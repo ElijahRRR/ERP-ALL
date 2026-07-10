@@ -38,6 +38,14 @@ curl http://localhost:8000/healthz   # 期望 {"status":"ok",...}
 ```
 团队访问：浏览器打开 `http://<固定内网IP>:5173`（前端随 R1 迭代由部署工作流接管构建）。
 
+### 第 2.5 步：创建初始超管（首次部署必做）
+
+```bash
+PW=$(openssl rand -base64 16) && echo "super 初始密码: $PW" >> /c/erp/erp-secrets.txt
+docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" api python -m erp.bootstrap admin
+```
+登录名 `admin`，密码在 `C:\erp\erp-secrets.txt`；系统内已有超管时该命令会拒绝（幂等）。
+
 ## 第 3 步：每日备份（红线，没配不算部署完成）
 
 1. 试跑：Git Bash 里 `bash infra/local-deploy/backup.sh`，确认 `~/erp-backups` 出现 dump 文件。
