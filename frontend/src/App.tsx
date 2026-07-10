@@ -1,12 +1,27 @@
-import { Result } from 'antd'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
 
-// R1-05 起：布局壳 + 登录页 + 按权限点渲染的菜单。当前为骨架占位。
+import { AuthProvider } from '@/auth/AuthContext'
+import AppLayout from '@/layout/AppLayout'
+import AuditPage from '@/pages/AuditPage'
+import HomePage from '@/pages/HomePage'
+import LoginPage from '@/pages/LoginPage'
+import RolesPage from '@/pages/RolesPage'
+import UsersPage from '@/pages/UsersPage'
+
 export default function App() {
   return (
-    <Result
-      status="info"
-      title="ERP-ALL"
-      subTitle="前端骨架已就绪（R1-01）。登录与工作台在 R1-05 交付。"
-    />
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route element={<AppLayout />}>
+            <Route index element={<HomePage />} />
+            <Route path="/users" element={<UsersPage />} />
+            <Route path="/roles" element={<RolesPage />} />
+            <Route path="/audit" element={<AuditPage />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   )
 }

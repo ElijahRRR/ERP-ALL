@@ -105,9 +105,13 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "identity API + 前端骨架（登录/成员/角色/审计页，契约 codegen 禁 mock-first）",
-  "status": "in_progress",
-  "evidence": [],
-  "finding": null,
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-05/local-verify.md",
+   ".agent/evidence/R1-05/shots/ (6截图)",
+   "frontend/e2e/smoke.mjs"
+  ],
+  "finding": "契约端点+登录/成员/角色/审计四页+权限渲染菜单；真实全栈 E2E 冒烟通过并截图交付 Owner",
   "last_checked_at": "2026-07-10"
  },
  {
