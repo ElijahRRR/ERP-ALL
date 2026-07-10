@@ -68,6 +68,9 @@ services:
     image: node:22-alpine
     restart: unless-stopped
     working_dir: /app
+    environment:
+      # 容器内 API 走 docker 网络名（vite.config.ts 读取；宿主机跑 vite 时无需此变量）
+      VITE_API_PROXY_TARGET: http://api:8000
     # corepack 按 package.json 的 packageManager 钉死 pnpm 版本（曾因拉到 pnpm 11 导致 install 失败）
     command: sh -c "corepack enable && pnpm install && pnpm dev --host"
     volumes:

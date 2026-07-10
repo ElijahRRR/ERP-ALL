@@ -81,6 +81,10 @@ docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" 
   重启 Docker Desktop（或真机重启）即恢复，容器本身是健康的。
 - **restart 策略**：compose 已内置 `restart: unless-stopped`（db/redis/api/frontend），
   `git pull` 后无需再手动 `docker update`；migrate 是一次性任务，Exited(0) 属正常。
+- **登录报"请求失败"（登录页正常）**：vite 代理目标曾写死宿主机 `localhost:8000`，
+  容器内转发进空端口。已根治：vite.config.ts 读 `VITE_API_PROXY_TARGET`，
+  compose 已注入 `http://api:8000`。处置：`git pull` 后
+  `docker compose --profile dev up -d --force-recreate frontend`。
 
 ## 注意
 
