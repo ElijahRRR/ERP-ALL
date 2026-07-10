@@ -66,20 +66,26 @@
   "priority": "P0",
   "dimension": "foundation",
   "check": "配置与密钥（pydantic-settings 三层 + ConfigService team>system>默认）",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-02-03/local-verify.md",
+   "backend/src/erp/core/config_service.py + tests/db/test_config_service.py"
+  ],
+  "finding": "ConfigService team>system>default + 60s TTL；跨进程失效广播随 R1-06 worker 接入",
+  "last_checked_at": "2026-07-10"
  },
  {
   "id": "R1-03",
   "priority": "P0",
   "dimension": "foundation",
   "check": "migration 基线（identity+channel+system 表 / RLS / 三 DB 角色 / 种子 / 升降级往返）[ar 独占]",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-02-03/local-verify.md",
+   "backend/alembic/versions/0001~0004"
+  ],
+  "finding": "identity+channel+system 20 表：RLS 全开(真库验证)、audit_log 双重不可篡改、月分区+助手函数、认证 SECURITY DEFINER 通道、36权限点/7模板角色种子；偏离：portal_account→R2#6",
+  "last_checked_at": "2026-07-10"
  },
  {
   "id": "R1-04",

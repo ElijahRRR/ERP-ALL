@@ -38,12 +38,13 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "PL", "RUF"]
 ignore = [
-    "PLR0913",           # 服务层函数参数数由 CR 把关，不由 lint 一刀切
-    "RUF002", "RUF003",  # 中文注释/文档串的全角标点是本项目惯例
+    "PLR0913",                     # 服务层函数参数数由 CR 把关，不由 lint 一刀切
+    "RUF001", "RUF002", "RUF003",  # 中文文案/注释的全角标点是本项目惯例
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["PLR2004"]
+"alembic/versions/*" = ["E501"]  # 手写 SQL 的行宽以可读为准
 
 [tool.mypy]
 python_version = "3.11"

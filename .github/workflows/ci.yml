@@ -23,6 +23,7 @@ jobs:
           --health-interval 3s --health-timeout 3s --health-retries 20
     env:
       ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/erp_all
+      ERP_DATABASE_URL: postgresql+psycopg://erp_app:erp_app@localhost:5432/erp_all
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
