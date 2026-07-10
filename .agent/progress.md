@@ -36,3 +36,7 @@
 - 关键新增: core/db.system_tx —— worker/beat 系统事务上下文(is_super GUC, 仅限非用户路径), 解决后台任务被 RLS 拒写。
 - 33 测试×2 + 前端 build + E2E notify-smoke 截图×2 已发 Owner。
 - Next: R1-08 店铺/代理/配额(界面录 A152 凭证) → R1-07 渠道网关。
+### Session: 2026-07-10 (部署机确定)
+- Owner 已退订 MySQL；部署机=Win11 Pro 台式机(Ultra7 265K 20核/48G/990PRO 2TB)——远超需求。
+- infra/local-deploy/windows.md 交付（Docker Desktop+wslconfig 20G限额+电源/更新/固定IP/防火墙+Git Bash 备份挂任务计划+self-hosted runner）。
+- 注意事项：可能是 Owner 主力机——WSL 已限 20G 互不干扰；正式团队切换时再评估专机。
