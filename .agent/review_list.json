@@ -52,9 +52,13 @@
   "priority": "P0",
   "dimension": "foundation",
   "check": "仓库工程化与 CI（monorepo/uv+ruff+mypy+pytest/GHA/docker-compose）",
-  "status": "in_progress",
-  "evidence": [],
-  "finding": null,
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-01/local-verify.md",
+   ".agent/evidence/R1-01/ci-first-run.md",
+   "CI run 29077720593 success"
+  ],
+  "finding": "本地四关+CI 双 job 全绿；compose 全栈 up 留待 Owner 本机/ECS 首次部署验证（沙盒无 docker daemon）",
   "last_checked_at": "2026-07-10"
  },
  {
