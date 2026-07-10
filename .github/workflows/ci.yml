@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: backend}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: erp_all
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d erp_all"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/erp_all
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: {python-version: "3.12"}
+      - name: 安装依赖
+        run: uv sync --frozen
+      - name: Lint（ruff）
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: 类型检查（mypy strict）
+        run: uv run mypy
+      - name: 单元测试
+        run: uv run pytest
+      - name: migration 空库演练（升→降→升）
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: frontend}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: {version: 10}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml}
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+      - name: Lint（eslint）
+        run: pnpm lint
+      - name: 构建（tsc + vite build）
+        run: pnpm build

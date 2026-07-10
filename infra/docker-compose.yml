@@ -1,0 +1,75 @@
+# 本地全栈：docker compose -f infra/docker-compose.yml up
+# （仓库根 Makefile 提供快捷方式 make up）
+name: erp-all
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: erp_all
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d erp_all"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: ../backend
+    command: ["alembic", "upgrade", "head"]
+    environment: &backend_env
+      ERP_DATABASE_URL: postgresql+psycopg://erp_app:erp_app@db:5432/erp_all
+      ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://erp_migrator:erp_migrator@db:5432/erp_all
+      ERP_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db: {condition: service_healthy}
+
+  api:
+    build: ../backend
+    command: ["uvicorn", "erp.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *backend_env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  # worker / beat 角色随 R1-06/09 启用（同镜像不同 command）：
+  # worker:
+  #   build: ../backend
+  #   command: ["python", "-m", "erp.worker"]
+  #   environment: *backend_env
+  # beat:
+  #   build: ../backend
+  #   command: ["python", "-m", "erp.beat"]
+  #   environment: *backend_env
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install && pnpm dev --host"
+    volumes:
+      - ../frontend:/app
+    ports:
+      - "5173:5173"
+    profiles: ["dev"]
+
+volumes:
+  pgdata:

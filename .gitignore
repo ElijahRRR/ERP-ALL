@@ -17,5 +17,5 @@ logs/
 htmlcov/
 *.sqlite
 *.db
-.agent/evidence/
 .claude/worktrees/
+*.tsbuildinfo
