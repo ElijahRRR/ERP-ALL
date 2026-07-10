@@ -133,10 +133,13 @@
   "priority": "P0",
   "dimension": "channel",
   "check": "渠道网关移植（walmart_client+GCRA+退避；dry_run/live_test/live 三模式）[be-channel 独占]",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-07/(archaeology.md+local-verify.md+dry-run-snapshot.json)",
+   "backend/src/erp/channel/gateway/*"
+  ],
+  "finding": "网关移植完成：三模式闸/token自愈/GCRA自适应/五头保真；A152 真调待 Owner 部署后在其机器执行（沙盒禁真调）",
+  "last_checked_at": "2026-07-10"
  },
  {
   "id": "R1-08",

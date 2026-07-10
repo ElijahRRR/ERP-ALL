@@ -1,0 +1,24 @@
+{
+  "mode": "dry_run",
+  "store": "A152",
+  "method": "POST",
+  "url": "https://marketplace.walmartapis.com/v3/feeds",
+  "endpoint_key": "POST /v3/feeds:MP_ITEM",
+  "params": {
+    "feedType": "MP_ITEM"
+  },
+  "json_body": {
+    "MPItemFeedHeader": {
+      "version": "5.0"
+    }
+  },
+  "proxy": null,
+  "headers": [
+    "Authorization",
+    "WM_SVC.NAME",
+    "WM_QOS.CORRELATION_ID",
+    "WM_CONSUMER.ID",
+    "WM_SEC.ACCESS_TOKEN",
+    "Accept"
+  ]
+}

@@ -50,6 +50,7 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "erp.core.authn.re
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["PLR2004", "PLC0415", "B008", "F811"]  # 测试惯用法：延迟导入/Depends默认参/夹具跨文件复用同名
 "alembic/versions/*" = ["E501"]  # 手写 SQL 的行宽以可读为准
+"src/erp/channel/gateway/*" = ["PLR2004", "PLR0915"]  # HTTP 状态码/时间语义直读；移植的请求循环保真不拆
 
 [tool.mypy]
 python_version = "3.11"
