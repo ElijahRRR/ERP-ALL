@@ -70,3 +70,10 @@
 - 自踩自修: 网关传输错误返回status=None不抛异常——必须当"结果未知"进verify_pending, 不能落"渠道拒绝"分支; 网关单例连接池缓存transport, 测试注入替身必须清池。
 - 75 测试×2 全过(新增8)。A152 真调 runbook 交付(evidence/R1-11/a152-live-runbook.md)——等 Owner 部署+凭证。
 - Next: R1-12 E2E 演示与失败路径(qa 收口)；A152 真调结果回来后补 R1-11 收尾。
+### Session: 2026-07-10 (R1-12 沙盒演示)
+- E2E 全链演示跑通：采集(真机器协议拨入)→审核(mock LLM)→分配→提交(live_test→mock渠道)→poll→live→delist；失败三路径(审核拒绝/配额耗尽/feed错误→字典→critical通知)；11 截图入证据。
+- 支撑改动: 网关 BASE_URL→Settings.channel_base_url; notify 接入 poll 终态; catalog 最小路由(GET /products[/{id}]); 前端新三页(采集作业/产品库/上架管理)+菜单权限门控。
+- 顺手修缺陷: transition 把 reason_code 误写 error_code(live 行挂红标)→仅 failed/degraded 落值; 提交0项不再弹 undefined 提示。
+- 75 pytest×2 + 全静态检查 + 前端 build 绿。踩坑: Settings 字段→env 名对应(llm_api_base=ERP_LLM_API_BASE, 写错会真连 deepseek); AntD Drawer 用 .ant-drawer-close 关, Escape 不可靠。
+- R1 收口状态: 01-10 ✅CI绿; 11 沙盒✅+A152待Owner; 12 沙盒✅+Owner验收待执行(owner-acceptance-runbook.md)。
+- Next: 等 Owner 验收回执→R1 关账→R2 规划(选品/订单/邮件/定价/自动化)。期间可做: R2 规划草案/欠账清单整理。

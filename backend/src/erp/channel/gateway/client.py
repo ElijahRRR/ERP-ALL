@@ -37,7 +37,7 @@ from erp.core.settings import get_settings
 
 log = structlog.get_logger()
 
-BASE_URL = "https://marketplace.walmartapis.com"
+
 GatewayMode = Literal["dry_run", "live_test", "live"]
 
 # 防 SOCKS hang（源仓 2026-05-12 实战：SSL read 卡 2.5h）——async 侧用显式 Timeout 全覆盖
@@ -151,7 +151,7 @@ class WalmartGateway:
             cred = base64.b64encode(f"{ctx.client_id}:{ctx.client_secret}".encode()).decode()
             client = self._client(ctx.proxy_url)
             resp = await client.post(
-                f"{BASE_URL}/v3/token",
+                f"{get_settings().channel_base_url}/v3/token",
                 headers={
                     "Authorization": f"Basic {cred}",
                     "WM_SVC.NAME": "Walmart Marketplace",
@@ -239,7 +239,7 @@ class WalmartGateway:
         ctx = await self._context(session, store_id)
         mode = mode_override or await self._resolve_mode(session)
         await self._enforce_mode(session, ctx, mode)
-        url = f"{BASE_URL}{path}"
+        url = f"{get_settings().channel_base_url}{path}"
         ep = endpoint_key or f"{method} {path.split('?', maxsplit=1)[0]}"
 
         if mode == "dry_run":

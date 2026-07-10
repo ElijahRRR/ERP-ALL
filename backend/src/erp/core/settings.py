@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     llm_api_base: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
 
+    # 渠道网关基址（E2E/联调可指向本地 mock；生产保持官方域名）
+    channel_base_url: str = "https://marketplace.walmartapis.com"
+
     log_json: bool = True
 
 

@@ -1,0 +1,288 @@
+import { Button, Drawer, Space, Table, Tabs, Tag, Timeline, message } from 'antd'
+import { useCallback, useEffect, useState } from 'react'
+
+import { ApiError, api, type PageOf } from '@/api/client'
+import { useAuth } from '@/auth/AuthContext'
+
+interface Listing {
+  id: number
+  store_id: number
+  product_id: number
+  offer_mode: string
+  channel_sku: string
+  gtin: string | null
+  status: string
+  error_code: string | null
+  wpid: string | null
+  current_price: number | null
+  current_inventory: number
+}
+
+interface StateHistory {
+  from_status: string
+  to_status: string
+  reason_code: string | null
+  actor_type: string
+  occurred_at: string
+}
+
+interface Feed {
+  id: number
+  store_id: number
+  channel_feed_id: string | null
+  feed_kind: string
+  status: string
+  item_count: number
+  submitted_at: string | null
+  created_at: string
+}
+
+const L_COLOR: Record<string, string> = {
+  draft: 'default',
+  queued: 'gold',
+  submitted: 'processing',
+  processing: 'processing',
+  published: 'cyan',
+  live: 'green',
+  degraded: 'orange',
+  delist_pending: 'orange',
+  delisted: 'default',
+  failed: 'red',
+  retired: 'default',
+}
+const F_COLOR: Record<string, string> = {
+  building: 'default',
+  submitting: 'processing',
+  verify_pending: 'orange',
+  submitted: 'processing',
+  processing: 'processing',
+  processed: 'green',
+  partial: 'orange',
+  error: 'red',
+  lost: 'red',
+}
+
+export default function ListingsPage() {
+  const { has } = useAuth()
+  const [listings, setListings] = useState<PageOf<Listing> | null>(null)
+  const [feeds, setFeeds] = useState<PageOf<Feed> | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<number[]>([])
+  const [history, setHistory] = useState<{ id: number; items: StateHistory[] } | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setListings(await api.get<PageOf<Listing>>(`/listings?page=1&size=50`))
+      setFeeds(await api.get<PageOf<Feed>>(`/feeds?page=1&size=50`))
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  async function onSubmit() {
+    try {
+      const r = await api.post<{
+        queued: number
+        feed_status?: string
+        dry_run?: boolean
+        skipped: { listing_id: number; code: string }[]
+      }>(`/listings/submit`, { listing_ids: selected })
+      if (r.dry_run) {
+        message.info(`dry-run 模式：已生成提交快照（${r.queued} 项，未真实发包）`)
+      } else if (r.queued > 0) {
+        message.success(`已提交 ${r.queued} 项（feed: ${r.feed_status}）`)
+      }
+      if (r.skipped.length) {
+        message.warning(`跳过 ${r.skipped.length} 项：${r.skipped.map((s) => s.code).join(', ')}`, 6)
+      }
+      setSelected([])
+      void load()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '提交失败')
+    }
+  }
+
+  async function showHistory(id: number) {
+    try {
+      const d = await api.get<{ state_history: StateHistory[] }>(`/listings/${id}`)
+      setHistory({ id, items: d.state_history })
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '加载失败')
+    }
+  }
+
+  async function op(path: string, ok: string) {
+    try {
+      await api.post(path, {})
+      message.success(ok)
+      void load()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '操作失败')
+    }
+  }
+
+  return (
+    <>
+      <Tabs
+        items={[
+          {
+            key: 'listings',
+            label: '刊登',
+            children: (
+              <>
+                <Space style={{ marginBottom: 16 }}>
+                  {has('listing.submit') && (
+                    <Button type="primary" disabled={!selected.length} onClick={() => void onSubmit()}>
+                      提交上架（{selected.length}）
+                    </Button>
+                  )}
+                  <Button onClick={() => void load()}>刷新</Button>
+                </Space>
+                <Table<Listing>
+                  rowKey="id"
+                  loading={loading}
+                  dataSource={listings?.items}
+                  rowSelection={{
+                    selectedRowKeys: selected,
+                    onChange: (keys) => setSelected(keys as number[]),
+                    getCheckboxProps: (r) => ({
+                      disabled: !['draft', 'queued'].includes(r.status),
+                    }),
+                  }}
+                  pagination={false}
+                  columns={[
+                    { title: 'ID', dataIndex: 'id', width: 70 },
+                    { title: 'SKU', dataIndex: 'channel_sku', width: 110 },
+                    { title: 'GTIN', dataIndex: 'gtin', width: 130 },
+                    { title: '模式', dataIndex: 'offer_mode', width: 80 },
+                    {
+                      title: '状态',
+                      dataIndex: 'status',
+                      width: 120,
+                      render: (s: string, r) => (
+                        <Space size={4}>
+                          <Tag color={L_COLOR[s]}>{s}</Tag>
+                          {r.error_code && <Tag color="red">{r.error_code}</Tag>}
+                        </Space>
+                      ),
+                    },
+                    { title: '价格', dataIndex: 'current_price', width: 90 },
+                    { title: 'WPID', dataIndex: 'wpid', width: 130 },
+                    {
+                      title: '操作',
+                      key: 'op',
+                      render: (_, r) => (
+                        <Space>
+                          <Button size="small" onClick={() => void showHistory(r.id)}>
+                            历史
+                          </Button>
+                          {has('listing.delist') && r.status === 'live' && (
+                            <Button
+                              size="small"
+                              danger
+                              onClick={() => void op(`/listings/${r.id}/delist`, '已下架')}
+                            >
+                              下架
+                            </Button>
+                          )}
+                          {has('listing.submit') && r.status === 'failed' && (
+                            <Button
+                              size="small"
+                              onClick={() => void op(`/listings/${r.id}/retry`, '已重投队列')}
+                            >
+                              重投
+                            </Button>
+                          )}
+                        </Space>
+                      ),
+                    },
+                  ]}
+                />
+              </>
+            ),
+          },
+          {
+            key: 'feeds',
+            label: 'Feed 提交',
+            children: (
+              <Table<Feed>
+                rowKey="id"
+                loading={loading}
+                dataSource={feeds?.items}
+                pagination={false}
+                columns={[
+                  { title: 'ID', dataIndex: 'id', width: 70 },
+                  { title: '渠道 FeedId', dataIndex: 'channel_feed_id', width: 200 },
+                  { title: '类型', dataIndex: 'feed_kind', width: 110 },
+                  {
+                    title: '状态',
+                    dataIndex: 'status',
+                    width: 130,
+                    render: (s: string) => <Tag color={F_COLOR[s]}>{s}</Tag>,
+                  },
+                  { title: '条数', dataIndex: 'item_count', width: 70 },
+                  { title: '提交时间', dataIndex: 'submitted_at', width: 180 },
+                  {
+                    title: '操作',
+                    key: 'op',
+                    render: (_, f) =>
+                      has('listing.submit') && (
+                        <Space>
+                          {['submitted', 'processing'].includes(f.status) && (
+                            <Button
+                              size="small"
+                              onClick={() => void op(`/feeds/${f.id}/poll`, '已轮询')}
+                            >
+                              轮询
+                            </Button>
+                          )}
+                          {f.status === 'verify_pending' && (
+                            <Button
+                              size="small"
+                              type="primary"
+                              onClick={() => void op(`/feeds/${f.id}/verify-back`, '对账完成')}
+                            >
+                              对账归位
+                            </Button>
+                          )}
+                        </Space>
+                      ),
+                  },
+                ]}
+              />
+            ),
+          },
+        ]}
+      />
+      <Drawer
+        title={`Listing #${history?.id ?? ''} 状态历史`}
+        open={!!history}
+        onClose={() => setHistory(null)}
+        width={480}
+      >
+        <Timeline
+          items={history?.items.map((h) => ({
+            children: (
+              <>
+                <b>
+                  {h.from_status} → {h.to_status}
+                </b>
+                {h.reason_code && <Tag style={{ marginLeft: 8 }}>{h.reason_code}</Tag>}
+                <div style={{ color: '#999', fontSize: 12 }}>
+                  {h.actor_type} · {h.occurred_at}
+                </div>
+              </>
+            ),
+          }))}
+        />
+      </Drawer>
+    </>
+  )
+}

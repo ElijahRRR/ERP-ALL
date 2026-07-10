@@ -2,10 +2,13 @@ import {
   ApiOutlined,
   AuditOutlined,
   BellOutlined,
+  CloudDownloadOutlined,
   DashboardOutlined,
   GlobalOutlined,
   LogoutOutlined,
   SafetyOutlined,
+  ShopOutlined,
+  ShoppingOutlined,
   TeamOutlined,
 } from '@ant-design/icons'
 import { Dropdown, Layout, Menu, Spin } from 'antd'
@@ -18,6 +21,9 @@ import { useAuth } from '@/auth/AuthContext'
 // 菜单项 → 所需权限点（无权限点的菜单所有人可见）
 const MENU = [
   { key: '/', icon: <DashboardOutlined />, label: '工作台', permission: null },
+  { key: '/scrape-jobs', icon: <CloudDownloadOutlined />, label: '采集作业', permission: 'scrape.job_read' },
+  { key: '/products', icon: <ShoppingOutlined />, label: '产品库', permission: 'catalog.product_read' },
+  { key: '/listings', icon: <ShopOutlined />, label: '上架管理', permission: 'listing.read' },
   { key: '/stores', icon: <GlobalOutlined />, label: '店铺管理', permission: 'channel.store_read' },
   { key: '/proxies', icon: <ApiOutlined />, label: '代理管理', permission: 'channel.proxy_read' },
   { key: '/users', icon: <TeamOutlined />, label: '成员管理', permission: 'identity.user_read' },

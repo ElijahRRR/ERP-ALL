@@ -28,13 +28,13 @@
           }
         },
         "Orderable": {
-          "sku": "M0000080",
+          "sku": "M0000151",
           "brand": "unbranded",
           "price": 19.99,
           "productName": "Bamboo Cutting Board Large",
           "ShippingWeight": 1.0,
           "productIdentifiers": {
-            "productId": "6900000000151",
+            "productId": "6900000000038",
             "productIdType": "EAN"
           },
           "electronicsIndicator": "No",

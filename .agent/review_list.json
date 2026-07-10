@@ -191,9 +191,10 @@
     "priority": "P0",
     "dimension": "acceptance",
     "check": "E2E 演示+失败路径三演示（审核拒/配额拒/feed错→告警）= R1 完成判据",
-    "status": "open",
-    "evidence": [],
+    "status": "in_progress",
+    "evidence": ".agent/evidence/R1-12/",
     "finding": null,
-    "last_checked_at": null
+    "last_checked_at": null,
+    "note": "沙盒演示全通过(11截图)；Owner 验收(含A152真调)=R1完成判据, runbook 已交付"
   }
 ]

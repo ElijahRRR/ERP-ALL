@@ -20,6 +20,7 @@ from erp.channel.gateway import gateway
 from erp.core.errors import BusinessError
 from erp.listing import gtin as gtin_pool
 from erp.listing import spec as spec_builder
+from erp.notify.service import notify
 
 log = structlog.get_logger()
 
@@ -46,9 +47,11 @@ async def transition(
         extra = ", published_at = now()"
     elif to_status == "delisted":
         extra = ", delisted_at = now()"
+    # error_code 仅在异常态携带（正常迁移清空——reason_code 只进 history）
+    err = reason_code if to_status in ("failed", "degraded") else None
     await session.execute(
         text("UPDATE app.listing SET status = :s, error_code = :e" + extra + " WHERE id = :id"),
-        {"s": to_status, "e": reason_code, "id": listing["id"]},
+        {"s": to_status, "e": err, "id": listing["id"]},
     )
     await session.execute(
         text(
@@ -564,6 +567,19 @@ async def poll_feed(session: AsyncSession, feed_id: int) -> dict[str, Any]:
         text("UPDATE app.feed SET status = :s, completed_at = now() WHERE id = :f"),
         {"s": final, "f": feed_id},
     )
+    if err:
+        # feed 错误 → 通知告警（错误明细已入 error catalog 闭环, R1-12 失败路径③）
+        await notify(
+            session,
+            team_id=feed["team_id"],
+            severity="critical" if final == "error" else "warn",
+            category="listing_feed",
+            title=f"上架 Feed #{feed_id} {'全部失败' if final == 'error' else '部分失败'}",
+            body=f"成功 {ok} / 失败 {err}；错误码已入字典待处置（feed 明细页可查）",
+            object_type="feed",
+            object_id=str(feed_id),
+            dedupe_key=f"feed_result:{feed_id}",
+        )
     return {"feed_id": feed_id, "feed_status": final, "success": ok, "error": err}
 
 
