@@ -314,9 +314,7 @@ class TestNodeSecurity:
         assert r.status_code == 422
         assert r.json()["error"]["code"] == "SCRAPE_NODE_AUTH"
 
-    def test_duplicate_node_key_rejected(
-        self, client: TestClient, seeded: dict[str, int]
-    ) -> None:
+    def test_duplicate_node_key_rejected(self, client: TestClient, seeded: dict[str, int]) -> None:
         r = client.post(
             "/api/v1/worker/v1/register",
             json={"node_key": "testnode-sec", "kind": "scraper_amazon", "enroll_token": ENROLL},
