@@ -160,8 +160,8 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "采集最小闭环（三表+worker 拨入协议移植 v3+product upsert）",
-    "status": "in_progress",
-    "evidence": [],
+    "status": "done",
+    "evidence": ".agent/evidence/R1-09/",
     "finding": null,
     "last_checked_at": null
   },
