@@ -60,3 +60,8 @@
 - 契约补录 Scrape 段 + worker-protocol.md 机器协议规格；考古对照表入证据(舍弃项：prefer_zip/批量回传/auto_retry→R2)。
 - 56 测试×2 全过(新增10)。真实 worker 引擎(curl_cffi/AIMD/session池)不在本单，随选品排期。
 - Next: R1-10 审核最小闭环（be-domain[审核] 帽，源=walmart-audit-system，考古纪律：先抓策略/提示词对照表）。
+### Session: 2026-07-10 (R1-10)
+- 审核最小闭环完成：0008(audit五表+黑名单四表+refdata.trademark+种子: 策略9条/黑名单10行/audit权限3码→42) + audit/pipeline(L0四层含占位符白名单/L2 R4词边界+R5 LIVE反查软证据/L3单策略IP) + llm.py(sha256输入缓存+usage记账含命中0成本行+单价走system_config) + service(orchestrator语义: L0短路→L2证据→L3判定→product状态联动) + 契约Audit段3端点。
+- 保真锁死: _coerce规范化(非法verdict→pass保守/旧标签映射/is_real_brand强制翻案)4单测; policy.version进prompt首行=配置变更自动新缓存键; L2查询ORDER BY保缓存键确定性。
+- 67 测试×2 全过(新增11)。R2欠账在archaeology.md: L1/L4/R1-R3,R7-R8/37条政策全量(lark OJSrkV)/AC自动机。
+- Next: R1-11 上架最小闭环（be-channel+be-domain 帽；listing六表+allocate/submit/轮询/回写；GTIN 20个EAN-13入池；A152真实上架1个SKU——需Owner部署机就绪+凭证入库后执行, dry-run部分沙盒可先行）。

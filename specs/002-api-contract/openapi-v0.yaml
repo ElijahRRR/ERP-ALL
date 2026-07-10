@@ -425,6 +425,41 @@ paths:
       x-permission: scrape.node_admin
       responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/WorkerNode'}}}}}}
 
+  # ─────────────────────── Audit ───────────────────────
+  /products/{productId}/audit:
+    post:
+      tags: [Audit]
+      summary: 发起单品审核（同步；R1 层级 l0/l2/l3，l4 未开放）
+      x-permission: audit.run
+      parameters: [{name: productId, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                levels: {type: array, items: {type: string, enum: [l0, l1, l2, l3, l4]}}
+                trigger_kind: {type: string, enum: [auto, manual, batch, re_audit], default: manual}
+      responses: {'201': {description: 审核完成（run_id/verdict/reject_level/llm_cost_usd/product_status）}, '422': {$ref: '#/components/responses/Error'}}
+  /audit-runs:
+    get:
+      tags: [Audit]
+      summary: 审核运行列表
+      x-permission: audit.read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: product_id, in: query, schema: {type: integer}}
+        - {name: verdict, in: query, schema: {type: string, enum: [pass, reject, needs_review]}}
+      responses: {'200': {description: OK}}
+  /audit-runs/{runId}:
+    get:
+      tags: [Audit]
+      summary: 审核运行详情（含逐层命中证据）
+      x-permission: audit.read
+      parameters: [{name: runId, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: OK}, '422': {$ref: '#/components/responses/Error'}}
+
   # ─────────────────────── Catalog ───────────────────────
   /products:
     get:

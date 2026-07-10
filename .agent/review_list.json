@@ -170,8 +170,8 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "审核最小闭环（L0+L2子集+L3单策略+cache/usage；先抓源仓对照表再写码）",
-    "status": "in_progress",
-    "evidence": [],
+    "status": "done",
+    "evidence": ".agent/evidence/R1-10/",
     "finding": null,
     "last_checked_at": null
   },

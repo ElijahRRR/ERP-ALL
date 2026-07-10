@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # 凭证加密密钥（pgcrypto 对称密钥，R1-08 使用）
     credential_key: str = "dev-only-change-me"
 
+    # LLM（R1-10 审核 L3；key 只走环境，模型/温度等业务参数在 audit_policy.config）
+    llm_api_base: str = "https://api.deepseek.com/v1"
+    llm_api_key: str = ""
+
     log_json: bool = True
 
 
