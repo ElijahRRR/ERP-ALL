@@ -2,8 +2,8 @@
 
 > 你是在 Owner 的 Windows 11 台式机上执行 ERP-ALL 本地部署的 agent。
 > 唯一操作依据：仓库 `infra/local-deploy/windows.md`（本任务书只补充约束与验收，不替代它）。
-> 仓库：https://github.com/ElijahRRR/ERP-ALL（私有，clone 时用 Owner 已登录的 Git 凭证，
-> 首次会弹 Git Credential Manager 浏览器授权，让 Owner 点一下即可）。
+> 仓库已由 Owner 克隆在 `D:\项目文件\ERP-ALL`（Git Bash 路径 `/d/项目文件/ERP-ALL`），跳过 clone，
+> 先 `git pull` 取最新 main 再开始。
 
 ## 硬约束（违反即停）
 
@@ -23,12 +23,12 @@
 
 **第 2.5 步（windows.md 起系统成功后）：创建初始超管**
 ```bash
-# Git Bash，仓库根目录。密码：生成 16 位随机串，存入本机 C:\erp\erp-secrets.txt（连同 .env 里两个密钥的备份）
+# Git Bash，仓库根目录。密码：生成 16 位随机串，存入本机 D:\项目文件\erp-secrets.txt（仓库目录外）（连同 .env 里两个密钥的备份）
 PW=$(openssl rand -base64 16)
-echo "super 初始密码: $PW" >> /c/erp/erp-secrets.txt
+echo "super 初始密码: $PW" >> /d/项目文件/erp-secrets.txt
 docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" api python -m erp.bootstrap admin
 ```
-然后告诉 Owner：「超管账号 admin，初始密码在 C:\erp\erp-secrets.txt，请登录验证并妥善保管该文件」。
+然后告诉 Owner：「超管账号 admin，初始密码在 D:\项目文件\erp-secrets.txt，请登录验证并妥善保管该文件」。
 **不要把密码本身写进你与 Owner 的对话。**
 
 ## 验收清单（全部✓才算完成）

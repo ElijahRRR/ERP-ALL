@@ -29,7 +29,8 @@
 
 Git Bash 里执行：
 ```bash
-cd /c/erp && git clone https://github.com/ElijahRRR/ERP-ALL.git && cd ERP-ALL
+# 仓库已克隆在 D:\项目文件\ERP-ALL（Git Bash 路径写法 /d/项目文件/ERP-ALL）
+cd /d/项目文件/ERP-ALL
 cp backend/.env.example backend/.env
 # 用记事本打开 backend/.env，把两处 dev-only-change-me 换成强随机串
 # （Git Bash 里生成：openssl rand -hex 32，跑两次各取一个）
@@ -41,10 +42,10 @@ curl http://localhost:8000/healthz   # 期望 {"status":"ok",...}
 ### 第 2.5 步：创建初始超管（首次部署必做）
 
 ```bash
-PW=$(openssl rand -base64 16) && echo "super 初始密码: $PW" >> /c/erp/erp-secrets.txt
+PW=$(openssl rand -base64 16) && echo "super 初始密码: $PW" >> /d/项目文件/erp-secrets.txt  # 注意：放仓库目录外，防误提交
 docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" api python -m erp.bootstrap admin
 ```
-登录名 `admin`，密码在 `C:\erp\erp-secrets.txt`；系统内已有超管时该命令会拒绝（幂等）。
+登录名 `admin`，密码在 `D:\项目文件\erp-secrets.txt`；系统内已有超管时该命令会拒绝（幂等）。
 
 ## 第 3 步：每日备份（红线，没配不算部署完成）
 
@@ -52,7 +53,7 @@ docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" 
 2. 挂定时（任务计划程序）：
    - 打开「任务计划程序」→ 创建基本任务 → 每天 02:30
    - 操作=启动程序：程序填 `"C:\Program Files\Git\bin\bash.exe"`，
-     参数填 `-lc "cd /c/erp/ERP-ALL && bash infra/local-deploy/backup.sh >> ~/erp-backups/backup.log 2>&1"`
+     参数填 `-lc "cd /d/项目文件/ERP-ALL && bash infra/local-deploy/backup.sh >> ~/erp-backups/backup.log 2>&1"`
    - 属性里勾选「不管用户是否登录都要运行」「使用最高权限」
 3. 异地副本：装 rclone（https://rclone.org/downloads/），`rclone config` 配一个网盘/OSS，
    然后在任务计划的参数前加 `RCLONE_REMOTE=<remote>:erp-backups `（脚本自动上传）。
