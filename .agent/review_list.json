@@ -1,5 +1,5 @@
 [
-  {"id":"EA-001","priority":"P0","dimension":"architecture","check":"领域模型列级设计 + 数据字典（15 限界上下文 → 表/字段/索引/分区/team隔离）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"EA-001","priority":"P0","dimension":"architecture","check":"领域模型列级设计 + 数据字典（15 限界上下文 → 表/字段/索引/分区/team隔离）","status":"needs_owner_review","evidence":["specs/001-domain-model/ (README + 00-conventions + 01~09, 80 表)"],"finding":"已产出；4 个开放点待 Owner 拍板（specs/001-domain-model/README.md §待验收开放点）","last_checked_at":"2026-07-10"},
   {"id":"EA-002","priority":"P0","dimension":"architecture","check":"OpenAPI 契约草案 v0（identity/channel/catalog/listing/order 五个核心上下文先行）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
   {"id":"EA-003","priority":"P0","dimension":"foundation","check":"R1 地基任务分解（多租户/RBAC/审计日志/认证/CI/migration/通知中心骨架/docker-compose）→ 逐项工单","status":"open","evidence":[],"finding":null,"last_checked_at":null},
   {"id":"EA-004","priority":"P1","dimension":"infra","check":"阿里云资源建议配置单（DB/应用两台规格 + 网络 + 备份策略）交 Owner 开通","status":"open","evidence":[],"finding":null,"last_checked_at":null}
