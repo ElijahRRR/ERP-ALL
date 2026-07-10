@@ -1,0 +1,22 @@
+status_code|live_dead|category|description
+600|DEAD|abandoned|Abandoned - Incomplete
+601|DEAD|abandoned|Abandoned - Express
+602|DEAD|abandoned|Abandoned - Failure to Respond
+603|DEAD|abandoned|Abandoned - After ex parte Appeal
+604|DEAD|abandoned|Abandoned - After inter partes Decision
+605|DEAD|abandoned|Abandoned - After Publication
+606|DEAD|abandoned|Abandoned - No Statement of Use Filed (ITU)
+607|DEAD|abandoned|Abandoned - Defective Statement of Use (ITU)
+608|DEAD|abandoned|Abandoned - After Petition Decision
+609|DEAD|abandoned|Abandoned - Defective Divided Application
+610|DEAD|abandoned|Abandoned - Petition Dismissed
+612|LIVE|petition|Petition to Revive Received
+614|DEAD|abandoned|Abandoned - Petition to Revive Denied
+616|LIVE|petition|Revived - Awaiting Further Action
+618|DEAD|abandoned|Abandoned File - Backfile
+0|DEAD|other|Unknown/Unassigned
+400|DEAD|other|Pre-examination - Abandoned
+401|DEAD|other|Pre-examination - Abandoned
+402|DEAD|other|Pre-examination - Abandoned
+403|DEAD|other|Pre-examination - Abandoned
+(20 rows)

@@ -1,0 +1,15 @@
+# 飞书表行数汇总（来源：lark-cli sheets +workbook-info，2026-07-09，--as bot 只读）
+# 注：row_count 为网格行数（可能含尾部空行），除注明外均含 1 行表头。
+
+文件 | workbook/sheet_id | 网格行数 | 网格列数 | 备注
+brand_blocklist.csv | YlA1sz…/WvPTz2 禁止品牌收集 | 2381 | 20 | 实际用 4 列（品牌名/来源/入库日期/SKU）
+compliance_delete.csv | YlA1sz…/eGjQRX 监管合规删除 | 6094 | 25 | 实际用 9 列；前 10 行的商品名称/ProductType/错误原因为空
+phishing_addr.csv | YnUH…/ZLUqxi 黑名单地址 | 200 | 20 | 前 4 行为横幅/说明行（含合并单元格），真正表头在第 5 行：律所/完整地址/街道/城市/州/邮编/风险/来源
+phishing_zip.csv | YnUH…/NOn5x7 黑名单邮编 | 200 | 20 | 单列表（邮编）
+purchasers.csv | YnUH…/OGBTUB 采购方 | 201 | 21 | 列：采购方/配送方式/价格区间起/止/汇率/是否启用；采购方为内部代号
+walmart_category.csv | Gx9Hs…/0bdc8b 沃尔玛类目 | 7009 | 31 | 实际用 10 列；D=准入状态，E=中国卖家可做
+prohibited.csv | Gx9Hs…/OJSrkV 沃尔玛禁止 | 200 | 20 | 实际用 14 列；单元格含多行文本（CSV 内带引号换行）
+mapping_detail.csv | Gx9Hs…/2p5sL6 映射明细 | 15771 | 20 | 实际用 11 列（Amazon→Walmart PT 映射）
+pricing_quota.csv | X4vMwQ…/2FJ2Np 定价和上下架 | 417 | 20 | 双行表头（第1行分组+第2行区间），数据自第 3 行起；导出=2 表头行+11 数据行
+upc_pool_stats.txt | PDsRsfG…/NxlS1J UPC池 | 148329 | 20 | 只统计不导全量：数据行 148328，B 列分布 已用 115752 / 空 27996 / 已领 4580
+online_products_header_only.txt | MO2escop…/e7834a 在线产品总表 | 147159 | 20 | 按 README §五 只导表头行

@@ -1,0 +1,48 @@
+Q2 店铺收款账户资料 — 数据样例（已打码）  调研日期: 2026-07-09
+================================================================================
+
+【结论】未发现集中式「店铺↔收款账户」结构化台账。最接近的实际数据是
+PingPong Card（虚拟卡）本地导出 + 结算快照中的 payment_processor 字段。
+打码规则：卡号只留后4位；CVC/有效期全掩码；无客户PII列。
+
+[来源1] /Users/nextderboy/Desktop/pingpong/PingPongCard数据 16.46.09.xlsx
+  sheet=PingPongCard数据  数据行数(不含表头)=21  列数=18
+  表头: 编号, 卡号, 卡类型, 卡状态, 备注名, CVC, 有效期, 总额度, 币种, 申请时间, 是否可转出, 账户名, 卡片类型, 注销时间, 资金结转状态, 注销原因, 资金结转明细, 是否为信用卡
+  样例(前8行, 卡号留后4位, CVC/有效期掩码):
+    card2920251031223326364717 | ************0682 | 虚拟卡 | 正常 | 环境73 | *** | **/** | 2770.00 | USD | 2025-10-31 22:33:29 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+    card2520251013195635527347 | ************6701 | 虚拟卡 | 正常 | 环境104 | *** | **/** | 200.00 | USD | 2025-10-13 19:56:39 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+    card2520251013195635530355 | ************3276 | 虚拟卡 | 正常 | 环境139 | *** | **/** | 50.00 | USD | 2025-10-13 19:56:39 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+    card2520251013195635528349 | ************0224 | 虚拟卡 | 正常 | 环境130 | *** | **/** | 50.00 | USD | 2025-10-13 19:56:39 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+    card2520251013195635529354 | ************7274 | 虚拟卡 | 正常 | 环境129 | *** | **/** | 50.00 | USD | 2025-10-13 19:56:38 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+    card2520251013195635529353 | ************9311 | 虚拟卡 | 正常 | 环境123d | *** | **/** | 9650.00 | USD | 2025-10-13 19:56:38 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+    card2520251013195635528351 | ************6551 | 虚拟卡 | 正常 | 环境122d | *** | **/** | 13550.00 | USD | 2025-10-13 19:56:38 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+    card2520251013195635528350 | ************9819 | 虚拟卡 | 正常 | 环境114 | *** | **/** | 50.00 | USD | 2025-10-13 19:56:38 | 是 | 美区 | 常规卡 | / | / | / | - | 否
+
+[来源2] 其他 PingPong Card 导出（同类数据，仅记表头与行数）:
+  /Users/nextderboy/Desktop/pingpong/PingPongCard.xlsx
+    sheet=PingPongCard数据 数据行数=21 表头: 编号, 卡号, 卡类型, 卡状态, 备注名, CVC, 有效期, 总额度, 币种, 申请时间
+  /Users/nextderboy/Downloads/pingpong卡.xls
+    sheet=PingPongCard数据 数据行数=24 表头: 编号, 卡号, 卡类型, 卡状态, 备注名, CVC, 有效期, 总额度, 币种, 申请时间, 是否可转出, 账户名, 卡片类型, 注销时间, 资金结转状态, 注销原因, 资金结转明细, 是否为信用卡, 是否多币种结算卡, 是否次卡, 单日取现额度, 单次取现额度
+  /Users/nextderboy/Desktop/公司/PingPongCard.xlsx
+    sheet=PingPongCard数据 数据行数=23 (文件dimension元数据损坏,经reset_dimensions重算)
+    表头(20列): 编号, 卡号, 卡类型, 卡状态, 备注名, CVC, 有效期, 总额度, 币种, 申请时间, 是否可转出, 账户名, 卡片类型, 注销时间, 资金结转状态, 注销原因, 资金结转明细, 是否为信用卡, 是否多币种结算卡, 是否次卡
+    备注名示例含「A147广告卡」→ 卡片与店铺代号(A147)+用途(广告)的映射即写在备注名里
+
+【备注名→店铺映射佐证】各导出的 备注名 列出现「环境73/环境104/环境139…」（对应
+~/Desktop/Super Browser/ 下同号店铺环境文件夹，如 73吴丽云）与「A147广告卡」等店铺代号，
+即 PingPong 卡与店铺的关联目前仅靠人工在备注名里手填，无独立映射表。
+
+[来源3] 结算快照（店铺→收款渠道，无账号）
+  ~/Projects/erpAPI/walmart_settlement.db :: settlement_snapshots
+  相关字段: store, partner_id, payment_status, payment_processor(=PingPong),
+           settle_cycle(=Bi-weekly), scheduled_settlement_date, paid_to_you,
+           closing_balance, hold_amount, hold_dates, reserve_to_date
+  （同字段亦出现在飞书 STORE_KPI/店铺日报 的「收款方」列 AC，来源同一 Walmart API）
+
+[来源4] PG erp_core.payout_accounts（空表，仅 DDL 目标设计）
+  id varchar64 PK | name varchar128 | account_masked varchar64 | type varchar32
+  | stores jsonb | kyc varchar32 | status varchar32(有索引) | month_income float
+  | pending float | frozen float | created_at timestamptz
+
+[来源5] 非结构化：~/Desktop/Super Browser/<店铺环境>/银行证明文件(Certified bank letter).pdf
+  按店铺环境文件夹散落（如 73吴丽云、3肖炜、AMZ-E08 等），PDF/PNG，不可直接入库

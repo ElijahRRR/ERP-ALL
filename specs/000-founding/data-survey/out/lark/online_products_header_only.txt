@@ -1,0 +1,3 @@
+# 在线产品总表（MO2escopjhLFzVtOzVlcq8xvnmI / e7834a）— 只取表头行（148k 全量不导，见 README §五）
+# workbook-info: rows=147159(当前网格), cols=20
+store,sku,wpid,upc,productName,shelf,productType,price_amount,availToSellQty,publishedStatus,lifecycleStatus,unpublishedReasons,处理后amz标题,相似度,amz价格,walmart价格,更新价格,库存,更新库存,last_updated

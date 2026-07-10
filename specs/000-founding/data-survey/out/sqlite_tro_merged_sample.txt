@@ -1,0 +1,11 @@
+id|source|case_number|court_code|title_80|filing_date|court|plaintiff|brand|law_firm|state|case_type|plaintiff_cn|brand_title|law_firm_abbr|lawyer|judge|cause|date_hit|trademarks_60|categories_60
+10638|123tro|2026-cv-08198|NJD|Ceremony of Roses Acquisition LLC v. Does 1-100 et al|2026-07-06|United States District Court, New Jersey|Ceremony of Roses Acquisition LLC|BENSON BOONE 本森布恩(歌手)|Stevens & Lee||Trademark|||Stevenslee|||||[]|[]
+10637|123tro|2026-cv-04061|NYSD|Milwaukee Electric Tool Corporation v. The Individuals, Corporations, Limited Li|2026-05-15|United States District Court, New York Southern|Milwaukee Electric Tool Corporation|Milwaukee 工具|Whitewood Law|||||Whitewood|||||[]|[]
+11971|61tro|2026-cv-00441|NCED|AFCO Performance Group, LLC v. The Partnerships and Unincorporated Ass...|2026-06-28|北卡罗来纳州东区法院|AFCO Performance Group, LLC|AFCO Performance Group, LLC|BB&L|NC|Copyright||||||||[]|[]
+11970|61tro|2026-cv-01443|CACD|Eureka LLC v. The Partnership and Unicorporated Associations Identifie...|2026-06-05|United States District Court, California Central||Eureka LLC|||||||||||[]|[]
+11993|ipsebe|2026-cv-03568||1:26-cv-3568|2026-06-24||LOGARO LLC|Crystal3 印泥|AU|GA|Trademark||||||||[]|[]
+11992|ipsebe|2026-cv-04236||2:26-cv-4236|2026-04-20||Alo, LLC|ALO 瑜伽品牌|Name Game IP|CA|Trademark||||||||[]|[]
+10288|saibeiip|2026-cv-07914|ILND|Kia Corporation V. The Partnerships And Unincorporated Associations Identified O|2026-07-07|United States District Court, Illinois Northern|Kia Corporation|Kia Corporation|GBC|IL|Trademark|Kia Corporation||GBC|Amy Crout Ziegler|Manish S. Shah|Trademark Infringement (Lanham Act)|2026-07-08|[]|[]
+10287|saibeiip|2026-cv-07920|ILND|Fca Us Llc V. The Partnerships And Unincorporated Associations Identified On Sch|2026-07-07|United States District Court, Illinois Northern|FCA US LLC|CHRYSLER 克莱斯勒|GBC|IL|Trademark|CHRYSLER 克莱斯勒||GBC|Amy Crout Ziegler|John J. Tharp, Jr|Trademark Infringement (Lanham Act)|2026-07-08|[]|[]
+12121|worldtro|2026-cv-02683||2026-cv-02683|2026-07-06||Pyokopins|Pyokopins 青蛙版权|Haynsworth Sinkler Boyd (cha)||商标||||||||[]|[]
+12120|worldtro|2026-cv-03620||2026-cv-03620 (被告名单)|2026-06-30||Logaro LLC|Crystal3 印泥|Au LLC|GA|商标||||||||[]|[]

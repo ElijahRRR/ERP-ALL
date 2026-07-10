@@ -1,0 +1,41 @@
+CREATE TABLE tro_cases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL,
+        case_number TEXT NOT NULL,
+        court_code TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL,
+        url TEXT NOT NULL,
+        filing_date TEXT,
+        court TEXT,
+        plaintiff TEXT,
+        brand TEXT,
+        law_firm TEXT,
+        state TEXT,
+        case_type TEXT,
+        plaintiff_cn TEXT,
+        brand_title TEXT,
+        law_firm_abbr TEXT,
+        lawyer TEXT,
+        description TEXT,
+        judge TEXT,
+        cause TEXT,
+        date_hit TEXT,
+        trademarks TEXT DEFAULT '[]',
+        product_categories TEXT DEFAULT '[]',
+        summary TEXT,
+        extra TEXT DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (case_number, court_code)
+    );
+CREATE TABLE sqlite_sequence(name,seq);
+CREATE TABLE trademark_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_number TEXT,
+        brand TEXT,
+        image_type TEXT NOT NULL,
+        image_url TEXT NOT NULL,
+        local_path TEXT,
+        registration_no TEXT,
+        source TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );

@@ -1,0 +1,56 @@
+Q1 黑名单卖家 — 数据存放位置与样例
+调研时间: 2026-07-09（只读调研）
+
+【存放位置（两处，飞书为 source of truth，PG 为每日同步镜像）】
+
+1) 飞书（主数据源，运营维护）
+   - wiki node token:      QNIpwrRWxiYPeVk86f8cemyenBb
+   - spreadsheet token:    BV25suzM7htNtBte91jc40iXnvg
+   - sheet_id:             8280e8（sheet_name: Sheet1，单 sheet）
+   - 网格规模:             row_count=18571 × column_count=20（含表头与尾部空行；有效数据 3 列）
+   - 表头(第1行):          A=黑名单卖家店铺ID  B=黑名单ASIN  C=黑名单类目
+   - 语义:                 每行一条"案例"，3 列功能独立（不强求同行都填），各列独立去重后各灌一张 PG 表
+
+2) 本地 PG（消费端镜像，walmart_audit 库）
+   - 表: public.phase0_blacklist_sellers  (seller_id text PK, synced_at timestamptz default now())
+   - 当前行数: 1308（去重后的独立 seller_id；同表族 asins=18458, amazon_cats=11810）
+   - 最近同步: 2026-07-09 07:09 (+08)
+   - 同步脚本: /Users/nextderboy/Projects/新审核系统/sync/sync_phase0_blacklist.py
+     （TRUNCATE + 全量重灌，单事务；每日 07:05 由定时任务
+      /Users/nextderboy/Projects/erpAPI/定时任务skill/sync-blacklist-brands-daily/SKILL.md 驱动，
+      同步后重启审核 worker 以加载新字典）
+   - 消费方: 新审核系统 Phase 0 飞书黑名单过滤
+     (pipelines/phase0_lark_blacklist.py，frozenset 内存字典)
+
+【飞书源表样例（前 10 数据行，A1:C12 原样导出）】
+黑名单卖家店铺ID,黑名单ASIN,黑名单类目
+AL28W8VC0OP8K,B0F9YPLHLZ,VideoGames->XboxSeriesX&S->Games
+A3UU7MDA741SA5,B0FQJB8392,"VideoGames->XboxSeriesX&S->Accessories->Faceplates,Protectors&Skins->Protectors"
+A3AYSFYP8MNX2,B0G3V4B839,VideoGames->XboxSeriesX&S->Accessories->Cases&Storage->Cases
+A322YC51QTTQF1,B0CXH39LC6,VideoGames->XboxSeriesX&S
+A35FD6S9G96BLM,B0CRGZSHN9,VideoGames->XboxOne->Games
+A2XJG57NMDQZTV,B0BR5RR7PW,VideoGames->XboxOne->Consoles
+ANZY3J724WTTJ,B0FHJQB45V,"VideoGames->XboxOne->Accessories->Mounts,Brackets&Stands->Stands"
+AOGAV8LBU66GF,B0F4X8G7KV,"VideoGames->XboxOne->Accessories->Mounts,Brackets&Stands"
+A2ZZAXCTXM3P30,B0FH9GQKW3,VideoGames->XboxOne->Accessories->Headsets
+A3SLLOLOLMCW4M,B0FMDPHHVR,"VideoGames->XboxOne->Accessories->Faceplates,Protectors&Skins"
+
+【PG 镜像样例（phase0_blacklist_sellers，按 seller_id 排序前 10 行）】
+seller_id|synced_at
+A102741HTMO4U3|2026-07-09 07:09:01+08
+A1095BZVWHJK2G|2026-07-09 07:09:01+08
+A10F1UCVYQM5JN|2026-07-09 07:09:01+08
+A10KD9XS5G7KAF|2026-07-09 07:09:01+08
+A10KZC2ZZYNJ6Z|2026-07-09 07:09:01+08
+A10UARNQGXE3BV|2026-07-09 07:09:01+08
+A110MBRL8XO94E|2026-07-09 07:09:01+08
+A115KAJKS8OJQZ|2026-07-09 07:09:01+08
+A115S9867S8HH7|2026-07-09 07:09:01+08
+A1185RVSWD0ST5|2026-07-09 07:09:01+08
+
+【隐私说明】seller_id 为 Amazon 市场卖家标识（如 AL28W8VC0OP8K），非客户个人信息；
+样例不含任何客户姓名/地址/邮箱/电话。
+
+【辨析：其他"黑名单"数据（非卖家，勿混淆）】
+- 黑名单品牌: 飞书「禁止品牌收集」(YlA1sz…/WvPTz2) → PG walmart_audit.blacklist_brands（uspto 库也有同名表）
+- 黑名单地址/邮编（钓鱼/律所检测，属客户侧）: 飞书 ORDER_AUDIT (YnUH…/ZLUqxi, NOn5x7)

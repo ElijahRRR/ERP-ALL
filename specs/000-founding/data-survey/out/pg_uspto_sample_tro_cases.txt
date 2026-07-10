@@ -1,0 +1,22 @@
+case_number|date_filed|nature_of_suit|plaintiff_raw|brand_raw|plaintiff_clean|brand_clean|brand_eq_plaintiff
+2026-cv-24675|2026-07-08|Trademark|ALBION BRAND FOUNDRY LTD|BESTSKY商标|ALBION BRAND FOUNDRY LTD|BESTSKY|f
+2026-cv-07972|2026-07-08|Trademark|||||t
+2026-cv-07969|2026-07-08|Trademark|||||t
+2026-cv-07967|2026-07-08|Trademark|||||t
+2026-cv-07961|2026-07-08|Trademark|Zhenbiao Zhang|RGOSME 女装商标|Zhenbiao Zhang|RGOSME|f
+2026-cv-07956|2026-07-08|Trademark|Kia Corporation|Kia Corporation|Kia Corporation|KIA CORPORATION|t
+2026-cv-07950|2026-07-08|Trademark|Zumao Wu|Zumao Wu|Zumao Wu|ZUMAO WU|t
+2026-cv-07948|2026-07-08|Trademark|Revelyst Operations LLC|Weaver商标|Revelyst Operations LLC|WEAVER|f
+2026-cv-07946|2026-07-08|Trademark|Bushnell LLC|博士能光学设备|Bushnell LLC|博士能光学设备|f
+2026-cv-07930|2026-07-07|Trademark|Disney Enterprises, Inc|迪士尼|Disney Enterprises, Inc|迪士尼|f
+2026-cv-07926|2026-07-07|Trademark|FCA US LLC|CHRYSLER 克莱斯勒|FC|CHRYSLER|f
+2026-cv-07924|2026-07-07|Trademark|Disney Enterprises, Inc|迪士尼|Disney Enterprises, Inc|迪士尼|f
+2026-cv-07920|2026-07-07|Trademark|FCA US LLC|CHRYSLER 克莱斯勒|FC|CHRYSLER|f
+2026-cv-07914|2026-07-07|Trademark|Kia Corporation|Kia Corporation|Kia Corporation|KIA CORPORATION|t
+2026-cv-07903|2026-07-07|Trademark|Fendi S.R.L|Fendi芬迪|Fendi S.R.L|FENDI|f
+2026-cv-07902|2026-07-07|Trademark|Kia Corporation|Kia Corporation|Kia Corporation|KIA CORPORATION|t
+2026-cv-07899|2026-07-07|Trademark|WENJING DENG|WENJING DENG|WENJING DENG|WENJING DENG|t
+2026-cv-07892|2026-07-07|Trademark|NextClimb Investments LLC|NextClimb商标|NextClimb Investments LLC|NEXTCLIMB|f
+2026-cv-07891|2026-07-07|Trademark|Bestway Inflatables & Material Corp|百适乐 BESTWAY|Bestway Inflatables & Material Corp|BESTWAY|f
+2026-cv-07890|2026-07-07|Copyright|Akamatsu Takayoshi|日本可爱表情包Piske & Usagi|Akamatsu Takayoshi|PISKE & USAGI|f
+(20 rows)

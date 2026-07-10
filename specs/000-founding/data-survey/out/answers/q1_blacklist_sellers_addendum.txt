@@ -1,0 +1,17 @@
+Q1 补充（2026-07-09 二轮核验，只读）— 黑名单卖家的第三处副本
+
+主文件 q1_blacklist_sellers_sample.txt 已记录:
+  ① 飞书权威源 QNIpwrRWxiYPeVk86f8cemyenBb / 8280e8（A列 黑名单卖家店铺ID，~1,308 独立 seller_id；本轮实测 A 列非空 1,309 格含表头，与之吻合）
+  ② PG walmart_audit.phase0_blacklist_sellers（1,308 行，本轮复核一致）
+
+本轮新增发现:
+  ③ PG walmart_os.blacklist_sellers — 沃尔玛操作台自己的一份下游副本
+     结构: id bigserial PK, seller_id text UNIQUE NOT NULL, source varchar(64) default 'manual',
+           enabled bool default true, notes text, created_at/updated_at timestamptz
+     行数: 1,271（全部 source='walmart_audit-phase0'，enabled=true）
+     读方: ~/Projects/沃尔玛操作台/backend/app/services/audit/pipelines/phase0_lark_blacklist.py
+           （SELECT seller_id FROM blacklist_sellers WHERE enabled → frozenset 内存拦截）
+     注: 行数 1,271 < 1,308，说明该副本同步略滞后于 walmart_audit 镜像；链路为
+         飞书 → walmart_audit.phase0_blacklist_sellers → walmart_os.blacklist_sellers。
+
+新 ERP 合规域结论建议: 权威源认飞书 8280e8 A 列；两份 PG 表均为派生镜像（TRUNCATE 重灌/增量搬运），迁移时以飞书为准即可。

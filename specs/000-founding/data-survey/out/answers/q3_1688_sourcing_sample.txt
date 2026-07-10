@@ -1,0 +1,20 @@
+Q3 样例：1688 货源对应记录（产品↔1688链接/价格）
+来源文件：/Users/nextderboy/Downloads/沃尔玛WFS选品.xlsx（本地 Excel，WPS 生成）
+说明：无客户PII。仅截取货源对应相关列；正文/图片列省略。
+
+== sheet「工作表1」（表头第2行，8 条数据，8 条含 1688采购链接） ==
+列：产品名称/定位 | sku | 当前进度状态 | 预估WFS售价($) | 拿货成本 | 1688采购链接
+橡胶O型密封圈套装 | B0D7VDYHM2 | 待负责人确定 | 15.99 | 23 | https://detail.1688.com/offer/909516283991.html
+气动升降工具 | B09NLY62RT | 待负责人确定 | 15.99 | 22.65 | https://detail.1688.com/offer/787952054303.html?spm=a262eq.8274978.im_chat_detail.pc
+螺母螺栓螺纹检查器 | B0CYT4ZK9J | 待负责人确定 | 16.99 | 20.1 | https://detail.1688.com/offer/800716990374.html?spm=a26286.10576602.qn-item.2.14c02beceBO8
+车库横梁重型收纳挂钩 | B09V7D1ML9 | 待负责人确定 | 22.99 | 34.55 | https://detail.1688.com/offer/875181647557.html
+园林修剪树叶收集垫 | B0BCKY4R4C | 待负责人确定 | 19.99 | 20 | https://detail.1688.com/offer/935541203622.html?spm=a21lca.1688_web_im.0.0
+
+== sheet「工作表1 (2)」（表头第1行，10 条数据，6 条含 1688产品链接） ==
+列：ASIN(A列) | 产品名称 | 亚马逊售价($) | 1688产品链接 | 价格(1688拿货,元) | 采购(含供应商寄渝运费)
+注：第3行样例的"价格"列原文即为风险备注（现货外观可能侵权），非填错。
+B0D7VDYHM2 | 橡胶O型密封圈套装 | 15.99 | https://detail.1688.com/offer/909516283991.html | 18.5/盒，含税，不含运费  （产品耐温范围比亚马逊产品少一倍） | 7.39
+B09NLY62RT | 气动升降工具 | 16.14 | https://detail.1688.com/offer/743978771519.html | 20.15/套，不含税不含运费 | 7.43
+B0CYT4ZK9J | 螺母螺栓螺纹检查器 | 17.99 | https://detail.1688.com/offer/800716990374.html?spm=a26286.10576602.qn-item.2.14c02beceBO8 | 现货产品的外观可能侵权 | -
+B09V7D1ML9 | 车库横梁重型收纳挂钩 | 22.99 | https://detail.1688.com/offer/875181647557.html?spm=a21lca.1688_web_im.0.0 | 32.8/套，不含税不含运费 | 9.48
+B0BBFKNKH5 | 帆布拉链工具收纳袋 (多色装) | 22.79 | https://detail.1688.com/offer/706033500339.html | - | -
