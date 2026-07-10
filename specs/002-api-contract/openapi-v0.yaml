@@ -739,6 +739,36 @@ paths:
         - {$ref: '#/components/parameters/size'}
         - {name: status, in: query, schema: {type: string, enum: [pending, success, error]}}
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/FeedItemPage'}}}}}
+  /feeds/{feedId}/poll:
+    post:
+      tags: [Listing]
+      summary: 手动轮询 feed 状态（item 级权威回写；beat 自动轮询 R2）
+      x-permission: listing.submit
+      parameters: [{name: feedId, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: OK}, '422': {$ref: '#/components/responses/Error'}}
+  /feeds/{feedId}/verify-back:
+    post:
+      tags: [Listing]
+      summary: verify_pending 对账归位（adopt/lost）——提交无响应永不盲重试
+      x-permission: listing.submit
+      parameters: [{name: feedId, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: OK}, '422': {$ref: '#/components/responses/Error'}}
+  /gtin-pool/import:
+    post:
+      tags: [Catalog]
+      summary: GTIN 批量导入（格式+GS1校验位校验；重复逐条报告）
+      x-permission: catalog.import_write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gtins]
+              properties:
+                gtins: {type: array, items: {type: string}, maxItems: 10000}
+                source: {type: string, enum: [generator_import, feishu_import, purchased], default: generator_import}
+      responses: {'201': {description: '{imported, rejected[]}'}}
   /pricing-strategies:
     get:
       tags: [Listing]

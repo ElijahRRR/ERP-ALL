@@ -1,0 +1,61 @@
+{
+  "mode": "dry_run",
+  "store": "A152L",
+  "method": "POST",
+  "url": "https://marketplace.walmartapis.com/v3/feeds",
+  "endpoint_key": "POST /v3/feeds:MP_ITEM",
+  "params": {
+    "feedType": "MP_ITEM"
+  },
+  "json_body": {
+    "MPItemFeedHeader": {
+      "sellingChannel": "mpmaintenance",
+      "processMode": "REPLACE",
+      "subset": "EXTERNAL",
+      "locale": "en",
+      "version": "1.5"
+    },
+    "MPItem": [
+      {
+        "Visible": {
+          "Drinkware": {
+            "keyFeatures": [
+              "solid"
+            ],
+            "mainImageUrl": null,
+            "shortDescription": "nice",
+            "productSecondaryImageURL": null
+          }
+        },
+        "Orderable": {
+          "sku": "M0000080",
+          "brand": "unbranded",
+          "price": 19.99,
+          "productName": "Bamboo Cutting Board Large",
+          "ShippingWeight": 1.0,
+          "productIdentifiers": {
+            "productId": "6900000000151",
+            "productIdType": "EAN"
+          },
+          "electronicsIndicator": "No",
+          "batteryTechnologyType": "Does Not Contain a Battery",
+          "chemicalAerosolPesticide": "No",
+          "shipsInOriginalPackaging": "No",
+          "inventory": {
+            "fulfillmentLagTime": 1,
+            "amount": 5
+          }
+        }
+      }
+    ]
+  },
+  "proxy": null,
+  "headers": [
+    "Authorization",
+    "WM_SVC.NAME",
+    "WM_QOS.CORRELATION_ID",
+    "WM_CONSUMER.ID",
+    "WM_SEC.ACCESS_TOKEN",
+    "Accept"
+  ]
+}

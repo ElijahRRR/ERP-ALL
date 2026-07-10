@@ -180,10 +180,11 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 全量证据+A152 真1单+delist 收尾）",
-    "status": "open",
-    "evidence": [],
+    "status": "in_progress",
+    "evidence": ".agent/evidence/R1-11/",
     "finding": null,
-    "last_checked_at": null
+    "last_checked_at": null,
+    "note": "沙盒范围全部完成(75测试×2绿)；剩 A152 真调 1 SKU 待 Owner 部署机执行(runbook 已交付)"
   },
   {
     "id": "R1-12",

@@ -65,3 +65,8 @@
 - 保真锁死: _coerce规范化(非法verdict→pass保守/旧标签映射/is_real_brand强制翻案)4单测; policy.version进prompt首行=配置变更自动新缓存键; L2查询ORDER BY保缓存键确定性。
 - 67 测试×2 全过(新增11)。R2欠账在archaeology.md: L1/L4/R1-R3,R7-R8/37条政策全量(lark OJSrkV)/AC自动机。
 - Next: R1-11 上架最小闭环（be-channel+be-domain 帽；listing六表+allocate/submit/轮询/回写；GTIN 20个EAN-13入池；A152真实上架1个SKU——需Owner部署机就绪+凭证入库后执行, dry-run部分沙盒可先行）。
+### Session: 2026-07-10 (R1-11 沙盒范围)
+- 上架最小闭环(沙盒部分)完成：0009(gtin_pool+listing七表+错误字典种子5条) + listing/gtin(GS1校验/单语句防双占/used永不回收) + spec(v5构建器+build_hash缓存, WPT=attrs.wpt>listing.default_wpt) + service(状态机唯一出口transition+allocate去重advisory lock+submit组批扣配额+poll item级权威回写+verify-back adopt/lost+delist+retry按处置策略) + 路由全契约端点+gtin导入。
+- 自踩自修: 网关传输错误返回status=None不抛异常——必须当"结果未知"进verify_pending, 不能落"渠道拒绝"分支; 网关单例连接池缓存transport, 测试注入替身必须清池。
+- 75 测试×2 全过(新增8)。A152 真调 runbook 交付(evidence/R1-11/a152-live-runbook.md)——等 Owner 部署+凭证。
+- Next: R1-12 E2E 演示与失败路径(qa 收口)；A152 真调结果回来后补 R1-11 收尾。
