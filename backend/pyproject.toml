@@ -45,7 +45,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["fastapi.Depends"]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "erp.core.authn.require_permission"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["PLR2004", "PLC0415", "B008"]  # 测试的延迟导入(env后导入)与 FastAPI Depends 惯用法

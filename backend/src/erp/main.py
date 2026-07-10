@@ -10,20 +10,14 @@ from fastapi.responses import JSONResponse
 
 from erp import __version__
 from erp.core.authn import AuthError, PermissionDenied
+from erp.core.errors import BusinessError
 from erp.core.logging import setup_logging
 from erp.core.settings import get_settings
+from erp.identity.router import auth_router, identity_router
 
 log = structlog.get_logger()
 
-
-class BusinessError(Exception):
-    """业务规则拒绝（HTTP 422）。code 使用大写蛇形错误码，进错误信封。"""
-
-    def __init__(self, code: str, message: str, detail: dict[str, Any] | None = None):
-        self.code = code
-        self.message = message
-        self.detail = detail or {}
-        super().__init__(message)
+__all__ = ["BusinessError", "app", "create_app"]
 
 
 def create_app() -> FastAPI:
@@ -82,6 +76,9 @@ def create_app() -> FastAPI:
     async def healthz() -> dict[str, str]:
         """存活探针：进程在即 200，不查依赖。"""
         return {"status": "ok", "version": __version__}
+
+    app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(identity_router, prefix="/api/v1")
 
     return app
 

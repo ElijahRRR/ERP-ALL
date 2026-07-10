@@ -5,6 +5,7 @@
 audit_log 表本身 append-only（无 UPDATE/DELETE 授权 + 无对应 RLS policy）。
 """
 
+import ipaddress
 import json
 from typing import Any
 
@@ -38,7 +39,8 @@ class AuditWriter:
         self._user_agent: str | None = None
         self._request_id: str | None = None
         if request is not None:
-            self._ip = request.client.host if request.client else None
+            raw_ip = request.client.host if request.client else None
+            self._ip = raw_ip if raw_ip and _is_ip(raw_ip) else None
             self._user_agent = request.headers.get("user-agent")
             self._request_id = getattr(request.state, "request_id", None)
 
@@ -85,3 +87,12 @@ class AuditWriter:
                 "rid": self._request_id,
             },
         )
+
+
+def _is_ip(value: str) -> bool:
+    """非法来源串（测试桩/脏代理头）不入 inet 列，置 NULL。"""
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True

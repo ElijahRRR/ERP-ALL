@@ -105,10 +105,10 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "identity API + 前端骨架（登录/成员/角色/审计页，契约 codegen 禁 mock-first）",
-  "status": "open",
+  "status": "in_progress",
   "evidence": [],
   "finding": null,
-  "last_checked_at": null
+  "last_checked_at": "2026-07-10"
  },
  {
   "id": "R1-06",
