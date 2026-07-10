@@ -1,198 +1,198 @@
 [
- {
-  "id": "EA-001",
-  "priority": "P0",
-  "dimension": "architecture",
-  "check": "领域模型列级设计 + 数据字典（15 限界上下文 → 表/字段/索引/分区/team隔离）",
-  "status": "accepted",
-  "evidence": [
-   "specs/001-domain-model/ (README + 00-conventions + 01~09, 80 表)"
-  ],
-  "finding": "已产出；4 个开放点待 Owner 拍板（specs/001-domain-model/README.md §待验收开放点）；2026-07-10 Owner 验收通过（开放点按默认值生效）",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "EA-002",
-  "priority": "P0",
-  "dimension": "architecture",
-  "check": "OpenAPI 契约草案 v0（identity/channel/catalog/listing/order 五个核心上下文先行）",
-  "status": "accepted",
-  "evidence": [
-   "specs/002-api-contract/ (README 全局约定 + openapi-v0.yaml 69路径52schema, YAML+引用已校验)"
-  ],
-  "finding": "草案已产出；随 EA-001 验收联动修订后冻结 v1；2026-07-10 Owner 验收通过（开放点按默认值生效）",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "EA-003",
-  "priority": "P0",
-  "dimension": "foundation",
-  "check": "R1 地基任务分解 → 逐项工单",
-  "status": "done",
-  "evidence": [
-   "specs/003-r1-plan/README.md (R1-01~R1-12 依赖图+验收标准+权限点种子+不做清单)"
-  ],
-  "finding": "12 个 R1 工单已注册（见下）",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "EA-004",
-  "priority": "P1",
-  "dimension": "infra",
-  "check": "阿里云资源建议配置单交 Owner 开通",
-  "status": "deferred",
-  "evidence": [
-   "specs/004-aliyun-provisioning/README.md"
-  ],
-  "finding": "D-Q52：试点期全本地部署，云采购暂缓；R2#6（门户对外）前重新评估。原配置单保留备用",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-01",
-  "priority": "P0",
-  "dimension": "foundation",
-  "check": "仓库工程化与 CI（monorepo/uv+ruff+mypy+pytest/GHA/docker-compose）",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-01/local-verify.md",
-   ".agent/evidence/R1-01/ci-first-run.md",
-   "CI run 29077720593 success"
-  ],
-  "finding": "本地四关+CI 双 job 全绿；compose 全栈 up 留待 Owner 本机/ECS 首次部署验证（沙盒无 docker daemon）",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-02",
-  "priority": "P0",
-  "dimension": "foundation",
-  "check": "配置与密钥（pydantic-settings 三层 + ConfigService team>system>默认）",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-02-03/local-verify.md",
-   "backend/src/erp/core/config_service.py + tests/db/test_config_service.py"
-  ],
-  "finding": "ConfigService team>system>default + 60s TTL；跨进程失效广播随 R1-06 worker 接入",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-03",
-  "priority": "P0",
-  "dimension": "foundation",
-  "check": "migration 基线（identity+channel+system 表 / RLS / 三 DB 角色 / 种子 / 升降级往返）[ar 独占]",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-02-03/local-verify.md",
-   "backend/alembic/versions/0001~0004"
-  ],
-  "finding": "identity+channel+system 20 表：RLS 全开(真库验证)、audit_log 双重不可篡改、月分区+助手函数、认证 SECURITY DEFINER 通道、36权限点/7模板角色种子；偏离：portal_account→R2#6",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-04",
-  "priority": "P0",
-  "dimension": "foundation",
-  "check": "认证+RBAC 中间件+审计唯一写出口（JWT 双 audience/权限点装饰器/GUC 注入）",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-04/local-verify.md",
-   "backend/src/erp/core/{security,authn,audit}.py + identity/service.py + 0005"
-  ],
-  "finding": "双域JWT/argon2/锁定/GUC注入/权限点装饰器/审计唯一出口全落地并真库测试；踩坑: SET LOCAL→set_config",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-05",
-  "priority": "P0",
-  "dimension": "feature",
-  "check": "identity API + 前端骨架（登录/成员/角色/审计页，契约 codegen 禁 mock-first）",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-05/local-verify.md",
-   ".agent/evidence/R1-05/shots/ (6截图)",
-   "frontend/e2e/smoke.mjs"
-  ],
-  "finding": "契约端点+登录/成员/角色/审计四页+权限渲染菜单；真实全栈 E2E 冒烟通过并截图交付 Owner",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-06",
-  "priority": "P1",
-  "dimension": "feature",
-  "check": "通知中心骨架（三表+API+铃铛+dedupe 抑制）",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-06/local-verify.md",
-   ".agent/evidence/R1-06/shots/",
-   "backend/src/erp/notify + automation/task_runner + 0006"
-  ],
-  "finding": "通知三表+notify唯一入口+dedupe+task失败联动+铃铛/通知页；新增 system_tx 系统事务上下文（worker RLS 通道）",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-07",
-  "priority": "P0",
-  "dimension": "channel",
-  "check": "渠道网关移植（walmart_client+GCRA+退避；dry_run/live_test/live 三模式）[be-channel 独占]",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-07/(archaeology.md+local-verify.md+dry-run-snapshot.json)",
-   "backend/src/erp/channel/gateway/*"
-  ],
-  "finding": "网关移植完成：三模式闸/token自愈/GCRA自适应/五头保真；A152 真调待 Owner 部署后在其机器执行（沙盒禁真调）",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-08",
-  "priority": "P0",
-  "dimension": "feature",
-  "check": "店铺/代理/配额 API+前端（凭证加密维护/代理独占换绑/配额原子扣减）",
-  "status": "done",
-  "evidence": [
-   ".agent/evidence/R1-08/local-verify.md",
-   ".agent/evidence/R1-08/shots/",
-   "backend/src/erp/channel/*"
-  ],
-  "finding": "契约 Channel 段全端点+店铺/代理两页+凭证抽屉；凭证加密/代理独占/配额原子扣减真库验证",
-  "last_checked_at": "2026-07-10"
- },
- {
-  "id": "R1-09",
-  "priority": "P0",
-  "dimension": "feature",
-  "check": "采集最小闭环（三表+worker 拨入协议移植 v3+product upsert）",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
- },
- {
-  "id": "R1-10",
-  "priority": "P0",
-  "dimension": "feature",
-  "check": "审核最小闭环（L0+L2子集+L3单策略+cache/usage；先抓源仓对照表再写码）",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
- },
- {
-  "id": "R1-11",
-  "priority": "P0",
-  "dimension": "feature",
-  "check": "上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 全量证据+A152 真1单+delist 收尾）",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
- },
- {
-  "id": "R1-12",
-  "priority": "P0",
-  "dimension": "acceptance",
-  "check": "E2E 演示+失败路径三演示（审核拒/配额拒/feed错→告警）= R1 完成判据",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
- }
+  {
+    "id": "EA-001",
+    "priority": "P0",
+    "dimension": "architecture",
+    "check": "领域模型列级设计 + 数据字典（15 限界上下文 → 表/字段/索引/分区/team隔离）",
+    "status": "accepted",
+    "evidence": [
+      "specs/001-domain-model/ (README + 00-conventions + 01~09, 80 表)"
+    ],
+    "finding": "已产出；4 个开放点待 Owner 拍板（specs/001-domain-model/README.md §待验收开放点）；2026-07-10 Owner 验收通过（开放点按默认值生效）",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "EA-002",
+    "priority": "P0",
+    "dimension": "architecture",
+    "check": "OpenAPI 契约草案 v0（identity/channel/catalog/listing/order 五个核心上下文先行）",
+    "status": "accepted",
+    "evidence": [
+      "specs/002-api-contract/ (README 全局约定 + openapi-v0.yaml 69路径52schema, YAML+引用已校验)"
+    ],
+    "finding": "草案已产出；随 EA-001 验收联动修订后冻结 v1；2026-07-10 Owner 验收通过（开放点按默认值生效）",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "EA-003",
+    "priority": "P0",
+    "dimension": "foundation",
+    "check": "R1 地基任务分解 → 逐项工单",
+    "status": "done",
+    "evidence": [
+      "specs/003-r1-plan/README.md (R1-01~R1-12 依赖图+验收标准+权限点种子+不做清单)"
+    ],
+    "finding": "12 个 R1 工单已注册（见下）",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "EA-004",
+    "priority": "P1",
+    "dimension": "infra",
+    "check": "阿里云资源建议配置单交 Owner 开通",
+    "status": "deferred",
+    "evidence": [
+      "specs/004-aliyun-provisioning/README.md"
+    ],
+    "finding": "D-Q52：试点期全本地部署，云采购暂缓；R2#6（门户对外）前重新评估。原配置单保留备用",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-01",
+    "priority": "P0",
+    "dimension": "foundation",
+    "check": "仓库工程化与 CI（monorepo/uv+ruff+mypy+pytest/GHA/docker-compose）",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-01/local-verify.md",
+      ".agent/evidence/R1-01/ci-first-run.md",
+      "CI run 29077720593 success"
+    ],
+    "finding": "本地四关+CI 双 job 全绿；compose 全栈 up 留待 Owner 本机/ECS 首次部署验证（沙盒无 docker daemon）",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-02",
+    "priority": "P0",
+    "dimension": "foundation",
+    "check": "配置与密钥（pydantic-settings 三层 + ConfigService team>system>默认）",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-02-03/local-verify.md",
+      "backend/src/erp/core/config_service.py + tests/db/test_config_service.py"
+    ],
+    "finding": "ConfigService team>system>default + 60s TTL；跨进程失效广播随 R1-06 worker 接入",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-03",
+    "priority": "P0",
+    "dimension": "foundation",
+    "check": "migration 基线（identity+channel+system 表 / RLS / 三 DB 角色 / 种子 / 升降级往返）[ar 独占]",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-02-03/local-verify.md",
+      "backend/alembic/versions/0001~0004"
+    ],
+    "finding": "identity+channel+system 20 表：RLS 全开(真库验证)、audit_log 双重不可篡改、月分区+助手函数、认证 SECURITY DEFINER 通道、36权限点/7模板角色种子；偏离：portal_account→R2#6",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-04",
+    "priority": "P0",
+    "dimension": "foundation",
+    "check": "认证+RBAC 中间件+审计唯一写出口（JWT 双 audience/权限点装饰器/GUC 注入）",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-04/local-verify.md",
+      "backend/src/erp/core/{security,authn,audit}.py + identity/service.py + 0005"
+    ],
+    "finding": "双域JWT/argon2/锁定/GUC注入/权限点装饰器/审计唯一出口全落地并真库测试；踩坑: SET LOCAL→set_config",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-05",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "identity API + 前端骨架（登录/成员/角色/审计页，契约 codegen 禁 mock-first）",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-05/local-verify.md",
+      ".agent/evidence/R1-05/shots/ (6截图)",
+      "frontend/e2e/smoke.mjs"
+    ],
+    "finding": "契约端点+登录/成员/角色/审计四页+权限渲染菜单；真实全栈 E2E 冒烟通过并截图交付 Owner",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-06",
+    "priority": "P1",
+    "dimension": "feature",
+    "check": "通知中心骨架（三表+API+铃铛+dedupe 抑制）",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-06/local-verify.md",
+      ".agent/evidence/R1-06/shots/",
+      "backend/src/erp/notify + automation/task_runner + 0006"
+    ],
+    "finding": "通知三表+notify唯一入口+dedupe+task失败联动+铃铛/通知页；新增 system_tx 系统事务上下文（worker RLS 通道）",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-07",
+    "priority": "P0",
+    "dimension": "channel",
+    "check": "渠道网关移植（walmart_client+GCRA+退避；dry_run/live_test/live 三模式）[be-channel 独占]",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-07/(archaeology.md+local-verify.md+dry-run-snapshot.json)",
+      "backend/src/erp/channel/gateway/*"
+    ],
+    "finding": "网关移植完成：三模式闸/token自愈/GCRA自适应/五头保真；A152 真调待 Owner 部署后在其机器执行（沙盒禁真调）",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-08",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "店铺/代理/配额 API+前端（凭证加密维护/代理独占换绑/配额原子扣减）",
+    "status": "done",
+    "evidence": [
+      ".agent/evidence/R1-08/local-verify.md",
+      ".agent/evidence/R1-08/shots/",
+      "backend/src/erp/channel/*"
+    ],
+    "finding": "契约 Channel 段全端点+店铺/代理两页+凭证抽屉；凭证加密/代理独占/配额原子扣减真库验证",
+    "last_checked_at": "2026-07-10"
+  },
+  {
+    "id": "R1-09",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "采集最小闭环（三表+worker 拨入协议移植 v3+product upsert）",
+    "status": "in_progress",
+    "evidence": [],
+    "finding": null,
+    "last_checked_at": null
+  },
+  {
+    "id": "R1-10",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "审核最小闭环（L0+L2子集+L3单策略+cache/usage；先抓源仓对照表再写码）",
+    "status": "open",
+    "evidence": [],
+    "finding": null,
+    "last_checked_at": null
+  },
+  {
+    "id": "R1-11",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 全量证据+A152 真1单+delist 收尾）",
+    "status": "open",
+    "evidence": [],
+    "finding": null,
+    "last_checked_at": null
+  },
+  {
+    "id": "R1-12",
+    "priority": "P0",
+    "dimension": "acceptance",
+    "check": "E2E 演示+失败路径三演示（审核拒/配额拒/feed错→告警）= R1 完成判据",
+    "status": "open",
+    "evidence": [],
+    "finding": null,
+    "last_checked_at": null
+  }
 ]
