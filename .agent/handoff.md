@@ -1,5 +1,6 @@
 # Session Handoff
-- Current mode: build, R0-tail design
-- Done: EA-001 领域模型列级设计 → specs/001-domain-model/（80 表，待 Owner 验收 4 个开放点）
-- Next: EA-002 OpenAPI 契约草案 v0（ar 帽，以 001 为源）→ EA-003 R1 分解 → EA-004 阿里云配置单
-- Read first: CLAUDE.md → specs/000-founding/DECISION-FORM.md → specs/001-domain-model/00-conventions.md
+- Current mode: build → R1 待开工
+- Done: EA-001 数据字典(80表) / EA-002 契约v0(69路径) / EA-003 R1分解(R1-01~12已注册) / EA-004 阿里云配置单
+- Blocked on Owner: ①EA-001 四个开放点 ②EA-004 云资源开通(扩展可用性优先验证) ③EA-001/002 总验收
+- Next: Owner 验收后 → R1-01 工程化开工（ar 帽起 monorepo + CI；云资源未到位不阻塞 R1-01~06，本地 docker-compose 即可开发）
+- Read first: CLAUDE.md → specs/001-domain-model/00-conventions.md → specs/003-r1-plan/README.md

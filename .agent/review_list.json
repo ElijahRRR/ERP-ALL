@@ -1,6 +1,18 @@
 [
   {"id":"EA-001","priority":"P0","dimension":"architecture","check":"领域模型列级设计 + 数据字典（15 限界上下文 → 表/字段/索引/分区/team隔离）","status":"needs_owner_review","evidence":["specs/001-domain-model/ (README + 00-conventions + 01~09, 80 表)"],"finding":"已产出；4 个开放点待 Owner 拍板（specs/001-domain-model/README.md §待验收开放点）","last_checked_at":"2026-07-10"},
-  {"id":"EA-002","priority":"P0","dimension":"architecture","check":"OpenAPI 契约草案 v0（identity/channel/catalog/listing/order 五个核心上下文先行）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
-  {"id":"EA-003","priority":"P0","dimension":"foundation","check":"R1 地基任务分解（多租户/RBAC/审计日志/认证/CI/migration/通知中心骨架/docker-compose）→ 逐项工单","status":"open","evidence":[],"finding":null,"last_checked_at":null},
-  {"id":"EA-004","priority":"P1","dimension":"infra","check":"阿里云资源建议配置单（DB/应用两台规格 + 网络 + 备份策略）交 Owner 开通","status":"open","evidence":[],"finding":null,"last_checked_at":null}
+  {"id":"EA-002","priority":"P0","dimension":"architecture","check":"OpenAPI 契约草案 v0（identity/channel/catalog/listing/order 五个核心上下文先行）","status":"needs_owner_review","evidence":["specs/002-api-contract/ (README 全局约定 + openapi-v0.yaml 69路径52schema, YAML+引用已校验)"],"finding":"草案已产出；随 EA-001 验收联动修订后冻结 v1","last_checked_at":"2026-07-10"},
+  {"id":"EA-003","priority":"P0","dimension":"foundation","check":"R1 地基任务分解 → 逐项工单","status":"done","evidence":["specs/003-r1-plan/README.md (R1-01~R1-12 依赖图+验收标准+权限点种子+不做清单)"],"finding":"12 个 R1 工单已注册（见下）","last_checked_at":"2026-07-10"},
+  {"id":"EA-004","priority":"P1","dimension":"infra","check":"阿里云资源建议配置单交 Owner 开通","status":"needs_owner_action","evidence":["specs/004-aliyun-provisioning/README.md"],"finding":"待 Owner 开通：RDS PG16 高可用 8C32G/500GB + ECS 8C16G；关键前置=四个 PG 扩展可用性验证；ICP 三选一","last_checked_at":"2026-07-10"},
+  {"id":"R1-01","priority":"P0","dimension":"foundation","check":"仓库工程化与 CI（monorepo/uv+ruff+mypy+pytest/GHA/docker-compose）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-02","priority":"P0","dimension":"foundation","check":"配置与密钥（pydantic-settings 三层 + ConfigService team>system>默认）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-03","priority":"P0","dimension":"foundation","check":"migration 基线（identity+channel+system 表 / RLS / 三 DB 角色 / 种子 / 升降级往返）[ar 独占]","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-04","priority":"P0","dimension":"foundation","check":"认证+RBAC 中间件+审计唯一写出口（JWT 双 audience/权限点装饰器/GUC 注入）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-05","priority":"P0","dimension":"feature","check":"identity API + 前端骨架（登录/成员/角色/审计页，契约 codegen 禁 mock-first）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-06","priority":"P1","dimension":"feature","check":"通知中心骨架（三表+API+铃铛+dedupe 抑制）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-07","priority":"P0","dimension":"channel","check":"渠道网关移植（walmart_client+GCRA+退避；dry_run/live_test/live 三模式）[be-channel 独占]","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-08","priority":"P0","dimension":"feature","check":"店铺/代理/配额 API+前端（凭证加密维护/代理独占换绑/配额原子扣减）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-09","priority":"P0","dimension":"feature","check":"采集最小闭环（三表+worker 拨入协议移植 v3+product upsert）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-10","priority":"P0","dimension":"feature","check":"审核最小闭环（L0+L2子集+L3单策略+cache/usage；先抓源仓对照表再写码）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-11","priority":"P0","dimension":"feature","check":"上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 全量证据+A152 真1单+delist 收尾）","status":"open","evidence":[],"finding":null,"last_checked_at":null},
+  {"id":"R1-12","priority":"P0","dimension":"acceptance","check":"E2E 演示+失败路径三演示（审核拒/配额拒/feed错→告警）= R1 完成判据","status":"open","evidence":[],"finding":null,"last_checked_at":null}
 ]
