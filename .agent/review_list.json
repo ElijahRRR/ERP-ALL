@@ -143,10 +143,10 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "店铺/代理/配额 API+前端（凭证加密维护/代理独占换绑/配额原子扣减）",
-  "status": "open",
+  "status": "in_progress",
   "evidence": [],
-  "finding": null,
-  "last_checked_at": null
+  "finding": "计划：channel 域 service(pgcrypto 凭证加密/配额原子扣减/代理独占换绑)+router(契约 Channel 段)+测试；前端 店铺页(凭证/配额抽屉)+代理页；A152 由 Owner 部署后录入",
+  "last_checked_at": "2026-07-10"
  },
  {
   "id": "R1-09",

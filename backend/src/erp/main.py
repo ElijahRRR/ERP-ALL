@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from erp import __version__
+from erp.channel.router import channel_router
 from erp.core.authn import AuthError, PermissionDenied
 from erp.core.errors import BusinessError
 from erp.core.logging import setup_logging
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(identity_router, prefix="/api/v1")
     app.include_router(notify_router, prefix="/api/v1")
+    app.include_router(channel_router, prefix="/api/v1")
 
     return app
 
