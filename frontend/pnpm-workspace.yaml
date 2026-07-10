@@ -1,0 +1,4 @@
+# pnpm 构建脚本白名单：esbuild 的 postinstall 是官方二进制解包，明确批准。
+# pnpm 11 起不再读取 package.json 的 pnpm.onlyBuiltDependencies，必须放在本文件。
+onlyBuiltDependencies:
+  - esbuild

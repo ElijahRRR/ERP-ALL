@@ -5,6 +5,7 @@ name: erp-all
 services:
   db:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_DB: erp_all
       POSTGRES_USER: postgres
@@ -22,6 +23,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
     healthcheck:
@@ -42,6 +44,7 @@ services:
 
   api:
     build: ../backend
+    restart: unless-stopped
     command: ["uvicorn", "erp.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: *backend_env
     ports:
@@ -63,7 +66,9 @@ services:
 
   frontend:
     image: node:22-alpine
+    restart: unless-stopped
     working_dir: /app
+    # corepack 按 package.json 的 packageManager 钉死 pnpm 版本（曾因拉到 pnpm 11 导致 install 失败）
     command: sh -c "corepack enable && pnpm install && pnpm dev --host"
     volumes:
       - ../frontend:/app

@@ -37,6 +37,10 @@ cp backend/.env.example backend/.env
 make up          # 没有 make 就执行: docker compose -f infra/docker-compose.yml up -d --build db redis migrate api
 curl http://localhost:8000/healthz   # 期望 {"status":"ok",...}
 ```
+前端（dev profile，团队试用期直接跑 dev server 即可）：
+```bash
+docker compose -f infra/docker-compose.yml --profile dev up -d frontend
+```
 团队访问：浏览器打开 `http://<固定内网IP>:5173`（前端随 R1 迭代由部署工作流接管构建）。
 
 ### 第 2.5 步：创建初始超管（首次部署必做）
@@ -52,9 +56,11 @@ docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" 
 1. 试跑：Git Bash 里 `bash infra/local-deploy/backup.sh`，确认 `~/erp-backups` 出现 dump 文件。
 2. 挂定时（任务计划程序）：
    - 打开「任务计划程序」→ 创建基本任务 → 每天 02:30
-   - 操作=启动程序：程序填 `"C:\Program Files\Git\bin\bash.exe"`，
+   - 操作=启动程序：程序填 bash.exe 的**实际安装路径**（默认 `"C:\Program Files\Git\bin\bash.exe"`，装在别处按实际改），
      参数填 `-lc "cd /d/项目文件/ERP-ALL && bash infra/local-deploy/backup.sh >> ~/erp-backups/backup.log 2>&1"`
-   - 属性里勾选「不管用户是否登录都要运行」「使用最高权限」
+   - 属性里勾选「只在用户登录时运行」+「使用最高权限」。
+     （不要选「不管用户是否登录都要运行」：那需要存 Windows 密码，且 SYSTEM 账户访问不到用户态的
+     Docker Desktop，备份反而会失败。机器常开常登录即满足。）
 3. 异地副本：装 rclone（https://rclone.org/downloads/），`rclone config` 配一个网盘/OSS，
    然后在任务计划的参数前加 `RCLONE_REMOTE=<remote>:erp-backups `（脚本自动上传）。
 4. 每月一次恢复演练（README §备份 有命令）。
@@ -63,6 +69,18 @@ docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" 
 
 仓库 GitHub 页面 → Settings → Actions → Runners → New self-hosted runner → Windows，
 照页面命令装成服务。装好后告诉远端 agent，deploy workflow 会接管「CI 绿 → 本机自动拉新版重启」。
+
+## 排障记录（部署实战）
+
+- **前端 `pnpm install` 退出码 1（build scripts: esbuild）**：corepack 拉到 pnpm 11，
+  它不再读 `package.json` 的 `pnpm.onlyBuiltDependencies`。已在仓库根治
+  （`packageManager` 钉死 pnpm 版本 + `frontend/pnpm-workspace.yaml` 批准 esbuild）。
+  处置：删掉本机被 pnpm 11 自动生成的 `frontend/pnpm-workspace.yaml`（占位符无效文件），
+  `git pull` 后重启 frontend 容器即可。
+- **`wsl --shutdown` 后主机连不上 8000**：可能残留孤儿 `wslrelay.exe` 占端口；
+  重启 Docker Desktop（或真机重启）即恢复，容器本身是健康的。
+- **restart 策略**：compose 已内置 `restart: unless-stopped`（db/redis/api/frontend），
+  `git pull` 后无需再手动 `docker update`；migrate 是一次性任务，Exited(0) 属正常。
 
 ## 注意
 
