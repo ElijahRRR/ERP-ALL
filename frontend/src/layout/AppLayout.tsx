@@ -1,5 +1,6 @@
 import {
   AuditOutlined,
+  BellOutlined,
   DashboardOutlined,
   LogoutOutlined,
   SafetyOutlined,
@@ -9,6 +10,7 @@ import { Dropdown, Layout, Menu, Spin } from 'antd'
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { logout } from '@/api/client'
+import NotificationBell from '@/components/NotificationBell'
 import { useAuth } from '@/auth/AuthContext'
 
 // 菜单项 → 所需权限点（无权限点的菜单所有人可见）
@@ -16,6 +18,7 @@ const MENU = [
   { key: '/', icon: <DashboardOutlined />, label: '工作台', permission: null },
   { key: '/users', icon: <TeamOutlined />, label: '成员管理', permission: 'identity.user_read' },
   { key: '/roles', icon: <SafetyOutlined />, label: '角色权限', permission: 'identity.user_read' },
+  { key: '/notifications', icon: <BellOutlined />, label: '通知中心', permission: null },
   { key: '/audit', icon: <AuditOutlined />, label: '审计日志', permission: 'identity.audit_read' },
 ]
 
@@ -65,8 +68,10 @@ export default function AppLayout() {
             justifyContent: 'flex-end',
             alignItems: 'center',
             paddingInline: 24,
+            gap: 24,
           }}
         >
+          <NotificationBell />
           <Dropdown
             menu={{
               items: [

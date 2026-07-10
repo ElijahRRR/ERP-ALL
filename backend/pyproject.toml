@@ -48,7 +48,7 @@ ignore = [
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "erp.core.authn.require_permission"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004", "PLC0415", "B008"]  # 测试的延迟导入(env后导入)与 FastAPI Depends 惯用法
+"tests/*" = ["PLR2004", "PLC0415", "B008", "F811"]  # 测试惯用法：延迟导入/Depends默认参/夹具跨文件复用同名
 "alembic/versions/*" = ["E501"]  # 手写 SQL 的行宽以可读为准
 
 [tool.mypy]

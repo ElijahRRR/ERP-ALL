@@ -31,3 +31,8 @@
 - E2E: 沙盒起真实全栈(PG+uvicorn+vite)，Playwright(预装Chromium executablePath)冒烟全过，6截图发Owner。
 - 踩坑: AntD 双字按钮空格；vite dev proxy 即联调环境。
 - Next: R1-06 通知中心骨架 或 R1-07 渠道网关移植（07 需 A152 凭证入库，依赖 R1-08 凭证维护——顺序上建议 06→08→07）。
+### Session: 2026-07-10 (R1-06)
+- 0006 通知三表(月分区+RLS) + notify()唯一入口(dedupe 24h) + run_tracked(task_run记账+失败→critical通知, 静默失败即缺陷) + 通知API(可见性=团队/本人/全局) + 前端铃铛/通知页。
+- 关键新增: core/db.system_tx —— worker/beat 系统事务上下文(is_super GUC, 仅限非用户路径), 解决后台任务被 RLS 拒写。
+- 33 测试×2 + 前端 build + E2E notify-smoke 截图×2 已发 Owner。
+- Next: R1-08 店铺/代理/配额(界面录 A152 凭证) → R1-07 渠道网关。

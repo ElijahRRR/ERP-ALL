@@ -119,10 +119,14 @@
   "priority": "P1",
   "dimension": "feature",
   "check": "通知中心骨架（三表+API+铃铛+dedupe 抑制）",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-06/local-verify.md",
+   ".agent/evidence/R1-06/shots/",
+   "backend/src/erp/notify + automation/task_runner + 0006"
+  ],
+  "finding": "通知三表+notify唯一入口+dedupe+task失败联动+铃铛/通知页；新增 system_tx 系统事务上下文（worker RLS 通道）",
+  "last_checked_at": "2026-07-10"
  },
  {
   "id": "R1-07",

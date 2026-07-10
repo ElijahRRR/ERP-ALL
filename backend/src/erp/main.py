@@ -14,6 +14,7 @@ from erp.core.errors import BusinessError
 from erp.core.logging import setup_logging
 from erp.core.settings import get_settings
 from erp.identity.router import auth_router, identity_router
+from erp.notify.router import notify_router
 
 log = structlog.get_logger()
 
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(identity_router, prefix="/api/v1")
+    app.include_router(notify_router, prefix="/api/v1")
 
     return app
 
