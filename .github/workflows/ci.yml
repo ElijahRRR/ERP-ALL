@@ -50,7 +50,8 @@ jobs:
       run: {working-directory: frontend}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4  # 版本读 frontend/package.json 的 packageManager，与 corepack 同源
+      - uses: pnpm/action-setup@v4  # 版本读 packageManager 字段，与 corepack 同源（默认只找仓库根，须指路）
+        with: {package_json_file: frontend/package.json}
       - uses: actions/setup-node@v4
         with: {node-version: 22, cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml}
       - name: 安装依赖
