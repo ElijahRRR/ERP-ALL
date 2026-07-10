@@ -7,6 +7,7 @@
 import asyncio
 import json
 import time
+from pathlib import Path
 
 import httpx
 import psycopg
@@ -265,7 +266,11 @@ class TestDryRunEvidence:
                 )
 
         resp = asyncio.run(run())
-        out = "/workspace/erp-all/.agent/evidence/R1-07/dry-run-snapshot.json"
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(resp.request_snapshot, f, ensure_ascii=False, indent=2)
+        # 证据路径相对仓库根定位（CI/沙盒/本机 checkout 位置各异，禁止写死绝对路径——CI 踩坑）
+        repo_root = Path(__file__).resolve().parents[3]
+        out = repo_root / ".agent" / "evidence" / "R1-07" / "dry-run-snapshot.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(resp.request_snapshot, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         assert resp.dry_run and resp.request_snapshot["endpoint_key"] == "POST /v3/feeds:MP_ITEM"
