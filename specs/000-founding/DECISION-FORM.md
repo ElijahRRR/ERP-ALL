@@ -193,3 +193,9 @@
 | D-Q49 | ✅ 前端 Vite + React + TS + Ant Design（中文） | |
 | Q50 | **待决**：采购方账号体系 A 同表角色区分 / B 物理隔离（独立账号表+独立登录入口+独立 /portal 路由面+受限 DB 角色兜底，约 +15-20% 门户工作量）——已向 Owner 解释，等二选一 | 建议 B |
 | D-Q50（终定） | 采购方账号体系 = **B' 混合模型**：采购执行单双入口——①内部成员勾选"采购执行"权限点后在**内部界面**直接领单/处理/回填（运营兼采购不切账号）；②订单可不分配、运营在订单页直接代填采购信息（等价分配给自己）；③**物理隔离仅约束外部采购方**（独立账号表+独立登录入口+受限 /portal 路由+受限 DB 角色）。分配对象列表 = 外部采购方 + 内部成员 + 自营快捷项 | procurement_order.assignee 多态建模（internal_user \| external_purchaser \| self_op）；采购执行 = 权限点而非用户类型；**R0 决策全部收口（50/50）** |
+
+## 第五轮决策（D-Q51，2026-07-10）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q51 | 前端 UI 构建引入 **Claude Design**（claude.ai/design）：设计系统（design tokens + 组件库预览）由远端 agent 经 DesignSync 工具**直接推送**到 Owner 的 Claude Design 项目；Owner 可在 Claude Design 中查看样式卡片、手动探索/迭代页面设计，定稿反馈给 agent 落码 | 已实测 DesignSync 授权可用（2026-07-10）。边界：**仓库是生产前端唯一事实源**（Vite+React+TS+AntD，D-Q49 不变，契约 codegen、禁 mock-first）；Claude Design 是设计协作与可视化层，其产出以"设计定稿"形式回流仓库，不直接充当生产代码。R1-05 前端骨架工单起执行：agent 先推设计系统 v0（色板/字阶/核心组件），Owner 审样式后开发页面 |
