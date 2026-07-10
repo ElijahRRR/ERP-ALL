@@ -40,11 +40,11 @@
   "priority": "P1",
   "dimension": "infra",
   "check": "阿里云资源建议配置单交 Owner 开通",
-  "status": "needs_owner_action",
+  "status": "deferred",
   "evidence": [
    "specs/004-aliyun-provisioning/README.md"
   ],
-  "finding": "待 Owner 开通：RDS PG16 高可用 8C32G/500GB + ECS 8C16G；关键前置=四个 PG 扩展可用性验证；ICP 三选一",
+  "finding": "D-Q52：试点期全本地部署，云采购暂缓；R2#6（门户对外）前重新评估。原配置单保留备用",
   "last_checked_at": "2026-07-10"
  },
  {
@@ -92,10 +92,13 @@
   "priority": "P0",
   "dimension": "foundation",
   "check": "认证+RBAC 中间件+审计唯一写出口（JWT 双 audience/权限点装饰器/GUC 注入）",
-  "status": "open",
-  "evidence": [],
-  "finding": null,
-  "last_checked_at": null
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-04/local-verify.md",
+   "backend/src/erp/core/{security,authn,audit}.py + identity/service.py + 0005"
+  ],
+  "finding": "双域JWT/argon2/锁定/GUC注入/权限点装饰器/审计唯一出口全落地并真库测试；踩坑: SET LOCAL→set_config",
+  "last_checked_at": "2026-07-10"
  },
  {
   "id": "R1-05",

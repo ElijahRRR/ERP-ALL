@@ -199,3 +199,9 @@
 | # | 决策 | 备注 |
 |---|---|---|
 | D-Q51 | 前端 UI 构建引入 **Claude Design**（claude.ai/design）：设计系统（design tokens + 组件库预览）由远端 agent 经 DesignSync 工具**直接推送**到 Owner 的 Claude Design 项目；Owner 可在 Claude Design 中查看样式卡片、手动探索/迭代页面设计，定稿反馈给 agent 落码 | 已实测 DesignSync 授权可用（2026-07-10）。边界：**仓库是生产前端唯一事实源**（Vite+React+TS+AntD，D-Q49 不变，契约 codegen、禁 mock-first）；Claude Design 是设计协作与可视化层，其产出以"设计定稿"形式回流仓库，不直接充当生产代码。R1-05 前端骨架工单起执行：agent 先推设计系统 v0（色板/字阶/核心组件），Owner 审样式后开发页面 |
+
+## 第六轮决策（D-Q52，2026-07-10）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q52 | **部署拓扑修订（修订 D-Q47）**：R1~R2 试点期**全本地部署**——DB+应用+Redis 全部跑在 Owner 一台常开机器上（docker compose 同构栈）；多团队上量 + 采购方门户对外之前迁云（迁移=pg_dump+换连接串，栈同构无改造）。已购 MySQL 实例退订，EA-004 云采购暂缓 | 硬性纪律：①专机常开；②**每日自动备份+异地（云存储）一份**（订单/财务永久保留级数据，备份是红线）；③部署走 GitHub self-hosted runner（CI 绿自动拉新版）；④外部门户上线前重新评估迁云（R2#6 检查点）。绕开 ICP 备案问题 |

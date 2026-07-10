@@ -21,3 +21,8 @@
 - ConfigService(R1-02) 落地并真库测试。12 集成/单元测试全过×2（幂等）。
 - 偏离：portal_account→R2#6（purchaser 依赖）。CI 补 ERP_DATABASE_URL。
 - Next: R1-04 认证+RBAC中间件+审计出口（be-domain 帽）。
+### Session: 2026-07-10 (D-Q52 + R1-04)
+- D-Q52 定案：试点期全本地部署（MySQL 实例退订、EA-004 deferred）；infra/local-deploy/ runbook+backup.sh 交付。
+- R1-04 done: 0005(locked_until+auth_record_login) + security/authn/audit + identity/service(login/refresh 自管事务) + main(request_id中间件+401/403信封)。24 测试×2 全过。
+- 踩坑记录：SET LOCAL 不支持绑定参数 → set_config('key',:v,true)。
+- Next: R1-05 identity API + 前端骨架（be-domain+fe 帽）；等 Owner 提供本地部署机配置以细化 runbook。

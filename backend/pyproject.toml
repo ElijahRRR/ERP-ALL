@@ -48,7 +48,7 @@ ignore = [
 extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004"]
+"tests/*" = ["PLR2004", "PLC0415", "B008"]  # 测试的延迟导入(env后导入)与 FastAPI Depends 惯用法
 "alembic/versions/*" = ["E501"]  # 手写 SQL 的行宽以可读为准
 
 [tool.mypy]

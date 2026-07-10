@@ -76,9 +76,11 @@ async def get_current_user(
 
     # GUC 注入：SET LOCAL 只影响当前事务（= 当前请求），请求间零泄漏
     if row.is_super:
-        await session.execute(text("SET LOCAL app.is_super = 'on'"))
+        await session.execute(text("SELECT set_config('app.is_super', 'on', true)"))
     if row.team_id is not None:
-        await session.execute(text("SET LOCAL app.current_team = :t"), {"t": str(row.team_id)})
+        await session.execute(
+            text("SELECT set_config('app.current_team', :t, true)"), {"t": str(row.team_id)}
+        )
 
     if row.is_super:
         permissions: frozenset[str] = frozenset()

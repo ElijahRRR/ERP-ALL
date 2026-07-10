@@ -1,12 +1,15 @@
 """API entrypoint（运行角色之一；worker/beat 有各自 entrypoint，共享同一代码库）。"""
 
+import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from erp import __version__
+from erp.core.authn import AuthError, PermissionDenied
 from erp.core.logging import setup_logging
 from erp.core.settings import get_settings
 
@@ -32,19 +35,47 @@ def create_app() -> FastAPI:
         docs_url="/api/docs" if settings.env != "prod" else None,
     )
 
-    @app.exception_handler(BusinessError)
-    async def business_error_handler(request: Request, exc: BusinessError) -> JSONResponse:
+    @app.middleware("http")
+    async def request_id_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        request.state.request_id = uuid.uuid4().hex
+        structlog.contextvars.bind_contextvars(request_id=request.state.request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            structlog.contextvars.unbind_contextvars("request_id")
+        response.headers["X-Request-Id"] = request.state.request_id
+        return response
+
+    def _envelope(
+        request: Request, status: int, code: str, message: str, detail: Any
+    ) -> JSONResponse:
         # 统一错误信封（002 契约 §全局约定 4）
         return JSONResponse(
-            status_code=422,
+            status_code=status,
             content={
                 "error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "detail": exc.detail,
+                    "code": code,
+                    "message": message,
+                    "detail": detail,
                     "request_id": getattr(request.state, "request_id", None),
                 }
             },
+        )
+
+    @app.exception_handler(BusinessError)
+    async def business_error_handler(request: Request, exc: BusinessError) -> JSONResponse:
+        return _envelope(request, 422, exc.code, exc.message, exc.detail)
+
+    @app.exception_handler(AuthError)
+    async def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:
+        return _envelope(request, 401, "UNAUTHENTICATED", exc.message, {})
+
+    @app.exception_handler(PermissionDenied)
+    async def permission_denied_handler(request: Request, exc: PermissionDenied) -> JSONResponse:
+        return _envelope(
+            request, 403, "PERMISSION_DENIED", "缺少所需权限", {"permission": exc.permission}
         )
 
     @app.get("/healthz", tags=["ops"])
