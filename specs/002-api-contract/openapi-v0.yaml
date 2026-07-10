@@ -1,0 +1,1567 @@
+openapi: 3.1.0
+info:
+  title: ERP-ALL API
+  version: 0.1.0-draft
+  description: >
+    契约草案 v0（EA-002）。五个核心上下文：identity / channel / catalog / listing / order + 采购门户。
+    全局约定见同目录 README.md；数据语义以 specs/001-domain-model/ 为准。
+    x-permission = 所需权限点（permission.code），网关中间件按此校验。
+servers:
+  - url: /api/v1
+    description: 内部 API（JWT audience=erp）
+  - url: /portal/v1
+    description: 采购门户 API（JWT audience=portal，仅 Portal tag 下端点）
+
+tags:
+  - {name: Auth}
+  - {name: Identity}
+  - {name: Channel}
+  - {name: Catalog}
+  - {name: Listing}
+  - {name: Order}
+  - {name: Portal, description: 采购方门户（独立认证域，白名单最小面）}
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ───────────────────────── Auth ─────────────────────────
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: 内部登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: {type: string}
+                password: {type: string, format: password}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPair'}
+        '401': {$ref: '#/components/responses/Error'}
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      summary: 刷新 access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPair'}
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: 登出（token_version+1 吊销全部会话可选参数 all=true）
+      responses:
+        '204': {description: 已登出}
+  /me:
+    get:
+      tags: [Auth]
+      summary: 当前用户与权限点集合
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: {$ref: '#/components/schemas/User'}
+                  permissions: {type: array, items: {type: string}}
+
+  # ─────────────────────── Identity ───────────────────────
+  /teams:
+    get:
+      tags: [Identity]
+      summary: 团队列表（超管）
+      x-permission: identity.team_admin
+      responses: {'200': {$ref: '#/components/responses/TeamPage'}}
+    post:
+      tags: [Identity]
+      summary: 建团队（超管独占，D-Q30）
+      x-permission: identity.team_admin
+      requestBody: {$ref: '#/components/requestBodies/TeamWrite'}
+      responses: {'201': {$ref: '#/components/responses/Team'}}
+  /teams/{teamId}:
+    patch:
+      tags: [Identity]
+      summary: 改团队（名称/状态/settings）
+      x-permission: identity.team_admin
+      parameters: [{$ref: '#/components/parameters/teamId'}]
+      requestBody: {$ref: '#/components/requestBodies/TeamWrite'}
+      responses: {'200': {$ref: '#/components/responses/Team'}}
+  /users:
+    get:
+      tags: [Identity]
+      summary: 本团队成员列表
+      x-permission: identity.user_read
+      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/size'}]
+      responses: {'200': {$ref: '#/components/responses/UserPage'}}
+    post:
+      tags: [Identity]
+      summary: 开成员账号
+      x-permission: identity.user_write
+      requestBody: {$ref: '#/components/requestBodies/UserWrite'}
+      responses: {'201': {$ref: '#/components/responses/UserResp'}}
+  /users/{userId}:
+    get:
+      tags: [Identity]
+      x-permission: identity.user_read
+      parameters: [{$ref: '#/components/parameters/userId'}]
+      responses: {'200': {$ref: '#/components/responses/UserResp'}}
+    patch:
+      tags: [Identity]
+      summary: 改成员（display_name/status/重置密码）
+      x-permission: identity.user_write
+      parameters: [{$ref: '#/components/parameters/userId'}]
+      requestBody: {$ref: '#/components/requestBodies/UserWrite'}
+      responses: {'200': {$ref: '#/components/responses/UserResp'}}
+  /users/{userId}/roles:
+    put:
+      tags: [Identity]
+      summary: 全量设置成员角色
+      x-permission: identity.user_write
+      parameters: [{$ref: '#/components/parameters/userId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role_ids]
+              properties: {role_ids: {type: array, items: {type: integer}}}
+      responses: {'200': {$ref: '#/components/responses/UserResp'}}
+  /roles:
+    get:
+      tags: [Identity]
+      x-permission: identity.user_read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Role'}}
+    post:
+      tags: [Identity]
+      x-permission: identity.role_write
+      requestBody: {$ref: '#/components/requestBodies/RoleWrite'}
+      responses: {'201': {description: Created}}
+  /roles/{roleId}:
+    patch:
+      tags: [Identity]
+      x-permission: identity.role_write
+      parameters: [{$ref: '#/components/parameters/roleId'}]
+      requestBody: {$ref: '#/components/requestBodies/RoleWrite'}
+      responses: {'200': {description: OK}}
+  /roles/{roleId}/permissions:
+    put:
+      tags: [Identity]
+      summary: 全量设置角色权限点
+      x-permission: identity.role_write
+      parameters: [{$ref: '#/components/parameters/roleId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permission_codes]
+              properties: {permission_codes: {type: array, items: {type: string}}}
+      responses: {'200': {description: OK}}
+  /permissions:
+    get:
+      tags: [Identity]
+      summary: 权限点全集（前端勾选界面数据源）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Permission'}}
+  /audit-logs:
+    get:
+      tags: [Identity]
+      summary: 审计日志查询
+      x-permission: identity.audit_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: actor_id, in: query, schema: {type: integer}}
+        - {name: object_type, in: query, schema: {type: string}}
+        - {name: object_id, in: query, schema: {type: string}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: occurred_after, in: query, schema: {type: string, format: date-time}}
+        - {name: occurred_before, in: query, schema: {type: string, format: date-time}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/AuditLogPage'}}}}}
+  /dicts/{dictType}:
+    get:
+      tags: [Identity]
+      summary: 字典取值下发（枚举不硬编码）
+      security: []
+      parameters: [{name: dictType, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/DictItem'}}
+
+  # ─────────────────────── Channel ───────────────────────
+  /stores:
+    get:
+      tags: [Channel]
+      x-permission: channel.store_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string, enum: [active, paused, suspended, closed]}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/StorePage'}}}}}
+    post:
+      tags: [Channel]
+      x-permission: channel.store_write
+      requestBody: {$ref: '#/components/requestBodies/StoreWrite'}
+      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Store'}}}}}
+  /stores/{storeId}:
+    get:
+      tags: [Channel]
+      x-permission: channel.store_read
+      parameters: [{$ref: '#/components/parameters/storeId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Store'}}}}}
+    patch:
+      tags: [Channel]
+      x-permission: channel.store_write
+      parameters: [{$ref: '#/components/parameters/storeId'}]
+      requestBody: {$ref: '#/components/requestBodies/StoreWrite'}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Store'}}}}}
+  /stores/{storeId}/credential:
+    get:
+      tags: [Channel]
+      summary: 凭证状态（永不回显 secret）
+      x-permission: channel.credential_view
+      parameters: [{$ref: '#/components/parameters/storeId'}]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: {type: boolean}
+                  client_id_masked: {type: string, examples: ['ab12****']}
+                  updated_at: {type: string, format: date-time}
+    put:
+      tags: [Channel]
+      summary: 设置/更换凭证（加密落库，记 audit_log）
+      x-permission: channel.credential_write
+      parameters: [{$ref: '#/components/parameters/storeId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id, client_secret]
+              properties:
+                client_id: {type: string}
+                client_secret: {type: string, format: password}
+      responses: {'204': {description: 已更新}}
+  /stores/{storeId}/proxy:
+    put:
+      tags: [Channel]
+      summary: 换绑出口代理（独占校验：一代理一店）
+      x-permission: channel.store_write
+      parameters: [{$ref: '#/components/parameters/storeId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [proxy_id]
+              properties: {proxy_id: {type: integer}}
+      responses:
+        '204': {description: 已换绑}
+        '409': {description: 代理已被其他店占用, $ref: '#/components/responses/Error'}
+  /stores/{storeId}/quota-configs:
+    get:
+      tags: [Channel]
+      x-permission: channel.store_read
+      parameters: [{$ref: '#/components/parameters/storeId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/QuotaConfig'}}}}}}
+    put:
+      tags: [Channel]
+      summary: 全量设置三向配额（D-Q10）
+      x-permission: channel.quota_write
+      parameters: [{$ref: '#/components/parameters/storeId'}]
+      requestBody:
+        content:
+          application/json:
+            schema: {type: array, items: {$ref: '#/components/schemas/QuotaConfig'}}
+      responses: {'200': {description: OK}}
+  /stores/{storeId}/quota-usage:
+    get:
+      tags: [Channel]
+      summary: 当日/指定日配额用量
+      x-permission: channel.store_read
+      parameters:
+        - {$ref: '#/components/parameters/storeId'}
+        - {name: date, in: query, schema: {type: string, format: date}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/QuotaUsage'}}}}}}
+  /proxies:
+    get:
+      tags: [Channel]
+      x-permission: channel.proxy_read
+      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/size'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ProxyPage'}}}}}
+    post:
+      tags: [Channel]
+      x-permission: channel.proxy_write
+      requestBody: {$ref: '#/components/requestBodies/ProxyWrite'}
+      responses: {'201': {description: Created}}
+  /proxies/{proxyId}:
+    patch:
+      tags: [Channel]
+      x-permission: channel.proxy_write
+      parameters: [{name: proxyId, in: path, required: true, schema: {type: integer}}]
+      requestBody: {$ref: '#/components/requestBodies/ProxyWrite'}
+      responses: {'200': {description: OK}}
+  /store-incidents:
+    get:
+      tags: [Channel]
+      x-permission: channel.incident_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/StoreIncidentPage'}}}}}
+    post:
+      tags: [Channel]
+      summary: 人工登记店铺事件（封店等，D-Q33）
+      x-permission: channel.incident_write
+      requestBody: {$ref: '#/components/requestBodies/StoreIncidentWrite'}
+      responses: {'201': {description: Created}}
+  /store-incidents/{incidentId}/transition:
+    post:
+      tags: [Channel]
+      summary: 事件状态推进（observing/appealing/resolved/closed）+ 触发释放作业
+      x-permission: channel.incident_write
+      parameters: [{name: incidentId, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_status]
+              properties:
+                to_status: {type: string, enum: [observing, appealing, resolved, closed]}
+                notes: {type: string}
+      responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
+
+  # ─────────────────────── Catalog ───────────────────────
+  /products:
+    get:
+      tags: [Catalog]
+      x-permission: catalog.product_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: brand, in: query, schema: {type: string}}
+        - {name: q, in: query, schema: {type: string}, description: 标题/ASIN/master_sku 搜索}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ProductPage'}}}}}
+  /products/{productId}:
+    get:
+      tags: [Catalog]
+      x-permission: catalog.product_read
+      parameters: [{$ref: '#/components/parameters/productId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Product'}}}}}
+    patch:
+      tags: [Catalog]
+      summary: 编辑产品（title/attrs/images；不可改 master_sku/source_ref）
+      x-permission: catalog.product_write
+      parameters: [{$ref: '#/components/parameters/productId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: {type: string}
+                attrs: {type: object}
+                images: {type: array, items: {type: string, format: uri}}
+      responses: {'200': {description: OK}}
+  /variant-groups:
+    get:
+      tags: [Catalog]
+      x-permission: catalog.product_read
+      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/size'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/VariantGroupPage'}}}}}
+    post:
+      tags: [Catalog]
+      summary: 建变体组（D-Q2）
+      x-permission: catalog.product_write
+      requestBody: {$ref: '#/components/requestBodies/VariantGroupWrite'}
+      responses: {'201': {description: Created}}
+  /variant-groups/{groupId}/members:
+    put:
+      tags: [Catalog]
+      summary: 全量设置组成员与维度值
+      x-permission: catalog.product_write
+      parameters: [{name: groupId, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [product_id, variant_attrs]
+                properties:
+                  product_id: {type: integer}
+                  variant_attrs: {type: object}
+                  is_primary: {type: boolean}
+      responses: {'200': {description: OK}}
+  /gtin-pool/stats:
+    get:
+      tags: [Catalog]
+      summary: GTIN 池水位（按 kind × status 统计）
+      x-permission: catalog.gtin_read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    gtin_kind: {type: string, enum: [upc_a, ean_13]}
+                    status: {type: string, enum: [free, held, used, conflict, invalid]}
+                    count: {type: integer}
+  /gtin-pool:
+    get:
+      tags: [Catalog]
+      x-permission: catalog.gtin_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: gtin_kind, in: query, schema: {type: string}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/GtinPage'}}}}}
+  /import-jobs:
+    post:
+      tags: [Catalog]
+      summary: 标准导入（gtin/黑名单/类目映射…；multipart 上传，D-Q35）
+      x-permission: catalog.import_write
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [domain, file]
+              properties:
+                domain: {type: string, description: 与 001 §import_job.domain 枚举一致}
+                file: {type: string, format: binary}
+                dry_run: {type: boolean, default: false}
+      responses: {'202': {description: 已受理, content: {application/json: {schema: {$ref: '#/components/schemas/ImportJob'}}}}}
+    get:
+      tags: [Catalog]
+      x-permission: catalog.import_read
+      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/size'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ImportJobPage'}}}}}
+  /import-jobs/{jobId}:
+    get:
+      tags: [Catalog]
+      x-permission: catalog.import_read
+      parameters: [{name: jobId, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ImportJob'}}}}}
+  /category-map:
+    get:
+      tags: [Catalog]
+      summary: 类目映射查询
+      x-permission: catalog.product_read
+      parameters:
+        - {name: amazon_leaf_id, in: query, schema: {type: string}}
+        - {name: q, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/CategoryMapPage'}}}}}
+  /category-map/{mapId}:
+    patch:
+      tags: [Catalog]
+      summary: 人工修正映射（map_source=manual 优先级最高）
+      x-permission: catalog.category_write
+      parameters: [{name: mapId, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wpt: {type: string}
+                status: {type: string, enum: [active, deprecated]}
+      responses: {'200': {description: OK}}
+  /products/{productId}/sources:
+    get:
+      tags: [Catalog]
+      x-permission: catalog.product_read
+      parameters: [{$ref: '#/components/parameters/productId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ProductSource'}}}}}}
+    post:
+      tags: [Catalog]
+      summary: 录入货源（confirmed 驱动 product→ready，D-Q25/41）
+      x-permission: catalog.source_write
+      parameters: [{$ref: '#/components/parameters/productId'}]
+      requestBody: {$ref: '#/components/requestBodies/ProductSourceWrite'}
+      responses: {'201': {description: Created}}
+  /brand-assignments:
+    get:
+      tags: [Catalog]
+      x-permission: catalog.product_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: brand, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string, enum: [occupied, released]}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BrandAssignmentPage'}}}}}
+
+  # ─────────────────────── Listing ───────────────────────
+  /listings:
+    get:
+      tags: [Listing]
+      x-permission: listing.read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: store_id, in: query, schema: {type: integer}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: offer_mode, in: query, schema: {type: string, enum: [build, match]}}
+        - {name: error_code, in: query, schema: {type: string}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListingPage'}}}}}
+  /listings/allocate:
+    post:
+      tags: [Listing]
+      summary: 分配上架（批量建 draft：产品×店铺×模式；含去重/品牌占用/GTIN 预占）
+      x-permission: listing.allocate
+      parameters: [{$ref: '#/components/parameters/idempotencyKey'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_ids, store_id, offer_mode]
+              properties:
+                product_ids: {type: array, items: {type: integer}, maxItems: 500}
+                store_id: {type: integer}
+                offer_mode: {type: string, enum: [build, match]}
+      responses:
+        '200':
+          description: 逐品结果（部分成功正常返回）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: {type: array, items: {$ref: '#/components/schemas/Listing'}}
+                  rejected:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id: {type: integer}
+                        code: {type: string, examples: [LISTING_DUP_IN_TEAM, BRAND_OCCUPIED_OTHER_STORE, GTIN_POOL_EMPTY, PRODUCT_NOT_READY]}
+                        message: {type: string}
+  /listings/{listingId}:
+    get:
+      tags: [Listing]
+      x-permission: listing.read
+      parameters: [{$ref: '#/components/parameters/listingId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListingDetail'}}}}}
+  /listings/submit:
+    post:
+      tags: [Listing]
+      summary: 批量提交上架（异步：构建 spec→组 feed→网关提交；消耗 listing_create 配额）
+      x-permission: listing.submit
+      parameters: [{$ref: '#/components/parameters/idempotencyKey'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [listing_ids]
+              properties: {listing_ids: {type: array, items: {type: integer}, maxItems: 500}}
+      responses:
+        '202': {description: 已入队, content: {application/json: {schema: {type: object, properties: {queued: {type: integer}, skipped: {type: array, items: {type: object}}}}}}}
+        '422': {description: 配额不足等业务拒绝, $ref: '#/components/responses/Error'}
+  /listings/{listingId}/delist:
+    post:
+      tags: [Listing]
+      summary: 下架（异步；消耗 listing_delete 配额）
+      x-permission: listing.delist
+      parameters: [{$ref: '#/components/parameters/listingId'}]
+      responses: {'202': {description: 已入队}, '409': {$ref: '#/components/responses/Error'}}
+  /listings/{listingId}/retry:
+    post:
+      tags: [Listing]
+      summary: failed 重投（按 error catalog 处置校验）
+      x-permission: listing.submit
+      parameters: [{$ref: '#/components/parameters/listingId'}]
+      responses: {'202': {description: 已入队}, '409': {$ref: '#/components/responses/Error'}}
+  /feeds:
+    get:
+      tags: [Listing]
+      x-permission: listing.read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: store_id, in: query, schema: {type: integer}}
+        - {name: feed_kind, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/FeedPage'}}}}}
+  /feeds/{feedId}:
+    get:
+      tags: [Listing]
+      x-permission: listing.read
+      parameters: [{name: feedId, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Feed'}}}}}
+  /feeds/{feedId}/items:
+    get:
+      tags: [Listing]
+      summary: item 级权威结果（headline 不可信）
+      x-permission: listing.read
+      parameters:
+        - {name: feedId, in: path, required: true, schema: {type: integer}}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string, enum: [pending, success, error]}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/FeedItemPage'}}}}}
+  /pricing-strategies:
+    get:
+      tags: [Listing]
+      x-permission: pricing.read
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/PricingStrategy'}}}}}}
+    post:
+      tags: [Listing]
+      summary: 建策略（(team×store×offer_mode) 活跃唯一，D-Q23）
+      x-permission: pricing.write
+      requestBody: {$ref: '#/components/requestBodies/PricingStrategyWrite'}
+      responses: {'201': {description: Created}, '409': {$ref: '#/components/responses/Error'}}
+  /pricing-strategies/{strategyId}:
+    patch:
+      tags: [Listing]
+      x-permission: pricing.write
+      parameters: [{name: strategyId, in: path, required: true, schema: {type: integer}}]
+      requestBody: {$ref: '#/components/requestBodies/PricingStrategyWrite'}
+      responses: {'200': {description: OK}}
+  /maintenance-tasks:
+    get:
+      tags: [Listing]
+      x-permission: listing.read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: task_kind, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceTaskPage'}}}}}
+    post:
+      tags: [Listing]
+      summary: 人工触发维护任务（改价/补库存/下架…）
+      x-permission: listing.maintain
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [listing_ids, task_kind]
+              properties:
+                listing_ids: {type: array, items: {type: integer}}
+                task_kind: {type: string, enum: [price_sync, inventory_sync, title_fix, end_date_renewal, delist, relist, unlock_probe]}
+                params: {type: object}
+      responses: {'202': {description: 已入队}}
+  /listing-errors:
+    get:
+      tags: [Listing]
+      summary: 错误分类字典（运营可维护，D-Q11）
+      x-permission: listing.read
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ListingError'}}}}}}
+  /listing-errors/{errorCode}:
+    patch:
+      tags: [Listing]
+      x-permission: listing.error_admin
+      parameters: [{name: errorCode, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                category: {type: string}
+                disposition: {type: string, enum: [auto_retry, backoff_retry, rebuild_spec, skip, manual, fatal]}
+                max_retries: {type: integer}
+                notes: {type: string}
+      responses: {'200': {description: OK}}
+
+  # ──────────────────────── Order ────────────────────────
+  /orders:
+    get:
+      tags: [Order]
+      x-permission: order.read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: store_id, in: query, schema: {type: integer}}
+        - {name: internal_status, in: query, schema: {type: string}}
+        - {name: has_flag, in: query, schema: {type: boolean}}
+        - {name: order_after, in: query, schema: {type: string, format: date-time}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/OrderPage'}}}}}
+  /orders/{orderId}:
+    get:
+      tags: [Order]
+      summary: 订单详情（内嵌 lines + checks + procurement 摘要）
+      x-permission: order.read
+      parameters: [{$ref: '#/components/parameters/orderId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/OrderDetail'}}}}}
+  /orders/{orderId}/checks/rerun:
+    post:
+      tags: [Order]
+      summary: 重跑四检
+      x-permission: order.check
+      parameters: [{$ref: '#/components/parameters/orderId'}]
+      responses: {'200': {description: OK}}
+  /orders/{orderId}/checks/{checkKind}/resolve:
+    post:
+      tags: [Order]
+      summary: 人工放行 flagged 检查项
+      x-permission: order.check
+      parameters:
+        - {$ref: '#/components/parameters/orderId'}
+        - {name: checkKind, in: path, required: true, schema: {type: string, enum: [phishing, purchaser, price_limit, consistency]}}
+      responses: {'200': {description: OK}}
+  /orders/{orderId}/ship:
+    post:
+      tags: [Order]
+      summary: 发货回传（异步推渠道；行级）
+      x-permission: order.ship
+      parameters: [{$ref: '#/components/parameters/orderId'}, {$ref: '#/components/parameters/idempotencyKey'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lines, carrier, tracking_no]
+              properties:
+                lines: {type: array, items: {type: object, required: [line_no, qty], properties: {line_no: {type: string}, qty: {type: integer}}}}
+                carrier: {type: string}
+                tracking_no: {type: string}
+                procurement_order_id: {type: integer}
+      responses: {'202': {description: 已入队推送}}
+  /procurement-orders:
+    get:
+      tags: [Order]
+      x-permission: procurement.read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: purchaser_id, in: query, schema: {type: integer}}
+        - {name: mine, in: query, schema: {type: boolean}, description: 内部采购执行入口「我的单」（D-Q50①）}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ProcurementPage'}}}}}
+    post:
+      tags: [Order]
+      summary: 从订单建执行单（默认 unassigned；可直接带 purchaser_id 分配）
+      x-permission: order.assign
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id]
+              properties:
+                order_id: {type: integer}
+                purchaser_id: {type: integer}
+      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/ProcurementOrder'}}}}}
+  /procurement-orders/{poId}/assign:
+    post:
+      tags: [Order]
+      x-permission: order.assign
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purchaser_id]
+              properties: {purchaser_id: {type: integer}}
+      responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
+  /procurement-orders/{poId}/claim:
+    post:
+      tags: [Order]
+      summary: 内部领单（D-Q50① 权限点入口）
+      x-permission: procurement.execute
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
+  /procurement-orders/{poId}/backfill:
+    post:
+      tags: [Order]
+      summary: 回填采购与物流（内部全字段；运营代填走同端点 op_direct 语义）
+      x-permission: procurement.execute
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      requestBody: {$ref: '#/components/requestBodies/ProcurementBackfill'}
+      responses: {'200': {description: OK}}
+  /procurement-orders/{poId}/exception:
+    post:
+      tags: [Order]
+      x-permission: procurement.execute
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: {reason: {type: string}}
+      responses: {'200': {description: OK}}
+  /purchasers:
+    get:
+      tags: [Order]
+      x-permission: procurement.read
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Purchaser'}}}}}}
+    post:
+      tags: [Order]
+      summary: 建采购方（external 同步开 portal 账号，D-Q27/50）
+      x-permission: procurement.admin
+      requestBody: {$ref: '#/components/requestBodies/PurchaserWrite'}
+      responses: {'201': {description: Created}}
+  /purchasers/{purchaserId}:
+    patch:
+      tags: [Order]
+      summary: 改采购方（含汇率，D-Q32；改汇率只影响未锁单）
+      x-permission: procurement.admin
+      parameters: [{name: purchaserId, in: path, required: true, schema: {type: integer}}]
+      requestBody: {$ref: '#/components/requestBodies/PurchaserWrite'}
+      responses: {'200': {description: OK}}
+
+  # ──────────────────────── Portal ────────────────────────
+  /portal/auth/login:
+    post:
+      tags: [Portal]
+      security: []
+      summary: 门户登录（独立账号表 portal_account，JWT audience=portal）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: {type: string}
+                password: {type: string, format: password}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/TokenPair'}}}}}
+  /portal/procurement-orders:
+    get:
+      tags: [Portal]
+      security: [{portalAuth: []}]
+      summary: 我的执行单（仅 assigned/claimed/purchased/shipped；视图白名单字段）
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string, enum: [assigned, claimed, purchased, shipped]}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/PortalProcurementPage'}}}}}
+  /portal/procurement-orders/{poId}:
+    get:
+      tags: [Portal]
+      security: [{portalAuth: []}]
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/PortalProcurement'}}}}}
+  /portal/procurement-orders/{poId}/claim:
+    post:
+      tags: [Portal]
+      security: [{portalAuth: []}]
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
+  /portal/procurement-orders/{poId}/backfill:
+    post:
+      tags: [Portal]
+      security: [{portalAuth: []}]
+      summary: 门户回填（受限列：采购平台/单号/成本/物流）
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      requestBody: {$ref: '#/components/requestBodies/ProcurementBackfill'}
+      responses: {'200': {description: OK}}
+  /portal/procurement-orders/{poId}/exception:
+    post:
+      tags: [Portal]
+      security: [{portalAuth: []}]
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: {reason: {type: string}}
+      responses: {'200': {description: OK}}
+
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 内部 JWT（audience=erp）}
+    portalAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 门户 JWT（audience=portal）}
+
+  parameters:
+    page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+    size: {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+    idempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 64}}
+    teamId: {name: teamId, in: path, required: true, schema: {type: integer}}
+    userId: {name: userId, in: path, required: true, schema: {type: integer}}
+    roleId: {name: roleId, in: path, required: true, schema: {type: integer}}
+    storeId: {name: storeId, in: path, required: true, schema: {type: integer}}
+    productId: {name: productId, in: path, required: true, schema: {type: integer}}
+    listingId: {name: listingId, in: path, required: true, schema: {type: integer}}
+    orderId: {name: orderId, in: path, required: true, schema: {type: integer}}
+    poId: {name: poId, in: path, required: true, schema: {type: integer}}
+
+  responses:
+    Error:
+      description: 统一错误信封
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    Team: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Team'}}}}
+    TeamPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/TeamPage'}}}}
+    UserResp: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}
+    UserPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/UserPage'}}}}
+
+  requestBodies:
+    TeamWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              name: {type: string}
+              status: {type: string, enum: [active, disabled]}
+              settings: {type: object}
+    UserWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              username: {type: string}
+              password: {type: string, format: password}
+              display_name: {type: string}
+              status: {type: string, enum: [active, disabled, locked]}
+    RoleWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              name: {type: string}
+              description: {type: string}
+    StoreWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              channel_id: {type: integer}
+              code: {type: string}
+              name: {type: string}
+              status: {type: string, enum: [active, paused, suspended, closed]}
+              operating_mode: {type: string, enum: [build, match, mixed]}
+              dedup_exempt: {type: boolean}
+              is_test: {type: boolean}
+              legal_entity: {type: string}
+              payment_label: {type: string}
+              opened_at: {type: string, format: date}
+              profile: {type: object}
+              notes: {type: string}
+    ProxyWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              kind: {type: string, enum: [socks5, http]}
+              host: {type: string}
+              port: {type: integer}
+              username: {type: string}
+              password: {type: string, format: password, description: 只写不读}
+              vendor: {type: string}
+              status: {type: string, enum: [active, expired, disabled]}
+              expires_at: {type: string, format: date}
+              monthly_cost: {type: number}
+              note: {type: string}
+    StoreIncidentWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [store_id, incident_kind, occurred_at]
+            properties:
+              store_id: {type: integer}
+              incident_kind: {type: string, enum: [suspension, warning, listing_block, other]}
+              occurred_at: {type: string, format: date-time}
+              reason: {type: string}
+    VariantGroupWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              source_parent_ref: {type: string}
+              variation_theme: {type: string}
+    ProductSourceWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              source_platform: {type: string, default: '1688'}
+              source_url: {type: string, format: uri}
+              source_price_cny: {type: number}
+              freight_cny: {type: number}
+              total_cost_cny: {type: number}
+              risk_note: {type: string}
+              status: {type: string, enum: [candidate, confirmed, invalid]}
+    PricingStrategyWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              store_id: {type: [integer, 'null']}
+              offer_mode: {type: string, enum: [build, match]}
+              name: {type: string}
+              algo_code: {type: string}
+              params: {type: object, description: 必含 min_price 硬底线}
+              status: {type: string, enum: [active, disabled]}
+    PurchaserWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              name: {type: string}
+              purchaser_kind: {type: string, enum: [internal, external]}
+              user_id: {type: [integer, 'null'], description: internal 必填}
+              contact: {type: object}
+              exchange_rate: {type: number}
+              status: {type: string, enum: [active, disabled]}
+              portal_username: {type: string, description: external 开门户账号}
+              portal_password: {type: string, format: password}
+    ProcurementBackfill:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              purchase_platform: {type: string}
+              purchase_order_ref: {type: string}
+              purchase_cost: {type: number}
+              purchase_currency: {type: string, default: CNY}
+              freight_cost: {type: number}
+              carrier: {type: string}
+              tracking_no: {type: string}
+              note: {type: string}
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            detail: {type: object}
+            request_id: {type: string}
+    PageMeta:
+      type: object
+      properties:
+        total: {type: integer}
+        page: {type: integer}
+        size: {type: integer}
+    TokenPair:
+      type: object
+      properties:
+        access_token: {type: string}
+        refresh_token: {type: string}
+        expires_in: {type: integer}
+    DictItem:
+      type: object
+      properties:
+        code: {type: string}
+        label: {type: string}
+        sort: {type: integer}
+        meta: {type: object}
+    Team:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        status: {type: string}
+        created_at: {type: string, format: date-time}
+    TeamPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Team'}}}}
+    User:
+      type: object
+      properties:
+        id: {type: integer}
+        team_id: {type: [integer, 'null']}
+        username: {type: string}
+        display_name: {type: string}
+        is_super: {type: boolean}
+        status: {type: string}
+        roles: {type: array, items: {$ref: '#/components/schemas/Role'}}
+        last_login_at: {type: [string, 'null'], format: date-time}
+    UserPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/User'}}}}
+    Role:
+      type: object
+      properties:
+        id: {type: integer}
+        team_id: {type: [integer, 'null']}
+        name: {type: string}
+        description: {type: [string, 'null']}
+        permission_codes: {type: array, items: {type: string}}
+    Permission:
+      type: object
+      properties:
+        code: {type: string}
+        module: {type: string}
+        name: {type: string}
+    AuditLog:
+      type: object
+      properties:
+        id: {type: integer}
+        occurred_at: {type: string, format: date-time}
+        actor_type: {type: string, enum: [user, portal, system]}
+        actor_id: {type: [integer, 'null']}
+        action: {type: string}
+        object_type: {type: string}
+        object_id: {type: string}
+        before: {type: [object, 'null']}
+        after: {type: [object, 'null']}
+        ip: {type: [string, 'null']}
+    AuditLogPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/AuditLog'}}}}
+    Store:
+      type: object
+      properties:
+        id: {type: integer}
+        channel_id: {type: integer}
+        code: {type: string}
+        name: {type: string}
+        status: {type: string}
+        operating_mode: {type: string}
+        dedup_exempt: {type: boolean}
+        is_test: {type: boolean}
+        proxy_id: {type: [integer, 'null']}
+        legal_entity: {type: [string, 'null']}
+        payment_label: {type: [string, 'null']}
+        opened_at: {type: [string, 'null'], format: date}
+        suspended_at: {type: [string, 'null'], format: date-time}
+        notes: {type: [string, 'null']}
+    StorePage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Store'}}}}
+    Proxy:
+      type: object
+      properties:
+        id: {type: integer}
+        kind: {type: string}
+        host: {type: string}
+        port: {type: integer}
+        username: {type: [string, 'null']}
+        vendor: {type: [string, 'null']}
+        status: {type: string}
+        expires_at: {type: [string, 'null'], format: date}
+        bound_store_id: {type: [integer, 'null'], description: 反查（独占绑定）}
+    ProxyPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Proxy'}}}}
+    QuotaConfig:
+      type: object
+      properties:
+        quota_kind: {type: string, enum: [listing_create, listing_delete, maintenance]}
+        daily_limit: {type: integer}
+        enabled: {type: boolean}
+    QuotaUsage:
+      type: object
+      properties:
+        quota_kind: {type: string}
+        window_date: {type: string, format: date}
+        used: {type: integer}
+        daily_limit: {type: integer}
+    StoreIncident:
+      type: object
+      properties:
+        id: {type: integer}
+        store_id: {type: integer}
+        incident_kind: {type: string}
+        source: {type: string}
+        occurred_at: {type: string, format: date-time}
+        reason: {type: [string, 'null']}
+        status: {type: string}
+        sku_released_at: {type: [string, 'null'], format: date-time}
+        brand_released_at: {type: [string, 'null'], format: date-time}
+        appeal_notes: {type: [string, 'null']}
+    StoreIncidentPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/StoreIncident'}}}}
+    Product:
+      type: object
+      properties:
+        id: {type: integer}
+        master_sku: {type: string}
+        source_channel: {type: string}
+        source_ref: {type: string}
+        title: {type: string}
+        brand: {type: [string, 'null']}
+        category_path: {type: [string, 'null']}
+        amazon_leaf_id: {type: [string, 'null']}
+        images: {type: array, items: {type: string}}
+        attrs: {type: object}
+        status: {type: string}
+        variant_group_id: {type: [integer, 'null']}
+        created_at: {type: string, format: date-time}
+    ProductPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Product'}}}}
+    VariantGroup:
+      type: object
+      properties:
+        id: {type: integer}
+        source_parent_ref: {type: [string, 'null']}
+        variation_theme: {type: [string, 'null']}
+        status: {type: string}
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              product_id: {type: integer}
+              variant_attrs: {type: object}
+              is_primary: {type: boolean}
+    VariantGroupPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/VariantGroup'}}}}
+    GtinItem:
+      type: object
+      properties:
+        id: {type: integer}
+        gtin: {type: string}
+        gtin_kind: {type: string}
+        status: {type: string}
+        source: {type: string}
+        held_listing_id: {type: [integer, 'null']}
+        used_listing_id: {type: [integer, 'null']}
+    GtinPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/GtinItem'}}}}
+    ImportJob:
+      type: object
+      properties:
+        id: {type: integer}
+        domain: {type: string}
+        source_name: {type: string}
+        format: {type: string}
+        status: {type: string}
+        total_rows: {type: integer}
+        ok_rows: {type: integer}
+        err_rows: {type: integer}
+        skip_rows: {type: integer}
+        error_report_ref: {type: [string, 'null']}
+        started_at: {type: [string, 'null'], format: date-time}
+        finished_at: {type: [string, 'null'], format: date-time}
+    ImportJobPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/ImportJob'}}}}
+    CategoryMap:
+      type: object
+      properties:
+        id: {type: integer}
+        amazon_leaf_id: {type: string}
+        amazon_path: {type: string}
+        wpt: {type: string}
+        risk: {type: object}
+        confidence: {type: [number, 'null']}
+        map_source: {type: string}
+        status: {type: string}
+    CategoryMapPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/CategoryMap'}}}}
+    ProductSource:
+      type: object
+      properties:
+        id: {type: integer}
+        product_id: {type: integer}
+        source_platform: {type: string}
+        source_url: {type: [string, 'null']}
+        source_price_cny: {type: [number, 'null']}
+        freight_cny: {type: [number, 'null']}
+        total_cost_cny: {type: [number, 'null']}
+        risk_note: {type: [string, 'null']}
+        status: {type: string}
+    BrandAssignment:
+      type: object
+      properties:
+        id: {type: integer}
+        brand_display: {type: string}
+        store_id: {type: integer}
+        status: {type: string}
+        assigned_at: {type: string, format: date-time}
+        released_at: {type: [string, 'null'], format: date-time}
+        release_reason: {type: [string, 'null']}
+    BrandAssignmentPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/BrandAssignment'}}}}
+    Listing:
+      type: object
+      properties:
+        id: {type: integer}
+        store_id: {type: integer}
+        product_id: {type: integer}
+        offer_mode: {type: string}
+        channel_sku: {type: string}
+        gtin: {type: [string, 'null']}
+        status: {type: string}
+        error_code: {type: [string, 'null']}
+        is_locked: {type: boolean}
+        current_price: {type: [number, 'null']}
+        current_inventory: {type: integer}
+        published_at: {type: [string, 'null'], format: date-time}
+    ListingDetail:
+      allOf:
+        - {$ref: '#/components/schemas/Listing'}
+        - type: object
+          properties:
+            wpid: {type: [string, 'null']}
+            channel_item_id: {type: [string, 'null']}
+            end_date: {type: string, format: date}
+            state_history:
+              type: array
+              items:
+                type: object
+                properties:
+                  from_status: {type: string}
+                  to_status: {type: string}
+                  reason_code: {type: [string, 'null']}
+                  occurred_at: {type: string, format: date-time}
+            price_history:
+              type: array
+              items:
+                type: object
+                properties:
+                  old_price: {type: [number, 'null']}
+                  new_price: {type: number}
+                  reason: {type: string}
+                  occurred_at: {type: string, format: date-time}
+    ListingPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Listing'}}}}
+    Feed:
+      type: object
+      properties:
+        id: {type: integer}
+        store_id: {type: integer}
+        channel_feed_id: {type: [string, 'null']}
+        feed_kind: {type: string}
+        status: {type: string}
+        item_count: {type: integer}
+        headline: {type: [object, 'null'], description: 渠道汇总（不可信，展示用）}
+        submitted_at: {type: [string, 'null'], format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+    FeedPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Feed'}}}}
+    FeedItem:
+      type: object
+      properties:
+        id: {type: integer}
+        listing_id: {type: integer}
+        channel_sku: {type: string}
+        status: {type: string}
+        error_code: {type: [string, 'null']}
+        error_msg: {type: [string, 'null']}
+    FeedItemPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/FeedItem'}}}}
+    PricingStrategy:
+      type: object
+      properties:
+        id: {type: integer}
+        store_id: {type: [integer, 'null']}
+        offer_mode: {type: string}
+        name: {type: string}
+        algo_code: {type: string}
+        params: {type: object}
+        status: {type: string}
+        version: {type: integer}
+    MaintenanceTask:
+      type: object
+      properties:
+        id: {type: integer}
+        listing_id: {type: integer}
+        task_kind: {type: string}
+        status: {type: string}
+        scheduled_at: {type: string, format: date-time}
+        finished_at: {type: [string, 'null'], format: date-time}
+        error: {type: [string, 'null']}
+    MaintenanceTaskPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/MaintenanceTask'}}}}
+    ListingError:
+      type: object
+      properties:
+        error_code: {type: string}
+        category: {type: string}
+        title: {type: string}
+        disposition: {type: string}
+        max_retries: {type: integer}
+        notes: {type: [string, 'null']}
+        enabled: {type: boolean}
+    Order:
+      type: object
+      properties:
+        id: {type: integer}
+        store_id: {type: integer}
+        channel_order_no: {type: string}
+        order_date: {type: string, format: date-time}
+        channel_status: {type: string}
+        internal_status: {type: string}
+        order_total: {type: number}
+        currency: {type: string}
+        item_count: {type: integer}
+        has_flag: {type: boolean}
+    OrderDetail:
+      allOf:
+        - {$ref: '#/components/schemas/Order'}
+        - type: object
+          properties:
+            ship_to: {type: object}
+            lines:
+              type: array
+              items:
+                type: object
+                properties:
+                  channel_line_no: {type: string}
+                  channel_sku: {type: string}
+                  qty: {type: integer}
+                  unit_price: {type: number}
+                  line_status: {type: string}
+                  tracking_no: {type: [string, 'null']}
+            checks:
+              type: array
+              items:
+                type: object
+                properties:
+                  check_kind: {type: string}
+                  result: {type: string}
+                  detail: {type: object}
+                  resolved_at: {type: [string, 'null'], format: date-time}
+            procurement: {type: [object, 'null'], description: 执行单摘要}
+    OrderPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Order'}}}}
+    ProcurementOrder:
+      type: object
+      properties:
+        id: {type: integer}
+        order_id: {type: integer}
+        store_id: {type: integer}
+        status: {type: string}
+        assignee_kind: {type: string}
+        purchaser_id: {type: [integer, 'null']}
+        purchase_platform: {type: [string, 'null']}
+        purchase_order_ref: {type: [string, 'null']}
+        purchase_cost: {type: [number, 'null']}
+        purchase_currency: {type: string}
+        exchange_rate_locked: {type: [number, 'null']}
+        freight_cost: {type: [number, 'null']}
+        carrier: {type: [string, 'null']}
+        tracking_no: {type: [string, 'null']}
+        claimed_at: {type: [string, 'null'], format: date-time}
+        backfilled_at: {type: [string, 'null'], format: date-time}
+        exception_reason: {type: [string, 'null']}
+    ProcurementPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/ProcurementOrder'}}}}
+    Purchaser:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        purchaser_kind: {type: string}
+        user_id: {type: [integer, 'null']}
+        exchange_rate: {type: number}
+        settle_currency: {type: string}
+        status: {type: string}
+        has_portal_account: {type: boolean}
+    PortalProcurement:
+      type: object
+      description: 门户白名单字段（对应 portal_procurement_v；无 team/store/客户身份信息）
+      properties:
+        id: {type: integer}
+        status: {type: string}
+        item_summary:
+          type: array
+          items:
+            type: object
+            properties:
+              channel_sku: {type: string}
+              qty: {type: integer}
+              unit_price: {type: number}
+        ship_to: {type: object}
+        purchase_platform: {type: [string, 'null']}
+        purchase_order_ref: {type: [string, 'null']}
+        purchase_cost: {type: [number, 'null']}
+        freight_cost: {type: [number, 'null']}
+        carrier: {type: [string, 'null']}
+        tracking_no: {type: [string, 'null']}
+        claimed_at: {type: [string, 'null'], format: date-time}
+    PortalProcurementPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/PortalProcurement'}}}}
