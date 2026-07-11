@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.audit import pipeline
+from erp.audit import policy_block as policy_module
 from erp.audit.llm import llm_client
 from erp.core.errors import BusinessError
 
@@ -21,7 +22,7 @@ log = structlog.get_logger()
 DEFAULT_LEVELS = ["l0", "l2", "l3"]
 
 
-async def audit_one(
+async def audit_one(  # noqa: PLR0915  编排函数（L0→L2→L3 全链），拆分反而割裂状态流
     session: AsyncSession,
     *,
     product_id: int,
@@ -126,12 +127,16 @@ async def audit_one(
         )
         if policy is not None:
             cfg = policy["config"] or {}
+            # 37 条政策静态块拼 system prompt 末尾（吃 provider prefix cache；所有产品同一份，
+            # 前缀稳定=cache 命中。空表→空块，退回单策略）。政策文本变→system 内容变→
+            # llm_cache 键自动失效（无需额外版本标记）。见 l3-policy-design.md。
+            policy_block = await policy_module.load_policy_block(session)
+            valid_categories = await policy_module.valid_reason_categories(session)
+            system_content = f"[policy_v{policy['version']}]\n" + pipeline.L3_SYSTEM_PROMPT
+            if policy_block:
+                system_content += "\n\n" + policy_block
             messages = [
-                # 策略 version 进 system 首行 → config 变更即新 cache key（001 §05 失效协议）
-                {
-                    "role": "system",
-                    "content": f"[policy_v{policy['version']}]\n" + pipeline.L3_SYSTEM_PROMPT,
-                },
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": pipeline.build_user_prompt(product, l2_hits)},
             ]
             raw_text, cost, cache_hit = await llm_client.chat(
@@ -147,7 +152,7 @@ async def audit_one(
             total_cost += cost
             llm_calls += 1
             llm_hits += int(cache_hit)
-            result = pipeline.coerce_l3_result(raw_text)
+            result = pipeline.coerce_l3_result(raw_text, valid_categories)
             if result["verdict"] == "reject":
                 verdict, reject_level = "reject", "l3"
                 await _write_hit(

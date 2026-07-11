@@ -286,8 +286,13 @@ def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) ->
     return "\n".join(lines)
 
 
-def coerce_l3_result(raw_text: str) -> dict[str, Any]:
-    """源仓 _coerce_result 逐条移植：保守规范化 + is_real_brand 强制翻案。"""
+def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) -> dict[str, Any]:
+    """源仓 _coerce_result 逐条移植：保守规范化 + is_real_brand 强制翻案。
+
+    valid_categories：reason_category 合法候选（小写）。缺省=静态两类；灌入 37 政策后
+    由 service 传入扩展集（静态 + 政策 category_en），否则政策类目会被误判为非法回退 IP。
+    """
+    categories = valid_categories or VALID_CATEGORIES
     try:
         raw = json.loads(raw_text)
         if not isinstance(raw, dict):
@@ -304,7 +309,7 @@ def coerce_l3_result(raw_text: str) -> dict[str, Any]:
         verdict = "pass"  # 非法 → 保守 pass
 
     category = str(raw.get("reason_category") or "").strip().lower()
-    if category not in VALID_CATEGORIES:
+    if category not in categories:
         category = _LEGACY_CATEGORY_MAP.get(category) or (
             "none" if verdict == "pass" else "intellectual property"
         )

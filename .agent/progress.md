@@ -119,3 +119,14 @@
 - 子代理B一处越界(justified)：test_unsupported_domain_rejected 例子域 trademark→category_map(因 trademark 现已支持)。子代理A一处有意分歧(safe)：全局+团队重复品牌的 evidence 去重(旧emit两次/新一次，build_user_prompt本就dedup，仅存储evidence差异)。
 - Next: L3 静态37政策 prompt 代码片(表+domain=policy导入+拼接，空表退回单策略) + Owner 侧全量数据导入 + L1类目/L2全规则。
 - CI 确认：run 29150618944（3e58344）三 job 全绿（backend 102测试+0010迁移往返 / frontend / workers）；AC 排序用 Python sorted()，pgvector/pg16 镜像下 collation 无碍。
+
+### Session: 2026-07-11 (R2-02 第四片：L3 静态 37 政策 prompt，Fable 亲做)
+- 由 Fable 在集成树上做（同碰 pipeline.py L3 + import_service，须待 A/B 落地）：
+  - 0011 refdata.prohibited_policy 表(category_en PK + seq 排序) + grant；ALTER import_job.domain CHECK 加 'policy'(0010 依 spec 原域集未含)。
+  - import_service 加 domain=policy 路径(显式分派替代「非黑名单即商标」隐式回退)+_apply_policy_row(幂等 upsert on category_en)。
+  - audit/policy_block.py：版本失效(count+max(updated_at))内存加载 37 政策块，压 240 字/条拼 system prompt 末尾(吃 provider prefix cache，所有产品同一份=前缀稳定)；空表→空块 L3 退回单策略。valid_reason_categories 扩为静态两类+政策 category_en。
+  - pipeline.coerce_l3_result 加 valid_categories 参数(默认静态集，向后兼容 4 旧测试)；service L3 拼块+传扩展类目集。
+  - CLI import_policy.py + 5 DB 测试(幂等/空表退回/块含全清单+版本失效重建/coerce类目扩展/行数不符)。
+- 关键成本不变量锁死：政策块在 system(所有产品同一份)、产品文本在 user → 前缀稳定=cache 命中；政策文本变→system 内容变→llm_cache 键自动失效(无需额外版本标记)。
+- 沙盒真库：0011 升降往返 + 107 pytest(102+5) + ruff/format/mypy 全绿。
+- Next: L1 类目判定(pt_embeddings+混合检索+LLM复排，需embed client+数据) + L2 R1/R2/R3/R7/R8；Owner 侧黑名单/商标/37政策全量数据导入。

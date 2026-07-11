@@ -3,10 +3,11 @@
 契约：dry-run 校验 → 幂等 upsert（各表唯一键）→ 逐块行数核对 → 汇总报告；
 **任何一块行数不符即 failed 并回滚该块**（lark 截断教训：逐块核对）。
 
-本单实现黑名单四域（brand/seller/asin/category）+ 商标域（trademark → refdata.trademark）。
+已实现域：黑名单四域（brand/seller/asin/category）+ 商标（trademark → refdata.trademark）
++ 政策（policy → refdata.prohibited_policy，喂 L3 静态 37 政策 prompt）。
 黑名单归一化与审核 L0 查表严格一致（全部走 audit.pipeline._norm）；商标 mark_norm 与
 审核 L2-R5 反查严格一致（同样 _norm），否则导入的词审核时查不到——这是必须锁死的不变量。
-其余域（policy/category_map/gtin…）表结构与 job 通道已就位，导入器随各自工单补。
+其余域（category_map/gtin/tro…）表结构与 job 通道已就位，导入器随各自工单补。
 """
 
 import json
@@ -62,10 +63,11 @@ _DOMAINS: dict[str, _Domain] = {
     ),
 }
 
-# 商标域走独立代码路径（写 refdata.trademark：无 team_id、多列、幂等键 serial_no），
+# 商标域 / 政策域走各自独立代码路径（refdata.*：无 team_id、多列、各自幂等键），
 # 不套黑名单 _apply_row。仍复用同一 job 通道与逐块核对（_process_chunks）。
 TRADEMARK_DOMAIN = "trademark"
-SUPPORTED_DOMAINS = (*_DOMAINS, TRADEMARK_DOMAIN)
+POLICY_DOMAIN = "policy"
+SUPPORTED_DOMAINS = (*_DOMAINS, TRADEMARK_DOMAIN, POLICY_DOMAIN)
 
 # 商标行列名兼容（源仓 USPTO ETL 惯用名：serial_number/mark_identification/filing_date…）
 _TM_SERIAL_KEYS = ("serial_no", "serial_number")
@@ -190,14 +192,19 @@ async def import_rows(
         {"j": job_id},
     )
 
-    # 按域选每行处理器；商标走独立路径（refdata.trademark），黑名单走 _apply_row
-    dom = _DOMAINS.get(job["domain"])
+    # 按域选每行处理器（显式分派，勿用「非黑名单即商标」的隐式回退）
+    domain = job["domain"]
+    dom = _DOMAINS.get(domain)
 
     async def apply_row(s: AsyncSession, row: dict[str, Any], line: int, c: _Counters) -> None:
-        if dom is None:
-            await _apply_trademark_row(s, row, line, c)
-        else:
+        if dom is not None:
             await _apply_row(s, dom, team_id, row, line, c)
+        elif domain == TRADEMARK_DOMAIN:
+            await _apply_trademark_row(s, row, line, c)
+        elif domain == POLICY_DOMAIN:
+            await _apply_policy_row(s, row, line, c)
+        else:  # create_job 已闸，理论不达
+            raise BusinessError("IMPORT_DOMAIN_UNSUPPORTED", f"域 {domain} 无处理器")
 
     total, verify = await _process_chunks(
         session, job_id=job_id, rows=rows, chunk_size=chunk_size, apply_row=apply_row
@@ -365,6 +372,66 @@ async def _apply_trademark_row(
             "owner": _first(row, _TM_OWNER_KEYS),
             "filed": _first(row, _TM_FILED_KEYS),
             "reg": _first(row, _TM_REGISTERED_KEYS),
+        },
+    )
+    c.ok += 1
+
+
+# 政策行列名兼容（飞书 OJSrkV 导出惯用名）
+_POL_CAT_EN_KEYS = ("category_en", "category")
+_POL_CAT_ZH_KEYS = ("category_zh", "category_cn")
+_POL_STATUS_KEYS = ("overall_status", "status")
+_POL_PROHIB_KEYS = ("prohibited_items", "prohibited")
+_POL_COND_KEYS = ("conditional_items", "conditional")
+_POL_PRE_KEYS = ("preapproval_items", "preapproval")
+_POL_RISK_KEYS = ("zh_seller_risk", "seller_risk", "risk")
+_POL_NOTES_KEYS = ("zh_seller_notes", "seller_notes", "notes")
+
+
+async def _apply_policy_row(
+    session: AsyncSession, row: dict[str, Any], line: int, c: _Counters
+) -> None:
+    """幂等 upsert 一行到 refdata.prohibited_policy（键 category_en）。
+
+    err 仅一种：category_en 缺失（无 skip——ON CONFLICT 恒更新，重导即 ok）。seq 供 L3
+    prompt 排序（源仓 id）；缺失置 NULL（排 NULLS LAST）。
+    """
+    cat_en = _first(row, _POL_CAT_EN_KEYS)
+    if not cat_en:
+        c.err += 1
+        c.errors.append({"line": line, "reason": "category_en 缺失", "row": row})
+        return
+    seq_raw = row.get("seq") if row.get("seq") is not None else row.get("id")
+    seq: int | None = None
+    if seq_raw is not None:
+        seq_str = str(seq_raw).strip()
+        if seq_str.lstrip("-").isdigit():
+            seq = int(seq_str)
+    await session.execute(
+        text(
+            "INSERT INTO refdata.prohibited_policy"
+            " (category_en, seq, category_zh, overall_status, prohibited_items,"
+            "  conditional_items, preapproval_items, zh_seller_risk, zh_seller_notes, updated_at)"
+            " VALUES (:en, :seq, :zh, :st, :pro, :cond, :pre, :risk, :notes, now())"
+            " ON CONFLICT (category_en) DO UPDATE SET"
+            "  seq = EXCLUDED.seq, category_zh = EXCLUDED.category_zh,"
+            "  overall_status = EXCLUDED.overall_status,"
+            "  prohibited_items = EXCLUDED.prohibited_items,"
+            "  conditional_items = EXCLUDED.conditional_items,"
+            "  preapproval_items = EXCLUDED.preapproval_items,"
+            "  zh_seller_risk = EXCLUDED.zh_seller_risk,"
+            "  zh_seller_notes = EXCLUDED.zh_seller_notes, updated_at = now()"
+        ),
+        {
+            "en": cat_en,
+            "seq": seq,
+            "zh": _first(row, _POL_CAT_ZH_KEYS),
+            "st": _first(row, _POL_STATUS_KEYS),
+            "pro": _first(row, _POL_PROHIB_KEYS),
+            "cond": _first(row, _POL_COND_KEYS),
+            "pre": _first(row, _POL_PRE_KEYS),
+            "risk": _first(row, _POL_RISK_KEYS),
+            "notes": _first(row, _POL_NOTES_KEYS),
         },
     )
     c.ok += 1
