@@ -75,11 +75,29 @@ async def get_current_user(
         raise AuthError("用户不存在、已停用或凭证已吊销")
 
     # GUC 注入：SET LOCAL 只影响当前事务（= 当前请求），请求间零泄漏
+    team_id: int | None = row.team_id
     if row.is_super:
         await session.execute(text("SELECT set_config('app.is_super', 'on', true)"))
-    if row.team_id is not None:
+        # 超管代表团队操作（试点期核心用法）：X-Act-Team 头指定当前作用团队。
+        # 校验必须在 is_super GUC 之后（team 表受 RLS，GUC 未注入前超管也查不到行）。
+        act_team = request.headers.get("X-Act-Team")
+        if act_team:
+            try:
+                act_id = int(act_team)
+            except ValueError as exc:
+                raise AuthError("X-Act-Team 必须是团队 ID") from exc
+            exists = (
+                await session.execute(
+                    text("SELECT 1 FROM app.team WHERE id = :t AND status = 'active'"),
+                    {"t": act_id},
+                )
+            ).scalar_one_or_none()
+            if exists is None:
+                raise AuthError("X-Act-Team 指定的团队不存在或已停用")
+            team_id = act_id
+    if team_id is not None:
         await session.execute(
-            text("SELECT set_config('app.current_team', :t, true)"), {"t": str(row.team_id)}
+            text("SELECT set_config('app.current_team', :t, true)"), {"t": str(team_id)}
         )
 
     if row.is_super:
@@ -98,7 +116,7 @@ async def get_current_user(
 
     user = CurrentUser(
         id=row.id,
-        team_id=row.team_id,
+        team_id=team_id,
         is_super=row.is_super,
         display_name=row.display_name,
         permissions=permissions,

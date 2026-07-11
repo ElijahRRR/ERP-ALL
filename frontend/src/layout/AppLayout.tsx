@@ -16,6 +16,7 @@ import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { logout } from '@/api/client'
 import NotificationBell from '@/components/NotificationBell'
+import TeamSwitcher from '@/components/TeamSwitcher'
 import { useAuth } from '@/auth/AuthContext'
 
 // 菜单项 → 所需权限点（无权限点的菜单所有人可见）
@@ -81,6 +82,7 @@ export default function AppLayout() {
             gap: 24,
           }}
         >
+          {me.user.is_super && <TeamSwitcher />}
           <NotificationBell />
           <Dropdown
             menu={{

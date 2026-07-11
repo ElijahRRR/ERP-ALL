@@ -170,3 +170,72 @@ class TestRoleGuards:
         )
         assert resp.status_code == 422
         assert resp.json()["error"]["code"] == "PERMISSION_INVALID"
+
+
+class TestActTeam:
+    """超管 X-Act-Team 代表团队操作（试点期核心用法）。"""
+
+    def test_super_acts_as_team(self, client: TestClient, migrated_db: str) -> None:
+        with psycopg.connect(migrated_db, autocommit=True) as conn:  # 幂等重跑清理
+            conn.execute(
+                "DELETE FROM app.user_role WHERE user_id IN"
+                " (SELECT id FROM app.app_user WHERE username LIKE 'act_member%')"
+            )
+            conn.execute("DELETE FROM app.app_user WHERE username LIKE 'act_member%'")
+            tid = conn.execute("SELECT id FROM app.team WHERE name = '切换测试团队'").fetchone()
+            if tid:
+                conn.execute("DELETE FROM app.scrape_task WHERE team_id = %s", (tid[0],))
+                conn.execute("DELETE FROM app.scrape_job WHERE team_id = %s", (tid[0],))
+                conn.execute(
+                    "DELETE FROM app.role_permission WHERE role_id IN"
+                    " (SELECT id FROM app.role WHERE team_id = %s)",
+                    (tid[0],),
+                )
+                conn.execute("DELETE FROM app.role WHERE team_id = %s", (tid[0],))
+                conn.execute("DELETE FROM app.team WHERE id = %s", (tid[0],))
+        sup = _login(client, SUPER, PASSWORD)
+        team = client.post("/api/v1/teams", headers=sup, json={"name": "切换测试团队"}).json()
+        act = {**sup, "X-Act-Team": str(team["id"])}
+
+        # 建用户不再必须显式 team_id（取作用团队）
+        r = client.post(
+            "/api/v1/users",
+            headers=act,
+            json={"username": "act_member", "password": PASSWORD, "display_name": "切换建"},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["team_id"] == team["id"]
+
+        # 团队域业务（建采集作业）以作用团队执行
+        r2 = client.post(
+            "/api/v1/scrape-jobs",
+            headers=act,
+            json={
+                "source": "amazon",
+                "job_kind": "product_detail",
+                "input": {"targets": ["B0ACTTEAM1"]},
+            },
+        )
+        assert r2.status_code == 201, r2.text
+        # 收尾：取消作业（pending 任务判死），避免泄漏进其他模块的 worker 领取队列
+        client.post(f"/api/v1/scrape-jobs/{r2.json()['id']}/cancel", headers=act)
+
+        # 未切换 → 明确报错引导
+        r3 = client.post(
+            "/api/v1/users",
+            headers=sup,
+            json={"username": "act_member2", "password": PASSWORD, "display_name": "x"},
+        )
+        assert r3.status_code == 422
+        assert r3.json()["error"]["code"] == "TEAM_REQUIRED"
+
+    def test_invalid_act_team_rejected(self, client: TestClient) -> None:
+        sup = _login(client, SUPER, PASSWORD)
+        r = client.get("/api/v1/users", headers={**sup, "X-Act-Team": "999999"})
+        assert r.status_code == 401
+
+    def test_non_super_header_ignored(self, client: TestClient, migrated_db: str) -> None:
+        member = _login(client, MEMBER, PASSWORD)
+        me = client.get("/api/v1/me", headers=member).json()
+        me2 = client.get("/api/v1/me", headers={**member, "X-Act-Team": "999999"}).json()
+        assert me2["user"]["team_id"] == me["user"]["team_id"]  # 普通用户忽略该头

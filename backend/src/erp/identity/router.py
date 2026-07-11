@@ -231,9 +231,10 @@ async def create_user(
 ) -> UserOut:
     team_id = user.team_id
     if user.is_super:
-        if body.team_id is None:
-            raise BusinessError("TEAM_REQUIRED", "超管建用户必须指定 team_id")
-        team_id = body.team_id
+        # 优先级：body.team_id > X-Act-Team（authn 已折算进 user.team_id）
+        team_id = body.team_id if body.team_id is not None else user.team_id
+        if team_id is None:
+            raise BusinessError("TEAM_REQUIRED", "超管建用户须指定 team_id（或先切换作用团队）")
     elif body.team_id is not None and body.team_id != user.team_id:
         raise PermissionDenied("identity.team_admin")
 

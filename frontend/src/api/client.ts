@@ -42,11 +42,26 @@ export const tokenStore = {
   },
 }
 
+const ACT_TEAM_KEY = 'erp.actTeam'
+
+export const actTeamStore = {
+  get(): string | null {
+    return localStorage.getItem(ACT_TEAM_KEY)
+  },
+  set(teamId: number | null) {
+    if (teamId == null) localStorage.removeItem(ACT_TEAM_KEY)
+    else localStorage.setItem(ACT_TEAM_KEY, String(teamId))
+  },
+}
+
 async function rawRequest(path: string, init: RequestInit): Promise<Response> {
   const headers = new Headers(init.headers)
   headers.set('Content-Type', 'application/json')
   const token = tokenStore.access
   if (token) headers.set('Authorization', `Bearer ${token}`)
+  // 超管代表团队操作：后端仅对超管生效，普通用户带上也会被忽略
+  const actTeam = actTeamStore.get()
+  if (actTeam) headers.set('X-Act-Team', actTeam)
   return fetch(`/api/v1${path}`, { ...init, headers })
 }
 
