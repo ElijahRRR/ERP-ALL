@@ -46,6 +46,9 @@ async def audit_one(
     )
     if row is None:
         raise BusinessError("AUDIT_PRODUCT_NOT_FOUND", "产品不存在")
+    if row["status"] in ("listed", "retired"):
+        # 在架/终局商品重审会覆盖生命周期状态——在架重审属维护流程（R2），此处硬闸
+        raise BusinessError("AUDIT_STATE_INVALID", f"产品状态 {row['status']} 不可发起审核")
     product: dict[str, Any] = dict(row)
     team_id = product["team_id"]
 

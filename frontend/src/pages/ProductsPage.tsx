@@ -87,7 +87,9 @@ export default function ProductsPage() {
 
   async function onAudit(p: Product) {
     try {
-      const r = await api.post<{ verdict: string; run_id: number }>(`/products/${p.id}/audit`, {})
+      const r = await api.post<{ verdict: string; run_id: number }>(`/products/${p.id}/audit`, {
+        trigger_kind: p.status === 'ingested' ? 'manual' : 're_audit',
+      })
       message.success(`审核完成：${r.verdict === 'pass' ? '✅ 通过' : '❌ 拒绝'}`)
       void load()
     } catch (e) {
@@ -166,11 +168,12 @@ export default function ProductsPage() {
             width: 260,
             render: (_, p) => (
               <Space>
-                {has('audit.run') && ['ingested', 'audit_rejected'].includes(p.status) && (
-                  <Button size="small" type="primary" onClick={() => void onAudit(p)}>
-                    审核
-                  </Button>
-                )}
+                {has('audit.run') &&
+                  ['ingested', 'audit_rejected', 'audit_passed'].includes(p.status) && (
+                    <Button size="small" type="primary" onClick={() => void onAudit(p)}>
+                      {p.status === 'ingested' ? '审核' : '重审'}
+                    </Button>
+                  )}
                 {has('audit.read') && p.latest_audit_run_id && (
                   <Button size="small" onClick={() => void showAudit(p.latest_audit_run_id!)}>
                     审核详情
