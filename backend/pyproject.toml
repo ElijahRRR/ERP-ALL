@@ -15,6 +15,7 @@ dependencies = [
     "structlog>=24.4",
     "pyjwt>=2.10",
     "argon2-cffi>=23.1",
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
@@ -23,7 +24,6 @@ dev = [
     "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "httpx>=0.28",
 ]
 
 [build-system]
