@@ -214,7 +214,7 @@
     "check": "审核弹药灌入【L1】（黑名单四表3.6万+商标库14.18M+37政策+pt_embeddings；L1类目判定+L2全规则+AC自动机）",
     "status": "in_progress",
     "evidence": ".agent/evidence/R2-02/archaeology.md",
-    "finding": "已交付四片(沙盒全绿107测试)：①数据载具 import_job 通道+黑名单四域导入器(0010) ②R4 升级 Aho-Corasick 纯Python自动机+版本失效内存加载器(20k差分fuzz vs旧regex 0不符; Opus子代理) ③商标导入域 refdata.trademark 喂R5 LIVE反查(mark_norm小写契约; Opus子代理) ④L3静态37政策prompt(0011 refdata.prohibited_policy + domain=policy导入 + policy_block版本失效拼接system prompt末尾吃prefix cache + coerce类目集扩展; 空表退回单策略)。归一化全走_norm与L0查表一致。后续片：黑名单/商标/37政策全量数据导入(Owner) + L1类目判定(pt_embeddings+混检+LLM复排) + L2 R1/R2/R3/R7/R8",
+    "finding": "已交付五片(沙盒全绿120测试)：①数据载具 import_job 通道+黑名单四域导入器(0010) ②R4 升级 Aho-Corasick 纯Python自动机+版本失效内存加载器(20k差分fuzz vs旧regex 0不符; Opus子代理) ③商标导入域 refdata.trademark 喂R5 LIVE反查(mark_norm小写契约; Opus子代理) ④L3静态37政策prompt ⑤L2 R7促销/R8敏感八子类软证据(纯文本喂L3)(0011 refdata.prohibited_policy + domain=policy导入 + policy_block版本失效拼接system prompt末尾吃prefix cache + coerce类目集扩展; 空表退回单策略)。归一化全走_norm与L0查表一致。后续片：黑名单/商标/37政策全量数据导入(Owner) + L1类目判定(pt_embeddings+混检+LLM复排) + L2 R1/R2/R3/R7/R8",
     "last_checked_at": "2026-07-11",
     "note": "验收(L1)：旧系统 4326 ASIN 子集 ≥100 重跑 verdict 一致率 ≥90%（待后续片+数据导入完成）"
   },

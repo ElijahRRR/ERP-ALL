@@ -131,3 +131,10 @@
 - 沙盒真库：0011 升降往返 + 107 pytest(102+5) + ruff/format/mypy 全绿。
 - Next: L1 类目判定(pt_embeddings+混合检索+LLM复排，需embed client+数据) + L2 R1/R2/R3/R7/R8；Owner 侧黑名单/商标/37政策全量数据导入。
 - CI 确认：run 29151294258（7bf606a）三 job 全绿（backend 107测试+0010/0011迁移往返 / frontend / workers）。
+
+### Session: 2026-07-11 (R2-02 第五片：L2 R7/R8 促销+敏感软证据)
+- l2_content.py 移植 R7(促销宣称:强促销词表+全大写滥用去噪)/R8(八子类敏感:文化/宗教/政治/历史/武器装饰/成人/物质/卡通IP百余条正则)，penalty=0 软证据。
+- run_l2 追加 R7/R8 命中；build_user_prompt surface「促销宣称词」「敏感内容命中」两行喂 L3。
+- 纯文本无外部依赖无迁移；13 单测；120 pytest(107+13)+ruff/format/mypy 全绿(46555ed)。
+- L2 R1/R2/R3(类目准入/禁售大类/认证)依赖 L1 类目判定，随 L1 交付。
+- Next: L1 类目判定(pt_embeddings 向量表+混合检索+LLM复排)——需 pgvector(可apt装)+embedding API(Owner配)+6832嵌入数据(Owner导)。
