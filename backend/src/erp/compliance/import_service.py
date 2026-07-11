@@ -3,12 +3,14 @@
 契约：dry-run 校验 → 幂等 upsert（各表唯一键）→ 逐块行数核对 → 汇总报告；
 **任何一块行数不符即 failed 并回滚该块**（lark 截断教训：逐块核对）。
 
-本单实现黑名单四域（brand/seller/asin/category）。归一化与审核 L0 查表严格一致
-（全部走 audit.pipeline._norm），否则导入的词审核时查不到——这是唯一必须锁死的不变量。
-其余域（trademark/policy/category_map/gtin…）表结构与 job 通道已就位，导入器随各自工单补。
+本单实现黑名单四域（brand/seller/asin/category）+ 商标域（trademark → refdata.trademark）。
+黑名单归一化与审核 L0 查表严格一致（全部走 audit.pipeline._norm）；商标 mark_norm 与
+审核 L2-R5 反查严格一致（同样 _norm），否则导入的词审核时查不到——这是必须锁死的不变量。
+其余域（policy/category_map/gtin…）表结构与 job 通道已就位，导入器随各自工单补。
 """
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,7 +62,24 @@ _DOMAINS: dict[str, _Domain] = {
     ),
 }
 
-SUPPORTED_DOMAINS = tuple(_DOMAINS)
+# 商标域走独立代码路径（写 refdata.trademark：无 team_id、多列、幂等键 serial_no），
+# 不套黑名单 _apply_row。仍复用同一 job 通道与逐块核对（_process_chunks）。
+TRADEMARK_DOMAIN = "trademark"
+SUPPORTED_DOMAINS = (*_DOMAINS, TRADEMARK_DOMAIN)
+
+# 商标行列名兼容（源仓 USPTO ETL 惯用名：serial_number/mark_identification/filing_date…）
+_TM_SERIAL_KEYS = ("serial_no", "serial_number")
+_TM_MARK_KEYS = ("mark_text", "mark_identification", "wordmark", "mark")
+_TM_NORM_KEYS = ("mark_norm",)
+_TM_STATUS_KEYS = ("status_code", "status")
+_TM_LIVE_KEYS = ("is_live", "live_dead", "live")
+_TM_NICE_KEYS = ("nice_classes", "nice_class", "nice")
+_TM_OWNER_KEYS = ("owner_name", "owner")
+_TM_FILED_KEYS = ("filed_date", "filing_date")
+_TM_REGISTERED_KEYS = ("registered_date", "registration_date")
+
+_LIVE_TRUE = {"live", "true", "t", "1", "yes", "y"}
+_LIVE_FALSE = {"dead", "false", "f", "0", "no", "n"}
 
 
 def _first(row: dict[str, Any], keys: tuple[str, ...]) -> str | None:
@@ -84,7 +103,7 @@ async def create_job(
     created_by: int | None = None,
 ) -> dict[str, Any]:
     """建导入作业（pending）。domain 必须受支持；total_rows = 调用方声明的源行数（供核对）。"""
-    if domain not in _DOMAINS:
+    if domain not in SUPPORTED_DOMAINS:
         raise BusinessError(
             "IMPORT_DOMAIN_UNSUPPORTED",
             f"域 {domain} 导入器尚未实现",
@@ -122,6 +141,10 @@ class _Counters:
     errors: list[dict[str, Any]] = field(default_factory=list)
 
 
+# 每行处理器：把一行分类为 ok/skip/err 并写库（黑名单/商标各自实现，共用逐块核对）
+_RowApplier = Callable[[AsyncSession, dict[str, Any], int, _Counters], Awaitable[None]]
+
+
 async def import_rows(
     session: AsyncSession, *, job_id: int, rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -147,7 +170,6 @@ async def import_rows(
         raise BusinessError("IMPORT_JOB_NOT_FOUND", "导入作业不存在")
     if job["status"] not in ("pending", "validating"):
         raise BusinessError("IMPORT_JOB_STATE_INVALID", f"作业状态 {job['status']} 不可导入")
-    dom = _DOMAINS[job["domain"]]
     team_id = job["team_id"]
     chunk_size = job["chunk_size"] or 5000
 
@@ -168,31 +190,18 @@ async def import_rows(
         {"j": job_id},
     )
 
-    total = _Counters()
-    verify: list[dict[str, int]] = []
-    for ci in range(0, len(rows), chunk_size):
-        chunk = rows[ci : ci + chunk_size]
-        c = _Counters()
-        for idx, row in enumerate(chunk):
-            await _apply_row(session, dom, team_id, row, ci + idx, c)
-        # 逐块核对：处理数必须等于块行数（每行都被分类为 ok/skip/err）
-        loaded = c.ok + c.skip + c.err
-        verify.append({"chunk": ci // chunk_size, "expected": len(chunk), "loaded": loaded})
-        if loaded != len(chunk):  # 结构性守卫：理论不触发，触发即代码缺陷
-            await session.execute(
-                text(
-                    "UPDATE app.import_job SET status = 'failed', finished_at = now() WHERE id = :j"
-                ),
-                {"j": job_id},
-            )
-            raise BusinessError(
-                "IMPORT_CHUNK_MISMATCH",
-                f"块 {ci // chunk_size} 行数不符：{loaded}/{len(chunk)}",
-            )
-        total.ok += c.ok
-        total.skip += c.skip
-        total.err += c.err
-        total.errors.extend(c.errors)
+    # 按域选每行处理器；商标走独立路径（refdata.trademark），黑名单走 _apply_row
+    dom = _DOMAINS.get(job["domain"])
+
+    async def apply_row(s: AsyncSession, row: dict[str, Any], line: int, c: _Counters) -> None:
+        if dom is None:
+            await _apply_trademark_row(s, row, line, c)
+        else:
+            await _apply_row(s, dom, team_id, row, line, c)
+
+    total, verify = await _process_chunks(
+        session, job_id=job_id, rows=rows, chunk_size=chunk_size, apply_row=apply_row
+    )
 
     await session.execute(
         text(
@@ -216,6 +225,45 @@ async def import_rows(
         "err": total.err,
         "verify": verify,
     }
+
+
+async def _process_chunks(
+    session: AsyncSession,
+    *,
+    job_id: int,
+    rows: list[dict[str, Any]],
+    chunk_size: int,
+    apply_row: _RowApplier,
+) -> tuple[_Counters, list[dict[str, int]]]:
+    """逐块调用 apply_row + 逐块行数核对（黑名单/商标共用）。
+
+    每行必被分类为 ok/skip/err；块内处理数≠块行数 → 该块 failed 回滚（结构性守卫）。
+    """
+    total = _Counters()
+    verify: list[dict[str, int]] = []
+    for ci in range(0, len(rows), chunk_size):
+        chunk = rows[ci : ci + chunk_size]
+        c = _Counters()
+        for idx, row in enumerate(chunk):
+            await apply_row(session, row, ci + idx, c)
+        loaded = c.ok + c.skip + c.err
+        verify.append({"chunk": ci // chunk_size, "expected": len(chunk), "loaded": loaded})
+        if loaded != len(chunk):  # 结构性守卫：理论不触发，触发即代码缺陷
+            await session.execute(
+                text(
+                    "UPDATE app.import_job SET status = 'failed', finished_at = now() WHERE id = :j"
+                ),
+                {"j": job_id},
+            )
+            raise BusinessError(
+                "IMPORT_CHUNK_MISMATCH",
+                f"块 {ci // chunk_size} 行数不符：{loaded}/{len(chunk)}",
+            )
+        total.ok += c.ok
+        total.skip += c.skip
+        total.err += c.err
+        total.errors.extend(c.errors)
+    return total, verify
 
 
 async def _apply_row(
@@ -261,6 +309,103 @@ async def _apply_row(
         c.ok += 1
     else:
         c.skip += 1  # 幂等：已在黑名单 → 跳过
+
+
+async def _apply_trademark_row(
+    session: AsyncSession, row: dict[str, Any], line: int, c: _Counters
+) -> None:
+    """幂等 upsert 一行到 refdata.trademark（键 serial_no）。
+
+    err 仅两种：serial_no 或 mark_text 缺失（无 skip——ON CONFLICT 恒更新，重导即 ok，
+    表内每 serial_no 恒一行）。mark_norm 契约：优先取 mark_norm 列，否则由 mark_text
+    派生（_norm = 小写 + 压空格），与 L2-R5 `mark_norm = ANY(小写候选)` 严格对齐，
+    否则 R5 永远查不到本行。is_live：显式列（bool/LIVE/DEAD）优先，否则按 status_code
+    查 refdata.tm_status_code 字典派生（查不到 → NULL/未知）。
+    """
+    serial = _first(row, _TM_SERIAL_KEYS)
+    mark_text = _first(row, _TM_MARK_KEYS)
+    if not serial or not mark_text:
+        c.err += 1
+        c.errors.append({"line": line, "reason": "serial_no 或 mark_text 缺失", "row": row})
+        return
+
+    provided_norm = _first(row, _TM_NORM_KEYS)
+    mark_norm = _norm(provided_norm) if provided_norm else _norm(mark_text)
+
+    status_code = _first(row, _TM_STATUS_KEYS)
+    is_live = _parse_is_live(row)
+    if is_live is None and status_code:
+        is_live = await _lookup_is_live(session, status_code)
+
+    await session.execute(
+        text(
+            "INSERT INTO refdata.trademark"
+            " (serial_no, mark_text, mark_norm, status_code, is_live, nice_classes,"
+            "  owner_name, filed_date, registered_date, updated_at)"
+            " VALUES (:sn, :mt, :mn, :sc, :live, cast(:nice AS smallint[]),"
+            "  :owner, cast(:filed AS date), cast(:reg AS date), now())"
+            " ON CONFLICT (serial_no) DO UPDATE SET"
+            "  mark_text = EXCLUDED.mark_text,"
+            "  mark_norm = EXCLUDED.mark_norm,"
+            "  status_code = EXCLUDED.status_code,"
+            "  is_live = EXCLUDED.is_live,"
+            "  nice_classes = EXCLUDED.nice_classes,"
+            "  owner_name = EXCLUDED.owner_name,"
+            "  filed_date = EXCLUDED.filed_date,"
+            "  registered_date = EXCLUDED.registered_date,"
+            "  updated_at = now()"
+        ),
+        {
+            "sn": serial,
+            "mt": mark_text,
+            "mn": mark_norm,
+            "sc": status_code,
+            "live": is_live,
+            "nice": _parse_nice_classes(row),
+            "owner": _first(row, _TM_OWNER_KEYS),
+            "filed": _first(row, _TM_FILED_KEYS),
+            "reg": _first(row, _TM_REGISTERED_KEYS),
+        },
+    )
+    c.ok += 1
+
+
+def _parse_is_live(row: dict[str, Any]) -> bool | None:
+    """显式 is_live/live_dead/live 列 → bool；无/无法识别 → None（交给字典派生）。"""
+    raw = _first(row, _TM_LIVE_KEYS)
+    if raw is None:
+        return None
+    token = raw.strip().lower()
+    if token in _LIVE_TRUE:
+        return True
+    if token in _LIVE_FALSE:
+        return False
+    return None
+
+
+async def _lookup_is_live(session: AsyncSession, status_code: str) -> bool | None:
+    """按 status_code 查 refdata.tm_status_code 字典（查不到 → None=未知）。"""
+    val = (
+        await session.execute(
+            text("SELECT is_live FROM refdata.tm_status_code WHERE code = :c"),
+            {"c": status_code},
+        )
+    ).scalar_one_or_none()
+    return None if val is None else bool(val)
+
+
+def _parse_nice_classes(row: dict[str, Any]) -> list[int] | None:
+    """nice_classes：原生 list/tuple 或逗号/空格分隔的整数串 → list[int]；否则 None。"""
+    for k in _TM_NICE_KEYS:
+        v = row.get(k)
+        if isinstance(v, list | tuple):
+            nums = [int(x) for x in v if str(x).strip().isdigit()]
+            return nums or None
+    raw = _first(row, _TM_NICE_KEYS)
+    if raw is None:
+        return None
+    nums = [int(tok) for tok in raw.replace(",", " ").split() if tok.isdigit()]
+    return nums or None
 
 
 async def mark_failed(session: AsyncSession, *, job_id: int, error: str) -> None:
