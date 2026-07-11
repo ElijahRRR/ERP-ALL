@@ -96,8 +96,8 @@ class TestAuthChannel:
 class TestSeeds:
     def test_permissions_roles_channel(self, migrated_db: str) -> None:
         with psycopg.connect(migrated_db) as conn:
-            assert (  # 36 基线 + 0007 scrape.* 3 + 0008 audit.* 3
-                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 42
+            assert (  # 36 基线 + 0007 scrape.* 3 + 0008 audit.* 3 + 0010 compliance.import_* 2
+                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 44
             )
             assert (
                 conn.execute("SELECT count(*) FROM app.role WHERE team_id IS NULL").fetchone()[0]

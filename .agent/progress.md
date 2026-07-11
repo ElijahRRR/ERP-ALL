@@ -98,3 +98,11 @@
 - 26 离线单测(payload/erp_client协议/engine分级处置) + ruff/format/mypy 全绿；CLI启动+parser离线解析冒烟过。沙盒不真抓(宪法禁)。
 - CI 确认：run 29148288864（5c8e21c）三 job 全绿（backend/frontend/workers）。
 - Next: L1 真抓验收待 Owner 机器+TPS 代理(runbook.md)；同时可开 R2-02 审核弹药灌入（已向 Owner 提议并行，待其回复）。
+
+### Session: 2026-07-11 (R2-01 验收通过 + 前端详情 + R2-02 第一片)
+- R2-01 Owner 机器真抓验收通过（真抓成功/variant偏移判失败/假ASIN标记不存在；未跑掐-worker回收测试）→ accepted 关账。
+- 顺手补前端产品详情抽屉(e7bc6a0)：表格原只有 SKU/ASIN/标题/品牌/状态无处点开，采集的图片/五点/价格/类目一直在库(GET /products/{id})却看不到——加抽屉(图片画廊/价格/五点/全字段中文标签)，标题可点+操作列「详情」。
+- R2-02 开工第一片=数据载具：migration 0010 import_job(表+RLS+compliance.import_read/admin 权限→44) + import_service(create_job/import_rows 分块核对+源截断守卫+幂等upsert) + 黑名单四域导入器 + CLI import_blacklist(csv/xlsx/jsonl→system_tx) + 只读路由 + main 注册。
+- 归一化锁死：四域主体全走 audit.pipeline._norm，与 L0 _blacklist_lookup 字节一致(否则导进去查不到)；品牌占位符白名单跳过。
+- 沙盒起 apt PG16(pgcrypto/pg_trgm；vector 缺=迁移未用)真库验证：0010 升降往返 + 84 pytest(新增6) + ruff/format/mypy 全绿。
+- Next: R2-02 后续片(黑名单/商标/37政策全量导入 + L1类目判定 + L2全规则 + AC自动机)，见 evidence/R2-02/archaeology.md 后续片清单。
