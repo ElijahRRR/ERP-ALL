@@ -1,13 +1,19 @@
 import {
   Button,
   Descriptions,
+  Divider,
   Drawer,
+  Empty,
   Form,
+  Image,
+  List,
   Modal,
   Select,
   Space,
+  Spin,
   Table,
   Tag,
+  Typography,
   message,
 } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
@@ -48,6 +54,70 @@ interface Store {
   name: string
 }
 
+interface ProductDetail {
+  id: number
+  master_sku: string
+  source_channel: string
+  source_ref: string
+  title: string
+  brand: string | null
+  category_path: string | null
+  images: string[] | null
+  attrs: Record<string, unknown> | null
+  price_snapshot: Record<string, unknown> | null
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+// price_snapshot 字段中文名（采集自 Amazon）
+const PRICE_LABELS: Record<string, string> = {
+  current_price: '当前价',
+  buybox_price: 'BuyBox 价',
+  original_price: '原价',
+  buybox_shipping: '运费',
+  is_fba: 'FBA 发货',
+  total_price: '总价',
+}
+
+// attrs 字段中文名（bullets 单独渲染，其余按此表；未列出的原样显示 key）
+const ATTR_LABELS: Record<string, string> = {
+  model_number: '型号',
+  manufacturer: '制造商',
+  part_number: '部件号',
+  country_of_origin: '原产国',
+  is_customized: '是否定制',
+  product_type: '商品类型',
+  stock_status: '库存状态',
+  stock_count: '库存数',
+  delivery_date: '配送日期',
+  delivery_time: '配送时长',
+  rating: '评分',
+  review_count: '评论数',
+  seller_name: '卖家',
+  seller_id: '卖家 ID',
+  best_sellers_rank: '畅销排名',
+  first_available_date: '上架日期',
+  package_dimensions: '包装尺寸',
+  package_weight: '包装重量',
+  item_dimensions: '商品尺寸',
+  item_weight: '商品重量',
+  upc_list: 'UPC',
+  ean_list: 'EAN',
+  variation_asins: '变体 ASIN',
+  parent_asin: '父体 ASIN',
+  long_description: '长描述',
+  crawl_time: '采集时间',
+  product_url: '商品链接',
+  zip_code: '配送邮编',
+  site: '站点',
+}
+
+function attrText(v: unknown): string {
+  if (Array.isArray(v)) return v.join('、')
+  return String(v ?? '')
+}
+
 const STATUS_COLOR: Record<string, string> = {
   ingested: 'default',
   auditing: 'processing',
@@ -68,6 +138,8 @@ export default function ProductsPage() {
   const [auditDetail, setAuditDetail] = useState<AuditRunDetail | null>(null)
   const [allocateFor, setAllocateFor] = useState<Product | null>(null)
   const [stores, setStores] = useState<Store[]>([])
+  const [detail, setDetail] = useState<ProductDetail | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -94,6 +166,18 @@ export default function ProductsPage() {
       void load()
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '审核失败')
+    }
+  }
+
+  async function showDetail(id: number) {
+    setDetailLoading(true)
+    setDetail(null)
+    try {
+      setDetail(await api.get<ProductDetail>(`/products/${id}`))
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '加载详情失败')
+    } finally {
+      setDetailLoading(false)
     }
   }
 
@@ -154,7 +238,14 @@ export default function ProductsPage() {
         columns={[
           { title: 'SKU', dataIndex: 'master_sku', width: 110 },
           { title: 'ASIN', dataIndex: 'source_ref', width: 130 },
-          { title: '标题', dataIndex: 'title', ellipsis: true },
+          {
+            title: '标题',
+            dataIndex: 'title',
+            ellipsis: true,
+            render: (t: string, p) => (
+              <Typography.Link onClick={() => void showDetail(p.id)}>{t}</Typography.Link>
+            ),
+          },
           { title: '品牌', dataIndex: 'brand', width: 120 },
           {
             title: '状态',
@@ -165,9 +256,12 @@ export default function ProductsPage() {
           {
             title: '操作',
             key: 'op',
-            width: 260,
+            width: 320,
             render: (_, p) => (
               <Space>
+                <Button size="small" onClick={() => void showDetail(p.id)}>
+                  详情
+                </Button>
                 {has('audit.run') &&
                   ['ingested', 'audit_rejected', 'audit_passed'].includes(p.status) && (
                     <Button size="small" type="primary" onClick={() => void onAudit(p)}>
@@ -235,6 +329,92 @@ export default function ProductsPage() {
                 },
               ]}
             />
+          </>
+        )}
+      </Drawer>
+      <Drawer
+        title={`产品详情 ${detail?.master_sku ?? ''}`}
+        open={detailLoading || !!detail}
+        onClose={() => setDetail(null)}
+        width={640}
+      >
+        {detailLoading && <Spin />}
+        {detail && (
+          <>
+            {detail.images && detail.images.length > 0 ? (
+              <Image.PreviewGroup>
+                <Space wrap size={8} style={{ marginBottom: 16 }}>
+                  {detail.images.map((src) => (
+                    <Image key={src} src={src} width={96} height={96} style={{ objectFit: 'contain' }} />
+                  ))}
+                </Space>
+              </Image.PreviewGroup>
+            ) : (
+              <Empty description="无图片" style={{ marginBottom: 16 }} />
+            )}
+
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="标题">{detail.title}</Descriptions.Item>
+              <Descriptions.Item label="品牌">{detail.brand ?? '—'}</Descriptions.Item>
+              <Descriptions.Item label="类目">{detail.category_path ?? '—'}</Descriptions.Item>
+              <Descriptions.Item label="ASIN">
+                {detail.source_channel === 'amazon' ? (
+                  <a
+                    href={`https://www.amazon.com/dp/${detail.source_ref}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {detail.source_ref}
+                  </a>
+                ) : (
+                  detail.source_ref
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label="状态">
+                <Tag color={STATUS_COLOR[detail.status]}>{detail.status}</Tag>
+              </Descriptions.Item>
+            </Descriptions>
+
+            {detail.price_snapshot && Object.keys(detail.price_snapshot).length > 0 && (
+              <>
+                <Divider orientation="left">价格</Divider>
+                <Descriptions column={2} size="small" bordered>
+                  {Object.entries(detail.price_snapshot).map(([k, v]) => (
+                    <Descriptions.Item key={k} label={PRICE_LABELS[k] ?? k}>
+                      {attrText(v)}
+                    </Descriptions.Item>
+                  ))}
+                </Descriptions>
+              </>
+            )}
+
+            {Array.isArray(detail.attrs?.bullets) &&
+              (detail.attrs!.bullets as string[]).length > 0 && (
+                <>
+                  <Divider orientation="left">五点描述</Divider>
+                  <List
+                    size="small"
+                    dataSource={detail.attrs!.bullets as string[]}
+                    renderItem={(b) => <List.Item>{b}</List.Item>}
+                  />
+                </>
+              )}
+
+            {detail.attrs &&
+              Object.keys(detail.attrs).filter((k) => k !== 'bullets').length > 0 && (
+                <>
+                  <Divider orientation="left">其他采集字段</Divider>
+                  <Descriptions column={1} size="small" bordered>
+                    {Object.entries(detail.attrs)
+                      .filter(([k]) => k !== 'bullets')
+                      .map(([k, v]) => (
+                        <Descriptions.Item key={k} label={ATTR_LABELS[k] ?? k}>
+                          {attrText(v)}
+                        </Descriptions.Item>
+                      ))}
+                  </Descriptions>
+                </>
+              )}
           </>
         )}
       </Drawer>
