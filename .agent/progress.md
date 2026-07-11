@@ -130,3 +130,4 @@
 - 关键成本不变量锁死：政策块在 system(所有产品同一份)、产品文本在 user → 前缀稳定=cache 命中；政策文本变→system 内容变→llm_cache 键自动失效(无需额外版本标记)。
 - 沙盒真库：0011 升降往返 + 107 pytest(102+5) + ruff/format/mypy 全绿。
 - Next: L1 类目判定(pt_embeddings+混合检索+LLM复排，需embed client+数据) + L2 R1/R2/R3/R7/R8；Owner 侧黑名单/商标/37政策全量数据导入。
+- CI 确认：run 29151294258（7bf606a）三 job 全绿（backend 107测试+0010/0011迁移往返 / frontend / workers）。
