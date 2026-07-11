@@ -139,3 +139,11 @@
 - L2 R1/R2/R3(类目准入/禁售大类/认证)依赖 L1 类目判定，随 L1 交付。
 - Next: L1 类目判定(pt_embeddings 向量表+混合检索+LLM复排)——需 pgvector(可apt装)+embedding API(Owner配)+6832嵌入数据(Owner导)。
 - CI 确认：run 29151967354(a6e0344)含 46555ed(R7/R8) 三 job 全绿；R7/R8 未误伤既有审核测试(120 pytest 全过)。
+
+### Session: 2026-07-11 (数据治理架构 D-Q55 + L1 方法修正)
+- Owner 反馈：数据非一次性导入,需多来源持续维护(店铺后台/邮件/外部收集/USPTO几十G/错误记录/黑名单库),飞书只是表现形式非master；且原类目判定=映射表+LLM非嵌入。
+- 诚实交代：已建地基(import_job+refdata+三导入器)但无体系化持续维护方案——现补。
+- 交付 specs/006-data-governance/README.md：5核心原则+8数据域+来源×通道矩阵+7类摄取通道(批量/USPTO增量投影/飞书双向/beat定时/人工UI/邮件/反馈闭环)+主数据vs飞书方向规则+溯源版本冲突+落地工单(DG1 category_map/DG2 uspto投影/DG3错误记录反馈/DG4黑名单UI)。
+- L1 修正：主路径=category_map+LLM(只卡category_map数据,不卡embedding API)；嵌入降为可选后置。l1-category-design.md 已改。
+- D-Q55 入决策表。
+- Next(待Owner)：①USPTO uspto库如何到部署机(定DG2形态) ②category_map首批导出(解锁L1) ③黑名单/商标/政策全量导入。我可先建 DG1 category_map导入域+表(不卡Owner的代码部分)。

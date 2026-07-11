@@ -4,19 +4,19 @@
 + `sync/build_pt_embeddings.py`。L1 = 判断产品属于哪个沃尔玛 Product Type（WPT），
 L2 的 R1/R2/R3（类目准入 / 禁售大类 / 认证要求）全依赖它，上架 spec 也依赖它。
 
-## 为什么卡 Owner（这是 stop-and-handoff 点）
+## 方法修正（Owner 澄清 2026-07-11）：映射表 + LLM，非嵌入
 
-L1 有三个 Owner 侧硬依赖，缺一不可真跑/真验收：
-1. **Embedding API**：一个文本嵌入模型服务（源仓用 volcengine/OpenAI 兼容 embeddings）
-   + API key。同 deepseek 的配置方式（走 settings/system_config，key 入 backend/.env，
-   永不出机）。**Owner 需提供 embedding 服务地址 + key**。
-2. **6832 条 pt_embeddings 数据**：把全部沃尔玛 Product Type 名用上面的 embedding API
-   逐条嵌入，灌入 refdata.pt_embeddings。生成需调 embedding API → 也依赖 #1。
-3. **category_map 数据**（amazon→walmart 映射，6672+15771 条）：L1 关键词反查候选 +
-   R2-03 上架都要。Owner 从旧系统/飞书导（走 import_job 通道，加 domain=category_map）。
+Owner 原系统类目判定 = **映射表（category_map）+ LLM 语义理解**，**不是**向量嵌入。
+故 ERP L1 主路径不需 embedding API：
+- **主路径（可立即建，只卡 category_map 数据）**：category_map（Amazon 路径→WPT 候选）
+  + LLM 语义复排选最终 WPT + `_coerce_llm` 规范化 + direct 高置信短路。复用现有
+  llm_cache/usage_log，**不引入新外部服务**。
+- **可选增强（后置，非必需）**：pt_embeddings 向量语义召回，补映射表未覆盖的品。要它才需
+  embedding API + 6832 嵌入数据；不要它 L1 也能跑（覆盖率略低）。
 
-沙盒能建的是**代码骨架**（表 + 检索 + rerank + fake embedder 测试），但**真分类质量**
-与 **L1 验收（旧系统 4326 ASIN 子集 ≥90% 一致）**必须等 Owner 的 API + 数据到位。
+**因此 L1 的唯一 Owner 依赖降为 category_map 数据**（走 import_job domain=category_map，
+DG1 通道）。沙盒可全建主路径 + fake LLM 测试；真验收（旧系统 4326 ASIN 子集 ≥90% 一致）
+待 category_map + 黑名单/商标/政策数据到位。embedding 增强作为独立后续，卡 Owner 选嵌入模型。
 
 ## 源仓 classify() 架构（移植蓝图）
 
