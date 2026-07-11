@@ -87,3 +87,13 @@
 - Owner 回执：验收A ✅(重启自愈实测; 固定IP不懂→已给白话步骤, 列为团队接入前待办)、验收B ✅(重审缺口修复 3b1a8f7 后全过)、验收C ✅ →「R1 验收通过」。
 - R1-01~12 全部 accepted 关账；R2-01~05 工单注册（specs/005-r2-plan v2 排序=Owner 三缺口）。
 - R2-01 采集引擎移植开工：源 /workspace/amazon-scraper-v3/worker/，目标 workers/ 独立包。
+
+### Session: 2026-07-11 (R2-01 采集引擎移植)
+- workers/ 独立 uv 包交付（拨入现有 /worker/v1 协议，不改后端）：
+  - **爬虫核心逐字移植**（vendored，ruff/mypy 排除保对齐上游）：parser 2199行/session(curl_cffi TLS指纹+邮编+CAPTCHA)/adaptive(AIMD-Gradient2)/metrics/proxy。
+  - **协议胶水（新写）**：erp_client(/worker/v1: register令牌持久化+复用/pull/result/release/sync, MockTransport 可测) + payload(parser扁平dict→ERP product五要素+attrs+price_snapshot)。
+  - **编排壳（改写移植）**：engine(流水线+分级处置: 被封/404/降级/variant偏移/空标题, 租约attempt原样回传, 下线归还) + run(CLI, Windows信号兼容) + config(调参+BROWSER_PROFILES)。
+  - Dockerfile + compose scraper profile(门控, 令牌/代理走env不落git) + CI workers job。
+- 剔除R1协议不承载的v3机制(截图/seller发现/邮编切换/批次门控/全局配额协调→R2-04或后续)，考古对照入 evidence/R2-01/archaeology.md。
+- 26 离线单测(payload/erp_client协议/engine分级处置) + ruff/format/mypy 全绿；CLI启动+parser离线解析冒烟过。沙盒不真抓(宪法禁)。
+- Next: L1 真抓验收待 Owner 机器+TPS 代理(runbook.md)；同时可开 R2-02 审核弹药灌入。

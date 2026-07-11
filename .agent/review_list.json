@@ -200,12 +200,12 @@
     "id": "R2-01",
     "priority": "P0",
     "dimension": "feature",
-    "check": "采集引擎移植【L1】（v3 worker 引擎 curl_cffi/AIMD/session池/批量回传 → workers/，Owner 机可跑，拨入现有协议；需 TPS 代理）",
-    "status": "in_progress",
-    "evidence": ".agent/evidence/R2-01/",
-    "finding": null,
+    "check": "采集引擎移植【L1】（v3 worker 引擎 curl_cffi/AIMD/session池 → workers/，Owner 机可跑，拨入现有协议；需 TPS 代理）",
+    "status": "done",
+    "evidence": ".agent/evidence/R2-01/ (archaeology.md + runbook.md)",
+    "finding": "workers/ 独立 uv 包交付：5 爬虫核心模块逐字移植(parser/session/adaptive/metrics/proxy) + 协议胶水(erp_client /worker/v1 + payload 适配器) + 编排壳(engine 分级处置 + run CLI + config) + Dockerfile + compose scraper profile。26 离线单测/ruff/format/mypy 全绿，新增 CI workers job。真抓 L1 验收待 Owner 机器+TPS 代理执行(runbook.md)",
     "last_checked_at": "2026-07-11",
-    "note": "验收(L1)：Owner 机真抓 ≥10 真实 ASIN 字段完整+与旧系统对照一致+失败任务正确回收"
+    "note": "验收(L1)：Owner 机真抓 ≥10 真实 ASIN 字段完整+与旧系统对照一致+失败任务正确回收——待 Owner+代理"
   },
   {
     "id": "R2-02",

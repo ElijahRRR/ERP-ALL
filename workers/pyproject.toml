@@ -1,0 +1,75 @@
+[project]
+name = "erp-worker"
+version = "0.1.0"
+description = "ERP 本地采集 worker（Amazon 商品详情，拨入 ERP /worker/v1 协议）"
+requires-python = ">=3.12"
+dependencies = [
+    "curl_cffi>=0.7",
+    "httpx>=0.27",
+    "selectolax>=0.3.21",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+# 验证码本地 OCR（可选；缺失时被封页直接轮换 session 而非尝试解码）
+captcha = ["amazoncaptcha>=0.5.11"]
+
+[project.scripts]
+erp-worker = "erp_worker.run:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/erp_worker"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# 逐字移植自 amazon-scraper-v3 的爬虫核心（vendored）：不 lint/format，保持与源仓一致，
+# 便于后续对齐上游。新胶水层（config/payload/erp_client/engine/run）与 tests 照常严格检查。
+extend-exclude = [
+    "src/erp_worker/parser.py",
+    "src/erp_worker/session.py",
+    "src/erp_worker/adaptive.py",
+    "src/erp_worker/metrics.py",
+    "src/erp_worker/proxy.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "PL"]
+ignore = [
+    "PLR0912",  # 分支多：采集分级处置本就复杂
+    "PLR0915",  # 语句多：同上
+    "PLR0913",  # 参数多：协议方法签名
+    "PLR2004",  # magic number：HTTP 状态码等
+    "PLR0911",  # return 多：解析分支
+]
+
+[tool.ruff.lint.per-file-ignores]
+# BROWSER_PROFILES 的 User-Agent 字符串移植自 v3，无法换行
+"src/erp_worker/config.py" = ["E501"]
+
+[tool.mypy]
+# 采集 worker 移植自弱类型爬虫代码：非严格，仅保证新胶水层（erp_client/payload/engine/run）
+# 的类型自洽 + 第三方库缺 stub 不报错。强类型纪律留在 backend。
+python_version = "3.12"
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+warn_unused_ignores = false
+exclude = ["src/erp_worker/(parser|session|adaptive|metrics|proxy)\\.py"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -54,7 +54,7 @@ services:
       redis: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
 
-  # worker / beat 角色随 R1-06/09 启用（同镜像不同 command）：
+  # 后端 worker / beat 角色随 R2-04 启用（同镜像不同 command）：
   # worker:
   #   build: ../backend
   #   command: ["python", "-m", "erp.worker"]
@@ -63,6 +63,28 @@ services:
   #   build: ../backend
   #   command: ["python", "-m", "erp.beat"]
   #   environment: *backend_env
+
+  # 采集 worker（R2-01）：独立镜像，出站拨入 api 领任务真抓 Amazon。
+  # profile 门控——默认 up 不启动；需 TPS 代理 + 注册令牌就位后显式起：
+  #   ERP_WORKER_ENROLL_TOKEN=<令牌> PROXY_URL=http://user:pwd@tps:port \
+  #     docker compose -f infra/docker-compose.yml --profile scraper up -d --build scraper
+  scraper:
+    build: ../workers
+    restart: unless-stopped
+    command:
+      - "--server"
+      - "http://api:8000"
+      - "--enroll-token"
+      - "${ERP_WORKER_ENROLL_TOKEN:-}"
+      - "--proxy"
+      - "${PROXY_URL:-}"
+      - "--node-key"
+      - "${ERP_WORKER_NODE_KEY:-erp-scraper-1}"
+    volumes:
+      - scraper_state:/root/.erp_worker
+    depends_on:
+      api: {condition: service_started}
+    profiles: ["scraper"]
 
   frontend:
     image: node:22-alpine
@@ -81,3 +103,4 @@ services:
 
 volumes:
   pgdata:
+  scraper_state:

@@ -44,6 +44,25 @@ jobs:
           uv run alembic downgrade base
           uv run alembic upgrade head
 
+  workers:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: workers}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: {python-version: "3.12"}
+      - name: 安装依赖
+        run: uv sync --frozen
+      - name: Lint（ruff）
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: 类型检查（mypy）
+        run: uv run mypy src tests
+      - name: 单元测试
+        run: uv run pytest
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
