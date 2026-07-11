@@ -73,6 +73,10 @@ R1-12 E2E 演示与失败路径（收口，依赖全部）
 - 验收：单 ASIN 走 L0→L2→L3 出 verdict；同输入二次运行 cache 命中 cost=0；usage_log 有行。
 - ⚠️ 移植保真：先抓源仓策略/提示词对照表入 evidence，再写代码（考古纪律）。
 
+> ⚠️ **修正注记（D-Q54，2026-07-11）**：R1-11/R1-12 原验收含 A152 真调（L2 动作），
+> 与 R1 的 L0 骨架定级错位。修正后 R1 验收=骨架验收（evidence/R1-12/owner-acceptance-runbook.md v2），
+> A152 真调挂 R2-03「上架真实化」验收②。等级定义见 specs/005-r2-plan/README.md。
+
 ### R1-11 上架最小闭环（帽：be-channel + be-domain）
 - listing/feed/feed_item/listing_spec/listing_error_catalog/maintenance_task migration + allocate/submit/轮询/状态回写链路（002 契约 Listing 段核心端点）。
 - GTIN：手工导入 20 个 EAN-13 入池（import-jobs 通道），走 held→used 全程。

@@ -77,3 +77,9 @@
 - 75 pytest×2 + 全静态检查 + 前端 build 绿。踩坑: Settings 字段→env 名对应(llm_api_base=ERP_LLM_API_BASE, 写错会真连 deepseek); AntD Drawer 用 .ant-drawer-close 关, Escape 不可靠。
 - R1 收口状态: 01-10 ✅CI绿; 11 沙盒✅+A152待Owner; 12 沙盒✅+Owner验收待执行(owner-acceptance-runbook.md)。
 - Next: 等 Owner 验收回执→R1 关账→R2 规划(选品/订单/邮件/定价/自动化)。期间可做: R2 规划草案/欠账清单整理。
+### Session: 2026-07-11 (D-Q54 验收对齐重排)
+- Owner 验收实测揭示错位：真任务卡 pending(无采集引擎)/审核缺弹药(黑名单10行/商标库空/政策1条/无L1)/spec骨架撑不起真上架——Owner 指示"测试验证要和开发进度相符"。
+- 落档：D-Q54(数据真实性等级 L0模拟/L1真实只读/L2测试店写/L3正式店写, 验收必须匹配等级) + specs/005-r2-plan/README.md v2(R2-01采集引擎/R2-02审核弹药/R2-03上架真实化=Owner三缺口一一对应, A152真调挂R2-03) + owner-acceptance-runbook v2(R1=骨架验收, 含"明确不验"清单) + specs/003 修正注记。
+- 教训: 工单验收判据必须与数据真实性等级绑定, 骨架单禁配真实验收。R1-11 转 done(修正范围)。
+- 另: 超管作用团队切换(X-Act-Team+顶栏切换器) b11e03c 已交付(Owner 实测首报缺口)。
+- Next: Owner 骨架验收回执 + R2 排期确认 → 注册 R2-01~05 工单开工。
