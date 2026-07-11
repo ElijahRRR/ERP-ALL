@@ -20,6 +20,8 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.audit.blacklist_index import scan_blacklist
+
 log = structlog.get_logger()
 
 # 源仓 phase0_brand._NON_BRAND_PLACEHOLDERS 原样移植
@@ -129,24 +131,10 @@ async def run_l2(session: AsyncSession, product: dict[str, Any]) -> list[dict[st
     hits: list[dict[str, Any]] = []
     full_text = _norm(_product_text(product))
 
-    # R4：黑名单词词边界子串扫（源仓 Aho-Corasick；试点量级 regex 足够，R2 换 AC）
-    rows = (
-        await session.execute(
-            text(
-                "SELECT brand_norm FROM app.blacklist_brand"
-                " WHERE status = 'active' AND (team_id IS NULL OR team_id = :t)"
-                " ORDER BY brand_norm"  # 顺序确定性——命中词序影响 L3 缓存键
-            ),
-            {"t": product["team_id"]},
-        )
-    ).scalars()
-    min_len = 4  # 源仓纪律：<4 字符的短单词不做子串扫（误伤通用词）
-    matches = []
-    for brand in rows:
-        if brand in NON_BRAND_PLACEHOLDERS or (len(brand) < min_len and " " not in brand):
-            continue
-        if re.search(rf"(?<![a-z0-9]){re.escape(brand)}(?![a-z0-9])", full_text):
-            matches.append({"brand": brand})
+    # R4：黑名单词词边界命中（Aho-Corasick + 版本失效内存加载器，见 blacklist_index）。
+    #     命中按 brand_norm 升序返回（顺序确定性——命中词序影响 L3 缓存键）；
+    #     全局+本 team 候选集与占位符/短单词跳过逻辑同旧实现，仅把 O(N) 正则换成一次 AC 扫描。
+    matches = await scan_blacklist(session, team_id=product["team_id"], text=full_text)
     if matches:
         hits.append(
             {
