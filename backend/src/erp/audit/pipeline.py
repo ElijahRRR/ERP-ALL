@@ -20,6 +20,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.audit import l2_content
 from erp.audit.blacklist_index import scan_blacklist
 
 log = structlog.get_logger()
@@ -173,6 +174,17 @@ async def run_l2(session: AsyncSession, product: dict[str, Any]) -> list[dict[st
                     "evidence": {"matched_marks": matched},
                 }
             )
+
+    # R7/R8：纯文本软证据（促销宣称 / 敏感内容），不否决，surface 到 L3 结合政策块判定
+    attrs = product.get("attrs") or {}
+    title = product.get("title") or ""
+    bullets = [str(b) for b in (attrs.get("bullets") or [])]
+    promo = l2_content.scan_promotional(title, bullets)
+    if promo:
+        hits.append({"rule_code": "l2_r7_content_promotional", "is_hard": False, "evidence": promo})
+    sensitive = l2_content.scan_sensitive(title, bullets)
+    if sensitive:
+        hits.append({"rule_code": "l2_r8_sensitive", "is_hard": False, "evidence": sensitive})
     return hits
 
 
@@ -268,10 +280,18 @@ _LEGACY_CATEGORY_MAP = {
 def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) -> str:
     attrs = product.get("attrs") or {}
     hit_words: list[str] = []
+    promo_phrases: list[str] = []
+    sensitive_terms: list[str] = []
     for h in l2_hits:
         ev = h.get("evidence") or {}
-        hit_words += [m["brand"] for m in ev.get("matches", [])]
-        hit_words += list(ev.get("matched_marks", []))
+        code = h.get("rule_code", "")
+        if code == "l2_r7_content_promotional":
+            promo_phrases += list(ev.get("strong_phrases", [])) + list(ev.get("allcaps_runs", []))
+        elif code == "l2_r8_sensitive":
+            sensitive_terms += list(ev.get("matched", []))
+        else:
+            hit_words += [m["brand"] for m in ev.get("matches", [])]
+            hit_words += list(ev.get("matched_marks", []))
     lines = [
         f"brand: {product.get('brand') or '(空)'}",
         f"title: {product.get('title') or ''}",
@@ -283,6 +303,10 @@ def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) ->
     if desc:
         lines.append(f"description: {desc[:1500]}")
     lines.append("L2 命中词: " + (" / ".join(dict.fromkeys(hit_words)) if hit_words else "(无)"))
+    if promo_phrases:
+        lines.append("促销宣称词(判是否有事实依据): " + " / ".join(dict.fromkeys(promo_phrases)))
+    if sensitive_terms:
+        lines.append("敏感内容命中(判是否冒犯/违规): " + " / ".join(dict.fromkeys(sensitive_terms)))
     return "\n".join(lines)
 
 
