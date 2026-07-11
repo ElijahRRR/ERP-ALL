@@ -160,30 +160,30 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "采集最小闭环（三表+worker 拨入协议移植 v3+product upsert）",
-    "status": "done",
+    "status": "accepted",
     "evidence": ".agent/evidence/R1-09/",
-    "finding": null,
-    "last_checked_at": null
+    "finding": "协议/租约/回收/upsert 全落地；真实引擎=R2-01；2026-07-11 随 R1 整单 Owner 验收通过",
+    "last_checked_at": "2026-07-11"
   },
   {
     "id": "R1-10",
     "priority": "P0",
     "dimension": "feature",
     "check": "审核最小闭环（L0+L2子集+L3单策略+cache/usage；先抓源仓对照表再写码）",
-    "status": "done",
+    "status": "accepted",
     "evidence": ".agent/evidence/R1-10/",
-    "finding": null,
-    "last_checked_at": null
+    "finding": "四层管道+缓存/记账落地；弹药灌入=R2-02；验收中补重审入口(3b1a8f7)；2026-07-11 Owner 验收通过",
+    "last_checked_at": "2026-07-11"
   },
   {
     "id": "R1-11",
     "priority": "P0",
     "dimension": "feature",
-    "check": "上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 全量证据+A152 真1单+delist 收尾）",
-    "status": "done",
+    "check": "上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 骨架范围）",
+    "status": "accepted",
     "evidence": ".agent/evidence/R1-11/",
-    "finding": null,
-    "last_checked_at": null,
+    "finding": "L0 骨架范围全部完成（D-Q54 修正）；A152 真调挂 R2-03 验收②；2026-07-11 Owner 验收通过",
+    "last_checked_at": "2026-07-11",
     "note": "D-Q54 修正后 R1-11=L0 骨架范围已全部完成；A152 真调挂 R2-03"
   },
   {
@@ -191,10 +191,64 @@
     "priority": "P0",
     "dimension": "acceptance",
     "check": "E2E 演示+失败路径三演示（审核拒/配额拒/feed错→告警）= R1 完成判据",
-    "status": "in_progress",
+    "status": "accepted",
     "evidence": ".agent/evidence/R1-12/",
+    "finding": "沙盒演示✅；Owner 骨架验收 A(重启自愈✅/固定IP列为团队接入前待办)+B(全链✅, 重审缺口已修)+C✅——2026-07-11 Owner 回复「R1 验收通过」，R1 关账",
+    "last_checked_at": "2026-07-11"
+  },
+  {
+    "id": "R2-01",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "采集引擎移植【L1】（v3 worker 引擎 curl_cffi/AIMD/session池/批量回传 → workers/，Owner 机可跑，拨入现有协议；需 TPS 代理）",
+    "status": "in_progress",
+    "evidence": ".agent/evidence/R2-01/",
+    "finding": null,
+    "last_checked_at": "2026-07-11",
+    "note": "验收(L1)：Owner 机真抓 ≥10 真实 ASIN 字段完整+与旧系统对照一致+失败任务正确回收"
+  },
+  {
+    "id": "R2-02",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "审核弹药灌入【L1】（黑名单四表3.6万+商标库14.18M+37政策+pt_embeddings；L1类目判定+L2全规则+AC自动机）",
+    "status": "todo",
+    "evidence": ".agent/evidence/R2-02/",
     "finding": null,
     "last_checked_at": null,
-    "note": "沙盒演示✅；Owner 骨架验收进行中（runbook v2）"
+    "note": "验收(L1)：旧系统 4326 ASIN 子集 ≥100 重跑 verdict 一致率 ≥90%"
+  },
+  {
+    "id": "R2-03",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "上架真实化【L2】（MPSetup v5 官方规格+AI属性填写+category_map+本地校验器+错误码灌入）",
+    "status": "todo",
+    "evidence": ".agent/evidence/R2-03/",
+    "finding": null,
+    "last_checked_at": null,
+    "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT) ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist"
+  },
+  {
+    "id": "R2-04",
+    "priority": "P1",
+    "dimension": "foundation",
+    "check": "worker/beat 底座【L0→L1】（schedule 表驱动：feed轮询/采集回收/缓存LRU/GTIN水位/预算闸；Redis pubsub 配置广播）",
+    "status": "todo",
+    "evidence": ".agent/evidence/R2-04/",
+    "finding": null,
+    "last_checked_at": null,
+    "note": "验收：A152 提交后无人工点查自动轮询回写；模拟断连自动回收"
+  },
+  {
+    "id": "R2-05",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
+    "status": "todo",
+    "evidence": ".agent/evidence/R2-05/",
+    "finding": null,
+    "last_checked_at": null,
+    "note": "验收(L1)：真实订单只读拉取对账一致；(L2)测试单全流程"
   }
 ]
