@@ -96,4 +96,5 @@
   - Dockerfile + compose scraper profile(门控, 令牌/代理走env不落git) + CI workers job。
 - 剔除R1协议不承载的v3机制(截图/seller发现/邮编切换/批次门控/全局配额协调→R2-04或后续)，考古对照入 evidence/R2-01/archaeology.md。
 - 26 离线单测(payload/erp_client协议/engine分级处置) + ruff/format/mypy 全绿；CLI启动+parser离线解析冒烟过。沙盒不真抓(宪法禁)。
-- Next: L1 真抓验收待 Owner 机器+TPS 代理(runbook.md)；同时可开 R2-02 审核弹药灌入。
+- CI 确认：run 29148288864（5c8e21c）三 job 全绿（backend/frontend/workers）。
+- Next: L1 真抓验收待 Owner 机器+TPS 代理(runbook.md)；同时可开 R2-02 审核弹药灌入（已向 Owner 提议并行，待其回复）。
