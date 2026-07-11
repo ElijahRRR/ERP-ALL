@@ -107,3 +107,14 @@
 - 沙盒起 apt PG16(pgcrypto/pg_trgm；vector 缺=迁移未用)真库验证：0010 升降往返 + 84 pytest(新增6) + ruff/format/mypy 全绿。
 - CI 确认：run 29149671287（3a847f7）三 job 全绿（backend 含 0010 迁移升降往返+84测试 / frontend / workers）。前端详情抽屉 e7bc6a0 亦已过 CI。
 - Next: R2-02 后续片(黑名单/商标/37政策全量导入 + L1类目判定 + L2全规则 + AC自动机)，见 evidence/R2-02/archaeology.md 后续片清单。
+
+### Session: 2026-07-11 (R2-02 并行片：workflow 模式 2×Opus 子代理)
+- 用户启用 workflow 模式（Fable 统筹/决策/集成，Opus4.8 子代理做实现片）。
+- 拆两片零文件重叠+各独立测试库(erp_all_a1/a2)：
+  - 子代理A(audit)：R4 黑名单匹配→纯Python Aho-Corasick 自动机 + 版本失效内存加载器(count+max(added_at)为版本键，惰性重建)。词边界保真ERP regex，20k差分fuzz vs旧regex 0不符。commit e0dc4ae。
+  - 子代理B(compliance)：import_job 加商标域→refdata.trademark upsert(ON CONFLICT serial_no)，mark_norm 走_norm小写(R5契约)、is_live派生、nice_classes解析。R5 parity 测试证明喂通。commit bd517d2。
+- 环境坑：worktree 隔离建的是 erpAPI 仓的 worktree(非erp-all)，两子代理各自在/workspace/erp-all-{r4,a2}建 erp-all worktree(共享主 .git 对象库) → commit 可从 main cherry-pick。
+- 集成：cherry-pick 两 commit(493d4f8/834048c)零冲突 → 主库全量 102 测试(84+10+8) + ruff/format/mypy 全绿。
+- Fable 并行产出：L3 静态37政策 prompt 设计档(l3-policy-design.md，锁死 prefix-cache 不变量+数据依赖)——该片待本片集成后单独做(同碰 pipeline.py L3 + import_service)。
+- 子代理B一处越界(justified)：test_unsupported_domain_rejected 例子域 trademark→category_map(因 trademark 现已支持)。子代理A一处有意分歧(safe)：全局+团队重复品牌的 evidence 去重(旧emit两次/新一次，build_user_prompt本就dedup，仅存储evidence差异)。
+- Next: L3 静态37政策 prompt 代码片(表+domain=policy导入+拼接，空表退回单策略) + Owner 侧全量数据导入 + L1类目/L2全规则。
