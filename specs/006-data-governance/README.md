@@ -151,6 +151,47 @@ master，进人工复核队列，避免误杀）。属邮件域工单（R2 后�
 
 ---
 
+## 9. 活数据迁移 playbook（Mac 源库 → 部署机，边建边追，一条不丢）
+
+**问题（Owner 提出）**：源数据在另一台 Mac，库**散乱**，且**在建设期间还在源源不断产生新数据**，
+局域网互通。担心：搬迁期间新数据丢失 / 需要先把 Mac 清理干净才能迁。
+
+**核心解法：不做一次性 cutover，做"回填 + 水位增量追平"。** 三条保证：
+
+### 9.1 为什么一条不丢（水位线 + 幂等）
+- 每个源表 → ERP 记一行 `sync_state(source_key, watermark, last_run_at)`。
+- 每次同步：`SELECT * FROM 源表 WHERE updated_at > :watermark ORDER BY updated_at LIMIT 批量`
+  → 幂等 upsert 进 ERP → 水位推进到本批 max(updated_at)。
+- **建设期 Mac 仍是 master，ERP 持续增量追平**：Mac 这段时间新产的数据，下一次同步按水位
+  自动带进来——没有"截止时刻"，故不丢。幂等 upsert 让窗口重叠重跑也安全。
+- **无 cutover 竞速**：等 ERP 就绪，跑一次最终追平即可切主；切之前 Mac 想产多久产多久，
+  甚至可双跑一段时间对账。
+
+### 9.2 源库散乱怎么办（不用先清理 Mac）
+- **ELT + 分域抽取器**：Mac 原样是什么样都行；ERP 侧每个数据域写一个"抽取器"，只读它需要的
+  源表/列，归一化进 ERP 干净表（同已建的 blacklist/trademark 导入器思路）。乱在源头由抽取器吸收。
+- **水位列缺失兜底**（散乱库常见）：优先 `updated_at` > `created_at` > 自增 id（append-only）>
+  小表全量 hash-diff。抽取器按源表实际有啥选最优水位。
+- 可选中间 `staging` schema：原始拉取先落 staging，再归一化进审核表，隔离脏数据。
+
+### 9.3 局域网传输：两种，按数据特性分
+- **大而慢变（USPTO 商标 几十 G）→ 一次性 dump + 文件传**：Mac 上 `pg_dump` 审核子集
+  （非全库）→ 局域网 scp / 共享目录 → 部署机 restore。之后日增走 §4.2。
+- **小而活变（黑名单/错误记录/映射，源源不断）→ 局域网直连增量**：部署机 ERP 建一个到 Mac PG
+  的**只读连接**（Mac 开 listen_addresses=LAN IP + pg_hba 放行部署机 IP + 建只读角色），
+  beat 定时按水位拉。Mac 关机就等，开机自动追平（pull-when-reachable，不强求 Mac 常开）。
+- 方向选 **部署机拉**（而非 Mac 推）：部署机常开、ERP 在此，逻辑集中；Mac 只需可达 + 只读账号。
+
+### 9.4 迁移阶段（无硬切换）
+1. **建管道**（本阶段，不卡 Mac）：抽取器框架 + sync_state 水位 + 每域抽取器（用 fake 源测试）。
+2. **首次回填**：大表 dump 传一次；活表增量从头拉一遍到当前水位。
+3. **持续追平**：beat 定时增量，Mac 继续产、ERP 持续追（对账 count/水位）。
+4. **切主**：ERP 数据完整且审核跑通后，最终追平一次 → ERP 成 master；Mac 转纯上游或退役。
+
+### 9.5 落地工单（并入 DG2）
+`sync_state` 表 + 抽取器框架（源连接抽象，真 PG + fake 测试）+ 每域抽取器 + beat 调度（R2-04）。
+**代码可先建**（fake 源测试，不卡 Mac）；真接 Mac 待 Owner 给：Mac PG 版本/可达性/各域源表清单。
+
 ## 附：L1 类目判定方法修正（Owner 澄清）
 
 Owner 原系统类目判定 = **映射表 + LLM 语义理解**（不是向量嵌入）。故 ERP L1：
