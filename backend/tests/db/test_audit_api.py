@@ -267,15 +267,29 @@ class TestL2L3Loop:
 
 
 class TestCoerce:
-    def test_illegal_verdict_defaults_pass(self) -> None:
+    def test_illegal_verdict_needs_review(self) -> None:
+        """fail-closed（评审 round-1 A4）：非法 verdict 不再默认 pass，转人工复核。"""
         out = coerce_l3_result(json.dumps({"verdict": "maybe"}))
-        assert out["verdict"] == "pass"
+        assert out["verdict"] == "needs_review"
         assert out["reason_category"] == "none"
 
-    def test_bad_json_defaults_pass(self) -> None:
+    def test_bad_json_needs_review(self) -> None:
         out = coerce_l3_result("哈哈我不是 JSON")
-        assert out["verdict"] == "pass"
+        assert out["verdict"] == "needs_review"
         assert out.get("parse_error") is True
+
+    def test_real_brand_overrides_needs_review(self) -> None:
+        """输出待复核但 is_real_brand=true → 仍强制 reject（确定性证据压过异常输出）。"""
+        out = coerce_l3_result(
+            json.dumps(
+                {
+                    "verdict": "maybe",
+                    "blacklist_brand_verdict": [{"brand": "dyson", "is_real_brand": True}],
+                }
+            )
+        )
+        assert out["verdict"] == "reject"
+        assert out["reason_category"] == "intellectual property"
 
     def test_real_brand_forces_reject(self) -> None:
         """⭐ 源仓强制翻案：LLM 说 pass 但 is_real_brand=true → reject。"""
@@ -297,6 +311,23 @@ class TestCoerce:
             json.dumps({"verdict": "reject", "reason_category": "ip_infringement"})
         )
         assert out["reason_category"] == "intellectual property"
+
+
+class TestFailClosed:
+    def test_bad_llm_output_puts_product_in_needs_review(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm
+    ) -> None:
+        """L3 verdict 非法 → run/product 双双 needs_review（评审 round-1 A4 验收）。"""
+        fake_llm.script = [{"verdict": "maybe", "reason_category": "什么鬼"}]
+        pid = _mk_product(migrated_db, seeded["team"], asin="B0AUDNR001")
+        auth = _login(client, ADMIN, PASSWORD)
+        body = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={}).json()
+        assert body["verdict"] == "needs_review"
+        assert body["product_status"] == "needs_review"
+        run = client.get(f"/api/v1/audit-runs/{body['run_id']}", headers=auth).json()
+        l3 = next(h for h in run["hits"] if h["level"] == "l3")
+        assert l3["rule_code"] == "llm_needs_review"
+        assert l3["is_hard"] is False
 
 
 class TestApiSurface:

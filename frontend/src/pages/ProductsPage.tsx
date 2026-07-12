@@ -123,6 +123,7 @@ const STATUS_COLOR: Record<string, string> = {
   auditing: 'processing',
   audit_passed: 'green',
   audit_rejected: 'red',
+  needs_review: 'orange',
   sourcing: 'gold',
   ready: 'cyan',
   listed: 'blue',
@@ -263,7 +264,9 @@ export default function ProductsPage() {
                   详情
                 </Button>
                 {has('audit.run') &&
-                  ['ingested', 'audit_rejected', 'audit_passed'].includes(p.status) && (
+                  ['ingested', 'audit_rejected', 'audit_passed', 'needs_review'].includes(
+                    p.status,
+                  ) && (
                     <Button size="small" type="primary" onClick={() => void onAudit(p)}>
                       {p.status === 'ingested' ? '审核' : '重审'}
                     </Button>

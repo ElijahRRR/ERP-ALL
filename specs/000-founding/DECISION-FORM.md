@@ -213,3 +213,9 @@
 | # | 决策 | 备注 |
 |---|---|---|
 | D-Q55 | **数据治理架构（多来源持续维护）+ L1 方法修正**：①数据非一次性导入——建立"来源→通道"体系：批量导入(import_job,已建)/外部大数据ETL(USPTO商标增量投影,保留Owner的uspto库为上游数据湖,ERP只投影审核子集)/飞书↔DB双向同步(飞书=工作台非master,DB=唯一真相源,回写只动机器列)/定时同步(beat心脏)/人工UI录入/邮件摄取→黑名单候选/反馈闭环(审核拒绝+订单问题+店铺后台下架→错误商品记录groundtruth→黑名单候选,越用越准)；②每行溯源(source/reason/added_by/added_at)+软删不物删+版本失效缓存；③**L1 类目判定=映射表+LLM语义(Owner原方法)，非向量嵌入**——主路径只需 category_map 数据+现有LLM,不引入embedding API；pt_embeddings向量召回降为可选后置增强 | 2026-07-11 Owner："数据需持续从各角度维护(店铺后台/邮件/外部收集/USPTO几十G/错误记录/黑名单库),飞书只是表现形式,要详细完善的数据入库维护方案"+"我原本类目判定用映射表+LLM"。完整方案=specs/006-data-governance/README.md。落地工单：DG1 category_map导入域(L1前置)/DG2 uspto→refdata.trademark增量投影/DG3 error_product_record+反馈闭环/DG4黑名单人工UI/飞书同步与beat挂R2-04 |
+
+## 第八轮决策（D-Q56，2026-07-12）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q56 | **外部评审 Round-1 采纳裁定**：部署机本地 AI 完成全项目架构评审（21 条：A 架构 7 / B 数据治理 8 / C 盲区 6），Fable 逐条核实与裁定=**17 采纳 / 4 部分采纳 / 0 驳回**，全文见 `specs/external-review-round-1.md`。核心落点：①L3 fail-open（非法 LLM 输出默认 pass）**当日修复**为 fail-closed needs_review（migration 0012 + coerce + 前端）；②新注册 RS-01~RS-11 工单，P0 三件绑定硬闸门——RS-04 摄取升级（COPY staging+manifest+revision 缓存版本，立即，14M 商标将至）/ RS-03 transactional outbox+幂等命令（真实渠道写入 A152-L2 前）/ RS-01+02 租户与部署加固（多团队上线·门户对外前）；③006 修订方向：B1 复合游标+tombstone+日对账、B2 飞书 staging/CAS 不 TRUNCATE、B3 反馈四层裁决门、B8 切主状态机；④财务域按 immutable event ledger 设计（R4/R5 建域前改图纸） | 部分采纳的 4 条：A2-FORCE RLS（owner 语义澄清后仍做）、A5（重装备挂多节点闸门）、B5（断言账本分级按域启用，revision 缓存版本全盘采纳）、B8（多数域旧系统=脚本+飞书，写栅栏成本低）。评审回传通道与单一编辑权纪律（specs 只由 Fable 落笔）按 REVIEW-BRIEF 运行正常 |

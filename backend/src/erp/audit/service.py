@@ -1,6 +1,7 @@
 """审核编排（源仓 orchestrator.audit_one 语义）：L0 短路 → L2 收证据 → L3 判定。
 
-verdict 联动 product.status（001 §05）：pass → audit_passed；reject → audit_rejected。
+verdict 联动 product.status（001 §05）：pass → audit_passed；reject → audit_rejected；
+needs_review → needs_review（L3 输出异常 fail-closed，转人工复核，评审 round-1 A4）。
 成本：audit_run.llm_cost_usd 累计本次全部 LLM 调用；cache_hit_rate 观测。
 """
 
@@ -168,6 +169,21 @@ async def audit_one(  # noqa: PLR0915  编排函数（L0→L2→L3 全链），�
                         "policy_version": policy["version"],
                     },
                 )
+            elif result["verdict"] == "needs_review":
+                # L3 输出异常（解析失败/非法 verdict）→ fail-closed 转人工复核
+                verdict, reject_level = "needs_review", "l3"
+                await _write_hit(
+                    "l3",
+                    "llm_needs_review",
+                    False,
+                    {
+                        "reason_category": result["reason_category"],
+                        "reason_text": result["reason_text"],
+                        "llm_confidence": result["llm_confidence"],
+                        "parse_error": bool(result.get("parse_error")),
+                        "policy_version": policy["version"],
+                    },
+                )
 
     duration_ms = int((time.monotonic() - t0) * 1000)
     await session.execute(
@@ -186,7 +202,7 @@ async def audit_one(  # noqa: PLR0915  编排函数（L0→L2→L3 全链），�
             "ca": run_row.created_at,
         },
     )
-    new_status = "audit_passed" if verdict == "pass" else "audit_rejected"
+    new_status = {"pass": "audit_passed", "reject": "audit_rejected"}.get(verdict, "needs_review")
     await session.execute(
         text("UPDATE app.product SET status = :s, latest_audit_run_id = :r WHERE id = :p"),
         {"s": new_status, "r": run_id, "p": product_id},

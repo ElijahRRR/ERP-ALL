@@ -147,3 +147,12 @@
 - L1 修正：主路径=category_map+LLM(只卡category_map数据,不卡embedding API)；嵌入降为可选后置。l1-category-design.md 已改。
 - D-Q55 入决策表。
 - Next(待Owner)：①USPTO uspto库如何到部署机(定DG2形态) ②category_map首批导出(解锁L1) ③黑名单/商标/政策全量导入。我可先建 DG1 category_map导入域+表(不卡Owner的代码部分)。
+
+### Session: 2026-07-12 (外部评审 Round-1 回应 + A4 fail-closed 修复)
+- 部署机本地 AI 按 REVIEW-BRIEF 完成全项目评审(21条:A架构7/B治理8/C盲区6)，Owner 贴回聊天。
+- 指控级论断逐条到代码核实(A2 GUC可自设/A3 compose缺密钥/A4 fail-open/A5 无kind过滤/A7 持锁调网络/B4 全量进内存)——全部属实。
+- 裁定:17采纳/4部分采纳/0驳回，全文 specs/external-review-round-1.md；D-Q56 入决策表。
+- **当日修 A4**：0012迁移(product.status+needs_review) + coerce fail-closed(badJSON/非法verdict→needs_review,不再默认pass;is_real_brand翻案覆盖needs_review) + audit_one写llm_needs_review软命中+状态联动 + 前端橙标可重审；测试3增2改，122 pytest+ruff/mypy/tsc 全绿。
+- 自查次生问题：坏响应已进llm_cache会让同输入重审复现needs_review→RS-09一并处理(parse_error不落缓存)。
+- 注册 RS-01~11 工单：P0三件绑闸门——RS-04摄取升级(立即,14M将至)/RS-03 outbox+幂等(真实写入前)/RS-01+02安全加固(多团队/门户前)。
+- Next: RS-04 摄取升级动工(COPY staging+manifest+refdata_revision)；006 正文按 B1/B2/B8 修订；RS-11 漂移清理。

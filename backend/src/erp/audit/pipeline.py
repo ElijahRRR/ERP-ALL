@@ -311,7 +311,10 @@ def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) ->
 
 
 def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) -> dict[str, Any]:
-    """源仓 _coerce_result 逐条移植：保守规范化 + is_real_brand 强制翻案。
+    """源仓 _coerce_result 移植：保守规范化 + is_real_brand 强制翻案。
+
+    fail-closed（外部评审 round-1 A4 修正）：JSON 解析失败 / verdict 非法 → needs_review
+    进人工复核，绝不默认 pass——审核是合规闸门，模型输出异常时放行等于闸门失效。
 
     valid_categories：reason_category 合法候选（小写）。缺省=静态两类；灌入 37 政策后
     由 service 传入扩展集（静态 + 政策 category_en），否则政策类目会被误判为非法回退 IP。
@@ -323,19 +326,20 @@ def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) ->
             raise ValueError("非 dict")
     except (ValueError, json.JSONDecodeError):
         log.warning("audit.l3_bad_json", head=raw_text[:120])
-        return {"verdict": "pass", "reason_category": "none", "reason_text": None,
+        return {"verdict": "needs_review", "reason_category": "none",
+                "reason_text": "[L3] 模型输出无法解析，转人工复核",
                 "signals": {}, "blacklist_brand_verdict": [], "llm_confidence": "low",
                 "parse_error": True}  # fmt: skip
 
     verdict = str(raw.get("verdict") or "").strip().lower()
     if verdict not in ("pass", "reject"):
         log.warning("audit.l3_bad_verdict", verdict=verdict)
-        verdict = "pass"  # 非法 → 保守 pass
+        verdict = "needs_review"  # 非法 verdict → 人工复核（fail-closed）
 
     category = str(raw.get("reason_category") or "").strip().lower()
     if category not in categories:
         category = _LEGACY_CATEGORY_MAP.get(category) or (
-            "none" if verdict == "pass" else "intellectual property"
+            "intellectual property" if verdict == "reject" else "none"
         )
     if verdict == "pass":
         category = "none"
@@ -346,9 +350,9 @@ def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) ->
     if not isinstance(brand_verdict, list):
         brand_verdict = []
 
-    # ⭐ 强制翻案：任一 is_real_brand=true → reject（即使 LLM 自己说 pass）
+    # ⭐ 强制翻案：任一 is_real_brand=true → reject（即使 LLM 自己说 pass / 输出待复核）
     real_hits = [v for v in brand_verdict if isinstance(v, dict) and v.get("is_real_brand") is True]
-    if verdict == "pass" and real_hits:
+    if verdict in ("pass", "needs_review") and real_hits:
         verdict = "reject"
         category = "intellectual property"
         if not reason_text:

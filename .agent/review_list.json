@@ -1,254 +1,386 @@
 [
-  {
-    "id": "EA-001",
-    "priority": "P0",
-    "dimension": "architecture",
-    "check": "领域模型列级设计 + 数据字典（15 限界上下文 → 表/字段/索引/分区/team隔离）",
-    "status": "accepted",
-    "evidence": [
-      "specs/001-domain-model/ (README + 00-conventions + 01~09, 80 表)"
-    ],
-    "finding": "已产出；4 个开放点待 Owner 拍板（specs/001-domain-model/README.md §待验收开放点）；2026-07-10 Owner 验收通过（开放点按默认值生效）",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "EA-002",
-    "priority": "P0",
-    "dimension": "architecture",
-    "check": "OpenAPI 契约草案 v0（identity/channel/catalog/listing/order 五个核心上下文先行）",
-    "status": "accepted",
-    "evidence": [
-      "specs/002-api-contract/ (README 全局约定 + openapi-v0.yaml 69路径52schema, YAML+引用已校验)"
-    ],
-    "finding": "草案已产出；随 EA-001 验收联动修订后冻结 v1；2026-07-10 Owner 验收通过（开放点按默认值生效）",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "EA-003",
-    "priority": "P0",
-    "dimension": "foundation",
-    "check": "R1 地基任务分解 → 逐项工单",
-    "status": "done",
-    "evidence": [
-      "specs/003-r1-plan/README.md (R1-01~R1-12 依赖图+验收标准+权限点种子+不做清单)"
-    ],
-    "finding": "12 个 R1 工单已注册（见下）",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "EA-004",
-    "priority": "P1",
-    "dimension": "infra",
-    "check": "阿里云资源建议配置单交 Owner 开通",
-    "status": "deferred",
-    "evidence": [
-      "specs/004-aliyun-provisioning/README.md"
-    ],
-    "finding": "D-Q52：试点期全本地部署，云采购暂缓；R2#6（门户对外）前重新评估。原配置单保留备用",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-01",
-    "priority": "P0",
-    "dimension": "foundation",
-    "check": "仓库工程化与 CI（monorepo/uv+ruff+mypy+pytest/GHA/docker-compose）",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-01/local-verify.md",
-      ".agent/evidence/R1-01/ci-first-run.md",
-      "CI run 29077720593 success"
-    ],
-    "finding": "本地四关+CI 双 job 全绿；compose 全栈 up 留待 Owner 本机/ECS 首次部署验证（沙盒无 docker daemon）",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-02",
-    "priority": "P0",
-    "dimension": "foundation",
-    "check": "配置与密钥（pydantic-settings 三层 + ConfigService team>system>默认）",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-02-03/local-verify.md",
-      "backend/src/erp/core/config_service.py + tests/db/test_config_service.py"
-    ],
-    "finding": "ConfigService team>system>default + 60s TTL；跨进程失效广播随 R1-06 worker 接入",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-03",
-    "priority": "P0",
-    "dimension": "foundation",
-    "check": "migration 基线（identity+channel+system 表 / RLS / 三 DB 角色 / 种子 / 升降级往返）[ar 独占]",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-02-03/local-verify.md",
-      "backend/alembic/versions/0001~0004"
-    ],
-    "finding": "identity+channel+system 20 表：RLS 全开(真库验证)、audit_log 双重不可篡改、月分区+助手函数、认证 SECURITY DEFINER 通道、36权限点/7模板角色种子；偏离：portal_account→R2#6",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-04",
-    "priority": "P0",
-    "dimension": "foundation",
-    "check": "认证+RBAC 中间件+审计唯一写出口（JWT 双 audience/权限点装饰器/GUC 注入）",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-04/local-verify.md",
-      "backend/src/erp/core/{security,authn,audit}.py + identity/service.py + 0005"
-    ],
-    "finding": "双域JWT/argon2/锁定/GUC注入/权限点装饰器/审计唯一出口全落地并真库测试；踩坑: SET LOCAL→set_config",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-05",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "identity API + 前端骨架（登录/成员/角色/审计页，契约 codegen 禁 mock-first）",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-05/local-verify.md",
-      ".agent/evidence/R1-05/shots/ (6截图)",
-      "frontend/e2e/smoke.mjs"
-    ],
-    "finding": "契约端点+登录/成员/角色/审计四页+权限渲染菜单；真实全栈 E2E 冒烟通过并截图交付 Owner",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-06",
-    "priority": "P1",
-    "dimension": "feature",
-    "check": "通知中心骨架（三表+API+铃铛+dedupe 抑制）",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-06/local-verify.md",
-      ".agent/evidence/R1-06/shots/",
-      "backend/src/erp/notify + automation/task_runner + 0006"
-    ],
-    "finding": "通知三表+notify唯一入口+dedupe+task失败联动+铃铛/通知页；新增 system_tx 系统事务上下文（worker RLS 通道）",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-07",
-    "priority": "P0",
-    "dimension": "channel",
-    "check": "渠道网关移植（walmart_client+GCRA+退避；dry_run/live_test/live 三模式）[be-channel 独占]",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-07/(archaeology.md+local-verify.md+dry-run-snapshot.json)",
-      "backend/src/erp/channel/gateway/*"
-    ],
-    "finding": "网关移植完成：三模式闸/token自愈/GCRA自适应/五头保真；A152 真调待 Owner 部署后在其机器执行（沙盒禁真调）",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-08",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "店铺/代理/配额 API+前端（凭证加密维护/代理独占换绑/配额原子扣减）",
-    "status": "done",
-    "evidence": [
-      ".agent/evidence/R1-08/local-verify.md",
-      ".agent/evidence/R1-08/shots/",
-      "backend/src/erp/channel/*"
-    ],
-    "finding": "契约 Channel 段全端点+店铺/代理两页+凭证抽屉；凭证加密/代理独占/配额原子扣减真库验证",
-    "last_checked_at": "2026-07-10"
-  },
-  {
-    "id": "R1-09",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "采集最小闭环（三表+worker 拨入协议移植 v3+product upsert）",
-    "status": "accepted",
-    "evidence": ".agent/evidence/R1-09/",
-    "finding": "协议/租约/回收/upsert 全落地；真实引擎=R2-01；2026-07-11 随 R1 整单 Owner 验收通过",
-    "last_checked_at": "2026-07-11"
-  },
-  {
-    "id": "R1-10",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "审核最小闭环（L0+L2子集+L3单策略+cache/usage；先抓源仓对照表再写码）",
-    "status": "accepted",
-    "evidence": ".agent/evidence/R1-10/",
-    "finding": "四层管道+缓存/记账落地；弹药灌入=R2-02；验收中补重审入口(3b1a8f7)；2026-07-11 Owner 验收通过",
-    "last_checked_at": "2026-07-11"
-  },
-  {
-    "id": "R1-11",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 骨架范围）",
-    "status": "accepted",
-    "evidence": ".agent/evidence/R1-11/",
-    "finding": "L0 骨架范围全部完成（D-Q54 修正）；A152 真调挂 R2-03 验收②；2026-07-11 Owner 验收通过",
-    "last_checked_at": "2026-07-11",
-    "note": "D-Q54 修正后 R1-11=L0 骨架范围已全部完成；A152 真调挂 R2-03"
-  },
-  {
-    "id": "R1-12",
-    "priority": "P0",
-    "dimension": "acceptance",
-    "check": "E2E 演示+失败路径三演示（审核拒/配额拒/feed错→告警）= R1 完成判据",
-    "status": "accepted",
-    "evidence": ".agent/evidence/R1-12/",
-    "finding": "沙盒演示✅；Owner 骨架验收 A(重启自愈✅/固定IP列为团队接入前待办)+B(全链✅, 重审缺口已修)+C✅——2026-07-11 Owner 回复「R1 验收通过」，R1 关账",
-    "last_checked_at": "2026-07-11"
-  },
-  {
-    "id": "R2-01",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "采集引擎移植【L1】（v3 worker 引擎 curl_cffi/AIMD/session池 → workers/，Owner 机可跑，拨入现有协议；需 TPS 代理）",
-    "status": "accepted",
-    "evidence": ".agent/evidence/R2-01/ (archaeology.md + runbook.md)",
-    "finding": "workers/ 独立 uv 包：5 爬虫核心逐字移植 + erp_client/payload 胶水 + engine/run/config 编排壳。2026-07-11 Owner 机器真抓验收通过（真抓成功/variant 偏移判失败/假 ASIN 标记不存在；未跑掐-worker 回收测试）。附带补前端产品详情抽屉(e7bc6a0, 修表格无处点开)",
-    "last_checked_at": "2026-07-11",
-    "note": "掐-worker 回收测试 Owner 未跑（可选兜底验证）；余 v3 机制(截图/seller/邮编/beat协调)挂后续"
-  },
-  {
-    "id": "R2-02",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "审核弹药灌入【L1】（黑名单四表3.6万+商标库14.18M+37政策+pt_embeddings；L1类目判定+L2全规则+AC自动机）",
-    "status": "in_progress",
-    "evidence": ".agent/evidence/R2-02/archaeology.md",
-    "finding": "已交付五片(沙盒全绿120测试)：①数据载具 import_job 通道+黑名单四域导入器(0010) ②R4 升级 Aho-Corasick 纯Python自动机+版本失效内存加载器(20k差分fuzz vs旧regex 0不符; Opus子代理) ③商标导入域 refdata.trademark 喂R5 LIVE反查(mark_norm小写契约; Opus子代理) ④L3静态37政策prompt ⑤L2 R7促销/R8敏感八子类软证据(纯文本喂L3)(0011 refdata.prohibited_policy + domain=policy导入 + policy_block版本失效拼接system prompt末尾吃prefix cache + coerce类目集扩展; 空表退回单策略)。归一化全走_norm与L0查表一致。后续片：黑名单/商标/37政策全量数据导入(Owner) + L1类目判定(pt_embeddings+混检+LLM复排) + L2 R1/R2/R3/R7/R8",
-    "last_checked_at": "2026-07-11",
-    "note": "验收(L1)：旧系统 4326 ASIN 子集 ≥100 重跑 verdict 一致率 ≥90%（待后续片+数据导入完成）"
-  },
-  {
-    "id": "R2-03",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "上架真实化【L2】（MPSetup v5 官方规格+AI属性填写+category_map+本地校验器+错误码灌入）",
-    "status": "todo",
-    "evidence": ".agent/evidence/R2-03/",
-    "finding": null,
-    "last_checked_at": null,
-    "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT) ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist"
-  },
-  {
-    "id": "R2-04",
-    "priority": "P1",
-    "dimension": "foundation",
-    "check": "worker/beat 底座【L0→L1】（schedule 表驱动：feed轮询/采集回收/缓存LRU/GTIN水位/预算闸；Redis pubsub 配置广播）",
-    "status": "todo",
-    "evidence": ".agent/evidence/R2-04/",
-    "finding": null,
-    "last_checked_at": null,
-    "note": "验收：A152 提交后无人工点查自动轮询回写；模拟断连自动回收"
-  },
-  {
-    "id": "R2-05",
-    "priority": "P0",
-    "dimension": "feature",
-    "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
-    "status": "todo",
-    "evidence": ".agent/evidence/R2-05/",
-    "finding": null,
-    "last_checked_at": null,
-    "note": "验收(L1)：真实订单只读拉取对账一致；(L2)测试单全流程"
-  }
+ {
+  "id": "EA-001",
+  "priority": "P0",
+  "dimension": "architecture",
+  "check": "领域模型列级设计 + 数据字典（15 限界上下文 → 表/字段/索引/分区/team隔离）",
+  "status": "accepted",
+  "evidence": [
+   "specs/001-domain-model/ (README + 00-conventions + 01~09, 80 表)"
+  ],
+  "finding": "已产出；4 个开放点待 Owner 拍板（specs/001-domain-model/README.md §待验收开放点）；2026-07-10 Owner 验收通过（开放点按默认值生效）",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "EA-002",
+  "priority": "P0",
+  "dimension": "architecture",
+  "check": "OpenAPI 契约草案 v0（identity/channel/catalog/listing/order 五个核心上下文先行）",
+  "status": "accepted",
+  "evidence": [
+   "specs/002-api-contract/ (README 全局约定 + openapi-v0.yaml 69路径52schema, YAML+引用已校验)"
+  ],
+  "finding": "草案已产出；随 EA-001 验收联动修订后冻结 v1；2026-07-10 Owner 验收通过（开放点按默认值生效）",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "EA-003",
+  "priority": "P0",
+  "dimension": "foundation",
+  "check": "R1 地基任务分解 → 逐项工单",
+  "status": "done",
+  "evidence": [
+   "specs/003-r1-plan/README.md (R1-01~R1-12 依赖图+验收标准+权限点种子+不做清单)"
+  ],
+  "finding": "12 个 R1 工单已注册（见下）",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "EA-004",
+  "priority": "P1",
+  "dimension": "infra",
+  "check": "阿里云资源建议配置单交 Owner 开通",
+  "status": "deferred",
+  "evidence": [
+   "specs/004-aliyun-provisioning/README.md"
+  ],
+  "finding": "D-Q52：试点期全本地部署，云采购暂缓；R2#6（门户对外）前重新评估。原配置单保留备用",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-01",
+  "priority": "P0",
+  "dimension": "foundation",
+  "check": "仓库工程化与 CI（monorepo/uv+ruff+mypy+pytest/GHA/docker-compose）",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-01/local-verify.md",
+   ".agent/evidence/R1-01/ci-first-run.md",
+   "CI run 29077720593 success"
+  ],
+  "finding": "本地四关+CI 双 job 全绿；compose 全栈 up 留待 Owner 本机/ECS 首次部署验证（沙盒无 docker daemon）",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-02",
+  "priority": "P0",
+  "dimension": "foundation",
+  "check": "配置与密钥（pydantic-settings 三层 + ConfigService team>system>默认）",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-02-03/local-verify.md",
+   "backend/src/erp/core/config_service.py + tests/db/test_config_service.py"
+  ],
+  "finding": "ConfigService team>system>default + 60s TTL；跨进程失效广播随 R1-06 worker 接入",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-03",
+  "priority": "P0",
+  "dimension": "foundation",
+  "check": "migration 基线（identity+channel+system 表 / RLS / 三 DB 角色 / 种子 / 升降级往返）[ar 独占]",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-02-03/local-verify.md",
+   "backend/alembic/versions/0001~0004"
+  ],
+  "finding": "identity+channel+system 20 表：RLS 全开(真库验证)、audit_log 双重不可篡改、月分区+助手函数、认证 SECURITY DEFINER 通道、36权限点/7模板角色种子；偏离：portal_account→R2#6",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-04",
+  "priority": "P0",
+  "dimension": "foundation",
+  "check": "认证+RBAC 中间件+审计唯一写出口（JWT 双 audience/权限点装饰器/GUC 注入）",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-04/local-verify.md",
+   "backend/src/erp/core/{security,authn,audit}.py + identity/service.py + 0005"
+  ],
+  "finding": "双域JWT/argon2/锁定/GUC注入/权限点装饰器/审计唯一出口全落地并真库测试；踩坑: SET LOCAL→set_config",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-05",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "identity API + 前端骨架（登录/成员/角色/审计页，契约 codegen 禁 mock-first）",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-05/local-verify.md",
+   ".agent/evidence/R1-05/shots/ (6截图)",
+   "frontend/e2e/smoke.mjs"
+  ],
+  "finding": "契约端点+登录/成员/角色/审计四页+权限渲染菜单；真实全栈 E2E 冒烟通过并截图交付 Owner",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-06",
+  "priority": "P1",
+  "dimension": "feature",
+  "check": "通知中心骨架（三表+API+铃铛+dedupe 抑制）",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-06/local-verify.md",
+   ".agent/evidence/R1-06/shots/",
+   "backend/src/erp/notify + automation/task_runner + 0006"
+  ],
+  "finding": "通知三表+notify唯一入口+dedupe+task失败联动+铃铛/通知页；新增 system_tx 系统事务上下文（worker RLS 通道）",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-07",
+  "priority": "P0",
+  "dimension": "channel",
+  "check": "渠道网关移植（walmart_client+GCRA+退避；dry_run/live_test/live 三模式）[be-channel 独占]",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-07/(archaeology.md+local-verify.md+dry-run-snapshot.json)",
+   "backend/src/erp/channel/gateway/*"
+  ],
+  "finding": "网关移植完成：三模式闸/token自愈/GCRA自适应/五头保真；A152 真调待 Owner 部署后在其机器执行（沙盒禁真调）",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-08",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "店铺/代理/配额 API+前端（凭证加密维护/代理独占换绑/配额原子扣减）",
+  "status": "done",
+  "evidence": [
+   ".agent/evidence/R1-08/local-verify.md",
+   ".agent/evidence/R1-08/shots/",
+   "backend/src/erp/channel/*"
+  ],
+  "finding": "契约 Channel 段全端点+店铺/代理两页+凭证抽屉；凭证加密/代理独占/配额原子扣减真库验证",
+  "last_checked_at": "2026-07-10"
+ },
+ {
+  "id": "R1-09",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "采集最小闭环（三表+worker 拨入协议移植 v3+product upsert）",
+  "status": "accepted",
+  "evidence": ".agent/evidence/R1-09/",
+  "finding": "协议/租约/回收/upsert 全落地；真实引擎=R2-01；2026-07-11 随 R1 整单 Owner 验收通过",
+  "last_checked_at": "2026-07-11"
+ },
+ {
+  "id": "R1-10",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "审核最小闭环（L0+L2子集+L3单策略+cache/usage；先抓源仓对照表再写码）",
+  "status": "accepted",
+  "evidence": ".agent/evidence/R1-10/",
+  "finding": "四层管道+缓存/记账落地；弹药灌入=R2-02；验收中补重审入口(3b1a8f7)；2026-07-11 Owner 验收通过",
+  "last_checked_at": "2026-07-11"
+ },
+ {
+  "id": "R1-11",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "上架最小闭环（allocate→spec→feed→轮询→回写；dry-run 骨架范围）",
+  "status": "accepted",
+  "evidence": ".agent/evidence/R1-11/",
+  "finding": "L0 骨架范围全部完成（D-Q54 修正）；A152 真调挂 R2-03 验收②；2026-07-11 Owner 验收通过",
+  "last_checked_at": "2026-07-11",
+  "note": "D-Q54 修正后 R1-11=L0 骨架范围已全部完成；A152 真调挂 R2-03"
+ },
+ {
+  "id": "R1-12",
+  "priority": "P0",
+  "dimension": "acceptance",
+  "check": "E2E 演示+失败路径三演示（审核拒/配额拒/feed错→告警）= R1 完成判据",
+  "status": "accepted",
+  "evidence": ".agent/evidence/R1-12/",
+  "finding": "沙盒演示✅；Owner 骨架验收 A(重启自愈✅/固定IP列为团队接入前待办)+B(全链✅, 重审缺口已修)+C✅——2026-07-11 Owner 回复「R1 验收通过」，R1 关账",
+  "last_checked_at": "2026-07-11"
+ },
+ {
+  "id": "R2-01",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "采集引擎移植【L1】（v3 worker 引擎 curl_cffi/AIMD/session池 → workers/，Owner 机可跑，拨入现有协议；需 TPS 代理）",
+  "status": "accepted",
+  "evidence": ".agent/evidence/R2-01/ (archaeology.md + runbook.md)",
+  "finding": "workers/ 独立 uv 包：5 爬虫核心逐字移植 + erp_client/payload 胶水 + engine/run/config 编排壳。2026-07-11 Owner 机器真抓验收通过（真抓成功/variant 偏移判失败/假 ASIN 标记不存在；未跑掐-worker 回收测试）。附带补前端产品详情抽屉(e7bc6a0, 修表格无处点开)",
+  "last_checked_at": "2026-07-11",
+  "note": "掐-worker 回收测试 Owner 未跑（可选兜底验证）；余 v3 机制(截图/seller/邮编/beat协调)挂后续"
+ },
+ {
+  "id": "R2-02",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "审核弹药灌入【L1】（黑名单四表3.6万+商标库14.18M+37政策+pt_embeddings；L1类目判定+L2全规则+AC自动机）",
+  "status": "in_progress",
+  "evidence": ".agent/evidence/R2-02/archaeology.md",
+  "finding": "已交付五片(沙盒全绿120测试)：①数据载具 import_job 通道+黑名单四域导入器(0010) ②R4 升级 Aho-Corasick 纯Python自动机+版本失效内存加载器(20k差分fuzz vs旧regex 0不符; Opus子代理) ③商标导入域 refdata.trademark 喂R5 LIVE反查(mark_norm小写契约; Opus子代理) ④L3静态37政策prompt ⑤L2 R7促销/R8敏感八子类软证据(纯文本喂L3)(0011 refdata.prohibited_policy + domain=policy导入 + policy_block版本失效拼接system prompt末尾吃prefix cache + coerce类目集扩展; 空表退回单策略)。归一化全走_norm与L0查表一致。后续片：黑名单/商标/37政策全量数据导入(Owner) + L1类目判定(pt_embeddings+混检+LLM复排) + L2 R1/R2/R3/R7/R8",
+  "last_checked_at": "2026-07-11",
+  "note": "验收(L1)：旧系统 4326 ASIN 子集 ≥100 重跑 verdict 一致率 ≥90%（待后续片+数据导入完成）"
+ },
+ {
+  "id": "R2-03",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "上架真实化【L2】（MPSetup v5 官方规格+AI属性填写+category_map+本地校验器+错误码灌入）",
+  "status": "todo",
+  "evidence": ".agent/evidence/R2-03/",
+  "finding": null,
+  "last_checked_at": null,
+  "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT) ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist"
+ },
+ {
+  "id": "R2-04",
+  "priority": "P1",
+  "dimension": "foundation",
+  "check": "worker/beat 底座【L0→L1】（schedule 表驱动：feed轮询/采集回收/缓存LRU/GTIN水位/预算闸；Redis pubsub 配置广播）",
+  "status": "todo",
+  "evidence": ".agent/evidence/R2-04/",
+  "finding": null,
+  "last_checked_at": null,
+  "note": "验收：A152 提交后无人工点查自动轮询回写；模拟断连自动回收"
+ },
+ {
+  "id": "R2-05",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
+  "status": "todo",
+  "evidence": ".agent/evidence/R2-05/",
+  "finding": null,
+  "last_checked_at": null,
+  "note": "验收(L1)：真实订单只读拉取对账一致；(L2)测试单全流程"
+ },
+ {
+  "id": "RS-01",
+  "priority": "P0",
+  "dimension": "security",
+  "check": "租户隔离加固（独立 DB 角色替代可自设 is_super GUC、(team_id,id) 复合 FK、FORCE RLS、跨团队组合必败测试）[评审 A2]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "闸门=多团队正式使用前",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-02",
+  "priority": "P0",
+  "dimension": "security",
+  "check": "部署与灾备加固（默认密钥硬失败、DB/Redis 端口收敛、HTTPS 反代+生产构建、备份加密+校验+月度恢复演练、迁云演练）[评审 A3+C5]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "闸门=团队经营/门户对外 R2#6 前",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-03",
+  "priority": "P0",
+  "dimension": "architecture",
+  "check": "transactional outbox + 幂等命令表（短事务 command→SKIP LOCKED 领取→事务外调渠道/LLM→回写/verify-back；Idempotency-Key 消费；audit LLM 出行锁）[评审 A7+C2]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "闸门=真实渠道写入（A152 L2 测试店写）前，硬性",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-04",
+  "priority": "P0",
+  "dimension": "data",
+  "check": "摄取通道升级（流式 COPY staging+set-based merge+分批提交+manifest/checksum+refdata_revision 事务内递增缓存版本+source registry+断言账本能力按域启用；14M 商标演练）[评审 B4+B5+B7]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "立即——Owner 数据将至，现通道搬不动 14M",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-05",
+  "priority": "P1",
+  "dimension": "data",
+  "check": "反馈裁决门（observation→candidate→adjudication→effective_rule 四层+shadow/canary+回滚；升级原 DG4）[评审 B3]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "外部评审 round-1 采纳，待排入迭代",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-06",
+  "priority": "P1",
+  "dimension": "product",
+  "check": "人工复核工作流（review_case/decision 模型+统一待办箱只读投影+审核 needs_review 承接 UI）[评审 C1+A1]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "0012 已有 needs_review 状态可见可重审，本单补完整流",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-07",
+  "priority": "P1",
+  "dimension": "architecture",
+  "check": "worker 信任边界（kind/source 过滤派发、capacity-inflight 限量、按 job_kind 租约时长+续租）[评审 A5 便宜三件；mTLS/公平队列挂多节点闸门]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "外部评审 round-1 采纳，待排入迭代",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-08",
+  "priority": "P1",
+  "dimension": "cost",
+  "check": "LLM 预算闸门（调用前原子预留+结算/释放；usage_log 增 cached_input_tokens/pricing_version 实测 prefix-cache 假设）[评审 A6]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "外部评审 round-1 采纳，待排入迭代",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-09",
+  "priority": "P1",
+  "dimension": "audit",
+  "check": "审核决策 manifest（代码 commit/输入 hash/数据集版本/prompt hash/model）+ parse_error 坏响应不落 llm_cache/主动失效 [评审 A4 余项]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "外部评审 round-1 采纳，待排入迭代",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-10",
+  "priority": "P2",
+  "dimension": "performance",
+  "check": "热表 keyset 分页+total 估算+容量模型（product/listing/audit/order/feed_item）[评审 C3]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "闸门=真实数据大规模迁入前",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-11",
+  "priority": "P1",
+  "dimension": "docs",
+  "check": "决策-规格漂移清理（superseded_by 标注、D-Q→文档→工单追踪列、契约四向一致性检查、001 财务域 immutable ledger 图纸修订）[评审 C6+C2+C4]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-1.md"
+  ],
+  "finding": "Fable 本周，specs 单一编辑权",
+  "last_checked_at": "2026-07-12"
+ }
 ]
