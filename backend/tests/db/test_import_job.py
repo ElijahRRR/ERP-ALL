@@ -104,12 +104,12 @@ def test_all_four_domains() -> None:
 
 
 def test_unsupported_domain_rejected() -> None:
-    # trademark 域本单已实现 → 改用仍未实现的 category_map 验证「未支持域被拒」
+    # trademark/category_map 域已实现 → 改用仍未实现的 gtin 验证「未支持域被拒」
     async def _try() -> None:
         sessions = _sessions()
         async with system_tx(sessions) as s:
             await import_service.create_job(
-                s, domain="category_map", source_name=f"{PREFIX}.csv", total_rows=0
+                s, domain="gtin", source_name=f"{PREFIX}.csv", total_rows=0
             )
 
     with pytest.raises(BusinessError) as ei:

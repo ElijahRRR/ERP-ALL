@@ -180,3 +180,11 @@
 - 验收实证：**FOR UPDATE NOWAIT 旁路探针在 provider 处理请求当口立即拿到行锁**(test_row_lock_released_during_provider_call)；遗孤清扫用例；全部 fail-closed 用例走新路径不变绿。134 pytest+ruff/mypy 全绿。
 - R2-02 百件真实对拍的闸门(评审 R2-06)已解除。余 RS-03b channel outbox 挂 A152 前。
 - Next: DG1 category_map 导入域(L1 前置，不卡 Owner) 或候审 Owner 数据到位后跑百件对拍。
+
+### Session: 2026-07-12 (DG1 category_map 导入域落地)
+- CI 066adb9 绿（RS-03a 收口，静默记）。
+- **DG1 完成**：0015 迁移（refdata.category_map 列级保真移植源仓 walmart_category_map + PK(amazon_category,walmart_product_type) + 0014 revision 触发器）；import_service 增 CATEGORY_MAP_DOMAIN（别名列宽容/布尔宽容 _parse_flag/'无对应Walmart PT' unmapped 条目照导/amazon_category 保原文精确匹配语义）；tools/import_category_map.py CLI；4 db 测试。
+- test_unsupported_domain_rejected 反例 category_map→gtin（域已支持）。138 pytest+ruff/mypy 全绿。
+- **四类审核弹药通道全通**（黑名单/商标 bulk/政策/类目映射），全部只待 Owner 数据。
+- 源仓考古备忘：L1 还需 walmart_pt_meta（PT 可用性元数据，源=walmart_specs/all_product_types.json+飞书），随 L1 实现单建表——candidates 必须 INNER JOIN pt_meta 过滤废弃 PT（源仓 2026-05-09 修复教训）。
+- Next: L1 类目判定主路径（direct 短路+category_map 召回+LLM 复排+coerce，fake LLM 测试沙盒可全建）。

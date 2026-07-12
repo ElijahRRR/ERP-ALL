@@ -63,11 +63,12 @@ _DOMAINS: dict[str, _Domain] = {
     ),
 }
 
-# 商标域 / 政策域走各自独立代码路径（refdata.*：无 team_id、多列、各自幂等键），
+# 商标域 / 政策域 / 类目映射域走各自独立代码路径（refdata.*：无 team_id、多列、各自幂等键），
 # 不套黑名单 _apply_row。仍复用同一 job 通道与逐块核对（_process_chunks）。
 TRADEMARK_DOMAIN = "trademark"
 POLICY_DOMAIN = "policy"
-SUPPORTED_DOMAINS = (*_DOMAINS, TRADEMARK_DOMAIN, POLICY_DOMAIN)
+CATEGORY_MAP_DOMAIN = "category_map"
+SUPPORTED_DOMAINS = (*_DOMAINS, TRADEMARK_DOMAIN, POLICY_DOMAIN, CATEGORY_MAP_DOMAIN)
 
 # 商标行列名兼容（源仓 USPTO ETL 惯用名：serial_number/mark_identification/filing_date…）
 _TM_SERIAL_KEYS = ("serial_no", "serial_number")
@@ -203,6 +204,8 @@ async def import_rows(
             await _apply_trademark_row(s, row, line, c)
         elif domain == POLICY_DOMAIN:
             await _apply_policy_row(s, row, line, c)
+        elif domain == CATEGORY_MAP_DOMAIN:
+            await _apply_category_map_row(s, row, line, c)
         else:  # create_job 已闸，理论不达
             raise BusinessError("IMPORT_DOMAIN_UNSUPPORTED", f"域 {domain} 无处理器")
 
@@ -432,6 +435,75 @@ async def _apply_policy_row(
             "pre": _first(row, _POL_PRE_KEYS),
             "risk": _first(row, _POL_RISK_KEYS),
             "notes": _first(row, _POL_NOTES_KEYS),
+        },
+    )
+    c.ok += 1
+
+
+# 类目映射行列名兼容（源仓 walmart_category_map 列 + 常见导出别名）
+_CM_AMAZON_KEYS = ("amazon_category", "amazon_path", "amazon_category_path", "category_path")
+_CM_PT_KEYS = ("walmart_product_type", "walmart_pt", "product_type", "wpt")
+_CM_CONF_KEYS = ("confidence",)
+_CM_CERT_KEYS = ("requires_certificate", "requires_cert")
+_CM_FORBIDDEN_KEYS = ("zh_seller_forbidden", "seller_forbidden")
+_CM_REQ_KEYS = ("requirements",)
+_CM_NOTES_KEYS = ("notes", "note")
+
+_FLAG_TRUE = {"true", "t", "1", "yes", "y", "是"}
+
+
+def _parse_flag(row: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    """布尔列宽容解析（TRUE/1/是…→True；其余含缺失→False，与源表 DEFAULT FALSE 一致）。"""
+    for k in keys:
+        v = row.get(k)
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in _FLAG_TRUE
+    return False
+
+
+async def _apply_category_map_row(
+    session: AsyncSession, row: dict[str, Any], line: int, c: _Counters
+) -> None:
+    """幂等 upsert 一行到 refdata.category_map（键 (amazon_category, walmart_product_type)）。
+
+    err 仅一种：amazon_category 或 walmart_product_type 缺失（无 skip——ON CONFLICT
+    恒更新，重导即 ok）。amazon_category 保持原文（去首尾空格）——L1 与源仓一致做
+    精确/前缀/叶子匹配，不做大小写归一。walmart_product_type='无对应Walmart PT'
+    为合法业务条目（unmapped 标记），照导。
+    """
+    amazon = _first(row, _CM_AMAZON_KEYS)
+    pt = _first(row, _CM_PT_KEYS)
+    if not amazon or not pt:
+        c.err += 1
+        c.errors.append(
+            {"line": line, "reason": "amazon_category 或 walmart_product_type 缺失", "row": row}
+        )
+        return
+    await session.execute(
+        text(
+            "INSERT INTO refdata.category_map"
+            " (amazon_category, walmart_product_type, confidence, requires_certificate,"
+            "  zh_seller_forbidden, requirements, notes, updated_at)"
+            " VALUES (:az, :pt, :conf, :cert, :forb, :req, :notes, now())"
+            " ON CONFLICT (amazon_category, walmart_product_type) DO UPDATE SET"
+            "  confidence = EXCLUDED.confidence,"
+            "  requires_certificate = EXCLUDED.requires_certificate,"
+            "  zh_seller_forbidden = EXCLUDED.zh_seller_forbidden,"
+            "  requirements = EXCLUDED.requirements,"
+            "  notes = EXCLUDED.notes,"
+            "  updated_at = now()"
+        ),
+        {
+            "az": amazon.strip(),
+            "pt": pt.strip(),
+            "conf": _first(row, _CM_CONF_KEYS),
+            "cert": _parse_flag(row, _CM_CERT_KEYS),
+            "forb": _parse_flag(row, _CM_FORBIDDEN_KEYS),
+            "req": _first(row, _CM_REQ_KEYS),
+            "notes": _first(row, _CM_NOTES_KEYS),
         },
     )
     c.ok += 1
