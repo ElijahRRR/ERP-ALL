@@ -219,3 +219,9 @@
 | # | 决策 | 备注 |
 |---|---|---|
 | D-Q56 | **外部评审 Round-1 采纳裁定**：部署机本地 AI 完成全项目架构评审（21 条：A 架构 7 / B 数据治理 8 / C 盲区 6），Fable 逐条核实与裁定=**17 采纳 / 4 部分采纳 / 0 驳回**，全文见 `specs/external-review-round-1.md`。核心落点：①L3 fail-open（非法 LLM 输出默认 pass）**当日修复**为 fail-closed needs_review（migration 0012 + coerce + 前端）；②新注册 RS-01~RS-11 工单，P0 三件绑定硬闸门——RS-04 摄取升级（COPY staging+manifest+revision 缓存版本，立即，14M 商标将至）/ RS-03 transactional outbox+幂等命令（真实渠道写入 A152-L2 前）/ RS-01+02 租户与部署加固（多团队上线·门户对外前）；③006 修订方向：B1 复合游标+tombstone+日对账、B2 飞书 staging/CAS 不 TRUNCATE、B3 反馈四层裁决门、B8 切主状态机；④财务域按 immutable event ledger 设计（R4/R5 建域前改图纸） | 部分采纳的 4 条：A2-FORCE RLS（owner 语义澄清后仍做）、A5（重装备挂多节点闸门）、B5（断言账本分级按域启用，revision 缓存版本全盘采纳）、B8（多数域旧系统=脚本+飞书，写栅栏成本低）。评审回传通道与单一编辑权纪律（specs 只由 Fable 落笔）按 REVIEW-BRIEF 运行正常 |
+
+## 第九轮决策（D-Q57，2026-07-12）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q57 | **外部评审 Round-2 收敛**：25 条全部采纳、无驳回，round-1 的 4 条分歧全部收敛（A2 FORCE RLS 接受"回填静默零行"风险修正；A5 接受对方坚持——毒任务隔离/quarantine 不挂多节点闸门，现阶段即做；B5/B8 对方接受我方口径+补硬验收）。评审指出 A4 修复的 3 个实质缺口全部属实并**当日修复**：①transport/config 异常 fail-open（chat 异常整体回滚无痕）→ 兜底落 llm_unavailable+needs_review；policy 缺失静默 pass → l3_policy_missing+needs_review；②坏响应先入缓存无法自愈 → cacheable 校验谓词+存量坏行驱逐+0013 DELETE 授权；③非法响应嵌套 is_real_brand 仍翻案硬拒 → 收回，翻案仅限结构合法 pass 响应。附带修正：needs_review 不占 reject_level（语义=首个否决层）、前端三态展示。闸门排期修正：RS-03 拆双闸门（audit 异步前置到 R2-02 百件对拍前）、RS-04 拆 A/B/C/D 四子单（B1/B2/B8 补注册）、RS-01/02 闸门改机器可判定事件。全文 `specs/external-review-round-2.md` | 实际顺序定稿：A4 尾项(✅) → RS-04 摄取升级 → RS-03a audit 异步 → R2-02 百件对拍 → RS-03b channel outbox → A152 → RS-01/02（多人/LAN 前）。A4 状态=待评审 round-3 复核关闭 |

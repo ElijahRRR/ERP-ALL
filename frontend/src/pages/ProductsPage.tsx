@@ -163,7 +163,9 @@ export default function ProductsPage() {
       const r = await api.post<{ verdict: string; run_id: number }>(`/products/${p.id}/audit`, {
         trigger_kind: p.status === 'ingested' ? 'manual' : 're_audit',
       })
-      message.success(`审核完成：${r.verdict === 'pass' ? '✅ 通过' : '❌ 拒绝'}`)
+      const verdictText =
+        r.verdict === 'pass' ? '✅ 通过' : r.verdict === 'reject' ? '❌ 拒绝' : '🟠 待人工复核'
+      message.success(`审核完成：${verdictText}`)
       void load()
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '审核失败')
@@ -296,8 +298,16 @@ export default function ProductsPage() {
           <>
             <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="判定">
-                <Tag color={auditDetail.verdict === 'pass' ? 'green' : 'red'}>
-                  {auditDetail.verdict}
+                <Tag
+                  color={
+                    auditDetail.verdict === 'pass'
+                      ? 'green'
+                      : auditDetail.verdict === 'reject'
+                        ? 'red'
+                        : 'orange'
+                  }
+                >
+                  {auditDetail.verdict === 'needs_review' ? '待人工复核' : auditDetail.verdict}
                 </Tag>
               </Descriptions.Item>
               <Descriptions.Item label="否决层">

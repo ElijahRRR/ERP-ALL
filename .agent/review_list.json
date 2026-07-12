@@ -261,7 +261,9 @@
    "specs/external-review-round-1.md"
   ],
   "finding": "闸门=多团队正式使用前",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "gate": "机器可判定闸门（任一发生前必须完成）：创建第二团队/启用第二内部用户/API绑定非loopback/门户路由启用",
+  "acceptance": "四角色(erp_app/erp_system/erp_migrator/超管)读写矩阵；含数据回填的migration实跑(FORCE后migrator路径不静默零行)；全部分区(父+子)RLS/FORCE核查；SECURITY DEFINER认证通道；门户受限角色；后台任务越权测试；跨团队store/product/listing组合必败"
  },
  {
   "id": "RS-02",
@@ -273,30 +275,76 @@
    "specs/external-review-round-1.md"
   ],
   "finding": "闸门=团队经营/门户对外 R2#6 前",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "gate": "机器可判定闸门（任一发生前必须完成）：创建第二团队/启用第二内部用户/API绑定非loopback/门户路由启用；R2#6 门户对外前",
+  "acceptance": "默认JWT/DB密钥prod硬失败；DB/Redis不发布或仅127.0.0.1；HTTPS反代+前端生产构建；refresh token→HttpOnly Secure cookie+CSP/CSRF；备份=PG+非DB文件(payload_ref/邮件/导入报告)+密钥角色配置，加密+校验+月度恢复演练(目标RTO内起服务)；本地→云→回切演练"
  },
  {
   "id": "RS-03",
   "priority": "P0",
   "dimension": "architecture",
-  "check": "transactional outbox + 幂等命令表（短事务 command→SKIP LOCKED 领取→事务外调渠道/LLM→回写/verify-back；Idempotency-Key 消费；audit LLM 出行锁）[评审 A7+C2]",
+  "check": "transactional outbox + 幂等命令表【拆双闸门】RS-03a: audit LLM调用移出行锁/请求事务(短事务落run→事务外调LLM→新事务回写)；RS-03b: channel写路径outbox/inbox+Idempotency-Key消费 [评审 A7+C2+R2-06]",
   "status": "todo",
   "evidence": [
    "specs/external-review-round-1.md"
   ],
   "finding": "闸门=真实渠道写入（A152 L2 测试店写）前，硬性",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "gate": "RS-03a=R2-02 百件真实LLM对拍之前（audit暴露已存在）；RS-03b=A152 L2真实渠道写入之前",
+  "depends_on": [],
+  "acceptance": "同key同payload同结果/异payload 409；外部成功后DB回写前崩溃→verify-back不重复提交(故障注入)；lease/fencing token拒迟到worker；同store/SKU命令有序；HTTP调用期间行锁已释放(实证)；outbox payload凭证/PII脱敏"
  },
  {
-  "id": "RS-04",
+  "id": "RS-04A",
   "priority": "P0",
   "dimension": "data",
-  "check": "摄取通道升级（流式 COPY staging+set-based merge+分批提交+manifest/checksum+refdata_revision 事务内递增缓存版本+source registry+断言账本能力按域启用；14M 商标演练）[评审 B4+B5+B7]",
+  "check": "摄取升级·搬运通道：流式读取→COPY staging→set-based merge→分批提交+manifest/checksum+断点续跑+refdata_revision(事务内递增缓存版本)+source registry [评审 B4+B5②+B7]",
   "status": "todo",
   "evidence": [
    "specs/external-review-round-1.md"
   ],
   "finding": "立即——Owner 数据将至，现通道搬不动 14M",
+  "last_checked_at": "2026-07-12",
+  "gate": "14M商标导入前；前置=磁盘/WAL/索引/备份峰值容量预算(采纳R2-17,从RS-10移入)",
+  "acceptance": "100万行演练：吞吐/内存/WAL/索引膨胀量化记录；中断续跑；重复导入不增行；manifest+checksum落盘；最终14M实测"
+ },
+ {
+  "id": "RS-04B",
+  "priority": "P0",
+  "dimension": "data",
+  "check": "摄取升级·活数据同步：复合游标(updated_at,pk)+重叠窗口+tombstone删除+每日key/count/hash对账+cutover状态机(backfill→shadow_read→reconciled→write_fenced→master) [评审 B1+B8，round-1漏注册]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-2.md"
+  ],
+  "acceptance": "同时戳跨批不漏；删除经tombstone同步；轻量域cutover证据=调度禁用记录+最后cursor+源快照hash+最终对账；晚到编辑进quarantine不覆盖canonical；Mac PG域含snapshot boundary+回滚窗口",
+  "finding": "承接006 §9修订",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-04C",
+  "priority": "P1",
+  "dimension": "data",
+  "check": "摄取升级·飞书↔DB：行UUID+revision+last_source_hash、字段owner+CAS、staging→事务性merge(永不TRUNCATE)、冲突quarantine、writeback ledger [评审 B2，round-1漏注册]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-2.md"
+  ],
+  "acceptance": "列错位/删列/重复行/并发覆盖四类故障注入均不污染canonical；回写有ledger可追溯",
+  "finding": "承接006 §4修订",
+  "last_checked_at": "2026-07-12"
+ },
+ {
+  "id": "RS-04D",
+  "priority": "P1",
+  "dimension": "data",
+  "check": "摄取升级·断言账本（按域启用）：source assertion ledger+canonical=有效断言投影+优先级按域/字段配置+人工裁决可压自动源 [评审 B5①]",
+  "status": "todo",
+  "evidence": [
+   "specs/external-review-round-2.md"
+  ],
+  "acceptance": "在blacklist_brand真实跑通：同品牌manual+TRO+trademark三源断言；撤销一源不误删仍有效证据的品牌；人工裁决覆盖+完整回滚；canonical可由assertion全量重建且一致（评审R2-03硬验收：不得只交付空框架）",
+  "finding": "承接B5分级共识",
   "last_checked_at": "2026-07-12"
  },
  {
@@ -309,7 +357,8 @@
    "specs/external-review-round-1.md"
   ],
   "finding": "外部评审 round-1 采纳，待排入迭代",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "acceptance": "observation绝不直接effective；双审不得同一账号；shadow/canary有样本量与误杀率阈值；规则过期/撤销后缓存即时失效；一键回滚"
  },
  {
   "id": "RS-06",
@@ -321,19 +370,21 @@
    "specs/external-review-round-1.md"
   ],
   "finding": "0012 已有 needs_review 状态可见可重审，本单补完整流",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "acceptance": "两人并发claim仅一人成功；裁决必带理由+version；撤销生成新decision不覆盖旧记录；统一待办箱只读不反向改域状态；SLA字段"
  },
  {
   "id": "RS-07",
   "priority": "P1",
   "dimension": "architecture",
-  "check": "worker 信任边界（kind/source 过滤派发、capacity-inflight 限量、按 job_kind 租约时长+续租）[评审 A5 便宜三件；mTLS/公平队列挂多节点闸门]",
+  "check": "worker信任边界（round-2扩充：毒任务隔离不挂多节点闸门）：服务端payload schema/尺寸/字段质量校验；permanent/transient/poison三类终态，poison进quarantine不upsert product；token撤销/轮换；dead/poison人工查看+显式重放；kind/source过滤；capacity-inflight限量(inflight由服务端租约事实计算)；按job_kind租约+续租 [评审 A5，R2-02+R2-14收敛]",
   "status": "todo",
   "evidence": [
    "specs/external-review-round-1.md"
   ],
   "finding": "外部评审 round-1 采纳，待排入迭代",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "acceptance": "count=100/capacity=2只领2；kind不匹配领不到；续租与回收并发fencing正确；poison payload不进product表；mTLS/公平队列维持多节点/跨公网闸门"
  },
  {
   "id": "RS-08",
@@ -345,31 +396,33 @@
    "specs/external-review-round-1.md"
   ],
   "finding": "外部评审 round-1 采纳，待排入迭代",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "acceptance": "并发请求总预留不超日预算；provider已收费但本地超时→成本待核对队列；记provider/request_id/retry/latency/error/cached_input_tokens/pricing_version；团队key加密且跨团队不可读"
  },
  {
   "id": "RS-09",
   "priority": "P1",
   "dimension": "audit",
-  "check": "审核决策 manifest（代码 commit/输入 hash/数据集版本/prompt hash/model）+ parse_error 坏响应不落 llm_cache/主动失效 [评审 A4 余项]",
+  "check": "审核决策manifest：代码commit/输入hash/raw_response_hash/coerce_version/各数据集revision/prompt hash/model/provider request id [评审 A4余项+R2-16]（原含坏响应缓存处理已于2026-07-12提前修复：cacheable谓词+存量驱逐+0013授权）",
   "status": "todo",
   "evidence": [
    "specs/external-review-round-1.md"
   ],
-  "finding": "外部评审 round-1 采纳，待排入迭代",
+  "finding": "坏缓存部分已完成（评审R2-21当日修）；manifest部分待排",
   "last_checked_at": "2026-07-12"
  },
  {
   "id": "RS-10",
   "priority": "P2",
   "dimension": "performance",
-  "check": "热表 keyset 分页+total 估算+容量模型（product/listing/audit/order/feed_item）[评审 C3]",
+  "check": "热表keyset分页+total估算（product/listing/audit/order/feed_item）[评审 C3]（容量预算部分已移入RS-04A前置，采纳R2-17）",
   "status": "todo",
   "evidence": [
    "specs/external-review-round-1.md"
   ],
   "finding": "闸门=真实数据大规模迁入前",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "gate": "真实数据大规模迁入前"
  },
  {
   "id": "RS-11",
@@ -381,6 +434,7 @@
    "specs/external-review-round-1.md"
   ],
   "finding": "Fable 本周，specs 单一编辑权",
-  "last_checked_at": "2026-07-12"
+  "last_checked_at": "2026-07-12",
+  "acceptance": "CI自动四向校验：OpenAPI operation↔实际路由↔x-permission↔permission seed；superseded_by标注；NOT VALID→VALIDATE大表CHECK纪律入00-conventions；前端调用覆盖先做静态清单"
  }
 ]

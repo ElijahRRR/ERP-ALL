@@ -6,8 +6,10 @@
   占位符品牌白名单（n/a/unbranded/generic…）不当品牌拦——源仓实战教训。
 - L2 双职责：硬拒 + 软证据收集（R1-10 仅软证据 R4/R5——penalty=0，detail 传给 L3）；
   不靠累积扣分自行 reject。
-- L3 严格 JSON 输出 + _coerce 规范化：非法 verdict → pass（保守）；
-  pass 强制 category=none；⭐ 任一 is_real_brand=true 强制翻案 reject。
+- L3 严格 JSON 输出 + _coerce 规范化：解析失败/非法 verdict → needs_review
+  （fail-closed，评审 round-1 A4 修正，源仓原为保守 pass）；pass 强制 category=none；
+  ⭐ verdict 合法为 pass 时任一 is_real_brand=true 强制翻案 reject（结构异常的响应
+  不翻案——嵌套字段不可信，评审 round-2 R2-22）。
 - system prompt 保持静态（吃 provider prompt cache——源仓 2026-04-28 成本设计），
   产品内容只进 user prompt。
 """
@@ -310,6 +312,21 @@ def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) ->
     return "\n".join(lines)
 
 
+def l3_response_cacheable(raw_text: str) -> bool:
+    """L3 响应可否入 llm_cache：JSON dict + 合法 verdict 才可复用（评审 round-2 R2-21）。
+
+    坏响应一旦缓存，同输入重审永远复放 needs_review、无法自愈——结构异常的响应
+    只用于本次判定（coerce 成 needs_review），不落缓存。
+    """
+    try:
+        raw = json.loads(raw_text)
+    except (ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    return str(raw.get("verdict") or "").strip().lower() in ("pass", "reject")
+
+
 def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) -> dict[str, Any]:
     """源仓 _coerce_result 移植：保守规范化 + is_real_brand 强制翻案。
 
@@ -350,9 +367,11 @@ def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) ->
     if not isinstance(brand_verdict, list):
         brand_verdict = []
 
-    # ⭐ 强制翻案：任一 is_real_brand=true → reject（即使 LLM 自己说 pass / 输出待复核）
+    # ⭐ 强制翻案：verdict 合法为 pass 且任一 is_real_brand=true → reject。
+    # 仅限结构合法的响应——顶层 verdict 非法时嵌套字段同样不可信，保持 needs_review
+    # 交人工（避免坏输出误升硬拒进而污染反馈闭环，评审 round-2 R2-22）。
     real_hits = [v for v in brand_verdict if isinstance(v, dict) and v.get("is_real_brand") is True]
-    if verdict in ("pass", "needs_review") and real_hits:
+    if verdict == "pass" and real_hits:
         verdict = "reject"
         category = "intellectual property"
         if not reason_text:

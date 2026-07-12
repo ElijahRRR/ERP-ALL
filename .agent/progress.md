@@ -156,3 +156,11 @@
 - 自查次生问题：坏响应已进llm_cache会让同输入重审复现needs_review→RS-09一并处理(parse_error不落缓存)。
 - 注册 RS-01~11 工单：P0三件绑闸门——RS-04摄取升级(立即,14M将至)/RS-03 outbox+幂等(真实写入前)/RS-01+02安全加固(多团队/门户前)。
 - Next: RS-04 摄取升级动工(COPY staging+manifest+refdata_revision)；006 正文按 B1/B2/B8 修订；RS-11 漂移清理。
+
+### Session: 2026-07-12 (外部评审 Round-2 收敛 + A4 尾项闭环)
+- 本地 AI round-2 反馈 25 条：4 条分歧全收敛(A2/B5/B8 对方接受我方口径+补硬验收；A5 我接受对方坚持——poison/quarantine 不等多节点)；其抓出 A4 修复 3 个实质缺口，核实全属实。
+- **当日修 A4 尾项**：①R2-20 chat() 异常兜底(llm_unavailable+needs_review 落痕,不再整体回滚)+policy 缺失→l3_policy_missing(不再静默 pass)；②R2-21 cacheable 谓词(坏响应不入缓存)+命中存量坏行 DELETE 驱逐自愈+0013 迁移补 DELETE 授权；③R2-22 收回"needs_review 也翻案"——仅结构合法 pass 响应可被 is_real_brand 翻案；④R2-23 needs_review 不占 reject_level；⑤R2-24 前端三态(通过/拒绝/待人工复核)。
+- 测试：+5 用例(500 落痕/policy 禁用/坏响应不缓存重审自愈 calls=2/存量坏行驱逐/非法 verdict 不翻案)，126 pytest+ruff/mypy/tsc 全绿。测试工程教训：缓存键不含 ASIN,NR 用例需独立 title 防跨用例缓存短路。
+- 工单修订：RS-03 拆双闸门(audit 异步前置 R2-02 对拍前)；RS-04 拆 A/B/C/D(B1/B2/B8 补注册)；RS-07 范围扩充(poison 现阶段做)；RS-01/02 闸门改机器可判定事件；各单补 acceptance 字段。
+- specs/external-review-round-2.md + D-Q57。A4=待 round-3 复核关闭。
+- Next: RS-04A 摄取升级动工(容量预算前置+COPY staging)；006 正文按 B1/B2/B8 修订(随 RS-11)。

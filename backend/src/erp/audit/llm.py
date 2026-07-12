@@ -11,6 +11,7 @@
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -136,10 +137,23 @@ class LlmClient:
         team_id: int | None = None,
         object_type: str | None = None,
         object_id: int | None = None,
+        cacheable: Callable[[str], bool] | None = None,
     ) -> tuple[str, float, bool]:
-        """→ (response_text, cost_usd, cache_hit)。命中缓存 cost=0 也记 usage 行。"""
+        """→ (response_text, cost_usd, cache_hit)。命中缓存 cost=0 也记 usage 行。
+
+        cacheable：业务侧响应校验（评审 round-2 R2-21）。不通过的响应**不落缓存**——
+        否则坏响应（解析失败/非法 verdict）会被同输入重审永久复放，无法自愈；
+        命中的存量坏行同理驱逐后走真调用。
+        """
         key = cache_key(model, messages, temperature, max_tokens)
         cached = await _cache_get(session, key)
+        if cached is not None and cacheable is not None and not cacheable(cached[0]):
+            # 修复前入库的坏响应：驱逐 + 走真调用（自愈）
+            await session.execute(
+                text("DELETE FROM app.llm_cache WHERE cache_key = :k"), {"k": key}
+            )
+            log.warning("llm.cache_evict_invalid", key=key, model=model)
+            cached = None
         if cached is not None:
             await log_usage(
                 session,
@@ -186,9 +200,12 @@ class LlmClient:
         pt = int(usage.get("prompt_tokens") or 0)
         ct = int(usage.get("completion_tokens") or 0)
         cost = await _price(session, model, pt, ct)
-        await _cache_put(
-            session, key, model, content, {"prompt_tokens": pt, "completion_tokens": ct}
-        )
+        if cacheable is None or cacheable(content):
+            await _cache_put(
+                session, key, model, content, {"prompt_tokens": pt, "completion_tokens": ct}
+            )
+        else:
+            log.warning("llm.response_not_cacheable", model=model, head=content[:120])
         await log_usage(
             session,
             team_id=team_id,

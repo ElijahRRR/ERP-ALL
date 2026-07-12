@@ -34,6 +34,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 还原前先安置存量：needs_review 保守归入 audit_rejected（宁误杀不漏放）
+    # ⚠️ 不可逆：needs_review 保守归入 audit_rejected（宁误杀不漏放），升回后无法区分
+    # 哪些行原本是 needs_review——执行前确认可接受该语义损失（评审 round-2 R2-19）
     op.execute("UPDATE app.product SET status = 'audit_rejected' WHERE status = 'needs_review'")
     op.execute(_status_check(_STATUSES_0007))

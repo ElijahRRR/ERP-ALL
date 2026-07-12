@@ -22,14 +22,17 @@ TEAM = "审核测试团队"
 
 
 class _FakeLlm:
-    """OpenAI 兼容替身：按脚本吐 JSON；记录调用数。"""
+    """OpenAI 兼容替身：按脚本吐 JSON；记录调用数；http_status 可模拟 provider 故障。"""
 
     def __init__(self) -> None:
         self.calls = 0
         self.script: list[dict] = []
+        self.http_status: int | None = None  # 设为 500 等模拟 provider HTTP 错误
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
+        if self.http_status is not None:
+            return httpx.Response(self.http_status, text="provider boom")
         body = self.script.pop(0) if self.script else _pass_verdict()
         return httpx.Response(
             200,
@@ -278,8 +281,11 @@ class TestCoerce:
         assert out["verdict"] == "needs_review"
         assert out.get("parse_error") is True
 
-    def test_real_brand_overrides_needs_review(self) -> None:
-        """输出待复核但 is_real_brand=true → 仍强制 reject（确定性证据压过异常输出）。"""
+    def test_real_brand_does_not_override_illegal_verdict(self) -> None:
+        """顶层 verdict 非法→整份响应不可信：嵌套 is_real_brand 不升级硬拒（round-2 R2-22）。
+
+        坏输出误升 reject 会以假信号污染反馈闭环（B3），保持 needs_review 交人工。
+        """
         out = coerce_l3_result(
             json.dumps(
                 {
@@ -288,8 +294,9 @@ class TestCoerce:
                 }
             )
         )
-        assert out["verdict"] == "reject"
-        assert out["reason_category"] == "intellectual property"
+        assert out["verdict"] == "needs_review"
+        # 嵌套字段保留供人工参考，但不驱动判定
+        assert out["blacklist_brand_verdict"][0]["is_real_brand"] is True
 
     def test_real_brand_forces_reject(self) -> None:
         """⭐ 源仓强制翻案：LLM 说 pass 但 is_real_brand=true → reject。"""
@@ -319,15 +326,132 @@ class TestFailClosed:
     ) -> None:
         """L3 verdict 非法 → run/product 双双 needs_review（评审 round-1 A4 验收）。"""
         fake_llm.script = [{"verdict": "maybe", "reason_category": "什么鬼"}]
-        pid = _mk_product(migrated_db, seeded["team"], asin="B0AUDNR001")
+        pid = _mk_product(
+            migrated_db, seeded["team"], asin="B0AUDNR001", title="Plain Mug B0AUDNR001"
+        )
         auth = _login(client, ADMIN, PASSWORD)
         body = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={}).json()
         assert body["verdict"] == "needs_review"
         assert body["product_status"] == "needs_review"
+        assert body["reject_level"] is None  # review 不是否决，不占用否决层语义（R2-23）
         run = client.get(f"/api/v1/audit-runs/{body['run_id']}", headers=auth).json()
         l3 = next(h for h in run["hits"] if h["level"] == "l3")
         assert l3["rule_code"] == "llm_needs_review"
         assert l3["is_hard"] is False
+
+    def test_bad_response_not_cached_reaudit_self_heals(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm
+    ) -> None:
+        """坏响应不落缓存（round-2 R2-21）：重审走真调用而非复放坏结果，可自愈。"""
+        fake_llm.script = [{"verdict": "maybe"}]
+        pid = _mk_product(
+            migrated_db, seeded["team"], asin="B0AUDNR002", title="Plain Mug B0AUDNR002"
+        )
+        auth = _login(client, ADMIN, PASSWORD)
+        body1 = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={}).json()
+        assert body1["verdict"] == "needs_review"
+        assert fake_llm.calls == 1
+        with psycopg.connect(migrated_db) as conn:
+            bad_cached = conn.execute(
+                "SELECT count(*) FROM app.llm_cache WHERE response_text LIKE '%maybe%'"
+            ).fetchone()[0]
+        assert bad_cached == 0  # 坏响应未入缓存
+        # 同输入重审：LLM 恢复正常 → 真调用（calls=2 证明没吃缓存）→ pass
+        fake_llm.script = [_pass_verdict()]
+        body2 = client.post(
+            f"/api/v1/products/{pid}/audit", headers=auth, json={"trigger_kind": "re_audit"}
+        ).json()
+        assert body2["verdict"] == "pass"
+        assert fake_llm.calls == 2
+
+    def test_provider_http_error_persists_needs_review(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm
+    ) -> None:
+        """provider HTTP 500 → 不再整体回滚无痕：audit_run 落痕 + needs_review（R2-20）。"""
+        fake_llm.http_status = 500
+        pid = _mk_product(
+            migrated_db, seeded["team"], asin="B0AUDNR004", title="Plain Mug B0AUDNR004"
+        )
+        auth = _login(client, ADMIN, PASSWORD)
+        r = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={})
+        assert r.status_code == 201, r.text  # 异常被兜住，不是 4xx/5xx
+        body = r.json()
+        assert body["verdict"] == "needs_review"
+        assert body["product_status"] == "needs_review"
+        assert body["reject_level"] is None
+        run = client.get(f"/api/v1/audit-runs/{body['run_id']}", headers=auth).json()
+        l3 = next(h for h in run["hits"] if h["level"] == "l3")
+        assert l3["rule_code"] == "llm_unavailable"
+        assert l3["evidence"]["error"] == "LLM_CALL_FAILED"
+
+    def test_policy_missing_needs_review(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm
+    ) -> None:
+        """请求了 L3 但策略被禁 → needs_review 而非静默 pass（R2-20 第二漏口）。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.audit_policy SET enabled = false"
+                " WHERE code = 'l3_intellectual_property'"
+            )
+        try:
+            pid = _mk_product(
+                migrated_db, seeded["team"], asin="B0AUDNR005", title="Plain Mug B0AUDNR005"
+            )
+            auth = _login(client, ADMIN, PASSWORD)
+            body = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={}).json()
+            assert body["verdict"] == "needs_review"
+            assert fake_llm.calls == 0
+            run = client.get(f"/api/v1/audit-runs/{body['run_id']}", headers=auth).json()
+            l3 = next(h for h in run["hits"] if h["level"] == "l3")
+            assert l3["rule_code"] == "l3_policy_missing"
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute(
+                    "UPDATE app.audit_policy SET enabled = true"
+                    " WHERE code = 'l3_intellectual_property'"
+                )
+
+    def test_legacy_bad_cache_row_evicted(self, migrated_db: str, fake_llm: _FakeLlm) -> None:
+        """修复前已入库的坏缓存行：命中即驱逐 + 走真调用（存量自愈，R2-21）。"""
+        import asyncio
+
+        from sqlalchemy import text as sa_text
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from erp.audit import llm as llm_module
+        from erp.audit.pipeline import l3_response_cacheable
+        from erp.core.db import system_tx
+
+        from .conftest import APP_URL
+
+        msgs = [{"role": "user", "content": "legacy-bad-cache-probe"}]
+        key = llm_module.cache_key("deepseek-chat", msgs, 0.0, 100)
+
+        async def _run() -> tuple[str, bool]:
+            sessions = async_sessionmaker(create_async_engine(APP_URL), expire_on_commit=False)
+            async with system_tx(sessions) as s:
+                await s.execute(
+                    sa_text(
+                        "INSERT INTO app.llm_cache (cache_key, model, response_text,"
+                        " response_meta) VALUES (:k, 'deepseek-chat', '垃圾不是JSON', '{}')"
+                        " ON CONFLICT (cache_key) DO NOTHING"
+                    ),
+                    {"k": key},
+                )
+            async with system_tx(sessions) as s:
+                content, _cost, hit = await llm_client.chat(
+                    s,
+                    model="deepseek-chat",
+                    messages=msgs,
+                    max_tokens=100,
+                    cacheable=l3_response_cacheable,
+                )
+                return content, hit
+
+        content, hit = asyncio.run(_run())
+        assert hit is False  # 坏行被驱逐，未按命中返回
+        assert fake_llm.calls == 1  # 走了真调用
+        assert "verdict" in content  # 拿到的是替身的正常响应而非坏行
 
 
 class TestApiSurface:
