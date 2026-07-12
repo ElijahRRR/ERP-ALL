@@ -172,3 +172,11 @@
 - 测试 +6（基本+R5 归一对齐/幂等重导/批内重复后者胜/中断→resume 补齐/sha256 变更拒续/任意写入方 bump），132 pytest 全绿。
 - **100 万行演练**：48s（20.8k 行/s）稳定无衰减；WAL 1.14GB/M、表+索引 257MB/M。14.18M 预算：~25-40min（部署机）/3.6GB/磁盘预留 8GB/当晚备份+2-3GB（.agent/evidence/RS-04A/rehearsal-1m.md）。
 - 余项：14.18M 真实实测待 Owner USPTO 导出。Next: RS-03a audit 异步化（R2-02 百件对拍闸门）或 DG1 category_map 导入域。
+
+### Session: 2026-07-12 (RS-03a audit 异步化落地)
+- CI 664e729 绿（静默记）。
+- **RS-03a 完成**：audit LLM 调用移出行锁/请求事务——llm.py 拆三段原语(check_cache/call_provider[纯网络零DB]/record_result，chat 保留为单事务组合)；audit_one 改三段式(tx1 短事务锁品+落run+L0/L2+组prompt+查缓存→缓存命中/L0拒/政策缺失同事务终局；无事务 HTTP 最长120s；tx2 重锁+记账+coerce+终局)。
+- 配套：router 传 sessionmaker+用户 GUC 上下文(_ctx_tx 每段重放 SET LOCAL)；并发重审"新者胜"(tx2 检测更新 run 则不覆盖 product 状态)；崩溃恢复=懒清扫(>10min running→failed，无需 beat)。
+- 验收实证：**FOR UPDATE NOWAIT 旁路探针在 provider 处理请求当口立即拿到行锁**(test_row_lock_released_during_provider_call)；遗孤清扫用例；全部 fail-closed 用例走新路径不变绿。134 pytest+ruff/mypy 全绿。
+- R2-02 百件真实对拍的闸门(评审 R2-06)已解除。余 RS-03b channel outbox 挂 A152 前。
+- Next: DG1 category_map 导入域(L1 前置，不卡 Owner) 或候审 Owner 数据到位后跑百件对拍。

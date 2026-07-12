@@ -471,3 +471,63 @@ class TestApiSurface:
         )
         assert r.status_code == 422
         assert r.json()["error"]["code"] == "AUDIT_L4_DISABLED"
+
+
+class TestLlmOutOfLock:
+    """RS-03a 验收：LLM HTTP 期间不持 product 行锁；遗孤 running run 懒清扫。"""
+
+    def test_row_lock_released_during_provider_call(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm
+    ) -> None:
+        """在替身 provider 处理请求的当口，从旁路连接 FOR UPDATE NOWAIT 锁同一行——
+        必须立刻拿到（锁已随 tx1 提交释放），否则说明 HTTP 仍在事务内（评审 A7 核心）。"""
+        pid = _mk_product(migrated_db, seeded["team"], asin="B0AUDLOCK1", title="Mug LockProbe")
+        probe: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            with psycopg.connect(migrated_db) as conn:
+                try:
+                    conn.execute(
+                        "SELECT id FROM app.product WHERE id = %s FOR UPDATE NOWAIT", (pid,)
+                    )
+                    probe["locked_during_http"] = False
+                except psycopg.errors.LockNotAvailable:
+                    probe["locked_during_http"] = True
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": json.dumps(_pass_verdict(), ensure_ascii=False)}}
+                    ],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 200},
+                },
+            )
+
+        llm_client._transport_factory = lambda: httpx.MockTransport(handler)
+        auth = _login(client, ADMIN, PASSWORD)
+        body = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={}).json()
+        assert probe == {"locked_during_http": False}  # HTTP 期间行锁已释放（实证）
+        assert body["verdict"] == "pass"
+        assert body["product_status"] == "audit_passed"
+
+    def test_stale_running_run_swept(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm
+    ) -> None:
+        """模拟 tx1 后崩溃的遗孤（running 超 10min）：下次审核同品自动清为 failed。"""
+        pid = _mk_product(migrated_db, seeded["team"], asin="B0AUDSTALE1", title="Mug Stale")
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            old_id = conn.execute(
+                "INSERT INTO app.audit_run"
+                " (team_id, product_id, trigger_kind, levels_requested, status, started_at)"
+                " VALUES (%s, %s, 'manual', '{l0,l2,l3}', 'running', now() - interval '20 min')"
+                " RETURNING id",
+                (seeded["team"], pid),
+            ).fetchone()[0]
+        auth = _login(client, ADMIN, PASSWORD)
+        body = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={}).json()
+        assert body["verdict"] == "pass"
+        with psycopg.connect(migrated_db) as conn:
+            st = conn.execute(
+                "SELECT status FROM app.audit_run WHERE id = %s", (old_id,)
+            ).fetchone()[0]
+        assert st == "failed"  # 遗孤被懒清扫，商品可正常重审

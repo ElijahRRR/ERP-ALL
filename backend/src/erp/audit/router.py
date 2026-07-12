@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from erp.audit import service
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
-from erp.core.db import get_session
+from erp.core.db import get_session, get_session_factory
 from erp.core.errors import BusinessError
 from erp.identity.schemas import Page
 
@@ -48,9 +48,13 @@ async def trigger_audit(
     levels = body.levels or service.DEFAULT_LEVELS
     if "l4" in levels:
         raise BusinessError("AUDIT_L4_DISABLED", "L4 视觉审核未开放（R2）")
+    # RS-03a：审核自管短事务（sessionmaker + 用户 GUC 上下文），LLM 调用期间不持
+    # 行锁/事务；本请求事务（session）只承载末尾的 audit_log 写
     result = await service.audit_one(
-        session,
+        get_session_factory(),
         product_id=product_id,
+        team_id=user.team_id,
+        is_super=user.is_super,
         trigger_kind=body.trigger_kind,
         levels=levels,
         created_by=user.id,

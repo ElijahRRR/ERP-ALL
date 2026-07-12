@@ -284,11 +284,13 @@
   "priority": "P0",
   "dimension": "architecture",
   "check": "transactional outbox + 幂等命令表【拆双闸门】RS-03a: audit LLM调用移出行锁/请求事务(短事务落run→事务外调LLM→新事务回写)；RS-03b: channel写路径outbox/inbox+Idempotency-Key消费 [评审 A7+C2+R2-06]",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
-   "specs/external-review-round-1.md"
+   "backend/src/erp/audit/service.py (三段式 tx1→HTTP→tx2)",
+   "backend/src/erp/audit/llm.py (check_cache/call_provider/record_result 原语)",
+   "backend/tests/db/test_audit_api.py::TestLlmOutOfLock"
   ],
-  "finding": "闸门=真实渠道写入（A152 L2 测试店写）前，硬性",
+  "finding": "RS-03a 已完成（2026-07-12）：audit LLM 调用移出行锁/请求事务——tx1 短事务落 run+L0/L2+查缓存(命中同事务终局)→无事务 HTTP→tx2 重锁回写；并发重审新者胜；遗孤 running 懒清扫(>10min→failed)；行锁释放有 FOR UPDATE NOWAIT 旁路探针实证。R2-02 百件对拍闸门已解除。余 RS-03b channel outbox（闸门=A152 L2 写入前）",
   "last_checked_at": "2026-07-12",
   "gate": "RS-03a=R2-02 百件真实LLM对拍之前（audit暴露已存在）；RS-03b=A152 L2真实渠道写入之前",
   "depends_on": [],

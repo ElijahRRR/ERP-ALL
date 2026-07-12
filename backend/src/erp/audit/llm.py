@@ -121,53 +121,67 @@ async def log_usage(
 
 
 class LlmClient:
-    """OpenAI 兼容 chat 客户端（deepseek/dashscope 均可），带缓存与记账。"""
+    """OpenAI 兼容 chat 客户端（deepseek/dashscope 均可），带缓存与记账。
+
+    三段原语（RS-03a：审核主链的 HTTP 期间不得持有事务/行锁）：
+      check_cache（事务内，短）→ call_provider（**无任何 DB 交互**）→ record_result（新事务）。
+    chat() = 三段的单事务组合，保留给非锁敏感调用方与测试（HTTP 发生在调用方事务内）。
+    """
 
     def __init__(self) -> None:
         self._transport_factory: Any = None  # 测试注入 httpx.MockTransport
 
-    async def chat(
+    async def check_cache(
         self,
         session: AsyncSession,
+        *,
+        key: str,
+        model: str,
+        team_id: int | None = None,
+        object_type: str | None = None,
+        object_id: int | None = None,
+        cacheable: Callable[[str], bool] | None = None,
+    ) -> str | None:
+        """缓存查询：命中记 usage(cost=0)；命中存量坏行（不过 cacheable）→ 驱逐返 None。
+
+        cacheable：业务侧响应校验（评审 round-2 R2-21）。坏响应一旦缓存会被同输入
+        重审永久复放、无法自愈——查/写两侧都过此谓词。
+        """
+        cached = await _cache_get(session, key)
+        if cached is not None and cacheable is not None and not cacheable(cached[0]):
+            await session.execute(
+                text("DELETE FROM app.llm_cache WHERE cache_key = :k"), {"k": key}
+            )
+            log.warning("llm.cache_evict_invalid", key=key, model=model)
+            return None
+        if cached is None:
+            return None
+        await log_usage(
+            session,
+            team_id=team_id,
+            model=model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost_usd=0.0,
+            cache_hit=True,
+            object_type=object_type,
+            object_id=object_id,
+        )
+        return cached[0]
+
+    async def call_provider(
+        self,
         *,
         model: str,
         messages: list[dict[str, Any]],
         temperature: float = 0.0,
         max_tokens: int = 1200,
-        team_id: int | None = None,
-        object_type: str | None = None,
-        object_id: int | None = None,
-        cacheable: Callable[[str], bool] | None = None,
-    ) -> tuple[str, float, bool]:
-        """→ (response_text, cost_usd, cache_hit)。命中缓存 cost=0 也记 usage 行。
+    ) -> tuple[str, int, int]:
+        """纯网络调用 → (content, prompt_tokens, completion_tokens)。
 
-        cacheable：业务侧响应校验（评审 round-2 R2-21）。不通过的响应**不落缓存**——
-        否则坏响应（解析失败/非法 verdict）会被同输入重审永久复放，无法自愈；
-        命中的存量坏行同理驱逐后走真调用。
+        **不接触 DB**——调用方必须在事务外调用（RS-03a 行锁纪律）。失败抛异常，
+        由调用方 fail-closed 落痕（评审 R2-20）。
         """
-        key = cache_key(model, messages, temperature, max_tokens)
-        cached = await _cache_get(session, key)
-        if cached is not None and cacheable is not None and not cacheable(cached[0]):
-            # 修复前入库的坏响应：驱逐 + 走真调用（自愈）
-            await session.execute(
-                text("DELETE FROM app.llm_cache WHERE cache_key = :k"), {"k": key}
-            )
-            log.warning("llm.cache_evict_invalid", key=key, model=model)
-            cached = None
-        if cached is not None:
-            await log_usage(
-                session,
-                team_id=team_id,
-                model=model,
-                prompt_tokens=0,
-                completion_tokens=0,
-                cost_usd=0.0,
-                cache_hit=True,
-                object_type=object_type,
-                object_id=object_id,
-            )
-            return cached[0], 0.0, True
-
         settings = get_settings()
         if not settings.llm_api_key and self._transport_factory is None:
             raise BusinessError("LLM_KEY_MISSING", "未配置 LLM API Key（ERP_LLM_API_KEY）")
@@ -195,14 +209,37 @@ class LlmClient:
                 {"body": resp.text[:500]},
             )
         data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        content = str(data["choices"][0]["message"]["content"])
         usage = data.get("usage") or {}
-        pt = int(usage.get("prompt_tokens") or 0)
-        ct = int(usage.get("completion_tokens") or 0)
-        cost = await _price(session, model, pt, ct)
+        return (
+            content,
+            int(usage.get("prompt_tokens") or 0),
+            int(usage.get("completion_tokens") or 0),
+        )
+
+    async def record_result(
+        self,
+        session: AsyncSession,
+        *,
+        key: str,
+        model: str,
+        content: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        team_id: int | None = None,
+        object_type: str | None = None,
+        object_id: int | None = None,
+        cacheable: Callable[[str], bool] | None = None,
+    ) -> float:
+        """真调用记账：计价 + （通过 cacheable 才）写缓存 + usage 行 → cost_usd。"""
+        cost = await _price(session, model, prompt_tokens, completion_tokens)
         if cacheable is None or cacheable(content):
             await _cache_put(
-                session, key, model, content, {"prompt_tokens": pt, "completion_tokens": ct}
+                session,
+                key,
+                model,
+                content,
+                {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
             )
         else:
             log.warning("llm.response_not_cacheable", model=model, head=content[:120])
@@ -210,12 +247,55 @@ class LlmClient:
             session,
             team_id=team_id,
             model=model,
-            prompt_tokens=pt,
-            completion_tokens=ct,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             cost_usd=cost,
             cache_hit=False,
             object_type=object_type,
             object_id=object_id,
+        )
+        return cost
+
+    async def chat(
+        self,
+        session: AsyncSession,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.0,
+        max_tokens: int = 1200,
+        team_id: int | None = None,
+        object_type: str | None = None,
+        object_id: int | None = None,
+        cacheable: Callable[[str], bool] | None = None,
+    ) -> tuple[str, float, bool]:
+        """→ (response_text, cost_usd, cache_hit)。三段原语的单事务组合。"""
+        key = cache_key(model, messages, temperature, max_tokens)
+        hit = await self.check_cache(
+            session,
+            key=key,
+            model=model,
+            team_id=team_id,
+            object_type=object_type,
+            object_id=object_id,
+            cacheable=cacheable,
+        )
+        if hit is not None:
+            return hit, 0.0, True
+        content, pt, ct = await self.call_provider(
+            model=model, messages=messages, temperature=temperature, max_tokens=max_tokens
+        )
+        cost = await self.record_result(
+            session,
+            key=key,
+            model=model,
+            content=content,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            team_id=team_id,
+            object_type=object_type,
+            object_id=object_id,
+            cacheable=cacheable,
         )
         return content, cost, False
 
