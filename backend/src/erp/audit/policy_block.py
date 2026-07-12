@@ -5,7 +5,8 @@
 ~63%→~95%。**绝不能按品类动态拼**（动态段=每产品 system 不同=cache miss=成本爆炸）。
 
 空表 → 返回空块 + 静态候选类目，L3 退回单策略行为，不报错（数据待 Owner 导）。
-版本键 = count + max(updated_at)，政策一变缓存自动重建（与 blacklist_index 同款）。
+版本键 = refdata.dataset_revision('prohibited_policy')（0014 触发器事务内递增，任何
+写入方都 bump），政策一变缓存自动重建（与 blacklist_index 同款）。
 """
 
 from typing import Any
@@ -24,11 +25,13 @@ _CACHE: dict[str, Any] = {"version": None, "block": "", "categories": _STATIC_CA
 
 
 async def _version(session: AsyncSession) -> str:
+    # dataset_revision('prohibited_policy')：0014 统计触发器事务内递增，任何写入方都 bump
+    # （替代 count+max(updated_at)，评审 round-1 B5② 采纳）
     val = (
         await session.execute(
             text(
-                "SELECT count(*)::text || ':' || COALESCE(max(updated_at)::text, '')"
-                " FROM refdata.prohibited_policy"
+                "SELECT COALESCE((SELECT revision FROM refdata.dataset_revision"
+                " WHERE dataset = 'prohibited_policy'), 0)::text"
             )
         )
     ).scalar_one()

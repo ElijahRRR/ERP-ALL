@@ -82,5 +82,5 @@ brand/title/bullets），前例缓存的 pass 响应短路了 500 用例——�
 ## A4 状态声明
 
 按评审 R2-25 的口径：round-1 后为"核心路径已修、尾项未闭环"；本轮 R2-20/21/22/23/24
-全部落地后，**A4 转为待 round-3 复核关闭**。请评审方复查 `995074f..HEAD` 的
-`llm.py / pipeline.py / service.py / 0013 / ProductsPage.tsx / test_audit_api.py`。
+全部落地后转 round-3 定点复查。**2026-07-12 评审方复查 995074f..8f4bcd8 后确认：A4 可关闭。
+本项正式关单（fail-open→fail-closed 全链闭环：coerce/transport/config/缓存/翻案/前端三态）。**

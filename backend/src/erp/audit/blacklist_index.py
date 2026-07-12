@@ -117,11 +117,14 @@ class Automaton:
 
 # ── 版本失效内存加载器（按 team scope 缓存自动机）──
 
-# 版本键：count + 最大 added_at；导入新增/移除品牌都会改变它 → 下次调用懒重建。
+# 版本键 = refdata.dataset_revision('blacklist')：0014 统计触发器在黑名单四表任何
+# INSERT/UPDATE/DELETE/TRUNCATE 时事务内递增——**任何写入方**（导入/人工 SQL/UI）都会
+# bump，无需写入方自觉。替代旧 count+max(added_at)（同秒替换有碰撞窗口 + 大表聚合贵，
+# 评审 round-1 B5② 采纳）。版本全局共享：任一 team 的黑名单变更使全部 team 缓存失效
+# （重建便宜、写入稀少，可接受）。
 _VERSION_SQL = (
-    "SELECT count(*)::text || ':' || COALESCE(max(added_at)::text, '')"
-    " FROM app.blacklist_brand"
-    " WHERE status = 'active' AND (team_id IS NULL OR team_id = :team)"
+    "SELECT COALESCE("
+    " (SELECT revision FROM refdata.dataset_revision WHERE dataset = 'blacklist'), 0)::text"
 )
 # 与旧 run_l2 完全一致的候选集：全局 + 本 team，按 brand_norm 升序。
 _BRANDS_SQL = (
@@ -143,7 +146,8 @@ def clear_cache() -> None:
 
 
 async def _current_version(session: AsyncSession, team_id: int) -> str:
-    row = (await session.execute(sql_text(_VERSION_SQL), {"team": team_id})).scalar_one()
+    del team_id  # 版本全局（见 _VERSION_SQL 注）；缓存仍按 team 存自动机
+    row = (await session.execute(sql_text(_VERSION_SQL))).scalar_one()
     return str(row)
 
 

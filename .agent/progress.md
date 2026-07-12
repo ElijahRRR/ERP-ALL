@@ -164,3 +164,11 @@
 - 工单修订：RS-03 拆双闸门(audit 异步前置 R2-02 对拍前)；RS-04 拆 A/B/C/D(B1/B2/B8 补注册)；RS-07 范围扩充(poison 现阶段做)；RS-01/02 闸门改机器可判定事件；各单补 acceptance 字段。
 - specs/external-review-round-2.md + D-Q57。A4=待 round-3 复核关闭。
 - Next: RS-04A 摄取升级动工(容量预算前置+COPY staging)；006 正文按 B1/B2/B8 修订(随 RS-11)。
+
+### Session: 2026-07-12 (A4 关单 + RS-04A 摄取升级落地)
+- 本地 AI round-3 定点复查确认 **A4 可关闭**——正式关单（round-2 文档已记）。CI 995074f/8f4bcd8 双绿。
+- **RS-04A 搬运通道建成**：0014 迁移（refdata.dataset_revision 事务内递增 + 统计触发器挂黑名单四表/政策/商标——任何写入方都 bump；trademark_staging UNLOGGED）+ tools/bulk_import_trademark.py（流式 csv/jsonl → COPY staging → DISTINCT ON merge → 按批提交；manifest sha256 断点续跑；错误行 sidecar；故障注入口）。
+- blacklist 自动机 / L3 政策块缓存版本从 count+max(ts) 切到 dataset_revision（B5② 收口，消同秒碰撞窗口）。
+- 测试 +6（基本+R5 归一对齐/幂等重导/批内重复后者胜/中断→resume 补齐/sha256 变更拒续/任意写入方 bump），132 pytest 全绿。
+- **100 万行演练**：48s（20.8k 行/s）稳定无衰减；WAL 1.14GB/M、表+索引 257MB/M。14.18M 预算：~25-40min（部署机）/3.6GB/磁盘预留 8GB/当晚备份+2-3GB（.agent/evidence/RS-04A/rehearsal-1m.md）。
+- 余项：14.18M 真实实测待 Owner USPTO 导出。Next: RS-03a audit 异步化（R2-02 百件对拍闸门）或 DG1 category_map 导入域。

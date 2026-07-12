@@ -299,11 +299,14 @@
   "priority": "P0",
   "dimension": "data",
   "check": "摄取升级·搬运通道：流式读取→COPY staging→set-based merge→分批提交+manifest/checksum+断点续跑+refdata_revision(事务内递增缓存版本)+source registry [评审 B4+B5②+B7]",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
-   "specs/external-review-round-1.md"
+   "backend/alembic/versions/0014_ingest_bulk.py",
+   "backend/src/erp/tools/bulk_import_trademark.py",
+   "backend/tests/db/test_bulk_import_trademark.py",
+   ".agent/evidence/RS-04A/rehearsal-1m.md"
   ],
-  "finding": "立即——Owner 数据将至，现通道搬不动 14M",
+  "finding": "搬运通道已建成并过 100 万行演练（20.8k 行/s、WAL 1.1GB/M、表 257MB/M，断点续跑/幂等/校验全过；容量预算已出：14.18M≈25-40min/3.6GB/预留8GB）。dataset_revision+触发器已上线（blacklist/policy 缓存版本已切换）。余项：14.18M 真实数据实测（待 Owner USPTO 导出，部署机执行）",
   "last_checked_at": "2026-07-12",
   "gate": "14M商标导入前；前置=磁盘/WAL/索引/备份峰值容量预算(采纳R2-17,从RS-10移入)",
   "acceptance": "100万行演练：吞吐/内存/WAL/索引膨胀量化记录；中断续跑；重复导入不增行；manifest+checksum落盘；最终14M实测"
