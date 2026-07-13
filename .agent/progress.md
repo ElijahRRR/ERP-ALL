@@ -202,3 +202,11 @@
 - **五类审核/上架弹药通道全通**（黑名单/商标 bulk/政策/类目映射/pt_meta），全部只待 Owner 数据。Owner 现可一次导全类目数据(映射明细→category_map，沃尔玛类目→pt_meta)。
 - 001 §03 旧 category_map 设计(leaf 唯一→单 WPT)被 D-Q55 取代，待随 L1 主路径实现修订正文。
 - Next: L1 类目判定主路径（direct 短路+category_map 召回 INNER JOIN pt_meta 滤废弃 PT+LLM 复排+coerce，fake LLM 测试沙盒可全建）。
+
+### Session: 2026-07-13 (🎯 全量真数据迁移完成——五通道上线)
+- **Owner + 部署 AI 用本项流程/代码完成全量迁移**（T7→D:\erp-staging-backup→PG17 staging→投影→ERP-ALL 导入 CLI）。9 个 import_job 全 done、错误 0、列全对齐、healthz ok、alembic 0016。
+- 迁移路径实录（供复盘）：旧库 dump 是 PG17.9 且 uspto 依赖 pgvector →采用**一次性 pgvector/pgvector:pg17 暂存容器 + `-t` 选择性单表还原**（只拉需要的关系表，跳过 20G+ 向量 embedding 表，绕开 vector 依赖 + 省 C: 盘）；`--no-owner -x` 挡旧角色错。暂存用毕精确删容器+7GB 匿名卷，pt_metadata/ 未碰。
+- **落库真数据量**：商标 4,439,478 live wordmark（14.19M 总行筛 ~31%）/ 政策 37（=L3 静态 37）/ 类目映射 15,987 / pt_meta 7,008 / 黑名单 41,992（4 符号品牌精确排除+大小写重复 ON CONFLICT 自动折叠）。
+- **列映射对账定案**：`walmart_category_map.rank_in_pt→rank_no`、`walmart_prohibited_policy.id→seq`；黑名单 brand-only（source≠reason 不硬套）。源空值（商标 8565 无 Nice/36 无 owner/63 无 filed；政策 4 无 prohibited；PT 66 无字段统计）均源目一致=无损，非别名问题。
+- **验收姿态变化**：R2-02（百件真实对拍 ≥90%）等"只待真数据"的门现在可在部署机跑；L0/L2/L3 三级均已真数据背书。
+- Next: **建 L1 类目判定主路径**（流水线最后缺口，弹药已齐）——direct 短路+category_map 召回 INNER JOIN pt_meta+LLM 复排+coerce；随实现修订 001 §03 正文（D-Q55）。
