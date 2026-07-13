@@ -24,13 +24,15 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from erp.audit import pipeline
+from erp.audit import l1_category, pipeline
 from erp.audit import policy_block as policy_module
 from erp.audit.llm import cache_key, llm_client
 from erp.core.errors import BusinessError
 
 log = structlog.get_logger()
 
+# L1 类目判定同步核心（L1-a）已接入但暂不进 DEFAULT——无直判命中会大量落 needs_review，
+# 待 L1-b（LLM 复排）补齐再默认开启；R2-02 对拍以显式 levels=[l0,l1,l2,l3] 请求。
 DEFAULT_LEVELS = ["l0", "l2", "l3"]
 _STALE_RUNNING_MINUTES = 10  # tx1 后崩溃的遗孤 run 判定阈值（LLM 超时 120s + 富余）
 
@@ -274,6 +276,25 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
                     evidence=l0["evidence"],
                 )
                 verdict, reject_level = "reject", "l0"
+
+        # L1：类目判定（同步映射表直判 gate，L1-a）。命中禁做即拒；无直判→needs_review
+        # （fail-closed，待 L1-b LLM 复排/人工）。resolved wpt 记入命中证据供上架/L2 复用。
+        if verdict == "pass" and "l1" in levels:
+            l1 = await l1_category.run_l1(s, product)
+            await _write_hit(
+                s,
+                run_id=run_id,
+                team_id=prod_team,
+                product_id=product_id,
+                level="l1",
+                rule_code=l1["rule_code"],
+                is_hard=(l1["verdict"] == "reject"),
+                evidence=l1["evidence"],
+            )
+            if l1["verdict"] == "reject":
+                verdict, reject_level = "reject", "l1"
+            elif l1["verdict"] == "needs_review":
+                verdict = "needs_review"  # reject_level 留 NULL：review 非否决（R2-23）
 
         # L2：软证据（不否决）
         l2_hits: list[dict[str, Any]] = []

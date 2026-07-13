@@ -210,3 +210,11 @@
 - **列映射对账定案**：`walmart_category_map.rank_in_pt→rank_no`、`walmart_prohibited_policy.id→seq`；黑名单 brand-only（source≠reason 不硬套）。源空值（商标 8565 无 Nice/36 无 owner/63 无 filed；政策 4 无 prohibited；PT 66 无字段统计）均源目一致=无损，非别名问题。
 - **验收姿态变化**：R2-02（百件真实对拍 ≥90%）等"只待真数据"的门现在可在部署机跑；L0/L2/L3 三级均已真数据背书。
 - Next: **建 L1 类目判定主路径**（流水线最后缺口，弹药已齐）——direct 短路+category_map 召回 INNER JOIN pt_meta+LLM 复排+coerce；随实现修订 001 §03 正文（D-Q55）。
+
+### Session: 2026-07-13 (L1-a 类目判定同步直判 gate)
+- **L1 拆两增量**（RS-03a 纪律）：L1-a 同步直判核心（本单，落 tx1 零重构 twice-reviewed audit_one）；L1-b 无直判命中的事务外 LLM 复排（另单，RS-03a 同款第二段 HTTP stall，值得独立评审 pass）。
+- **spec §03 修订**（dfddd93）：旧单 WPT+pt_embedding 设计→D-Q55 映射表多候选+LLM 复排；正文对齐已落地 refdata.category_map/pt_meta。
+- **l1_category.py**：`run_l1`——product 的 category_path/amazon_leaf_id 精确命中 category_map（INNER JOIN pt_meta 滤废弃 PT，排除 '无对应Walmart PT'）→ 存在非禁做有效候选=pass（带 resolved wpt）/ 候选全禁做(map 或 pt 维度)=reject(reject_level=l1) / 无直判/无类目=needs_review(fail-closed)。sellability=任一可售通道即算可售。
+- **service.py**：L0 后 L2 前插 l1 级（`verdict==pass and 'l1' in levels`）；reject→reject_level=l1，needs_review→留 NULL(review 非否决)。**暂不进 DEFAULT_LEVELS**（无直判会大量落 needs_review，待 L1-b；R2-02 对拍显式 levels=[l0,l1,l2,l3]）——故不破坏既有 audit 测试。
+- test_l1_category.py 9 例（pass/pt禁/map禁/废弃PT被INNER JOIN滤/混合可售胜/unmapped/leaf键/无类目/audit_one 集成 reject_level=l1）。153 pytest + ruff + mypy(57) 全绿。
+- Next: **L1-b**（无直判→事务外 LLM 复排，扩 audit_one 为两段 HTTP stall）；之后 L2 R1/R2/R3 硬规则 → R2-02 部署机对拍。
