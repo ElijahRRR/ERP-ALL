@@ -4,10 +4,12 @@
 **任何一块行数不符即 failed 并回滚该块**（lark 截断教训：逐块核对）。
 
 已实现域：黑名单四域（brand/seller/asin/category）+ 商标（trademark → refdata.trademark）
-+ 政策（policy → refdata.prohibited_policy，喂 L3 静态 37 政策 prompt）。
++ 政策（policy → refdata.prohibited_policy，喂 L3 静态 37 政策 prompt）
++ 类目映射（category_map → refdata.category_map，L1 候选召回）
++ PT 元数据（pt_meta → refdata.pt_meta，L1 候选 INNER JOIN 过滤废弃 PT 的主表）。
 黑名单归一化与审核 L0 查表严格一致（全部走 audit.pipeline._norm）；商标 mark_norm 与
 审核 L2-R5 反查严格一致（同样 _norm），否则导入的词审核时查不到——这是必须锁死的不变量。
-其余域（category_map/gtin/tro…）表结构与 job 通道已就位，导入器随各自工单补。
+其余域（gtin/tro…）表结构与 job 通道已就位，导入器随各自工单补。
 """
 
 import json
@@ -68,7 +70,14 @@ _DOMAINS: dict[str, _Domain] = {
 TRADEMARK_DOMAIN = "trademark"
 POLICY_DOMAIN = "policy"
 CATEGORY_MAP_DOMAIN = "category_map"
-SUPPORTED_DOMAINS = (*_DOMAINS, TRADEMARK_DOMAIN, POLICY_DOMAIN, CATEGORY_MAP_DOMAIN)
+PT_META_DOMAIN = "pt_meta"
+SUPPORTED_DOMAINS = (
+    *_DOMAINS,
+    TRADEMARK_DOMAIN,
+    POLICY_DOMAIN,
+    CATEGORY_MAP_DOMAIN,
+    PT_META_DOMAIN,
+)
 
 # 商标行列名兼容（源仓 USPTO ETL 惯用名：serial_number/mark_identification/filing_date…）
 _TM_SERIAL_KEYS = ("serial_no", "serial_number")
@@ -91,6 +100,20 @@ def _first(row: dict[str, Any], keys: tuple[str, ...]) -> str | None:
         if v is not None and str(v).strip():
             return str(v)
     return None
+
+
+def _parse_int(row: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    """列值 → int（含浮点串 "12.0" → 12）；缺失/非数字 → None。"""
+    raw = _first(row, keys)
+    if raw is None:
+        return None
+    token = raw.strip()
+    if token.lstrip("-").isdigit():
+        return int(token)
+    try:  # 宽容 "12.0" 这类浮点串（openpyxl 数字列常见）
+        return int(float(token))
+    except ValueError:
+        return None
 
 
 async def create_job(
@@ -206,6 +229,8 @@ async def import_rows(
             await _apply_policy_row(s, row, line, c)
         elif domain == CATEGORY_MAP_DOMAIN:
             await _apply_category_map_row(s, row, line, c)
+        elif domain == PT_META_DOMAIN:
+            await _apply_pt_meta_row(s, row, line, c)
         else:  # create_job 已闸，理论不达
             raise BusinessError("IMPORT_DOMAIN_UNSUPPORTED", f"域 {domain} 无处理器")
 
@@ -440,7 +465,7 @@ async def _apply_policy_row(
     c.ok += 1
 
 
-# 类目映射行列名兼容（源仓 walmart_category_map 列 + 常见导出别名）
+# 类目映射行列名兼容（源仓 walmart_category_map 列 + 飞书「映射明细」全列导出别名）
 _CM_AMAZON_KEYS = ("amazon_category", "amazon_path", "amazon_category_path", "category_path")
 _CM_PT_KEYS = ("walmart_product_type", "walmart_pt", "product_type", "wpt")
 _CM_CONF_KEYS = ("confidence",)
@@ -448,6 +473,12 @@ _CM_CERT_KEYS = ("requires_certificate", "requires_cert")
 _CM_FORBIDDEN_KEYS = ("zh_seller_forbidden", "seller_forbidden")
 _CM_REQ_KEYS = ("requirements",)
 _CM_NOTES_KEYS = ("notes", "note")
+# 0016 补源列（飞书映射明细无损导入）
+_CM_LEAF_KEYS = ("amazon_leaf", "leaf")
+_CM_NODE_KEYS = ("browse_node_id", "browse_node", "node_id")
+_CM_RANK_KEYS = ("rank_no", "rank", "rank_number")
+_CM_MATCH_KEYS = ("match_type", "match")
+_CM_BATCH_KEYS = ("source_batch", "batch")
 
 _FLAG_TRUE = {"true", "t", "1", "yes", "y", "是"}
 
@@ -486,14 +517,21 @@ async def _apply_category_map_row(
         text(
             "INSERT INTO refdata.category_map"
             " (amazon_category, walmart_product_type, confidence, requires_certificate,"
-            "  zh_seller_forbidden, requirements, notes, updated_at)"
-            " VALUES (:az, :pt, :conf, :cert, :forb, :req, :notes, now())"
+            "  zh_seller_forbidden, requirements, notes,"
+            "  amazon_leaf, browse_node_id, rank_no, match_type, source_batch, updated_at)"
+            " VALUES (:az, :pt, :conf, :cert, :forb, :req, :notes,"
+            "  :leaf, :node, :rank, :match, :batch, now())"
             " ON CONFLICT (amazon_category, walmart_product_type) DO UPDATE SET"
             "  confidence = EXCLUDED.confidence,"
             "  requires_certificate = EXCLUDED.requires_certificate,"
             "  zh_seller_forbidden = EXCLUDED.zh_seller_forbidden,"
             "  requirements = EXCLUDED.requirements,"
             "  notes = EXCLUDED.notes,"
+            "  amazon_leaf = EXCLUDED.amazon_leaf,"
+            "  browse_node_id = EXCLUDED.browse_node_id,"
+            "  rank_no = EXCLUDED.rank_no,"
+            "  match_type = EXCLUDED.match_type,"
+            "  source_batch = EXCLUDED.source_batch,"
             "  updated_at = now()"
         ),
         {
@@ -504,6 +542,79 @@ async def _apply_category_map_row(
             "forb": _parse_flag(row, _CM_FORBIDDEN_KEYS),
             "req": _first(row, _CM_REQ_KEYS),
             "notes": _first(row, _CM_NOTES_KEYS),
+            "leaf": _first(row, _CM_LEAF_KEYS),
+            "node": _first(row, _CM_NODE_KEYS),
+            "rank": _parse_int(row, _CM_RANK_KEYS),
+            "match": _first(row, _CM_MATCH_KEYS),
+            "batch": _first(row, _CM_BATCH_KEYS),
+        },
+    )
+    c.ok += 1
+
+
+# PT 元数据行列名兼容（飞书「沃尔玛类目」sheet 一行一 PT + 源仓 walmart_pt_meta 列）
+_PT_TYPE_KEYS = ("walmart_product_type", "walmart_pt", "product_type", "wpt", "pt")
+_PT_CATEGORY_KEYS = ("walmart_category", "category")
+_PT_PTG_KEYS = ("walmart_ptg", "ptg", "product_type_group")
+_PT_ACCESS_KEYS = ("access_state", "access")
+_PT_CANDO_KEYS = ("zh_can_do", "can_do", "cando")
+_PT_FORBIDDEN_KEYS = ("zh_seller_forbidden", "seller_forbidden")
+_PT_REQ_KEYS = ("requirements", "require")
+_PT_NOTES_KEYS = ("notes", "note")
+_PT_TOTAL_KEYS = ("total_fields", "total")
+_PT_REQCNT_KEYS = ("required_count", "required_cnt", "required_num")
+_PT_REQFIELDS_KEYS = ("required_fields", "required")
+
+
+async def _apply_pt_meta_row(
+    session: AsyncSession, row: dict[str, Any], line: int, c: _Counters
+) -> None:
+    """幂等 upsert 一行到 refdata.pt_meta（键 walmart_product_type）。
+
+    err 仅一种：walmart_product_type 缺失（无 skip——ON CONFLICT 恒更新，重导即 ok，
+    表内每 PT 恒一行）。这是 L1 候选召回的过滤主表：category_map 召回的候选 PT 必须
+    INNER JOIN pt_meta 才保留（过滤源仓 2026-05-09 教训里的废弃 PT）。zh_seller_forbidden
+    NOT NULL DEFAULT false，缺失即 false，与源表一致。total_fields/required_count 供
+    上架成本估计，非数字置 NULL。
+    """
+    pt = _first(row, _PT_TYPE_KEYS)
+    if not pt:
+        c.err += 1
+        c.errors.append({"line": line, "reason": "walmart_product_type 缺失", "row": row})
+        return
+    await session.execute(
+        text(
+            "INSERT INTO refdata.pt_meta"
+            " (walmart_product_type, walmart_category, walmart_ptg, access_state, zh_can_do,"
+            "  zh_seller_forbidden, requirements, notes, total_fields, required_count,"
+            "  required_fields, updated_at)"
+            " VALUES (:pt, :cat, :ptg, :acc, :cando, :forb, :req, :notes, :total, :reqcnt,"
+            "  :reqf, now())"
+            " ON CONFLICT (walmart_product_type) DO UPDATE SET"
+            "  walmart_category = EXCLUDED.walmart_category,"
+            "  walmart_ptg = EXCLUDED.walmart_ptg,"
+            "  access_state = EXCLUDED.access_state,"
+            "  zh_can_do = EXCLUDED.zh_can_do,"
+            "  zh_seller_forbidden = EXCLUDED.zh_seller_forbidden,"
+            "  requirements = EXCLUDED.requirements,"
+            "  notes = EXCLUDED.notes,"
+            "  total_fields = EXCLUDED.total_fields,"
+            "  required_count = EXCLUDED.required_count,"
+            "  required_fields = EXCLUDED.required_fields,"
+            "  updated_at = now()"
+        ),
+        {
+            "pt": pt.strip(),
+            "cat": _first(row, _PT_CATEGORY_KEYS),
+            "ptg": _first(row, _PT_PTG_KEYS),
+            "acc": _first(row, _PT_ACCESS_KEYS),
+            "cando": _first(row, _PT_CANDO_KEYS),
+            "forb": _parse_flag(row, _PT_FORBIDDEN_KEYS),
+            "req": _first(row, _PT_REQ_KEYS),
+            "notes": _first(row, _PT_NOTES_KEYS),
+            "total": _parse_int(row, _PT_TOTAL_KEYS),
+            "reqcnt": _parse_int(row, _PT_REQCNT_KEYS),
+            "reqf": _first(row, _PT_REQFIELDS_KEYS),
         },
     )
     c.ok += 1

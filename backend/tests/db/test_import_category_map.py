@@ -102,6 +102,32 @@ def test_basic_import_aliases_and_flags() -> None:
     assert mug[3] is False
 
 
+def test_source_columns_imported() -> None:
+    """0016 补源列（飞书映射明细全列无损导入）：leaf/browse_node/rank/match/batch。"""
+    asyncio.run(
+        _import(
+            [
+                {
+                    "amazon_category": f"{PREFIX}/Electronics/Cables",
+                    "walmart_product_type": "Cables",
+                    "amazon_leaf": "Cables",
+                    "browse_node_id": "172500",
+                    "rank_no": "2.0",  # 浮点串宽容
+                    "match_type": "leaf_exact",
+                    "source_batch": "2026-05",
+                }
+            ]
+        )
+    )
+    with psycopg.connect(_pg_dsn(MIGRATOR_URL)) as conn:
+        row = conn.execute(
+            "SELECT amazon_leaf, browse_node_id, rank_no, match_type, source_batch"
+            " FROM refdata.category_map WHERE amazon_category = %s",
+            (f"{PREFIX}/Electronics/Cables",),
+        ).fetchone()
+    assert row == ("Cables", "172500", 2, "leaf_exact", "2026-05")
+
+
 def test_idempotent_reimport_no_dup() -> None:
     asyncio.run(_import(_rows()))
     r2 = asyncio.run(_import(_rows()))

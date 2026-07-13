@@ -188,3 +188,17 @@
 - **四类审核弹药通道全通**（黑名单/商标 bulk/政策/类目映射），全部只待 Owner 数据。
 - 源仓考古备忘：L1 还需 walmart_pt_meta（PT 可用性元数据，源=walmart_specs/all_product_types.json+飞书），随 L1 实现单建表——candidates 必须 INNER JOIN pt_meta 过滤废弃 PT（源仓 2026-05-09 修复教训）。
 - Next: L1 类目判定主路径（direct 短路+category_map 召回+LLM 复排+coerce，fake LLM 测试沙盒可全建）。
+
+### Session: 2026-07-12 (CI 核对 + Owner 数据策略答复)
+- CI 837adaf(DG1) 三 job 全绿（静默记）。
+- Owner 提出数据策略问题（不导入数据对开发影响多大 / 导入不符预期调整麻烦否）——已答：不卡开发卡验收；调整绝大多数🟢(重跑幂等/列名别名)🟡(加列迁移)，仅"结构性猜错"🔴，可靠先导小样本消除。
+- Owner 决定动工全量数据迁移，与本地 AI 协作用本项流程/代码——已交付迁移沟通包：破除"连库"误解(工具吃文件不连库)+三跳模型(Mac 抽取→局域网搬文件→部署机灌库)+局域网三方案(共享夹/U盘/scp)+可粘贴本地 AI 指令(四通道 CLR+列契约+docker 卷+import_job 验证+幂等安全网)。
+
+### Session: 2026-07-12 (pt_meta 通道收尾——L1 弹药补全)
+- **0016 收尾并测通提交**：category_map 补 5 列(amazon_leaf/browse_node_id/rank_no/match_type/source_batch)+ 新建 refdata.pt_meta(walmart_category/ptg/access_state/zh_can_do/zh_seller_forbidden/requirements/notes/total_fields/required_count/required_fields，PK=walmart_product_type)+ dataset_revision('pt_meta') 触发器 + import_job domain+=pt_meta。
+- import_service 增 PT_META_DOMAIN + `_apply_pt_meta_row`(别名列/布尔宽容/`_parse_int` 含浮点串宽容)；category_map handler 扩写 5 源列(飞书映射明细无损导入)；`_parse_int` 复用助手。
+- tools/import_pt_meta.py CLI；tests/db/test_import_pt_meta.py(4)+test_import_category_map 补 test_source_columns_imported(1)。
+- 迁移 0016 downgrade/upgrade 往返验证通过(downgrade 真删表，re-upgrade CREATE 不冲突)。144 pytest + ruff + mypy(56 files) 全绿。
+- **五类审核/上架弹药通道全通**（黑名单/商标 bulk/政策/类目映射/pt_meta），全部只待 Owner 数据。Owner 现可一次导全类目数据(映射明细→category_map，沃尔玛类目→pt_meta)。
+- 001 §03 旧 category_map 设计(leaf 唯一→单 WPT)被 D-Q55 取代，待随 L1 主路径实现修订正文。
+- Next: L1 类目判定主路径（direct 短路+category_map 召回 INNER JOIN pt_meta 滤废弃 PT+LLM 复排+coerce，fake LLM 测试沙盒可全建）。
