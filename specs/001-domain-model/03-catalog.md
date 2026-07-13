@@ -98,22 +98,41 @@
 - held → used：listing 首次 published；held → free：上架终态失败释放；used **永不回收**（防跨店重用关联）。
 - 水位告警：automation 域按 (team, kind) 统计 free 占比，阈值进 team_config（默认 <15% warn、<5% critical）→ notification。
 
-## category_map 类目映射（全局作用域，D-Q21）
+## category_map 类目映射（全局参考数据 refdata，D-Q21 + D-Q55 修订）
 
-| 列 | 类型 | 约束/默认 | 说明 |
-|---|---|---|---|
-| id | BIGINT | PK identity | |
-| amazon_leaf_id | TEXT | NOT NULL UNIQUE | |
-| amazon_path | TEXT | NOT NULL | |
-| wpt | TEXT | NOT NULL | Walmart Product Type |
-| risk | JSONB | NOT NULL DEFAULT '{}' | 5 维风险评分（源仓 pipeline 字段） |
-| confidence | NUMERIC(4,3) | NULL | AI 匹配置信度 |
-| map_source | TEXT | NOT NULL CHECK IN (static, ai, manual) | manual 修正优先级最高 |
-| status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, deprecated) | |
-| updated_by / updated_at / created_at | | | 变更history靠 audit_log |
+> **D-Q55 修订（2026-07-11，随 L1 主路径落地）**：旧设计（`amazon_leaf_id` 唯一 → 单
+> `wpt` + `map_source` + `risk` 5 维 + `pt_embedding` 向量召回）被"**映射表多候选 + LLM
+> 语义复排**（Owner 原方法，非嵌入）"取代。主路径只需 category_map 数据 + 现有 LLM，
+> **不引入 embedding API**；`refdata.pt_embedding` 向量召回降为可选后置增强。实际落库为
+> `refdata.category_map`（多候选）+ `refdata.pt_meta`（PT 元数据主表），迁移 0015/0016。
 
-- 导入源：uspto 库 amazon_walmart_category_map 6,672 + 飞书 mapping_detail 15,771 + path_a_results（导入器去重合并，manual > static > ai）。
-- 命中即 0 LLM（PRD §9）；未命中走 refdata.pt_embedding 检索 + LLM 复排，结果以 map_source=ai 回写。
+**refdata.category_map（键 (amazon_category, walmart_product_type)，一个 Amazon 类目可映射多个 WPT 候选）**
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| amazon_category | TEXT | Amazon 类目路径/叶子（原文，L1 精确/前缀匹配，不归一） |
+| walmart_product_type | TEXT | Walmart PT 候选；`'无对应Walmart PT'`=合法 unmapped 标记 |
+| confidence | TEXT | 匹配置信度（高/中/低，自由文本） |
+| requires_certificate | BOOLEAN | 该映射是否需证书 |
+| zh_seller_forbidden | BOOLEAN | 中国搬运卖家是否禁做 |
+| requirements / notes | TEXT | 自由文本 |
+| amazon_leaf / browse_node_id | TEXT | 飞书映射明细补源列（溯源） |
+| rank_no | INT | PT 内候选排名（源 `rank_in_pt`），供复排先验 |
+| match_type | TEXT | 匹配方式（leaf_exact/path_prefix…） |
+| source_batch | TEXT | 来源批次 |
+| updated_at | timestamptz | dataset_revision('category_map') 触发器随写 bump |
+
+**refdata.pt_meta（键 walmart_product_type，PT 元数据主表）**：walmart_category / walmart_ptg /
+access_state / zh_can_do / zh_seller_forbidden / requirements / notes / total_fields /
+required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤废弃 PT**（源仓
+2026-05-09 教训：category_map 里残留已下线 PT，直接用会映射到不可上架类目）。
+
+- 导入源：uspto.amazon_walmart_category_map + 飞书映射明细/沃尔玛类目（导入器幂等 upsert，
+  别名列宽容）。真数据已落库（2026-07-13）：category_map 15,987 + pt_meta 7,008。
+- **L1 判定主路径**（001 §05 audit）：① category_map 直判命中（精确/前缀）→ 0 LLM 短路；
+  ② 未直判 → 召回候选 WPT（INNER JOIN pt_meta 滤废弃）→ LLM 语义复排选最优 → coerce
+  （非法/无法解析 → needs_review，fail-closed）；③ 禁做类目（category_map/pt_meta
+  `zh_seller_forbidden`）命中 → L1 拒。命中即 0 LLM（PRD §9）；复排结果回写 map 供后续复用。
 
 ## product_source 货源记录（占位设计，D-Q41）
 
