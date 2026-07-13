@@ -141,11 +141,13 @@ class LlmClient:
         object_type: str | None = None,
         object_id: int | None = None,
         cacheable: Callable[[str], bool] | None = None,
+        module: str = "audit",
     ) -> str | None:
         """缓存查询：命中记 usage(cost=0)；命中存量坏行（不过 cacheable）→ 驱逐返 None。
 
         cacheable：业务侧响应校验（评审 round-2 R2-21）。坏响应一旦缓存会被同输入
-        重审永久复放、无法自愈——查/写两侧都过此谓词。
+        重审永久复放、无法自愈——查/写两侧都过此谓词。module：usage 归因域（默认 audit；
+        L1-b 类目复排传 category_map，001 §05）。
         """
         cached = await _cache_get(session, key)
         if cached is not None and cacheable is not None and not cacheable(cached[0]):
@@ -166,6 +168,7 @@ class LlmClient:
             cache_hit=True,
             object_type=object_type,
             object_id=object_id,
+            module=module,
         )
         return cached[0]
 
@@ -230,6 +233,7 @@ class LlmClient:
         object_type: str | None = None,
         object_id: int | None = None,
         cacheable: Callable[[str], bool] | None = None,
+        module: str = "audit",
     ) -> float:
         """真调用记账：计价 + （通过 cacheable 才）写缓存 + usage 行 → cost_usd。"""
         cost = await _price(session, model, prompt_tokens, completion_tokens)
@@ -253,6 +257,7 @@ class LlmClient:
             cache_hit=False,
             object_type=object_type,
             object_id=object_id,
+            module=module,
         )
         return cost
 
@@ -268,6 +273,7 @@ class LlmClient:
         object_type: str | None = None,
         object_id: int | None = None,
         cacheable: Callable[[str], bool] | None = None,
+        module: str = "audit",
     ) -> tuple[str, float, bool]:
         """→ (response_text, cost_usd, cache_hit)。三段原语的单事务组合。"""
         key = cache_key(model, messages, temperature, max_tokens)
@@ -279,6 +285,7 @@ class LlmClient:
             object_type=object_type,
             object_id=object_id,
             cacheable=cacheable,
+            module=module,
         )
         if hit is not None:
             return hit, 0.0, True
@@ -296,6 +303,7 @@ class LlmClient:
             object_type=object_type,
             object_id=object_id,
             cacheable=cacheable,
+            module=module,
         )
         return content, cost, False
 

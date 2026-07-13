@@ -217,4 +217,12 @@
 - **l1_category.py**：`run_l1`——product 的 category_path/amazon_leaf_id 精确命中 category_map（INNER JOIN pt_meta 滤废弃 PT，排除 '无对应Walmart PT'）→ 存在非禁做有效候选=pass（带 resolved wpt）/ 候选全禁做(map 或 pt 维度)=reject(reject_level=l1) / 无直判/无类目=needs_review(fail-closed)。sellability=任一可售通道即算可售。
 - **service.py**：L0 后 L2 前插 l1 级（`verdict==pass and 'l1' in levels`）；reject→reject_level=l1，needs_review→留 NULL(review 非否决)。**暂不进 DEFAULT_LEVELS**（无直判会大量落 needs_review，待 L1-b；R2-02 对拍显式 levels=[l0,l1,l2,l3]）——故不破坏既有 audit 测试。
 - test_l1_category.py 9 例（pass/pt禁/map禁/废弃PT被INNER JOIN滤/混合可售胜/unmapped/leaf键/无类目/audit_one 集成 reject_level=l1）。153 pytest + ruff + mypy(57) 全绿。
-- Next: **L1-b**（无直判→事务外 LLM 复排，扩 audit_one 为两段 HTTP stall）；之后 L2 R1/R2/R3 硬规则 → R2-02 部署机对拍。
+
+### Session: 2026-07-13 (L1-b 类目复排——module=category_map 写回，L1 主路径完备)
+- **架构据文档修正**：原计划"扩 audit_one 为两段 HTTP stall"；查 001 §05（llm_usage_log.module CHECK IN 含 category_map + team_id NULL "类目映射批量"）+ §03（复排结果回写 map）→ 文档指向**类目级批量复排写回**，非 per-product 内联。改用此法：**不改 twice-reviewed audit_one 行锁编排**，更符合文档。
+- **l1_rerank.py**（module=category_map）：`resolve_category` 三段（tx1 召回+查缓存→HTTP→tx2 记账+写回，无 product 行锁故无重锁/新者胜）——祖先前缀召回(starts_with 分隔符无关) INNER JOIN pt_meta 滤废弃→LLM 复排选唯一候选→写回 category_map(match_type=ai_rerank)。之后 L1-a 直判即覆盖该类目(0 LLM)。**fail-closed**：非 JSON/候选外 WPT/无候选→不写回(绝不写脏映射污染 gate)。
+- **llm.py**：check_cache/record_result/chat 加 `module` 参数(默认 audit，向后兼容)→ usage 归因 category_map。
+- **tools/resolve_categories.py** CLI：--backlog(扫 product 无直判类目) / --category 单个；R2-02 对拍前置=先填 map 再对拍。
+- test_l1_rerank.py 8 例(coerce 合法/候选外None/坏JSON/cacheable/祖先召回/resolve写回+usage归因+写回后L1-a直判命中/候选外不写/无候选不调LLM)。160 pytest + ruff + mypy(59) 全绿。
+- **L1 主路径完备**：L1-a 同步直判 gate（audit 内联）+ L1-b 类目复排写回（批量作业），category_map 是共享真相源。DEFAULT_LEVELS 仍不含 l1（填 map 后由部署决定开启；R2-02 对拍显式 levels）。
+- Next: **L2 R1/R2/R3 硬规则**（商标硬拒），补齐后 L1+L2 齐 → R2-02 部署机对拍验收（Owner）。
