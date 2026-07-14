@@ -304,3 +304,10 @@
 - **定性：代码保真基本收尾**。八轮循环共修复：L1 缺图放行/browse_node 键/召回 v2/栏剥离/R0/R1/R3a gate/L3 双维度/seed yaml 双匹配器/R5 Nice 过滤/stopwords 全量/lark 双键/空响应重试——对照清单可移植项仅剩 R3b。**90% 问题已从工程问题变成验收语义问题**（groundtruth 与今日数据/模型时代不对齐）。
 - 待部署机：①round-6 的 31 条 pass->reject reject_level 分布（jq）②phase0_blacklist_amazon_cats 是否有时间戳→类目漂移可证性 ③walmart_pt_spec 的 \d + 3 行样例（R3b 移植前置）。
 - **Owner 决策点（三选一）**：A 重采样近期判定 groundtruth（数据/模型时代对齐，90% 门槛保真）/ B 漂移行重分类（时间戳可证时从分母剔）/ C 以"分歧类别全部溯源+文档化"为验收（79% + 已证成因清单）。
+
+### Session: 2026-07-15 (D-Q59 路径A → round-7 84.5% + R3b 收尾)
+- **Owner 选 A（D-Q59 已录）**：groundtruth 重采样旧系统最后 28 天判定（剔 SHORTCUT/L4），90% 门槛原样。
+- **round-7（时代对齐 gt，d7bacd3）：84.5%**。结构单边化：**旧拒侧 93/100 对齐**（reject->pass 仅 7：3 L2-stage≈R3b、1 L0、3 商标词 bear/keller/utopia 散差）；缺口=pass->reject 21（旧 pass 无因，需我方 hits 聚类定位）+ bad_json 3。
+- **R3b 全链落地**（85ff698，最后一块可移植缺口）：0019 refdata.pt_spec（源仓 walmart_pt_spec 6,942 行列级保真）+ nrtl.py 整机/小件分类器（42+46 词）+ L1 gate LEFT JOIN（has_real_cert 且整机→cat_requires_cert_hard，小件降级放行）+ PT_SPEC_DOMAIN 导入通道 + import_pt_spec CLI。
+- **L3 输出容错升级**：strip_json_fences 增最外层大括号截取（round-7 3/200 JSON 混杂解释文字）；截断仍 fail-closed。199 pytest+ruff+mypy(65) 全绿。
+- Next：部署机 ①导 pt_spec jsonl ②发 21 条 pass->reject 的 reject_level+hits 聚类（决定最后一步：若 l3 聚集→考虑 L3 prompt 与源仓逐字对齐；若 l1 聚集→PT 选择差异属 L1-LLM 双确认缺席，验收判读）③round-8。
