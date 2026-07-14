@@ -71,12 +71,14 @@ TRADEMARK_DOMAIN = "trademark"
 POLICY_DOMAIN = "policy"
 CATEGORY_MAP_DOMAIN = "category_map"
 PT_META_DOMAIN = "pt_meta"
+PT_SPEC_DOMAIN = "pt_spec"
 SUPPORTED_DOMAINS = (
     *_DOMAINS,
     TRADEMARK_DOMAIN,
     POLICY_DOMAIN,
     CATEGORY_MAP_DOMAIN,
     PT_META_DOMAIN,
+    PT_SPEC_DOMAIN,
 )
 
 # 商标行列名兼容（源仓 USPTO ETL 惯用名：serial_number/mark_identification/filing_date…）
@@ -231,6 +233,8 @@ async def import_rows(
             await _apply_category_map_row(s, row, line, c)
         elif domain == PT_META_DOMAIN:
             await _apply_pt_meta_row(s, row, line, c)
+        elif domain == PT_SPEC_DOMAIN:
+            await _apply_pt_spec_row(s, row, line, c)
         else:  # create_job 已闸，理论不达
             raise BusinessError("IMPORT_DOMAIN_UNSUPPORTED", f"域 {domain} 无处理器")
 
@@ -615,6 +619,65 @@ async def _apply_pt_meta_row(
             "total": _parse_int(row, _PT_TOTAL_KEYS),
             "reqcnt": _parse_int(row, _PT_REQCNT_KEYS),
             "reqf": _first(row, _PT_REQFIELDS_KEYS),
+        },
+    )
+    c.ok += 1
+
+
+# PT spec 行列名兼容（源仓 walmart_pt_spec 直导 jsonl）
+_PS_TYPE_KEYS = ("walmart_product_type", "walmart_pt", "product_type", "wpt")
+
+
+def _jsonb_or_none(v: Any) -> str | None:
+    """jsonb 列宽容：原生 list/dict → dumps；JSON 串原样；其余/空 → None。"""
+    if v is None:
+        return None
+    if isinstance(v, list | dict):
+        return json.dumps(v, ensure_ascii=False)
+    s = str(v).strip()
+    return s if s else None
+
+
+async def _apply_pt_spec_row(
+    session: AsyncSession, row: dict[str, Any], line: int, c: _Counters
+) -> None:
+    """幂等 upsert 一行到 refdata.pt_spec（键 walmart_product_type，R3b 弹药）。
+
+    err 仅一种：walmart_product_type 缺失。has_real_cert/has_soft_cert 布尔宽容
+    （_parse_flag）；jsonb 列（real_cert_fields/soft_cert_fields/required_fields/
+    fields 忽略 fields——审核只需 cert 与统计列）。
+    """
+    pt = _first(row, _PS_TYPE_KEYS)
+    if not pt:
+        c.err += 1
+        c.errors.append({"line": line, "reason": "walmart_product_type 缺失", "row": None})
+        return
+    await session.execute(
+        text(
+            "INSERT INTO refdata.pt_spec"
+            " (walmart_product_type, has_real_cert, real_cert_fields, has_soft_cert,"
+            "  soft_cert_fields, total_fields, required_count, required_fields, updated_at)"
+            " VALUES (:pt, :hrc, cast(:rcf AS jsonb), :hsc, cast(:scf AS jsonb),"
+            "  :total, :reqcnt, cast(:reqf AS jsonb), now())"
+            " ON CONFLICT (walmart_product_type) DO UPDATE SET"
+            "  has_real_cert = EXCLUDED.has_real_cert,"
+            "  real_cert_fields = EXCLUDED.real_cert_fields,"
+            "  has_soft_cert = EXCLUDED.has_soft_cert,"
+            "  soft_cert_fields = EXCLUDED.soft_cert_fields,"
+            "  total_fields = EXCLUDED.total_fields,"
+            "  required_count = EXCLUDED.required_count,"
+            "  required_fields = EXCLUDED.required_fields,"
+            "  updated_at = now()"
+        ),
+        {
+            "pt": pt.strip(),
+            "hrc": _parse_flag(row, ("has_real_cert",)),
+            "rcf": _jsonb_or_none(row.get("real_cert_fields")),
+            "hsc": _parse_flag(row, ("has_soft_cert",)),
+            "scf": _jsonb_or_none(row.get("soft_cert_fields")),
+            "total": _parse_int(row, ("total_fields", "total")),
+            "reqcnt": _parse_int(row, ("required_count",)),
+            "reqf": _jsonb_or_none(row.get("required_fields")),
         },
     )
     c.ok += 1

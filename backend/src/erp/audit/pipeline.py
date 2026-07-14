@@ -364,17 +364,27 @@ def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) ->
 
 
 def strip_json_fences(raw_text: str) -> str:
-    """剥掉模型偶发的 markdown 代码栏（```json … ```）——R2-02 对拍 v4-flash 实测
-    9/200 输出带栏导致解析失败。只剥外层栏，内容原样；非栏文本原样返回。"""
+    """剥掉模型偶发的 markdown 代码栏（```json … ```）+ 前后缀杂文本容错。
+
+    v4-flash 实测两类形态（对拍 round-2 栏 9/200、round-7 杂文本 3/200）：
+    ①代码栏包裹；②JSON 前/后混入解释文字。处理=剥外层栏 + 截取最外层大括号；
+    截断（缺闭合括号）仍解析失败 → fail-closed NR（不猜补）。"""
     t = raw_text.strip()
-    if not t.startswith("```"):
-        return t
-    t = t[3:]
-    if t[:4].lower() == "json":
-        t = t[4:]
-    t = t.strip()
-    if t.endswith("```"):
-        t = t[:-3].strip()
+    if t.startswith("```"):
+        t = t[3:]
+        if t[:4].lower() == "json":
+            t = t[4:]
+        t = t.strip()
+        if t.endswith("```"):
+            t = t[:-3].strip()
+    if not t.startswith("{"):
+        i = t.find("{")
+        if i >= 0:
+            t = t[i:]
+    if not t.endswith("}"):
+        j = t.rfind("}")
+        if j >= 0:
+            t = t[: j + 1]
     return t
 
 

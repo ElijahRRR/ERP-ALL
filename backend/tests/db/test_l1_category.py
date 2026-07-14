@@ -32,6 +32,7 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
         like = (f"{PREFIX}%",)
         conn.execute("DELETE FROM refdata.category_map WHERE amazon_category LIKE %s", like)
         conn.execute("DELETE FROM refdata.pt_meta WHERE walmart_product_type LIKE %s", like)
+        conn.execute("DELETE FROM refdata.pt_spec WHERE walmart_product_type LIKE %s", like)
 
     with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
         _wipe(conn)
@@ -45,6 +46,8 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
             (f"{PREFIX}_Mega", "Electronics", False, "普通商品", "是", None),  # R0 大类硬禁
             (f"{PREFIX}_Cert", "Home", False, "附条件允许", "需评估上架", "需 FDA 注册"),  # R3a
             (f"{PREFIX}_Eval", "Home", False, "附条件允许", "需评估风险", None),  # 可售（需评估*）
+            (f"{PREFIX}_SpecHeater", "Home", False, "普通商品", "是", None),  # R3b 整机
+            (f"{PREFIX}_Fan Replacement Parts", "Home", False, "普通商品", "是", None),  # R3b 小件
         ]
         with conn.cursor() as cur:
             cur.executemany(
@@ -67,6 +70,8 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
             (f"{PREFIX}/Gate/Mega", f"{PREFIX}_Mega", False),  # R0 mega
             (f"{PREFIX}/Gate/Cert", f"{PREFIX}_Cert", False),  # R3a cert
             (f"{PREFIX}/Gate/Eval", f"{PREFIX}_Eval", False),  # 需评估* 可售
+            (f"{PREFIX}/Gate/SpecWhole", f"{PREFIX}_SpecHeater", False),  # R3b 整机拒
+            (f"{PREFIX}/Gate/SpecSmall", f"{PREFIX}_Fan Replacement Parts", False),  # 小件放
         ]
         with conn.cursor() as cur:
             cur.executemany(
@@ -79,6 +84,12 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
             "INSERT INTO refdata.category_map"
             " (amazon_category, walmart_product_type, browse_node_id) VALUES (%s,%s,%s)",
             (f"{PREFIX}/Node/Path", f"{PREFIX}_Drinkware", "998877"),
+        )
+        # R3b：官方 spec 认证层（has_real_cert=true；整机拒/小件放由 nrtl 分类器定）
+        conn.execute(
+            "INSERT INTO refdata.pt_spec (walmart_product_type, has_real_cert)"
+            " VALUES (%s,true),(%s,true)",
+            (f"{PREFIX}_SpecHeater", f"{PREFIX}_Fan Replacement Parts"),
         )
     yield
     with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
@@ -183,6 +194,18 @@ class TestCategoryHardGates:
         r = _l1(category_path=f"{PREFIX}/Gate/Eval")
         assert r["verdict"] == "pass"
         assert r["wpt"] == f"{PREFIX}_Eval"
+
+    def test_r3b_spec_whole_unit_blocked(self) -> None:
+        """R3b：pt_spec.has_real_cert + 整机 PT（nrtl 保守默认）→ NRTL 硬拒。"""
+        r = _l1(category_path=f"{PREFIX}/Gate/SpecWhole")
+        assert r["verdict"] == "reject"
+        assert r["rule_code"] == "cat_requires_cert_hard"
+
+    def test_r3b_spec_small_part_sellable(self) -> None:
+        """R3b 降级：PT 名含 'Replacement Parts' → 小件，不硬拒（源仓 R3b small）。"""
+        r = _l1(category_path=f"{PREFIX}/Gate/SpecSmall")
+        assert r["verdict"] == "pass"
+        assert r["wpt"] == f"{PREFIX}_Fan Replacement Parts"
 
 
 class TestSeedExcluded:

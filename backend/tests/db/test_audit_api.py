@@ -338,6 +338,16 @@ class TestCoerce:
 
         assert l3_response_cacheable(fenced) is True
 
+    def test_json_with_surrounding_prose_parsed(self) -> None:
+        """JSON 前后混入解释文字（round-7 实测 3/200）：截取最外层大括号后解析。"""
+        noisy = '好的，我的判定如下：\n{"verdict": "pass", "reason_category": "none"}\n以上。'
+        assert coerce_l3_result(noisy)["verdict"] == "pass"
+
+    def test_truncated_json_still_fail_closed(self) -> None:
+        """截断（缺闭合括号）不猜补 → 仍 fail-closed NR。"""
+        truncated = '{"verdict": "pass", "reason_category": "no'
+        assert coerce_l3_result(truncated)["verdict"] == "needs_review"
+
     def test_real_brand_does_not_override_illegal_verdict(self) -> None:
         """顶层 verdict 非法→整份响应不可信：嵌套 is_real_brand 不升级硬拒（round-2 R2-22）。
 

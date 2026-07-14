@@ -29,7 +29,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from erp.audit import zh_forbidden
+from erp.audit import nrtl, zh_forbidden
 
 # category_map 里 unmapped 的合法业务标记（非真实 PT，直判需排除）
 _UNMAPPED_MARKER = "无对应Walmart PT"
@@ -61,9 +61,11 @@ _DIRECT_SQL = text(
     "       cm.zh_seller_forbidden AS map_forbidden, cm.requires_certificate,"
     "       cm.rank_no, cm.match_type,"
     "       pm.zh_seller_forbidden AS pt_forbidden, pm.walmart_category, pm.access_state,"
-    "       pm.zh_can_do, pm.requirements"
+    "       pm.zh_can_do, pm.requirements,"
+    "       COALESCE(ps.has_real_cert, false) AS has_real_cert"
     " FROM refdata.category_map cm"
     " JOIN refdata.pt_meta pm ON pm.walmart_product_type = cm.walmart_product_type"
+    " LEFT JOIN refdata.pt_spec ps ON ps.walmart_product_type = cm.walmart_product_type"
     " WHERE (cm.amazon_category = ANY(:keys) OR cm.amazon_leaf = ANY(:keys)"
     "        OR cm.browse_node_id = ANY(:keys))"
     "   AND cm.walmart_product_type <> :unmapped"
@@ -95,6 +97,10 @@ def candidate_block_reason(row: dict[str, Any]) -> str | None:  # noqa: PLR0911 
         return "forbidden_mega_cat"  # R2 seed yaml：18 细粒度禁售大类（词边界）
     req_low = (row["requirements"] or "").lower()
     if req_low and any(kw in req_low for kw in _HARD_CERT_KWS):
+        return "cat_requires_cert_hard"
+    # R3b（官方 spec 层，源仓第 2 数据源）：has_real_cert 且 PT 为整机 → NRTL 硬拒；
+    # 小件降级不拒（源仓 R3b small_part 软证据）。pt_spec 未导入时 COALESCE false 短路。
+    if row.get("has_real_cert") and nrtl.classify_nrtl_pt(row["wpt"]) == "whole_unit":
         return "cat_requires_cert_hard"
     return None
 
