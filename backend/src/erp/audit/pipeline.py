@@ -223,10 +223,12 @@ async def run_l2(
 # round-5 补齐——此前最小子集导致 R5 候选过滤不足、L3 商标信号偏多）
 
 
-# ── L3：LLM 语义审核（R1-10 单策略=知识产权）──
+# ── L3：LLM 语义审核 ──
 
-# 保真移植：业务约束 + 品牌真伪/IP 维度 + 严格 JSON 输出（源仓 _build_system_prompt 精简版；
-# 37 条政策全清单静态段随 R2 全量策略落库后拼接——结构位置已预留在末尾）
+# 源仓 _build_system_prompt base 段【逐字移植】（R2-02 round-8 对齐：同代模型同代数据
+# 仍有 12/200 品牌真伪判定分歧 → 差异收敛到 prompt 文本本身，不再精简/改写）。
+# 末尾由 service 拼接：候选 reason_category 清单（policy_block.reason_categories_block）
+# + POLICY_BLOCK_HEADER + 37 政策静态块。
 L3_SYSTEM_PROMPT = """你是沃尔玛 Marketplace 合规审核 AI (站在沃尔玛官方立场)。
 卖家是中国搬运模式、无任何证书/认证、每日数万产品。
 你只输出严格 JSON, 不要任何解释文字或 markdown 前后缀。
@@ -237,7 +239,33 @@ L3_SYSTEM_PROMPT = """你是沃尔玛 Marketplace 合规审核 AI (站在沃尔�
 - 任何"授权声明"都视为虚假宣称, 一律按侵权判 (无豁免).
 - 默认 pass — 只有清晰证据才 reject.
 
-# 你的判定职责
+# 政策匹配的两类 (重要)
+
+判 reject 时, 与下方"沃尔玛 37 条 Prohibited Products Policy 全清单"做语义匹配,
+按下面两类来判 — **不要把"严格证据"误读为"标题必须明示违规用途"**:
+
+## A. 品类/设备/物料整体禁售 (政策直接禁该物本身, 不论用途)
+当政策 prohibited_items 列出**具体产品品类/设备名/物料名** → 产品本质就是这类东西即 reject:
+  - 例: Policy 1 Alcohol 禁"蒸馏设备" → 产品 = Distillation Apparatus 直接 reject
+        (即使标题写 "for essential oil / water purifier", 设备本身就是禁的)
+  - 例: Policy 17 Hazmat 禁"烟花/灭火器/18650 锂电" → 产品 = 这些即 reject
+  - 例: Policy 37 Tobacco 禁"vape pen/hookah pen" → 产品 = 这些即 reject
+  - 例: Policy 5 Auto 禁"DPF/SCR/EGR delete kit" → 产品 = delete kit 即 reject
+  - 例: Policy 23 Military 禁"防弹衣/战术头盔/手铐/警徽" → 产品 = 这些即 reject
+
+## B. 用途/特征敏感 (政策禁的是子类型/特征, 需文本佐证)
+当政策禁的是产品的**特定属性/用途/年龄段** (而非整个品类), 必须文本里有该属性证据:
+  - 例: Home Goods 禁"有绳窗帘 (corded window blinds)" → 必须含 "corded";
+        "cordless" 反而合规 (CPSC 推荐)
+  - 例: Children's Products 需 CPC → 必须 ≤12 岁儿童用品 (标 "for adult" 不算)
+  - 例: Hazardous 含"EPA-regulated" → 必须真化学品/农药; 命名 "clean" 不算
+
+## 证据要求
+- 类型 A: reason_text 写"产品本质是 [禁售品类], 政策 [Policy N] 直接禁此类"
+- 类型 B: reason_text 必须引用产品原文证据 (title/bullets 原句)
+- 不命中: verdict=pass (默认保守)
+
+# 你的判定职责 (4 个维度)
 
 ## 1. 品牌真伪 (针对 user prompt 列出的"L2 命中词")
 用完整 title/bullets/description 上下文综合判断每个命中词:
@@ -251,8 +279,7 @@ L3_SYSTEM_PROMPT = """你是沃尔玛 Marketplace 合规审核 AI (站在沃尔�
   "designed for X" / "OEM for X" / 品牌名后紧跟型号 (如 "Dyson V6")
 
 ## 2. 冒犯性内容 (Walmart Offensive Content 政策)
-从 title/bullets/description 语义判, 命中以下任一 → reject,
-reason_category='Offensive Content':
+从 title/bullets/description 语义判, 命中以下任一 → reject:
 - 色情 / 成人主题 / 性化未成年 / 捆绑 / 性玩具
 - 种族辱骂 / 仇恨象征 (Confederate / Nazi / Swastika / KKK)
 - 恶搞冒犯 (funny + offensive 混合 / 嘲讽政治人物)
@@ -263,30 +290,55 @@ reason_category='Offensive Content':
 任一 → reject, reason_category='Intellectual Property':
 - 商标仿冒: 已通过维度 1 处理
 - 版权 IP 角色: 卡通 / 电影 / 游戏 / 动漫 IP 名 + 周边商品
+  (贴纸 / T恤 / 毛绒 / 玩具 / 海报 / 杯子 / 钥匙扣)
 - 外观/发明专利: 文本明示仿造 ("Stanley Cup style" / "AirPods case for Apple")
-- 商业包装 (Trade Dress): 仿知名整体视觉
-- 肖像权: 名人姓名 + 周边商品
+- 商业包装 (Trade Dress): 仿知名整体视觉 (可口可乐瓶形 / Tiffany 蓝盒)
+- 肖像权 (Publicity Rights): 名人姓名 + 周边商品
+  (政治人物 / 演员 / 运动员 / 音乐人 / Kpop 艺人)
 - 假冒: "100% Authentic <大牌>" + 显著低价
 
 ## 4. 品牌字段伪装 (brand_misuse)
 brand 填 Unbranded/Generic/小品牌, 但 title/描述暗示某大牌
 → reject, reason_category='brand_misuse'
 
-## 5. 儿童产品 / CPC 兜底 (重要 — 即便类目没标 CPC 也要拦)
-美国 CPSIA 要求所有 ≤12 岁儿童产品必须有 CPC + ASTM/CPSC 实验室测试报告,
-搬运卖家无法提供。判定步骤:
-1. title/bullets/description 是否暗示 ≤12 岁儿童使用:
-   - 显式年龄: "for kids" / "ages 3+" / "infant" / "toddler" / "baby" / "婴儿" / "儿童"
-   - 儿童专用形态: onesie / bib / diaper / stroller / crib / high chair /
-     car seat / pacifier / sippy cup / swaddle
-   - 玩具/教具: squishy / plush toy / stuffed animal / fidget toy / slime kit /
-     play set / playmat / play tent
-2. 排除明确成人/兽用情形: "for adult" / "dog onesie" / "Baby's Breath Flower"(花卉) /
-   给妈妈用的 "Baby Pillow for Mom" 等 → 不算儿童产品
-   **特别注意**: 成品形态是儿童典型玩具的 (squishy/slime/plush/fidget/play dough/
-   stuffed animal), 不管文案写 DIY/adult/decor, 一律算儿童产品.
-3. 命中且无排除 → reject, reason_category="Children's Products"
-   (< 3 岁专用则 "Baby Products"), reason_text 引用 title 原文证据.
+## 5. 儿童产品 / CPC 兜底 (重要 — 即便 L1 PT 没标 CPC 也要拦)
+背景: 美国 CPSIA 法规要求所有 ≤12 岁儿童产品必须有 CPC (Children's Product
+Certificate) + ASTM/CPSC 实验室测试报告. 沃尔玛会强制要求卖家提供, 无 CPC
+→ 上架被警告 / 下架 / 罚款.
+
+L1 类目映射经常因为亚马逊源头分类错误而漏判 (例如 "Baby Bodysuit Extender"
+被亚马逊放在 Sewing Fasteners 类目, L1 选了 Sewing Fasteners 这个非儿童 PT
+→ requirements 字段没 CPC → L2 不会触发软合规警告).
+
+判定步骤:
+1. 看 title / bullets / description 是否暗示 **≤12 岁儿童使用**:
+   - 显式年龄: "for kids", "for children", "ages 3+", "infant", "toddler",
+              "baby", "newborn", "婴儿", "儿童", "小孩"
+   - 儿童专用形态: "onesie", "bodysuit", "bib", "diaper", "stroller",
+              "crib", "high chair", "baby gate", "car seat", "pacifier",
+              "sippy cup", "training pants", "swaddle", "burp cloth"
+   - 玩具/教具: "squishy", "plush toy", "stuffed animal", "fidget toy",
+              "slime kit", "sticker book for kids", "kid's craft kit",
+              "play set", "playmat", "play tent", "kid's drawing"
+   - 儿童规格描述: "BPA-free baby bottle", "non-toxic for toddlers" 等
+2. 排除明确成人/兽用情形:
+   - "for adult", "adult onesie", "for pets", "dog onesie" → 不算儿童产品
+   - "Baby Pillow for Mom Comfort" (产品是给妈妈用的, 不是给婴儿) → 不算
+   - "Baby's Breath Flower" (婴儿之吻花卉) → 文字含 baby 但是植物 → 不算
+   - 修车工具 "infant car seat protector" 给汽车用 → 不算 (但接近边界, 谨慎)
+
+   **特别注意 — 这些情况打着 "DIY/craft/adult" 旗号但仍算儿童产品**:
+   - "DIY Squishy Kit" / "DIY Slime Kit" — 成品 squishy/slime 是 ≤12 岁儿童玩具,
+     即使 kit 是大人帮做, 沃尔玛仍判 needs_cpc.
+   - "Adult Putty Toy" — 沃尔玛把所有 putty/slime 类减压玩具判 children product,
+     因为流行儿童市场.
+   - "Plush Animal for Home Decor" — 即使描述是装饰品, 毛绒玩偶仍要 CPC.
+   - 规则: 成品形态是儿童典型玩具的 (squishy/slime/plush/fidget/play dough/stuffed
+     animal), **不管文案怎么写**, 一律判 reject + "Children's Products".
+3. 命中且无明确成人/兽用排除 → verdict='reject',
+   reason_category="Children's Products" (或 "Baby Products" 如果 < 3 岁专用),
+   reason_text 必须明确指出: "<产品类别>属于儿童用品, 需 CPC + ASTM 认证, 卖家
+   未提供 → 上架会被警告". 必须引用 title 原文证据.
 
 # 输出规范 (严格 JSON)
 
@@ -297,7 +349,7 @@ brand 填 Unbranded/Generic/小品牌, 但 title/描述暗示某大牌
   "signals": {
     "has_trademark_symbol": true|false,
     "has_authorization_claim": true|false,
-    "offensive_signals": []
+    "offensive_signals": ["<具体信号>",...]
   },
   "blacklist_brand_verdict": [
     {"brand": "<命中词>", "is_real_brand": true|false, "evidence": "<简短理由>"}
@@ -307,13 +359,22 @@ brand 填 Unbranded/Generic/小品牌, 但 title/描述暗示某大牌
 
 # 约束
 - 默认 verdict=pass, 只有清晰证据才 reject
+- reason_category 必须从下方"候选 reason_category 列表"里选一项
 - verdict=pass 时 reason_category 必须是 "none"
-- blacklist_brand_verdict: 对 L2 命中词每个都要 verdict (最多 10 个)
+- blacklist_brand_verdict: 对 L2 R4/R5 命中词每个都要 verdict (最多 10 个)
 - 不凭空添加未列出的品牌
 
 # 候选 reason_category (verdict=reject 时必选其一)
-Intellectual Property / brand_misuse / Offensive Content /
-Children's Products / Baby Products / 或下方政策清单中的 category_en
+"""
+
+# 源仓 _build_system_prompt 拼接段（候选清单之后、政策块之前）——逐字
+POLICY_BLOCK_HEADER = """
+
+# 沃尔玛 37 条 Prohibited Products Policy 全清单 (LLM 训练数据外的内部规则)
+
+判产品是否违规时与下面清单做语义匹配, 命中任一 → reason_category 填对应 category_en.
+不命中 → 默认 verdict=pass.
+
 """
 
 # 静态合法类目（源仓 5 维判定的产出类目；37 政策 category_en 由 service 运行时扩入）
@@ -330,37 +391,74 @@ _LEGACY_CATEGORY_MAP = {
 }
 
 
-def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) -> str:
+_DESC_MAX = 600  # 源仓长描述截断上限
+
+
+def build_user_prompt(
+    product: dict[str, Any],
+    l2_hits: list[dict[str, Any]],
+    *,
+    walmart_pt: str | None = None,
+    walmart_category: str | None = None,
+) -> str:
+    """源仓 _build_user_prompt 结构对齐（round-8 逐字化）：产品信息段 + L2 命中段 +
+    待评估品牌词段。R7/R8 软证据不进 prompt（源仓 _summarize_l2_hits 只渲染 R4/R5——
+    hits 留档 audit_hit，判定口径与旧一致）。政策路由提示行与 pt_notes 行省略
+    （对应模块未移植；缺省=无该行，与"路由无结果"的旧行为一致）。"""
     attrs = product.get("attrs") or {}
-    hit_words: list[str] = []
-    promo_phrases: list[str] = []
-    sensitive_terms: list[str] = []
+    l2_lines: list[str] = []
+    brand_words: list[str] = []
     for h in l2_hits:
         ev = h.get("evidence") or {}
         code = h.get("rule_code", "")
-        if code == "l2_r7_content_promotional":
-            promo_phrases += list(ev.get("strong_phrases", [])) + list(ev.get("allcaps_runs", []))
-        elif code == "l2_r8_sensitive":
-            sensitive_terms += list(ev.get("matched", []))
-        else:
-            hit_words += [m["brand"] for m in ev.get("matches", [])]
-            hit_words += list(ev.get("matched_marks", []))
-    lines = [
-        f"brand: {product.get('brand') or '(空)'}",
-        f"title: {product.get('title') or ''}",
-    ]
-    bullets = attrs.get("bullets") or []
-    if bullets:
-        lines.append("bullets: " + " | ".join(map(str, bullets[:8])))
-    desc = str(attrs.get("description") or "")
-    if desc:
-        lines.append(f"description: {desc[:1500]}")
-    lines.append("L2 命中词: " + (" / ".join(dict.fromkeys(hit_words)) if hit_words else "(无)"))
-    if promo_phrases:
-        lines.append("促销宣称词(判是否有事实依据): " + " / ".join(dict.fromkeys(promo_phrases)))
-    if sensitive_terms:
-        lines.append("敏感内容命中(判是否冒犯/违规): " + " / ".join(dict.fromkeys(sensitive_terms)))
-    return "\n".join(lines)
+        if code == "l2_r4_title_desc_blacklist":
+            names = [m.get("brand", "") for m in ev.get("matches", []) if m.get("brand")][:10]
+            brand_words.extend(names)
+            l2_lines.append(
+                f"* 标题/描述命中黑名单(R4, 共{len(ev.get('matches', []))}个, 前10): "
+                + ", ".join(names)
+            )
+        elif code == "l2_r5_trademark_live":
+            marks = [str(m) for m in ev.get("matched_marks", [])][:10]
+            l2_lines.append(f"* USPTO LIVE 商标(R5, 前10): {', '.join(marks)}")
+            brand_words.extend(m.lower() for m in marks if m)
+    l2_txt = "\n".join(l2_lines) if l2_lines else "(L2 无命中)"
+    uniq_words = list(dict.fromkeys(brand_words))[:10]
+    brand_list = (
+        "\n".join(f"  - {b}" for b in uniq_words)
+        if uniq_words
+        else "  (无 R4/R5 命中, 跳过品牌真伪判定)"
+    )
+
+    bullets = [str(b) for b in (attrs.get("bullets") or [])]
+    bullets_txt = "\n".join(f"  - {b}" for b in bullets[:5]) or "  (无)"
+    desc = str(attrs.get("description") or "").strip()
+    if len(desc) > _DESC_MAX:
+        desc = desc[:_DESC_MAX] + "...(已截断)"
+
+    return f"""# 产品信息
+
+ASIN: {product.get("source_ref") or "(空)"}
+标题: {product.get("title") or ""}
+品牌字段(商家填报): {product.get("brand") or "(空)"}
+原产国: {attrs.get("country_of_origin") or "(空)"}
+Amazon 类目: {product.get("category_path") or "(空)"}
+沃尔玛 PT: {walmart_pt or "(空)"}
+沃尔玛 Category: {walmart_category or "(空)"}
+
+五点描述:
+{bullets_txt}
+
+长描述:
+{desc or "(空)"}
+
+# L2 规则引擎命中
+{l2_txt}
+
+# 待评估的品牌/商标词 (来自 L2 R4+R5, 前 10 个, 综合上下文判 is_real_brand)
+
+{brand_list}
+"""
 
 
 def strip_json_fences(raw_text: str) -> str:

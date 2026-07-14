@@ -281,6 +281,7 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
         # 无直判/无类目→软标记放行，L2/L3 照跑（类目缺图=数据缺口非检查异常，
         # 对拍 round-1 教训+旧系统 parity）。resolved wpt 记入命中证据供上架/L2 复用。
         l1_walmart_category: str | None = None
+        l1_wpt: str | None = None
         if verdict == "pass" and "l1" in levels:
             l1 = await l1_category.run_l1(s, product)
             await _write_hit(
@@ -297,6 +298,7 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
                 verdict, reject_level = "reject", "l1"
             elif l1["rule_code"] == "l1_category_mapped":
                 l1_walmart_category = l1["evidence"].get("walmart_category")
+                l1_wpt = l1["wpt"]
 
         # L2：软证据（不否决）。L1 直判出的 walmart_category 供 R5 Nice 过滤
         l2_hits: list[dict[str, Any]] = []
@@ -344,17 +346,28 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
                 )
             else:
                 cfg = policy["config"] or {}
-                # 37 条政策静态块拼 system prompt 末尾（吃 provider prefix cache；所有产品
-                # 同一份，前缀稳定=cache 命中。空表→空块，退回单策略）。政策文本变→system
-                # 内容变→llm_cache 键自动失效。见 l3-policy-design.md。
+                # 拼接顺序=源仓 _build_system_prompt 逐字（round-8 对齐）：base +
+                # 候选 reason_category 清单 + 政策块标题 + 37 条政策静态块。所有产品
+                # 同一份 → 吃 provider prefix cache；政策/清单变 → 版本变 → 缓存键失效。
                 policy_block = await policy_module.load_policy_block(s)
+                cats_block = await policy_module.reason_categories_block(s)
                 valid_categories = await policy_module.valid_reason_categories(s)
-                system_content = f"[policy_v{policy['version']}]\n" + pipeline.L3_SYSTEM_PROMPT
+                system_content = (
+                    f"[policy_v{policy['version']}]\n" + pipeline.L3_SYSTEM_PROMPT + cats_block
+                )
                 if policy_block:
-                    system_content += "\n\n" + policy_block
+                    system_content += pipeline.POLICY_BLOCK_HEADER + policy_block
                 messages = [
                     {"role": "system", "content": system_content},
-                    {"role": "user", "content": pipeline.build_user_prompt(product, l2_hits)},
+                    {
+                        "role": "user",
+                        "content": pipeline.build_user_prompt(
+                            product,
+                            l2_hits,
+                            walmart_pt=l1_wpt,
+                            walmart_category=l1_walmart_category,
+                        ),
+                    },
                 ]
                 # 标准模型=deepseek-v4-flash（Owner 长期实测定标，D-Q58）；坏输出由
                 # strip_json_fences + fail-closed 兜底

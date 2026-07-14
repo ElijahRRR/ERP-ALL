@@ -311,3 +311,10 @@
 - **R3b 全链落地**（85ff698，最后一块可移植缺口）：0019 refdata.pt_spec（源仓 walmart_pt_spec 6,942 行列级保真）+ nrtl.py 整机/小件分类器（42+46 词）+ L1 gate LEFT JOIN（has_real_cert 且整机→cat_requires_cert_hard，小件降级放行）+ PT_SPEC_DOMAIN 导入通道 + import_pt_spec CLI。
 - **L3 输出容错升级**：strip_json_fences 增最外层大括号截取（round-7 3/200 JSON 混杂解释文字）；截断仍 fail-closed。199 pytest+ruff+mypy(65) 全绿。
 - Next：部署机 ①导 pt_spec jsonl ②发 21 条 pass->reject 的 reject_level+hits 聚类（决定最后一步：若 l3 聚集→考虑 L3 prompt 与源仓逐字对齐；若 l1 聚集→PT 选择差异属 L1-LLM 双确认缺席，验收判读）③round-8。
+
+### Session: 2026-07-15 (round-8 86% + L3 prompt 逐字对齐——最后一张牌)
+- **round-8（pt_spec 6,942 导入，e552500）：86%（+1.5）**。旧拒侧 94/100（R3b 兑现）；NR 0（JSON 容错兑现）。**round-7 聚类破案**：pass->reject 21 = **13 l3**（12 条同链 R4/R5 命中→L3 判真品牌）+ 4 l1 cert（我方 map 候选被 gate 而旧 L1-LLM 选了别的 PT——架构取舍）+ 4 l0（lark ASIN/类目窗口内小漂移）。同代模型同代数据仍 12 条品牌真伪分歧 → 矛头=prompt 文本差异（我们此前是"精简版+补维度"非逐字）。
+- **L3 prompt 逐字对齐（本单）**：①system prompt 换源仓 base 原文——补上此前缺失的整段「# 政策匹配的两类（A 品类整体禁售/B 需文本佐证）+ 证据要求」（塑造判定松紧的关键段）、IP 维度完整示例清单（贴纸/T恤/毛绒…；可口可乐瓶形/Tiffany 蓝盒；政治人物/演员…）、输出规范 offensive_signals 原格式；②候选 reason_category 由 policy_block.reason_categories_block 渲染（'  - Cat' 每行，seq 序 37 类+brand_misuse+none）+ POLICY_BLOCK_HEADER 源仓原文；③政策块渲染格式源仓逐字（## {seq}. {en} ({zh}) / 状态|中国卖家 / 禁 / 高风险备注——备注行此前遗漏）；④user prompt 结构源仓对齐：产品信息段（ASIN/标题/品牌字段/原产国/Amazon 类目/沃尔玛 PT/Category）+ 五点/长描述(600 截断) + L2 命中段 + 待评估品牌词段；**R7/R8 不再进 prompt**（源仓 _summarize_l2_hits 只渲染 R4/R5——判定口径与旧一致，hits 仍留档）。service 拼接顺序同步、传 l1 wpt/category。
+- 测试：test_l2_content prompt 测试改口径（R7/R8 不进 prompt）+ 无命中占位；test_l3_policy 块格式断言更新。200 pytest+ruff+mypy 全绿。
+- **诚实天花板**：4 l0（窗口内小漂移）+ 4 l1（0-LLM 直判 vs LLM 双确认架构差）≈ 8 条基本不可代码收敛 → 上限 ≈ 96%；本单瞄准 13 条 l3，需再收 ≥8 条即过线（86%→90%）。
+- Next：round-9 重跑。若仍差 1-2 条 → 残余全部可溯源（漂移/架构/散差），建议以「已证成因清单」补充验收判读交 Owner。

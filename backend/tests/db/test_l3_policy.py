@@ -119,8 +119,9 @@ def test_policy_block_after_import_and_version_invalidation() -> None:
 
     block, cats = asyncio.run(_load())
     # 块含政策 header + seq 排序（Intellectual Property seq=1 在 Hazardous seq=2 前）
-    assert f"## {PREFIX} Intellectual Property" in block
-    assert f"## {PREFIX} Hazardous Items" in block
+    # round-8 起格式=源仓逐字：## {seq}. {cat_en} ({cat_zh})
+    assert f"## 1. {PREFIX} Intellectual Property" in block
+    assert f"## 2. {PREFIX} Hazardous Items" in block
     assert block.index("Intellectual Property") < block.index("Hazardous Items")
     # 类目候选扩展为小写 category_en + 静态两类
     assert f"{PREFIX} hazardous items".lower() in cats
@@ -131,7 +132,7 @@ def test_policy_block_after_import_and_version_invalidation() -> None:
         _import_policies([{"category_en": f"{PREFIX} Weapons", "prohibited_items": "guns"}])
     )
     block2, cats2 = asyncio.run(_load())
-    assert f"## {PREFIX} Weapons" in block2
+    assert f"{PREFIX} Weapons (" in block2  # round-8 源仓格式：## {seq}. {en} ({zh})
     assert f"{PREFIX} weapons".lower() in cats2
 
 

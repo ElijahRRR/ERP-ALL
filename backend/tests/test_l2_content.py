@@ -78,7 +78,9 @@ def test_r8_empty() -> None:
 # ── L3 user prompt surface ──
 
 
-def test_build_user_prompt_surfaces_r7_r8() -> None:
+def test_build_user_prompt_source_aligned() -> None:
+    """round-8 逐字对齐源仓 _build_user_prompt：R4/R5 进 prompt；R7/R8 只留档
+    audit_hit 不进 prompt（源仓 _summarize_l2_hits 同）；产品信息段 + 待评估品牌词段。"""
     product = {"brand": "Generic", "title": "Mickey Mouse Premium Quality Mug", "attrs": {}}
     l2_hits = [
         {
@@ -91,7 +93,16 @@ def test_build_user_prompt_surfaces_r7_r8() -> None:
         },
         {"rule_code": "l2_r4_title_desc_blacklist", "evidence": {"matches": [{"brand": "acme"}]}},
     ]
-    prompt = build_user_prompt(product, l2_hits)
-    assert "促销宣称词" in prompt and "Premium Quality" in prompt
-    assert "敏感内容命中" in prompt and "Mickey Mouse" in prompt
-    assert "L2 命中词" in prompt and "acme" in prompt  # R4 仍走原通道
+    prompt = build_user_prompt(product, l2_hits, walmart_pt="Drinkware", walmart_category="Home")
+    assert "# 产品信息" in prompt
+    assert "沃尔玛 PT: Drinkware" in prompt
+    assert "标题/描述命中黑名单(R4" in prompt and "acme" in prompt
+    assert "# 待评估的品牌/商标词" in prompt
+    assert "促销宣称词" not in prompt  # R7/R8 不进 prompt（源仓口径）
+    assert "敏感内容命中" not in prompt
+
+
+def test_build_user_prompt_no_hits_placeholder() -> None:
+    prompt = build_user_prompt({"title": "Plain Mug", "attrs": {}}, [])
+    assert "(L2 无命中)" in prompt
+    assert "(无 R4/R5 命中, 跳过品牌真伪判定)" in prompt

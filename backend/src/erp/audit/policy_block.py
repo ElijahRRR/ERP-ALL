@@ -16,12 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # 通用两类始终在候选（源仓 _ALWAYS_INCLUDE）；其余 = 政策表 category_en
 _STATIC_CATEGORIES = {"intellectual property", "brand_misuse", "none"}
+_STATIC_DISPLAY = ["Intellectual Property", "brand_misuse", "none"]
 
-# 每条政策压缩上限（源仓 ~240 字；37 条 ≈ 5500 字 ≈ 4-5K token，可控）
-_PROHIBITED_MAX = 240
-
-# 缓存：(version, block, categories)。单进程 asyncio，重复重建无害，绝不返回过期
-_CACHE: dict[str, Any] = {"version": None, "block": "", "categories": _STATIC_CATEGORIES}
+# 缓存：(version, block, categories, display)。单进程 asyncio，重复重建无害，绝不返回过期
+_CACHE: dict[str, Any] = {
+    "version": None,
+    "block": "",
+    "categories": _STATIC_CATEGORIES,
+    "display": _STATIC_DISPLAY,
+}
 
 
 async def _version(session: AsyncSession) -> str:
@@ -38,34 +41,16 @@ async def _version(session: AsyncSession) -> str:
     return str(val)
 
 
-def _summarize(text_val: str | None, max_chars: int = _PROHIBITED_MAX) -> str:
-    """prohibited_items 二次摘要：按 • / 换行拆条，取前若干条到字数上限（源仓同款）。"""
-    if not text_val:
-        return ""
-    cleaned = text_val.replace("\r\n", "\n").replace("\r", "\n")
-    bullets = [b.strip() for b in cleaned.replace("•", "\n").split("\n") if b.strip()]
-    if not bullets:
-        return text_val[:max_chars]
-    out: list[str] = []
-    total = 0
-    for b in bullets:
-        one = b[:80]
-        if total + len(one) + 3 > max_chars:
-            if not out:
-                out.append(one[: max_chars - 3])
-            break
-        out.append(one)
-        total += len(one) + 3
-    return " / ".join(out)
-
-
-async def _rebuild(session: AsyncSession) -> tuple[str, set[str]]:
+async def _rebuild(session: AsyncSession) -> tuple[str, set[str], list[str]]:
+    """→ (政策块, 合法类目小写集, 候选类目显示序列)。块格式=源仓
+    _format_full_policy_block 逐字（round-8 对齐）：## {seq}. {en} ({zh}) /
+    状态|中国卖家 / 禁 / 高风险备注。块顶标题由 pipeline.POLICY_BLOCK_HEADER 提供。"""
     rows = (
         (
             await session.execute(
                 text(
-                    "SELECT category_en, category_zh, overall_status, prohibited_items,"
-                    " zh_seller_risk FROM refdata.prohibited_policy"
+                    "SELECT seq, category_en, category_zh, overall_status, prohibited_items,"
+                    " zh_seller_risk, zh_seller_notes FROM refdata.prohibited_policy"
                     " ORDER BY seq NULLS LAST, category_en"
                 )
             )
@@ -74,38 +59,55 @@ async def _rebuild(session: AsyncSession) -> tuple[str, set[str]]:
         .all()
     )
     if not rows:
-        return "", set(_STATIC_CATEGORIES)
-    lines = ["# 沃尔玛禁售政策全清单（判 reject 时与下列做语义匹配，reason_category 取命中项）"]
+        return "", set(_STATIC_CATEGORIES), list(_STATIC_DISPLAY)
+    parts: list[str] = []
     categories = set(_STATIC_CATEGORIES)
-    for r in rows:
-        cat_en = r["category_en"]
+    display: list[str] = []
+    for i, r in enumerate(rows, start=1):
+        cat_en = (r["category_en"] or "").strip()
+        cat_zh = (r["category_zh"] or "").strip()
+        status = (r["overall_status"] or "").strip().replace("\n", " ")[:50]
+        risk = (r["zh_seller_risk"] or "").strip().replace("\n", " ")[:30]
+        prohib = (
+            (r["prohibited_items"] or "").replace("\n", " ").replace("•", "/").strip()[:240]
+        )
+        notes = (r["zh_seller_notes"] or "").replace("\n", " ").strip()[:80]
         categories.add(cat_en.lower())
-        header = f"## {cat_en}"
-        if r["category_zh"]:
-            header += f"（{r['category_zh']}）"
-        if r["zh_seller_risk"]:
-            header += f" — 风险:{r['zh_seller_risk']}"
-        lines.append(header)
-        if r["overall_status"]:
-            lines.append(f"状态: {str(r['overall_status'])[:50]}")
-        summary = _summarize(r["prohibited_items"])
-        if summary:
-            lines.append(f"禁: {summary}")
-        lines.append("")
-    return "\n".join(lines), categories
+        display.append(cat_en)
+
+        line = f"## {r['seq'] or i}. {cat_en} ({cat_zh})"
+        if status:
+            line += f"\n状态: {status}"
+            if risk:
+                line += f" | 中国卖家:{risk}"
+        if prohib:
+            line += f"\n禁: {prohib}"
+        if notes and "红" in risk:  # 仅高风险政策保留卖家备注（源仓：节省 token）
+            line += f"\n备注: {notes}"
+        parts.append(line)
+    display += ["brand_misuse", "none"]
+    return "\n\n".join(parts), categories, display
 
 
 async def _ensure(session: AsyncSession) -> None:
     version = await _version(session)
     if _CACHE["version"] != version:
-        block, categories = await _rebuild(session)
-        _CACHE.update(version=version, block=block, categories=categories)
+        block, categories, display = await _rebuild(session)
+        _CACHE.update(version=version, block=block, categories=categories, display=display)
 
 
 async def load_policy_block(session: AsyncSession) -> str:
     """37 条政策静态块（拼 L3 system prompt 末尾）；空表 → 空串。"""
     await _ensure(session)
     return str(_CACHE["block"])
+
+
+async def reason_categories_block(session: AsyncSession) -> str:
+    """候选 reason_category 显示清单（源仓 _get_full_reason_categories 格式：
+    '  - Cat' 每行；政策表 category_en 按 seq 序 + brand_misuse + none）。"""
+    await _ensure(session)
+    display: list[str] = _CACHE["display"]
+    return "\n".join(f"  - {c}" for c in display)
 
 
 async def valid_reason_categories(session: AsyncSession) -> set[str]:
@@ -117,4 +119,6 @@ async def valid_reason_categories(session: AsyncSession) -> set[str]:
 
 def clear_cache() -> None:
     """测试隔离用：清缓存强制下次重建。"""
-    _CACHE.update(version=None, block="", categories=_STATIC_CATEGORIES)
+    _CACHE.update(
+        version=None, block="", categories=_STATIC_CATEGORIES, display=_STATIC_DISPLAY
+    )
