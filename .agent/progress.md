@@ -288,3 +288,12 @@
 - 测试：test_r5_nice_filter 3 例（过滤命中/无关类滤除+NULL 滤除/未过滤全中）+ TestEmptyResponseRetry。189 pytest+ruff+mypy(62) 全绿。
 - **战略判断（给 Owner）**：平台期残余大头疑似**groundtruth 时效**（黑名单/商标数据在旧判定之后增长——旧系统今天重跑也会拒）与 LLM 散差，需部署机做"品牌入库时间 vs 旧判定时间"核验后再谈验收口径（重采样近期判定 or 漂移行重分类）。
 - Next：round-5（含 Nice 过滤+重试+max_tokens 2000）+ 漂移核验 + reject->pass 旧因 Top10（尚未见文本）。
+
+### Session: 2026-07-14 (round-5 77% + 旧因 Top10 破案——lark 黑名单缺数据 + stopwords 全量)
+- **round-5（9490ec4/0018/max_tokens=2000）：77%（+4.5）**。Nice 过滤+重试+max_tokens 全见效：NR 0、bad_json 0、pass->reject 31→22。残余 46=pass->reject 22 + reject->pass 24。
+- **漂移假设被数据否定**：R4 命中的 86 对品牌**全部早于旧判定入库**——旧系统判定时看得见这些词仍放行=旧 L3 判了通用词而我们判真品牌。pass->reject 残余定性=LLM 判定散差 + R5 候选面偏大（stopwords 子集）。
+- **reject->pass 旧因 Top10 破案**（首次拿到文本）：8× `phase0_lark_blacklist_amazon_cat` + 1× `_asin`——**旧系统飞书维护的类目/ASIN 黑名单，迁移时只导了品牌(41,992)，类目/ASIN/卖家三张全漏**（纯数据缺口）；4× cat_requires_cert_hard（含"整机电器必须 NRTL"=R3b walmart_pt_spec 驱动，表未导+分类器未移植）；1× history_shortcut（复放历史拒，不可复现）。
+- **修二件**：①L0 类目黑名单双键查找——移植源仓 `normalize_amazon_category`（去空格+分隔符统一'->'），查 `_norm(原文)` + `_norm(normalize(原文))` 两键，使导入的旧 lark 归一形态数据可命中；②stopwords 全量移植（源仓 707 词+长度/数字规则 vs 此前 ~30 词子集，R5 候选过滤不足的实级缺口，erp/audit/stopwords.py 逐字保真+文件级 lint 豁免）。
+- 测试：lark 归一形态 L0 命中集成 1 例（_mk_product 扩 category_path）。190 pytest+ruff+mypy(63) 全绿。
+- **round-6 前置（部署机数据）**：从旧 dump 单表还原 phase0_blacklist_amazon_cats/asins/sellers → csv → import_blacklist 三域导入。**round-6 后仍开的口**：R3b NRTL（需 walmart_pt_spec 表+nrtl_classifier 移植，视 round-6 残余定）；LLM 散差与旧系统模型代际（groundtruth 跨新旧模型时代）→ 验收口径需 Owner 裁（重采样近期/散差类重分类）。
+- Next：部署机导 lark 三表 → round-6。

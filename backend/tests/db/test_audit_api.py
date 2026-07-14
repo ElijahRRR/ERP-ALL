@@ -143,17 +143,27 @@ def _mk_product(migrated_db: str, team: int, **kw) -> int:
         "source_ref": kw.get("asin", "B0AUDIT001"),
         "title": kw.get("title", "Plain Ceramic Mug 12oz"),
         "brand": kw.get("brand"),
+        "category_path": kw.get("category_path"),
         "attrs": json.dumps(kw.get("attrs") or {}, ensure_ascii=False),
     }
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         return conn.execute(
-            "INSERT INTO app.product (team_id, source_channel, source_ref, title, brand, attrs)"
-            " VALUES (%s, 'amazon', %s, %s, %s, %s::jsonb)"
+            "INSERT INTO app.product"
+            " (team_id, source_channel, source_ref, title, brand, category_path, attrs)"
+            " VALUES (%s, 'amazon', %s, %s, %s, %s, %s::jsonb)"
             " ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE SET"
-            "  title = excluded.title, brand = excluded.brand, attrs = excluded.attrs,"
+            "  title = excluded.title, brand = excluded.brand,"
+            "  category_path = excluded.category_path, attrs = excluded.attrs,"
             "  status = 'ingested'"
             " RETURNING id",
-            (team, row["source_ref"], row["title"], row["brand"], row["attrs"]),
+            (
+                team,
+                row["source_ref"],
+                row["title"],
+                row["brand"],
+                row["category_path"],
+                row["attrs"],
+            ),
         ).fetchone()[0]
 
 
@@ -184,6 +194,40 @@ class TestL0:
         assert body["verdict"] == "reject"
         assert body["reject_level"] == "l0"
         assert fake_llm.calls == 0
+
+    def test_lark_category_blacklist_hits_normalized_form(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm
+    ) -> None:
+        """旧 lark 类目黑名单（去空格 '->' 归一形态入库）→ 带空格原始路径命中（round-5）。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO app.blacklist_category (team_id, category_ref, source, status)"
+                " VALUES (NULL, 'zlarkpatio,lawn&garden->pots', 'import', 'active')"
+                " ON CONFLICT DO NOTHING"
+            )
+        try:
+            pid = _mk_product(
+                migrated_db,
+                seeded["team"],
+                asin="B0AUDL0004",
+                title="Ceramic Planter Pot",
+                category_path="ZLarkPatio, Lawn & Garden > Pots",
+            )
+            auth = _login(client, ADMIN, PASSWORD)
+            body = client.post(f"/api/v1/products/{pid}/audit", headers=auth, json={}).json()
+            assert body["verdict"] == "reject"
+            assert body["reject_level"] == "l0"
+            assert fake_llm.calls == 0
+            run = client.get(f"/api/v1/audit-runs/{body['run_id']}", headers=auth).json()
+            l0 = next(h for h in run["hits"] if h["level"] == "l0")
+            assert l0["rule_code"] == "l0_blacklist_category"
+            assert l0["evidence"]["matched_key"] == "zlarkpatio,lawn&garden->pots"
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute(
+                    "DELETE FROM app.blacklist_category"
+                    " WHERE category_ref = 'zlarkpatio,lawn&garden->pots'"
+                )
 
     def test_placeholder_brand_not_blocked(
         self, client: TestClient, seeded: dict, migrated_db: str, fake_llm: _FakeLlm

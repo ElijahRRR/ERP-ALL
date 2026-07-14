@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.audit import l2_content, nice_class
 from erp.audit.blacklist_index import scan_blacklist
+from erp.audit.stopwords import is_stopword
 
 log = structlog.get_logger()
 
@@ -42,6 +43,24 @@ TRADEMARK_SYMBOLS = ("®", "™", "℠", "©")  # ® ™ ℠ ©
 
 def _norm(s: str | None) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+_CAT_WS_RE = re.compile(r"\s+")
+
+
+def normalize_amazon_category(s: str | None) -> str:
+    """源仓 phase0_lark_blacklist.normalize_amazon_category 原样：去全部空格 +
+    '>'/'->'/'/' 统一为 '->'。旧 lark 类目黑名单存的是此形态（再经 _norm 小写入库），
+    L0 类目查找需用同款派生键才能命中导入的旧数据。"""
+    if not s:
+        return ""
+    raw = s.replace("->", "\x00").replace(">", "\x00").replace("/", "\x00")
+    parts: list[str] = []
+    for raw_seg in raw.split("\x00"):
+        seg = _CAT_WS_RE.sub("", raw_seg).strip()
+        if seg:
+            parts.append(seg)
+    return "->".join(parts)
 
 
 def _product_text(product: dict[str, Any]) -> str:
@@ -81,16 +100,19 @@ async def run_l0(session: AsyncSession, product: dict[str, Any]) -> dict[str, An
         if hit:
             return {"rule_code": "l0_blacklist_asin", "evidence": {"asin": asin, "row_id": hit}}
 
-    # 2. 类目黑名单（Amazon 类目路径/叶子）
+    # 2. 类目黑名单（Amazon 类目路径/叶子）。双键：_norm 原文（本系统契约）+
+    #    lower(normalize_amazon_category)（旧 lark 黑名单契约——去空格 '->' 分隔，
+    #    导入的旧 phase0_blacklist_amazon_cats 数据以此形态命中）
     for cat in filter(None, (product.get("amazon_leaf_id"), product.get("category_path"))):
-        hit = await _blacklist_lookup(
-            session, "blacklist_category", "category_ref", _norm(str(cat)), team
-        )
-        if hit:
-            return {
-                "rule_code": "l0_blacklist_category",
-                "evidence": {"category": cat, "row_id": hit},
-            }
+        for key in {_norm(str(cat)), _norm(normalize_amazon_category(str(cat)))}:
+            hit = await _blacklist_lookup(
+                session, "blacklist_category", "category_ref", key, team
+            )
+            if hit:
+                return {
+                    "rule_code": "l0_blacklist_category",
+                    "evidence": {"category": cat, "matched_key": key, "row_id": hit},
+                }
 
     # 3. 商标符号硬拦（title/bullets/desc 含 ®™℠©）
     full_text = _product_text(product)
@@ -159,7 +181,7 @@ async def run_l2(
         dict.fromkeys(
             w.lower()
             for w in re.findall(r"\b[A-Z][A-Za-z]{3,}\b", title)
-            if not _is_stopword(w.lower())
+            if not is_stopword(w.lower())
         )
     )[:20]
     if candidates:
@@ -197,16 +219,8 @@ async def run_l2(
     return hits
 
 
-# 源仓 _stopwords 的最小子集（完整表随 R2 全量移植；此处只保 R5 候选提取需要的高频词）
-_STOPWORDS = {
-    "with", "from", "this", "that", "pack", "size", "color", "black", "white",
-    "blue", "green", "large", "small", "mini", "set", "new", "for", "and",
-    "the", "pcs", "inch", "women", "men", "kids", "home", "gift", "style",
-}  # fmt: skip
-
-
-def _is_stopword(w: str) -> bool:
-    return w in _STOPWORDS
+# stopwords 已全量移植至 erp.audit.stopwords（源仓 707 词 + 长度/数字规则，
+# round-5 补齐——此前最小子集导致 R5 候选过滤不足、L3 商标信号偏多）
 
 
 # ── L3：LLM 语义审核（R1-10 单策略=知识产权）──
