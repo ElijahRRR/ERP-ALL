@@ -1,8 +1,9 @@
 """L1-a 验收：类目判定同步直判 gate（refdata.category_map INNER JOIN pt_meta）。
 
 直判命中非禁做→pass 带 wpt / 命中全禁做(map 或 pt 维度)→reject / 废弃 PT 被 INNER JOIN
-滤除→needs_review / 无直判命中→needs_review / 无类目信息→needs_review。
-一条 audit_one 集成：禁做类目 levels=[l0,l1] → reject_level=l1 + 商品 audit_rejected。
+滤除→软标记放行 / 无直判命中→软标记放行 / 无类目信息→软标记放行（对拍 round-1 教训：
+类目缺图是数据缺口非合规异常，不阻审核）/ browse_node_id 数字键直判。
+audit_one 集成：禁做类目→reject_level=l1+audit_rejected；unmapped→pass 放行。
 """
 
 import asyncio
@@ -57,6 +58,12 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
                 " (amazon_category, walmart_product_type, zh_seller_forbidden) VALUES (%s,%s,%s)",
                 rows,
             )
+        # browse node 数字 ID 直判键（旧库 amazon_leaf_id 多为数字 ID）
+        conn.execute(
+            "INSERT INTO refdata.category_map"
+            " (amazon_category, walmart_product_type, browse_node_id) VALUES (%s,%s,%s)",
+            (f"{PREFIX}/Node/Path", f"{PREFIX}_Drinkware", "998877"),
+        )
     yield
     with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
         _wipe(conn)
@@ -93,11 +100,13 @@ def test_map_forbidden_reject() -> None:
     assert r["verdict"] == "reject"  # map 行 zh_seller_forbidden=true，即便 PT 本身可售
 
 
-def test_deprecated_pt_filtered_needs_review() -> None:
-    """废弃 PT（不在 pt_meta）被 INNER JOIN 滤除 → 无有效直判 → needs_review。"""
+def test_deprecated_pt_filtered_soft_pass() -> None:
+    """废弃 PT（不在 pt_meta）被 INNER JOIN 滤除 → 无有效直判 → 软标记放行。"""
     r = _l1(category_path=f"{PREFIX}/Ghost/Deprecated")
-    assert r["verdict"] == "needs_review"
+    assert r["verdict"] == "pass"
+    assert r["wpt"] is None
     assert r["rule_code"] == "l1_unmapped"
+    assert r["is_hard"] is False
 
 
 def test_mixed_candidates_sellable_wins() -> None:
@@ -107,10 +116,12 @@ def test_mixed_candidates_sellable_wins() -> None:
     assert r["wpt"] == f"{PREFIX}_Drinkware"
 
 
-def test_unmapped_marker_and_no_hit_needs_review() -> None:
-    # '无对应Walmart PT' 标记被排除，等价无直判
-    assert _l1(category_path=f"{PREFIX}/Unmapped/None")["verdict"] == "needs_review"
-    assert _l1(category_path=f"{PREFIX}/Does/Not/Exist")["rule_code"] == "l1_unmapped"
+def test_unmapped_marker_and_no_hit_soft_pass() -> None:
+    # '无对应Walmart PT' 标记被排除，等价无直判 → 软标记放行（L2/L3 照跑）
+    r1 = _l1(category_path=f"{PREFIX}/Unmapped/None")
+    assert (r1["verdict"], r1["rule_code"]) == ("pass", "l1_unmapped")
+    r2 = _l1(category_path=f"{PREFIX}/Does/Not/Exist")
+    assert (r2["verdict"], r2["wpt"]) == ("pass", None)
 
 
 def test_leaf_id_key_matches() -> None:
@@ -119,9 +130,18 @@ def test_leaf_id_key_matches() -> None:
     assert r["verdict"] == "pass"
 
 
-def test_no_category_needs_review() -> None:
+def test_browse_node_id_key_matches() -> None:
+    """旧库 amazon_leaf_id=browse node 数字 ID → 命中 category_map.browse_node_id。"""
+    r = _l1(amazon_leaf_id="998877")
+    assert r["verdict"] == "pass"
+    assert r["wpt"] == f"{PREFIX}_Drinkware"
+    assert r["rule_code"] == "l1_category_mapped"
+
+
+def test_no_category_soft_pass() -> None:
     r = _l1()
-    assert r["verdict"] == "needs_review"
+    assert r["verdict"] == "pass"
+    assert r["wpt"] is None
     assert r["rule_code"] == "l1_no_category"
 
 
@@ -155,3 +175,35 @@ def test_audit_one_forbidden_category_rejects_at_l1(team_ids: tuple[int, int]) -
             (pid,),
         ).fetchone()
     assert hit == ("l1_category_forbidden", True)
+
+
+def test_audit_one_unmapped_category_passes_through(team_ids: tuple[int, int]) -> None:
+    """集成：类目缺图不阻审核——levels=[l0,l1] unmapped → pass + 软命中留痕。"""
+    team = team_ids[0]
+    with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
+        pid = conn.execute(
+            "INSERT INTO app.product (team_id, source_channel, source_ref, title, category_path)"
+            " VALUES (%s,'amazon','ZL1AUD002','Plain Bowl', %s)"
+            " ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE SET"
+            "  status='ingested', category_path=excluded.category_path RETURNING id",
+            (team, f"{PREFIX}/Nowhere/ToBe/Found"),
+        ).fetchone()[0]
+
+    out = asyncio.run(
+        service.audit_one(
+            _sessions(),
+            product_id=pid,
+            team_id=team,
+            is_super=False,
+            levels=["l0", "l1"],
+        )
+    )
+    assert out["verdict"] == "pass"
+    assert out["reject_level"] is None
+    assert out["product_status"] == "audit_passed"
+    with psycopg.connect(_pg_dsn(MIGRATOR_URL)) as conn:
+        hit = conn.execute(
+            "SELECT rule_code, is_hard FROM app.audit_hit WHERE product_id = %s AND level = 'l1'",
+            (pid,),
+        ).fetchone()
+    assert hit == ("l1_unmapped", False)  # 软证据留痕，不否决

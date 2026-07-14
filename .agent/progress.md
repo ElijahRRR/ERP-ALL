@@ -233,3 +233,12 @@
 - test_audit_replay 2 例(归一 + 端到端 3 品：L0 拒一致/L1 直判过+L3 过一致/旧拒新过=分歧；calls=2 证 L0 短路)。踩坑：黑名单 brand_norm 须归一小写(L0 查表用 _norm)；llm_cache 需清以定 LLM 调用数。162 pytest + ruff + mypy(60) 全绿。
 - **R2-02 达【待验收运行】**：开发建齐（L0/L1/L2软证据/L3 + 对拍工具）。余 Owner 在部署机跑：导 groundtruth → resolve_categories 填图 → audit_replay 出一致率。≥90% 即通过；<90% 看分歧清单定 L2 硬规则（带真数据）。这是"持续推进到需要验收"的终点。
 - Next（Owner 验收后按分歧决定）：或收 R2-02，或据分歧清单补 L2 R1/R2/R3（真数据驱动）。
+
+### Session: 2026-07-14 (对拍 round-1 42% 根因修复——L1 缺图放行)
+- **对拍 round-1 结果（部署机 200 ASIN，100pass+100reject）：42%，未过闸**。混淆：pass->pass 42/pass->reject 13/pass->NR 45/reject->reject 42/reject->pass 17/reject->NR 41。
+- **根因**：needs_review 86/200(43%)=主因。旧系统 L3 二值输出从不产 needs_review（archaeology:89）→ 每个 NR 自动计分歧。86 个 NR 几乎全来自 L1-a「无直判命中→needs_review(fail-closed)」设计：189 类目仅 99 复排成功、90 无召回候选（疑旧库 category_path 与飞书 map 分隔符/格式不匹配），落在缺图类目的商品卡死 L1 连 L2/L3 都没跑。
+- **定性**：我的设计错误——类目缺图是**数据缺口**非合规检查异常；A4 fail-closed 适用于"检查本身失败"(LLM 输出非法)，不适用"可选补充信息缺失"。把"能否上架(缺WPT)"和"是否合规"混进了一个闸门。旧系统 unmapped 照跑 L3，类目硬拒仅 R1/R2/R3。
+- **修复（三件）**：①l1_category：unmapped/无类目 → verdict=pass + 软命中(l1_unmapped/l1_no_category, is_hard=False)，L2/L3 照跑；唯一 L1 硬拒=候选全禁做。run_l1 返回增 is_hard。②直判键增 browse_node_id（旧库 amazon_leaf_id 多为数字 browse node ID，0016 列已导数据但直判没用上）。③audit_replay diff 增强：每分歧带 category/hits(命中链)/old_reason(groundtruth 可选列)；unmapped 计数(缺图规模指标)；分歧类目 Top5 聚类（reject->pass 聚类=L2 类目硬规则缺口的直接证据）。
+- spec §03 L1 主路径正文同步修正。test_l1_category 改 3 增 2（browse_node 键/unmapped 集成放行）；test_audit_replay 增 D 品（缺图→放行→L3 过=与旧一致）。164 pytest+ruff+mypy 全绿。
+- **预期**：round-2 中 86 个 NR 桶消失（那些商品真正跑完 L2/L3）；残余分歧（17 reject->pass 等）由增强 diff 的 old_reason+hits+类目聚类定位——是否需补 L2 R1/R2/R3 届时以真数据裁决。
+- Next：Owner/部署 AI round-2 重跑（groundtruth 加 old_reason；顺带发格式样例验证类目 join 匹配率；部署库补 llm.pricing）。

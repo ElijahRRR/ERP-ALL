@@ -12,7 +12,8 @@
 groundtruth.jsonl 每行一个旧系统判过的商品（部署 AI 从旧 walmart_audit 导出）：
   {"asin": "...", "title": "...", "brand": "...", "category_path": "...",
    "amazon_leaf_id": "...", "seller_id": "...", "description": "...",
-   "bullets": ["..."], "old_verdict": "pass|reject|needs_review"}
+   "bullets": ["..."], "old_verdict": "pass|reject|needs_review",
+   "old_reason": "旧系统拒绝原因(可选,强烈建议带上——分歧诊断的关键)"}
 title 缺省用 asin；old_verdict 旧标签自动归一（approved→pass、blocked→reject…）。
 
 输出：总数 / 一致数 / 一致率 / 混淆矩阵（old→new）/ 分歧样本（含新 reject_level，
@@ -23,6 +24,7 @@ import argparse
 import asyncio
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +97,23 @@ async def _upsert_product(session: AsyncSession, team_id: int, row: dict[str, An
     return int(r.id)
 
 
+async def _run_hits(
+    sessions: async_sessionmaker[AsyncSession], run_id: int
+) -> list[str]:
+    """本次 run 的命中清单 → ["l0:l0_blacklist_brand", "l1:l1_unmapped", ...]（诊断用）。"""
+    async with system_tx(sessions) as s:
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT level, rule_code FROM app.audit_hit"
+                    " WHERE run_id = :r ORDER BY id"
+                ),
+                {"r": run_id},
+            )
+        ).all()
+    return [f"{r.level}:{r.rule_code}" for r in rows]
+
+
 async def replay(
     sessions: async_sessionmaker[AsyncSession],
     *,
@@ -103,7 +122,12 @@ async def replay(
     levels: list[str],
     resolve_categories: bool = False,
 ) -> dict[str, Any]:
-    """重跑并对拍。→ {total, agree, rate, confusion, disagreements}。"""
+    """重跑并对拍。→ {total, agree, rate, confusion, unmapped, disagreements}。
+
+    disagreements 每条带 category / hits / old_reason——分歧可按类目聚类、按命中层
+    定位（判 L2 类目硬规则是否需补的实测证据）。unmapped=命中 l1_unmapped 的产品数
+    （类目缺图规模指标；高=旧库 category_path 与 map 格式不匹配的信号）。
+    """
     async with system_tx(sessions) as s:
         team_id = await _ensure_team(s, team_name)
 
@@ -112,10 +136,11 @@ async def replay(
         for c in cats:
             await l1_rerank.resolve_category(sessions, c)
 
-    pairs: list[tuple[str, str, str | None, str]] = []
+    recs: list[dict[str, Any]] = []
     for row in rows:
         async with system_tx(sessions) as s:
             pid = await _upsert_product(s, team_id, row)
+        hits: list[str] = []
         try:
             out = await service.audit_one(
                 sessions,
@@ -126,26 +151,35 @@ async def replay(
                 trigger_kind="batch",
             )
             new_v, rl = out["verdict"], out["reject_level"]
-        except Exception as e:
+            hits = await _run_hits(sessions, out["run_id"])
+        except Exception as e:  # 单品失败不终止整批对拍
             new_v, rl = "error", str(e)[:120]
-        pairs.append((_norm_verdict(row.get("old_verdict")), new_v, rl, str(row.get("asin"))))
+        recs.append(
+            {
+                "asin": str(row.get("asin")),
+                "old": _norm_verdict(row.get("old_verdict")),
+                "new": new_v,
+                "reject_level": rl,
+                "category": row.get("category_path"),
+                "hits": hits,
+                "old_reason": row.get("old_reason") or row.get("reason"),
+            }
+        )
 
-    total = len(pairs)
-    agree = sum(1 for o, n, _, _ in pairs if o == n)
+    total = len(recs)
+    agree = sum(1 for r in recs if r["old"] == r["new"])
     confusion: dict[str, int] = {}
-    for o, n, _, _ in pairs:
-        confusion[f"{o}->{n}"] = confusion.get(f"{o}->{n}", 0) + 1
-    disagreements = [
-        {"asin": a, "old": o, "new": n, "reject_level": rl}
-        for o, n, rl, a in pairs
-        if o != n
-    ]
+    for r in recs:
+        k = f"{r['old']}->{r['new']}"
+        confusion[k] = confusion.get(k, 0) + 1
+    unmapped = sum(1 for r in recs if any(h.endswith(":l1_unmapped") for h in r["hits"]))
     return {
         "total": total,
         "agree": agree,
         "rate": round(agree / total, 4) if total else 0.0,
         "confusion": dict(sorted(confusion.items())),
-        "disagreements": disagreements,
+        "unmapped": unmapped,
+        "disagreements": [r for r in recs if r["old"] != r["new"]],
     }
 
 
@@ -169,17 +203,28 @@ async def _run(
     )
     print(f"\n=== R2-02 对拍结果（levels={','.join(levels)}）===")
     print(f"总数 {report['total']} / 一致 {report['agree']} / 一致率 {report['rate']:.1%}")
+    print(f"类目缺图产品数(l1_unmapped)：{report['unmapped']}（高=旧库路径与 map 格式不匹配信号）")
     print("混淆矩阵 old→new:")
     for k, v in report["confusion"].items():
         print(f"  {k}: {v}")
     gate = "✅ 达标(≥90%)" if report["rate"] >= _ACCEPT_RATE else "❌ 未达标(<90%)"
     print(f"验收闸门：{gate}")
+    for bucket in ("reject->pass", "pass->reject"):
+        cats = Counter(
+            str(d.get("category") or "(无类目)")
+            for d in report["disagreements"]
+            if f"{d['old']}->{d['new']}" == bucket
+        )
+        if cats:
+            print(f"分歧 {bucket} 类目 Top5（聚类=需补类目硬规则的信号）:")
+            for c, n in cats.most_common(5):
+                print(f"  {n}× {c}")
     if out is not None:
         out.write_text(
             "\n".join(json.dumps(d, ensure_ascii=False) for d in report["disagreements"])
         )
         n = len(report["disagreements"])
-        print(f"分歧清单已写 {out}（{n} 条），供判 L2 类目硬规则是否需补")
+        print(f"分歧清单已写 {out}（{n} 条，含 category/hits/old_reason），供定位规则缺口")
 
 
 def main() -> int:

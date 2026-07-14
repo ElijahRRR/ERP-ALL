@@ -129,10 +129,15 @@ required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤�
 
 - 导入源：uspto.amazon_walmart_category_map + 飞书映射明细/沃尔玛类目（导入器幂等 upsert，
   别名列宽容）。真数据已落库（2026-07-13）：category_map 15,987 + pt_meta 7,008。
-- **L1 判定主路径**（001 §05 audit）：① category_map 直判命中（精确/前缀）→ 0 LLM 短路；
-  ② 未直判 → 召回候选 WPT（INNER JOIN pt_meta 滤废弃）→ LLM 语义复排选最优 → coerce
-  （非法/无法解析 → needs_review，fail-closed）；③ 禁做类目（category_map/pt_meta
-  `zh_seller_forbidden`）命中 → L1 拒。命中即 0 LLM（PRD §9）；复排结果回写 map 供后续复用。
+- **L1 判定主路径**（001 §05 audit，R2-02 对拍 round-1 修正）：① category_map 直判命中
+  （键=category_path/amazon_leaf_id × amazon_category/amazon_leaf/browse_node_id）→
+  0 LLM 短路，带出 wpt；② 禁做类目（map/pt 任一维度 `zh_seller_forbidden`，候选全禁）
+  命中 → **L1 拒**（唯一 L1 硬拒）；③ 未直判/无类目 → **软标记放行**（l1_unmapped，
+  L2/L3 照跑）——类目缺图=数据缺口非合规异常，A4 fail-closed 只适用于检查本身失败；
+  旧系统 parity：类目硬拒仅 R1/R2/R3，unmapped 不拦审核。缺 WPT 只阻上架（listing 前置）。
+  ④ 缺图类目由 **L1-b 批量复排**补：祖先召回（INNER JOIN pt_meta 滤废弃）→ LLM 选唯一
+  候选 → 写回 map（match_type=ai_rerank；非法/候选外/无候选 → 不写回，绝不写脏映射）。
+  命中即 0 LLM（PRD §9）。
 
 ## product_source 货源记录（占位设计，D-Q41）
 

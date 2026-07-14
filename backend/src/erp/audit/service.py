@@ -277,8 +277,9 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
                 )
                 verdict, reject_level = "reject", "l0"
 
-        # L1：类目判定（同步映射表直判 gate，L1-a）。命中禁做即拒；无直判→needs_review
-        # （fail-closed，待 L1-b LLM 复排/人工）。resolved wpt 记入命中证据供上架/L2 复用。
+        # L1：类目判定（同步映射表直判 gate，L1-a）。命中禁做即拒（唯一 L1 硬拒）；
+        # 无直判/无类目→软标记放行，L2/L3 照跑（类目缺图=数据缺口非检查异常，
+        # 对拍 round-1 教训+旧系统 parity）。resolved wpt 记入命中证据供上架/L2 复用。
         if verdict == "pass" and "l1" in levels:
             l1 = await l1_category.run_l1(s, product)
             await _write_hit(
@@ -288,13 +289,11 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
                 product_id=product_id,
                 level="l1",
                 rule_code=l1["rule_code"],
-                is_hard=(l1["verdict"] == "reject"),
+                is_hard=l1["is_hard"],
                 evidence=l1["evidence"],
             )
             if l1["verdict"] == "reject":
                 verdict, reject_level = "reject", "l1"
-            elif l1["verdict"] == "needs_review":
-                verdict = "needs_review"  # reject_level 留 NULL：review 非否决（R2-23）
 
         # L2：软证据（不否决）
         l2_hits: list[dict[str, Any]] = []

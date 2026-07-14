@@ -139,6 +139,15 @@ def _rows() -> list[dict]:
             "brand": "N/A",
             "category_path": f"{PREFIX}/Home/Mugs",
             "old_verdict": "blocked",
+            "old_reason": "旧系统类目拦截",
+        },
+        # D: 类目缺图 → L1 软标记放行 → L3 过；旧 pass → 一致（缺图不再阻审核）
+        {
+            "asin": f"{PREFIX}D",
+            "title": "Plain Bowl",
+            "brand": "N/A",
+            "category_path": f"{PREFIX}/NoMap/Bowls",
+            "old_verdict": "pass",
         },
     ]
 
@@ -147,15 +156,19 @@ def test_replay_agreement_confusion_and_disagreements(fake_llm: _FakeLlm) -> Non
     report = asyncio.run(
         replay(_sessions(), team_name=TEAM, rows=_rows(), levels=["l0", "l1", "l2", "l3"])
     )
-    assert report["total"] == 3
-    assert report["agree"] == 2  # A、B 一致
-    assert report["rate"] == round(2 / 3, 4)
+    assert report["total"] == 4
+    assert report["agree"] == 3  # A、B、D 一致
+    assert report["rate"] == round(3 / 4, 4)
     assert report["confusion"].get("reject->reject") == 1  # A
-    assert report["confusion"].get("pass->pass") == 1  # B
+    assert report["confusion"].get("pass->pass") == 2  # B、D
     assert report["confusion"].get("reject->pass") == 1  # C 旧拒新过
+    assert report["unmapped"] == 1  # D 类目缺图（软标记计数）
     dis = report["disagreements"]
     assert len(dis) == 1
     assert dis[0]["asin"] == f"{PREFIX}C"
     assert dis[0]["old"] == "reject"
     assert dis[0]["new"] == "pass"
-    assert fake_llm.calls == 2  # 仅 B、C 到 L3（A 在 L0 短路）
+    assert dis[0]["category"] == f"{PREFIX}/Home/Mugs"  # 诊断字段：类目
+    assert dis[0]["old_reason"] == "旧系统类目拦截"  # 诊断字段：旧因
+    assert any(h.startswith("l1:") for h in dis[0]["hits"])  # 诊断字段：命中链
+    assert fake_llm.calls == 3  # B、C、D 到 L3（A 在 L0 短路；D 缺图不再挡 L3）
