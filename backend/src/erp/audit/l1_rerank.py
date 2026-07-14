@@ -13,7 +13,6 @@ fail-closed：LLM 输出非法 / 选了召回候选外的 WPT / 无候选 → **
 映射污染 L1-a gate（脏映射会让后续该类目商品直判到错误/禁做 WPT）。
 """
 
-import json
 from typing import Any
 
 import structlog
@@ -21,7 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from erp.audit.llm import cache_key, llm_client
-from erp.audit.pipeline import strip_json_fences
+from erp.audit.pipeline import parse_json_object
 from erp.core.db import system_tx
 
 log = structlog.get_logger()
@@ -143,20 +142,14 @@ def build_rerank_messages(
 
 def rerank_cacheable(raw_text: str) -> bool:
     """可缓存谓词：JSON dict + 非空 wpt 串（坏响应不入缓存，同 L3 R2-21 纪律）。"""
-    try:
-        raw = json.loads(strip_json_fences(raw_text))
-    except (ValueError, json.JSONDecodeError):
-        return False
+    raw = parse_json_object(raw_text)
     return isinstance(raw, dict) and bool(str(raw.get("wpt") or "").strip())
 
 
 def coerce_rerank(raw_text: str, valid_wpts: set[str]) -> dict[str, Any] | None:
     """解析复排结果。fail-closed：非 JSON / 非 dict / wpt 不在召回候选内 → None（不写回）。"""
-    try:
-        raw = json.loads(strip_json_fences(raw_text))
-        if not isinstance(raw, dict):
-            raise ValueError("非 dict")
-    except (ValueError, json.JSONDecodeError):
+    raw = parse_json_object(raw_text)
+    if not isinstance(raw, dict):
         log.warning("l1b.rerank_bad_json", head=raw_text[:120])
         return None
     wpt = str(raw.get("wpt") or "").strip()

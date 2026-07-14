@@ -318,3 +318,9 @@
 - 测试：test_l2_content prompt 测试改口径（R7/R8 不进 prompt）+ 无命中占位；test_l3_policy 块格式断言更新。200 pytest+ruff+mypy 全绿。
 - **诚实天花板**：4 l0（窗口内小漂移）+ 4 l1（0-LLM 直判 vs LLM 双确认架构差）≈ 8 条基本不可代码收敛 → 上限 ≈ 96%；本单瞄准 13 条 l3，需再收 ≥8 条即过线（86%→90%）。
 - Next：round-9 重跑。若仍差 1-2 条 → 残余全部可溯源（漂移/架构/散差），建议以「已证成因清单」补充验收判读交 Owner。
+
+### Session: 2026-07-15 (round-9 88% + 三层 JSON 提取移植——收官前最后代码增量)
+- **round-9（prompt 逐字对齐生效）：88%（+2）**。pass->reject 22→16、pass->pass 78→83。残余 24 全部可命名：~8 l3 散差 + 4 l1 架构差 + 4 l0 窗口内小漂移 + 6 reject->pass 散差 + 2 bad_json。
+- **三层 JSON 提取移植**（源仓 llm_client._json_from_text 逐字）：①直接 loads ②```json 栏内正则 ③**平衡括号扫描**（逐个候选对象试到解析成功——比此前"首尾大括号截取"强：坏候选/尾随含括号杂文本不干扰）。`parse_json_object` 统一供 L3 coerce/cacheable + L1-b 复排四处；全部失败 → None → fail-closed（**不学源仓 unparseable→pass 的旧行为**——A4 裁定 NR 保持）。瞄准 2 条 bad_json。
+- 201 pytest+ruff+mypy 全绿。
+- **收官账（若 round-10 达 89-90%）**：4 l0 需部署机验 lark 表时间戳（可证=groundtruth 缺陷，同 SHORTCUT/L4 剔除原则）；4 l1=架构取舍留档；l3 散差=同代模型固有非确定性。90% 若差 1-2 条，以 D-Q59 同款证据链交 Owner 裁定。

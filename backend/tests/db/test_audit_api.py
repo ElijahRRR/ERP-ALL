@@ -348,6 +348,14 @@ class TestCoerce:
         truncated = '{"verdict": "pass", "reason_category": "no'
         assert coerce_l3_result(truncated)["verdict"] == "needs_review"
 
+    def test_balanced_brace_scan_extracts_first_valid(self) -> None:
+        """平衡括号扫描（源仓 _json_from_text 第 3 层，round-9 移植）：
+        坏候选后仍能找到合法对象；尾随含括号杂文本不干扰。"""
+        noisy = '{bad json} 然后 {"verdict": "reject", "reason_category": "brand_misuse"} 尾{注}'
+        out = coerce_l3_result(noisy)
+        assert out["verdict"] == "reject"
+        assert out["reason_category"] == "brand_misuse"
+
     def test_real_brand_does_not_override_illegal_verdict(self) -> None:
         """顶层 verdict 非法→整份响应不可信：嵌套 is_real_brand 不升级硬拒（round-2 R2-22）。
 

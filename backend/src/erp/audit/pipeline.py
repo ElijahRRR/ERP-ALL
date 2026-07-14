@@ -461,29 +461,39 @@ Amazon 类目: {product.get("category_path") or "(空)"}
 """
 
 
-def strip_json_fences(raw_text: str) -> str:
-    """剥掉模型偶发的 markdown 代码栏（```json … ```）+ 前后缀杂文本容错。
-
-    v4-flash 实测两类形态（对拍 round-2 栏 9/200、round-7 杂文本 3/200）：
-    ①代码栏包裹；②JSON 前/后混入解释文字。处理=剥外层栏 + 截取最外层大括号；
-    截断（缺闭合括号）仍解析失败 → fail-closed NR（不猜补）。"""
-    t = raw_text.strip()
-    if t.startswith("```"):
-        t = t[3:]
-        if t[:4].lower() == "json":
-            t = t[4:]
-        t = t.strip()
-        if t.endswith("```"):
-            t = t[:-3].strip()
-    if not t.startswith("{"):
-        i = t.find("{")
-        if i >= 0:
-            t = t[i:]
-    if not t.endswith("}"):
-        j = t.rfind("}")
-        if j >= 0:
-            t = t[: j + 1]
-    return t
+def parse_json_object(raw_text: str) -> Any | None:
+    """从 LLM 返回文本稳健提取 JSON（源仓 llm_client._json_from_text 三层逐字移植，
+    round-9 对齐——比"首尾大括号截取"强在第 3 层平衡括号扫描会逐个候选对象试到
+    解析成功）：①直接 loads ②```json 栏内正则 ③首个 balanced {...}。
+    全部失败 → None（调用方 fail-closed，不学源仓的 {'_raw'} 包裹）。"""
+    text_val = (raw_text or "").strip()
+    if not text_val:
+        return None
+    try:
+        return json.loads(text_val)
+    except (ValueError, json.JSONDecodeError):
+        pass
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text_val, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except (ValueError, json.JSONDecodeError):
+            pass
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text_val):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    return json.loads(text_val[start : i + 1])
+                except (ValueError, json.JSONDecodeError):
+                    start = -1
+    return None
 
 
 def l3_response_cacheable(raw_text: str) -> bool:
@@ -492,10 +502,7 @@ def l3_response_cacheable(raw_text: str) -> bool:
     坏响应一旦缓存，同输入重审永远复放 needs_review、无法自愈——结构异常的响应
     只用于本次判定（coerce 成 needs_review），不落缓存。
     """
-    try:
-        raw = json.loads(strip_json_fences(raw_text))
-    except (ValueError, json.JSONDecodeError):
-        return False
+    raw = parse_json_object(raw_text)
     if not isinstance(raw, dict):
         return False
     return str(raw.get("verdict") or "").strip().lower() in ("pass", "reject")
@@ -511,11 +518,8 @@ def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) ->
     由 service 传入扩展集（静态 + 政策 category_en），否则政策类目会被误判为非法回退 IP。
     """
     categories = valid_categories or VALID_CATEGORIES
-    try:
-        raw = json.loads(strip_json_fences(raw_text))
-        if not isinstance(raw, dict):
-            raise ValueError("非 dict")
-    except (ValueError, json.JSONDecodeError):
+    raw = parse_json_object(raw_text)
+    if not isinstance(raw, dict):
         log.warning("audit.l3_bad_json", head=raw_text[:120])
         return {"verdict": "needs_review", "reason_category": "none",
                 "reason_text": "[L3] 模型输出无法解析，转人工复核",
