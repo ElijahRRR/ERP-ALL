@@ -185,6 +185,24 @@ class TestCategoryHardGates:
         assert r["wpt"] == f"{PREFIX}_Eval"
 
 
+class TestSeedExcluded:
+    """seed yaml 预拦截（源仓 L1 _check_seed_excluded 移植，round-3 补齐）。"""
+
+    def test_amazon_path_excluded(self) -> None:
+        """Amazon 路径含 'Consumer Electronics' → 直接拒（无需 map 命中）。"""
+        r = _l1(category_path="Electronics > Consumer Electronics > Gadgets")
+        assert r["verdict"] == "reject"
+        assert r["rule_code"] == "l1_excluded_category"
+        assert r["is_hard"] is True
+        assert "3C" in r["evidence"]["reason"]
+
+    def test_title_only_product_not_excluded(self) -> None:
+        """无类目 + 干净 title → 仍软放行（排除检查不误伤）。"""
+        r = asyncio.run(_run_l1({"category_path": None, "title": "Plain Ceramic Mug"}))
+        assert r["verdict"] == "pass"
+        assert r["rule_code"] == "l1_no_category"
+
+
 def test_no_category_soft_pass() -> None:
     r = _l1()
     assert r["verdict"] == "pass"

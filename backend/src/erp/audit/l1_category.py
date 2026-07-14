@@ -29,6 +29,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.audit import zh_forbidden
+
 # category_map 里 unmapped 的合法业务标记（非真实 PT，直判需排除）
 _UNMAPPED_MARKER = "无对应Walmart PT"
 
@@ -69,7 +71,7 @@ _DIRECT_SQL = text(
 )
 
 
-def candidate_block_reason(row: dict[str, Any]) -> str | None:
+def candidate_block_reason(row: dict[str, Any]) -> str | None:  # noqa: PLR0911 谓词链逐条返回
     """单候选 PT 的类目硬拒原因（None=可售）。源仓 R0→R1→R3a 顺序保真。
 
     - l1_category_forbidden        map/pt 任一维度 zh_seller_forbidden（本系统原有）
@@ -80,6 +82,8 @@ def candidate_block_reason(row: dict[str, Any]) -> str | None:
     """
     if row["map_forbidden"] or row["pt_forbidden"]:
         return "l1_category_forbidden"
+    if zh_forbidden.check_excluded(category_path=None, title=None, walmart_pt=row["wpt"]):
+        return "l1_excluded_category"  # seed excluded：PT 名子串（3C/服饰/汽配…）
     if (row["walmart_category"] or "").strip() in _MEGA_FORBIDDEN_CATEGORIES:
         return "zh_seller_mega_cat_forbidden"
     if (row["access_state"] or "").strip() not in _ACCESS_WHITELIST:
@@ -87,6 +91,8 @@ def candidate_block_reason(row: dict[str, Any]) -> str | None:
     zh = (row["zh_can_do"] or "").strip()
     if not (zh == "是" or zh.startswith("需评估")):
         return "cat_zh_blocked"
+    if zh_forbidden.match_mega(row["wpt"], row["walmart_category"]):
+        return "forbidden_mega_cat"  # R2 seed yaml：18 细粒度禁售大类（词边界）
     req_low = (row["requirements"] or "").lower()
     if req_low and any(kw in req_low for kw in _HARD_CERT_KWS):
         return "cat_requires_cert_hard"
@@ -100,6 +106,24 @@ async def run_l1(session: AsyncSession, product: dict[str, Any]) -> dict[str, An
     wpt 仅直判命中可售时非空（resolved Walmart Product Type，供后续上架/L2 复用）。
     unmapped / 无类目 → verdict=pass + 软标记（审核不因缺图阻塞）。
     """
+    # seed excluded 预拦截（源仓 L1 _check_seed_excluded）：Amazon 路径/title 子串
+    # 命中 3C/服饰/汽配/带电 等 → 直接拒。放最前——无类目/无直判商品也能拦。
+    excl = zh_forbidden.check_excluded(
+        category_path=product.get("category_path"), title=product.get("title")
+    )
+    if excl:
+        return {
+            "verdict": "reject",
+            "wpt": None,
+            "rule_code": "l1_excluded_category",
+            "is_hard": True,
+            "evidence": {
+                "reason": excl,
+                "category_path": product.get("category_path"),
+                "detail": "seed excluded 预拦截（源仓 L1 排除规则）",
+            },
+        }
+
     keys = [
         str(k)
         for k in (product.get("category_path"), product.get("amazon_leaf_id"))

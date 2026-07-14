@@ -271,3 +271,11 @@
 - **架构复查（Owner"我以前这方面做得比较好"→比对）**：静态 system prompt 前缀（L3 policy_v+37 政策块 / L1-b 复排 system）本就是源仓 2026-04-28 的省钱设计、移植时保留——命中面已最大化，缺的只是**计价与记账**（今补齐）。v4-flash 下静态政策块的输入成本近乎免费（1/50），37 政策全量拼 prompt 的成本顾虑基本消除。
 - 测试：TestCacheHitPricing（1000 输入 800 命中+200 输出=0.000086 vs 不建模 0.000196，56%↓；usage 行记 cached_input_tokens=800）。175 pytest+ruff+mypy 全绿。RS-08 的 cached_input_tokens 记账项就此提前完成（预算闸/pricing_version 仍留 RS-08）。
 - Next：部署机 round-3（llm.pricing 用真实单价 SQL 已给）。
+
+### Session: 2026-07-14 (round-3 72% + seed yaml 移植——最后一块拒绝机器)
+- **round-3（部署机，be67efe/0017/v4-flash）：72%（+8）**。R0/R1/R3a gate 见效：旧拒侧一致 55→73；reject->pass 45→25；unmapped 33→14（召回 v2 生效）。excluded_l4=0（本批无 L4 拒）。残余 56：pass->reject 26（现最大桶）/ reject->pass 25 / NR 5（v4-flash 输出仍有 5 条不可解析，栏剥离外的形态待看样本）。
+- **seed yaml 移植（对照清单最后一块拒绝机器）**：源仓 `forbidden_categories_zh_seller.yaml`（13 excluded + 18 mega）机械转换为 `audit/data/forbidden_categories_zh_seller.json`（stdlib json 加载，不引 pyyaml）。`zh_forbidden.py` 保真移植两匹配器：`check_excluded`（小写子串，amazon_category/walmart_pt/title_keyword 三 scope）+ `match_mega`（词边界+可选复数 's'，"bra"中"Bras"不中"Brackets"；category_prefix 小写前缀；首条命中优先）。
+- **接线**：run_l1 最前做 excluded 预拦截（路径/title——无类目商品也能拦，rule=l1_excluded_category）；candidate_block_reason 增 excluded-PT 子串 + mega 词边界两谓词（rule=forbidden_mega_cat）。谓词链顺序≈源仓（forbidden→excluded→R0→R1→R2 yaml→R3a）。
+- 测试：tests/test_zh_forbidden.py 8 例（数据量/子串/词边界/复数/无误报/前缀）+ TestSeedExcluded 集成 2 例。185 pytest+ruff+mypy(61) 全绿。
+- 已知边界：旧系统三处吃 yaml（L1 excluded/R0 兜底/R2），现全数覆盖；旧 L1 的 title 关键词反查候选与 LLM 双确认仍未移植（有意）。规则数据后续入 refdata 治理（RS-04D 方向）。
+- Next：round-4 重跑；同时要 pass->reject 26 的 reject_level/hits 聚类 + NR 5 的原始输出样本（api 日志 grep audit.l3_bad_json）。
