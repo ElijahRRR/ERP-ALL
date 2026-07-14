@@ -28,7 +28,12 @@ log = structlog.get_logger()
 
 # 复排模型参数：system_config 'category_map.rerank' JSON（{model, temperature, max_tokens}），
 # 缺省回退此表。与 L3 的 audit_policy.config 同思路——模型选择归 DB 配置，不写死代码。
-_RERANK_DEFAULTS: dict[str, Any] = {"model": "deepseek-chat", "temperature": 0.0, "max_tokens": 400}
+# 标准模型=deepseek-v4-flash（Owner 长期实测定标，D-Q58）。
+_RERANK_DEFAULTS: dict[str, Any] = {
+    "model": "deepseek-v4-flash",
+    "temperature": 0.0,
+    "max_tokens": 400,
+}
 
 
 async def _rerank_cfg(session: AsyncSession) -> dict[str, Any]:

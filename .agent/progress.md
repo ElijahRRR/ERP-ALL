@@ -257,3 +257,10 @@
 - 测试：pt_meta 种子补 access/zh 列；TestCategoryHardGates 5 例(access 拒/zh 拒/mega 拒/cert 拒/需评估*可售)。174 pytest+ruff+mypy 全绿。
 - **未移植项与处置**：R2 yaml→以 round-3 残余分歧裁决是否补；⑥⑦是有意的成本/架构差异（残余影响以对拍量化）；⑧需部署机查 groundtruth 里 L4 拒占比（从验收分母剔除或接受为已知差异）。
 - Next：round-3 重跑（模型回退 deepseek-chat）；结果+L4 占比回来后收敛 R2-02。
+
+### Session: 2026-07-14 (D-Q58：标准模型定标 v4-flash + L4 剔除对拍分母)
+- **Owner 决策（D-Q58 已录）**：①标准模型=deepseek-v4-flash（Owner 长期实测，好用成本低）——撤回我"回退 deepseek-chat"的建议；模型不是一致率杠杆（64 vs 61 差 3 点 << 结构缺口），以 Owner 实测定标。②L4 视觉不进现阶段流程与验收（无视觉模型可接）。
+- 落地：service.py L3 fallback + l1_rerank 默认 → deepseek-v4-flash；**0017 迁移**条件更新 0008 种子（仅改仍为 deepseek-chat 的行，部署侧已手工切 v4-flash 的配置不覆盖；version+1 自然失效缓存），downgrade/upgrade 往返验证过。v4-flash 栏输出兜底=已有 strip_json_fences。
+- **对拍 L4 剔除**：groundtruth 行支持 old_stage/stage 字段，含 'l4' → 从分母剔除、单独计 excluded_l4 并在 console 报告。test_audit_replay 增 E 品（L4 拒→剔除）。
+- 测试 pricing 种子补 deepseek-v4-flash 单价。174 pytest+ruff+mypy 全绿。
+- Next：部署机 round-3——git pull(0017 会自动对齐模型) + groundtruth 导出带 old_stage 列 + llm.pricing 补 v4-flash 真实单价 + 重跑。

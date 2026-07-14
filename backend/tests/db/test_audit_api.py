@@ -105,7 +105,9 @@ def seeded(migrated_db: str) -> dict[str, int]:
         conn.execute(
             """
             INSERT INTO app.system_config (key, value) VALUES
-            ('llm.pricing', '{"deepseek-chat": {"input_per_1m": 0.27, "output_per_1m": 1.1}}')
+            ('llm.pricing',
+             '{"deepseek-chat":     {"input_per_1m": 0.27, "output_per_1m": 1.1},
+               "deepseek-v4-flash": {"input_per_1m": 0.15, "output_per_1m": 0.6}}')
             ON CONFLICT (key) DO UPDATE SET value = excluded.value
             """
         )

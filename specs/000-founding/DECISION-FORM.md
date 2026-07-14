@@ -225,3 +225,9 @@
 | # | 决策 | 备注 |
 |---|---|---|
 | D-Q57 | **外部评审 Round-2 收敛**：25 条全部采纳、无驳回，round-1 的 4 条分歧全部收敛（A2 FORCE RLS 接受"回填静默零行"风险修正；A5 接受对方坚持——毒任务隔离/quarantine 不挂多节点闸门，现阶段即做；B5/B8 对方接受我方口径+补硬验收）。评审指出 A4 修复的 3 个实质缺口全部属实并**当日修复**：①transport/config 异常 fail-open（chat 异常整体回滚无痕）→ 兜底落 llm_unavailable+needs_review；policy 缺失静默 pass → l3_policy_missing+needs_review；②坏响应先入缓存无法自愈 → cacheable 校验谓词+存量坏行驱逐+0013 DELETE 授权；③非法响应嵌套 is_real_brand 仍翻案硬拒 → 收回，翻案仅限结构合法 pass 响应。附带修正：needs_review 不占 reject_level（语义=首个否决层）、前端三态展示。闸门排期修正：RS-03 拆双闸门（audit 异步前置到 R2-02 百件对拍前）、RS-04 拆 A/B/C/D 四子单（B1/B2/B8 补注册）、RS-01/02 闸门改机器可判定事件。全文 `specs/external-review-round-2.md` | 实际顺序定稿：A4 尾项(✅) → RS-04 摄取升级 → RS-03a audit 异步 → R2-02 百件对拍 → RS-03b channel outbox → A152 → RS-01/02（多人/LAN 前）。A4 状态=待评审 round-3 复核关闭 |
+
+## 第十轮决策（D-Q58，2026-07-14）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q58 | **审核 LLM 标准模型定标 deepseek-v4-flash + L4 视觉不接入现阶段流程**：①L3 语义审核与 L1-b 类目复排的标准模型统一为 `deepseek-v4-flash`（Owner 长期实测：好用且成本低）——代码缺省与 0008 种子默认（0017 条件更新）随之切换；v4-flash 偶发 markdown 栏输出由 strip_json_fences + coerce fail-closed 兜底（R2-02 round-2 实测 9/200，已修）。②L4 视觉审核**不进现阶段流程与验收**：暂无视觉模型可接入；R2-02 对拍中旧系统 stage=L4（看图拒）的 groundtruth 样本从分母剔除（harness 读 old_stage 字段自动剔），后续接入视觉模型时再启 L4（audit_policy l4_vision 种子仍 enabled=false 占位） | 2026-07-14 Owner："我还是坚持使用deepseek-v4-flash，这是经过我长期使用测试的，好用且成本低"+"L4视觉不需要走测流程。暂时没有视觉模型可以接入"。对拍口径影响：round-2 的 64%(chat) vs 61%(flash) 差距 3 点，远小于结构性缺口（未移植类目硬拒），模型选择不是一致率杠杆——以 Owner 实测经验定标，一致率靠补齐移植缺口收敛 |

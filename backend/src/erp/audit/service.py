@@ -353,7 +353,9 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
                     {"role": "system", "content": system_content},
                     {"role": "user", "content": pipeline.build_user_prompt(product, l2_hits)},
                 ]
-                model = str(cfg.get("model") or "deepseek-chat")
+                # 标准模型=deepseek-v4-flash（Owner 长期实测定标，D-Q58）；坏输出由
+                # strip_json_fences + fail-closed 兜底
+                model = str(cfg.get("model") or "deepseek-v4-flash")
                 temperature = float(cfg.get("temperature") or 0.0)
                 max_tokens = int(cfg.get("max_tokens") or 1200)
                 key = cache_key(model, messages, temperature, max_tokens)

@@ -13,7 +13,8 @@ groundtruth.jsonl 每行一个旧系统判过的商品（部署 AI 从旧 walmar
   {"asin": "...", "title": "...", "brand": "...", "category_path": "...",
    "amazon_leaf_id": "...", "seller_id": "...", "description": "...",
    "bullets": ["..."], "old_verdict": "pass|reject|needs_review",
-   "old_reason": "旧系统拒绝原因(可选,强烈建议带上——分歧诊断的关键)"}
+   "old_reason": "旧系统拒绝原因(可选,强烈建议带上——分歧诊断的关键)",
+   "old_stage": "旧系统 stage_stopped_at(可选;含 'L4' 的行从分母剔除,D-Q58)"}
 title 缺省用 asin；old_verdict 旧标签自动归一（approved→pass、blocked→reject…）。
 
 输出：总数 / 一致数 / 一致率 / 混淆矩阵（old→new）/ 分歧样本（含新 reject_level，
@@ -135,7 +136,20 @@ async def replay(
     disagreements 每条带 category / hits / old_reason——分歧可按类目聚类、按命中层
     定位（判 L2 类目硬规则是否需补的实测证据）。unmapped=命中 l1_unmapped 的产品数
     （类目缺图规模指标；高=旧库 category_path 与 map 格式不匹配的信号）。
+
+    L4 剔除（D-Q58）：旧系统 L4 视觉默认开、本系统现阶段无视觉模型不接入——
+    groundtruth 行带 old_stage/stage 含 'l4' 的（旧系统看图拒的）纯文本管道结构性
+    对不上，从对拍分母剔除，单独计 excluded_l4。
     """
+    l4_rows = [
+        r
+        for r in rows
+        if "l4" in str(r.get("old_stage") or r.get("stage") or "").strip().lower()
+    ]
+    if l4_rows:
+        excluded = {id(r) for r in l4_rows}
+        rows = [r for r in rows if id(r) not in excluded]
+
     async with system_tx(sessions) as s:
         team_id = await _ensure_team(s, team_name)
 
@@ -189,6 +203,7 @@ async def replay(
         "rate": round(agree / total, 4) if total else 0.0,
         "confusion": dict(sorted(confusion.items())),
         "unmapped": unmapped,
+        "excluded_l4": len(l4_rows),
         "disagreements": [r for r in recs if r["old"] != r["new"]],
     }
 
@@ -213,6 +228,8 @@ async def _run(
     )
     print(f"\n=== R2-02 对拍结果（levels={','.join(levels)}）===")
     print(f"总数 {report['total']} / 一致 {report['agree']} / 一致率 {report['rate']:.1%}")
+    if report["excluded_l4"]:
+        print(f"已剔除旧系统 L4(视觉)拒样本：{report['excluded_l4']}（现阶段无视觉模型，D-Q58）")
     print(f"类目缺图产品数(l1_unmapped)：{report['unmapped']}（高=旧库路径与 map 格式不匹配信号）")
     print("混淆矩阵 old→new:")
     for k, v in report["confusion"].items():

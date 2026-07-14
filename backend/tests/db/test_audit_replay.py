@@ -150,6 +150,14 @@ def _rows() -> list[dict]:
             "category_path": f"{PREFIX}/NoMap/Bowls",
             "old_verdict": "pass",
         },
+        # E: 旧系统 L4(视觉)拒 → 从分母剔除（现阶段无视觉模型，D-Q58）
+        {
+            "asin": f"{PREFIX}E",
+            "title": "Image Only Reject",
+            "brand": "N/A",
+            "old_verdict": "reject",
+            "old_stage": "L4",
+        },
     ]
 
 
@@ -157,7 +165,8 @@ def test_replay_agreement_confusion_and_disagreements(fake_llm: _FakeLlm) -> Non
     report = asyncio.run(
         replay(_sessions(), team_name=TEAM, rows=_rows(), levels=["l0", "l1", "l2", "l3"])
     )
-    assert report["total"] == 4
+    assert report["total"] == 4  # E(L4) 不进分母
+    assert report["excluded_l4"] == 1  # E 被剔除（D-Q58：无视觉模型）
     assert report["agree"] == 3  # A、B、D 一致
     assert report["rate"] == round(3 / 4, 4)
     assert report["confusion"].get("reject->reject") == 1  # A
