@@ -107,7 +107,9 @@ def seeded(migrated_db: str) -> dict[str, int]:
             INSERT INTO app.system_config (key, value) VALUES
             ('llm.pricing',
              '{"deepseek-chat":     {"input_per_1m": 0.27, "output_per_1m": 1.1},
-               "deepseek-v4-flash": {"input_per_1m": 0.15, "output_per_1m": 0.6}}')
+               "deepseek-v4-flash": {"input_per_1m": 0.14,
+                                     "input_cache_hit_per_1m": 0.0028,
+                                     "output_per_1m": 0.28}}')
             ON CONFLICT (key) DO UPDATE SET value = excluded.value
             """
         )
@@ -463,6 +465,59 @@ class TestFailClosed:
         assert hit is False  # 坏行被驱逐，未按命中返回
         assert fake_llm.calls == 1  # 走了真调用
         assert "verdict" in content  # 拿到的是替身的正常响应而非坏行
+
+
+class TestCacheHitPricing:
+    def test_cached_input_priced_at_hit_rate(self, migrated_db: str, fake_llm: _FakeLlm) -> None:
+        """DeepSeek prefix-cache 命中输入按命中价计（≈1/50），并记 cached_input_tokens。
+
+        1000 输入(800 命中) + 200 输出，v4-flash 单价(0.14/0.0028/0.28)：
+        800×0.0028/1M + 200×0.14/1M + 200×0.28/1M = 0.000086（vs 不建模 0.000196）。
+        """
+        import asyncio
+
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from erp.core.db import system_tx
+
+        from .conftest import APP_URL
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": json.dumps(_pass_verdict(), ensure_ascii=False)}}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 200,
+                        "prompt_cache_hit_tokens": 800,  # DeepSeek 原生字段
+                    },
+                },
+            )
+
+        llm_client._transport_factory = lambda: httpx.MockTransport(handler)
+        msgs = [{"role": "user", "content": "cache-hit-pricing-probe"}]
+
+        async def _run() -> float:
+            sessions = async_sessionmaker(create_async_engine(APP_URL), expire_on_commit=False)
+            async with system_tx(sessions) as s:
+                _content, cost, hit = await llm_client.chat(
+                    s, model="deepseek-v4-flash", messages=msgs, max_tokens=100
+                )
+                assert hit is False
+                return cost
+
+        cost = asyncio.run(_run())
+        assert cost == 0.000086  # 命中价生效（不建模会是 0.000196）
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT cached_input_tokens, prompt_tokens FROM app.llm_usage_log"
+                " WHERE model = 'deepseek-v4-flash' AND cached_input_tokens > 0"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert row == (800, 1000)  # 命中 token 数已入账（RS-08 实测口径）
 
 
 class TestApiSurface:

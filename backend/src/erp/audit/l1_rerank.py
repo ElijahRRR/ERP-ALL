@@ -234,7 +234,7 @@ async def resolve_category(
 
     # ── HTTP（无事务）──
     try:
-        content, pt, ct = await llm_client.call_provider(
+        content, pt, ct, cached_toks = await llm_client.call_provider(
             model=model, messages=messages, temperature=temperature, max_tokens=max_tokens
         )
     except Exception as e:
@@ -253,6 +253,7 @@ async def resolve_category(
             object_type="category_map",
             cacheable=rerank_cacheable,
             module="category_map",
+            cached_tokens=cached_toks,
         )
         written, wpt = await _apply_writeback(
             s, amazon_category, coerce_rerank(content, valid_wpts)

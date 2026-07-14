@@ -264,3 +264,10 @@
 - **对拍 L4 剔除**：groundtruth 行支持 old_stage/stage 字段，含 'l4' → 从分母剔除、单独计 excluded_l4 并在 console 报告。test_audit_replay 增 E 品（L4 拒→剔除）。
 - 测试 pricing 种子补 deepseek-v4-flash 单价。174 pytest+ruff+mypy 全绿。
 - Next：部署机 round-3——git pull(0017 会自动对齐模型) + groundtruth 导出带 old_stage 列 + llm.pricing 补 v4-flash 真实单价 + 重跑。
+
+### Session: 2026-07-14 (DeepSeek 真实单价 + 缓存命中计价建模——RS-08 记账项提前落地)
+- **官方单价（api-docs.deepseek.com 实查）**：deepseek-v4-flash 输入命中 $0.0028/1M、未命中 $0.14/1M、输出 $0.28/1M（**命中价=未命中 1/50**）；v4-pro 0.003625/0.435/0.87。⚠️ **deepseek-chat/deepseek-reasoner 模型名 2026-07-24 弃用**——Owner 定标 v4-flash 前瞻正确。
+- **计费引擎补缓存命中建模**：`_price` 支持 `input_cache_hit_per_1m`（cost=命中×hit + 未命中×miss + 输出×out）；`call_provider` 返回 4 元组（+cached_tokens，DeepSeek 原生 `prompt_cache_hit_tokens`，OpenAI 兼容 `prompt_tokens_details.cached_tokens` 兜底）；`log_usage/record_result/chat` 全链路带 `cached_input_tokens`；**0018 迁移** llm_usage_log 加列（分区父表传播，往返验证过）。spec 001 §05 表随改。
+- **架构复查（Owner"我以前这方面做得比较好"→比对）**：静态 system prompt 前缀（L3 policy_v+37 政策块 / L1-b 复排 system）本就是源仓 2026-04-28 的省钱设计、移植时保留——命中面已最大化，缺的只是**计价与记账**（今补齐）。v4-flash 下静态政策块的输入成本近乎免费（1/50），37 政策全量拼 prompt 的成本顾虑基本消除。
+- 测试：TestCacheHitPricing（1000 输入 800 命中+200 输出=0.000086 vs 不建模 0.000196，56%↓；usage 行记 cached_input_tokens=800）。175 pytest+ruff+mypy 全绿。RS-08 的 cached_input_tokens 记账项就此提前完成（预算闸/pricing_version 仍留 RS-08）。
+- Next：部署机 round-3（llm.pricing 用真实单价 SQL 已给）。

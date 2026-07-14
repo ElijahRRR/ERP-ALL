@@ -80,9 +80,10 @@ verdict 语义：pass → product.status=audit_passed；reject → audit_rejecte
 | id | BIGINT | identity | PK=(id, occurred_at) |
 | team_id | BIGINT | NULL | 全局任务（类目映射批量）为 NULL |
 | module | TEXT | NOT NULL CHECK IN (audit, category_map, mail_classify, other) | |
-| model | TEXT | NOT NULL | v4flash/v4pro…（团队自管模型选择，D-Q19） |
+| model | TEXT | NOT NULL | v4flash/v4pro…（团队自管模型选择，D-Q19）；标准模型=deepseek-v4-flash（D-Q58） |
 | prompt_tokens / completion_tokens | INT | NOT NULL | |
-| cost_usd | NUMERIC(12,6) | NOT NULL | 单价表在 system_config（运营可更新） |
+| cached_input_tokens | INT | NOT NULL DEFAULT 0 | 输入中命中 provider prefix-cache 的 token 数（0018；DeepSeek 命中价≈未命中 1/50，计价与 RS-08 实测用） |
+| cost_usd | NUMERIC(12,6) | NOT NULL | 单价表在 system_config `llm.pricing`（{model: {input_per_1m, input_cache_hit_per_1m, output_per_1m}}，运营可更新） |
 | cache_hit | BOOLEAN | NOT NULL DEFAULT false | 命中缓存也记行（cost=0），保真实调用画像 |
 | object_type / object_id | TEXT/BIGINT | NULL | 归因（product/audit_run…） |
 | occurred_at | timestamptz | NOT NULL DEFAULT now() | 分区键 |

@@ -408,9 +408,9 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
     # ── HTTP（无事务、无行锁；最长 120s）──
     llm_error: Exception | None = None
     content = ""
-    pt = ct = 0
+    pt = ct = cached_toks = 0
     try:
-        content, pt, ct = await llm_client.call_provider(
+        content, pt, ct, cached_toks = await llm_client.call_provider(
             model=llm_job["model"],
             messages=llm_job["messages"],
             temperature=llm_job["temperature"],
@@ -457,6 +457,7 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
                 object_type="audit_run",
                 object_id=run_id,
                 cacheable=pipeline.l3_response_cacheable,
+                cached_tokens=cached_toks,
             )
             llm_calls = 1
             result = pipeline.coerce_l3_result(content, llm_job["valid_categories"])

@@ -70,8 +70,16 @@ async def _cache_put(
 
 
 async def _price(
-    session: AsyncSession, model: str, prompt_tokens: int, completion_tokens: int
+    session: AsyncSession,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
 ) -> float:
+    """计价（区分缓存命中输入）。DeepSeek 缓存命中输入价 ≈ 未命中的 1/50
+    （v4-flash: $0.0028 vs $0.14 /1M），不建模会显著高估成本、也无法度量
+    prefix-cache 优化收益（RS-08）。单价表可配 input_cache_hit_per_1m；
+    未配则全部输入按 input_per_1m（向后兼容）。"""
     row = (
         await session.execute(text("SELECT value FROM app.system_config WHERE key = 'llm.pricing'"))
     ).scalar_one_or_none()
@@ -79,8 +87,12 @@ async def _price(
     if not pricing:
         log.warning("llm.pricing_missing", model=model)
         return 0.0
+    miss_price = float(pricing.get("input_per_1m", 0))
+    hit_price = float(pricing.get("input_cache_hit_per_1m", miss_price))
+    cached = max(0, min(cached_tokens, prompt_tokens))
     return round(
-        prompt_tokens * float(pricing.get("input_per_1m", 0)) / 1_000_000
+        cached * hit_price / 1_000_000
+        + (prompt_tokens - cached) * miss_price / 1_000_000
         + completion_tokens * float(pricing.get("output_per_1m", 0)) / 1_000_000,
         6,
     )
@@ -98,13 +110,14 @@ async def log_usage(
     object_type: str | None = None,
     object_id: int | None = None,
     module: str = "audit",
+    cached_input_tokens: int = 0,
 ) -> None:
     await session.execute(
         text(
             "INSERT INTO app.llm_usage_log"
             " (team_id, module, model, prompt_tokens, completion_tokens,"
-            "  cost_usd, cache_hit, object_type, object_id)"
-            " VALUES (:t, :mod, :m, :pt, :ct, :c, :h, :ot, :oi)"
+            "  cost_usd, cache_hit, object_type, object_id, cached_input_tokens)"
+            " VALUES (:t, :mod, :m, :pt, :ct, :c, :h, :ot, :oi, :cit)"
         ),
         {
             "t": team_id,
@@ -116,6 +129,7 @@ async def log_usage(
             "h": cache_hit,
             "ot": object_type,
             "oi": object_id,
+            "cit": cached_input_tokens,
         },
     )
 
@@ -179,11 +193,13 @@ class LlmClient:
         messages: list[dict[str, Any]],
         temperature: float = 0.0,
         max_tokens: int = 1200,
-    ) -> tuple[str, int, int]:
-        """纯网络调用 → (content, prompt_tokens, completion_tokens)。
+    ) -> tuple[str, int, int, int]:
+        """纯网络调用 → (content, prompt_tokens, completion_tokens, cached_tokens)。
 
-        **不接触 DB**——调用方必须在事务外调用（RS-03a 行锁纪律）。失败抛异常，
-        由调用方 fail-closed 落痕（评审 R2-20）。
+        cached_tokens = 输入中命中 provider prefix-cache 的 token 数（DeepSeek 原生
+        `prompt_cache_hit_tokens`；OpenAI 兼容 `prompt_tokens_details.cached_tokens`
+        兜底；都没有则 0）。**不接触 DB**——调用方必须在事务外调用（RS-03a 行锁
+        纪律）。失败抛异常，由调用方 fail-closed 落痕（评审 R2-20）。
         """
         settings = get_settings()
         if not settings.llm_api_key and self._transport_factory is None:
@@ -214,10 +230,13 @@ class LlmClient:
         data = resp.json()
         content = str(data["choices"][0]["message"]["content"])
         usage = data.get("usage") or {}
+        details = usage.get("prompt_tokens_details") or {}
+        cached = int(usage.get("prompt_cache_hit_tokens") or details.get("cached_tokens") or 0)
         return (
             content,
             int(usage.get("prompt_tokens") or 0),
             int(usage.get("completion_tokens") or 0),
+            cached,
         )
 
     async def record_result(
@@ -234,9 +253,10 @@ class LlmClient:
         object_id: int | None = None,
         cacheable: Callable[[str], bool] | None = None,
         module: str = "audit",
+        cached_tokens: int = 0,
     ) -> float:
-        """真调用记账：计价 + （通过 cacheable 才）写缓存 + usage 行 → cost_usd。"""
-        cost = await _price(session, model, prompt_tokens, completion_tokens)
+        """真调用记账：计价（含缓存命中价）+（通过 cacheable 才）写缓存 + usage 行。"""
+        cost = await _price(session, model, prompt_tokens, completion_tokens, cached_tokens)
         if cacheable is None or cacheable(content):
             await _cache_put(
                 session,
@@ -258,6 +278,7 @@ class LlmClient:
             object_type=object_type,
             object_id=object_id,
             module=module,
+            cached_input_tokens=cached_tokens,
         )
         return cost
 
@@ -289,7 +310,7 @@ class LlmClient:
         )
         if hit is not None:
             return hit, 0.0, True
-        content, pt, ct = await self.call_provider(
+        content, pt, ct, cached = await self.call_provider(
             model=model, messages=messages, temperature=temperature, max_tokens=max_tokens
         )
         cost = await self.record_result(
@@ -304,6 +325,7 @@ class LlmClient:
             object_id=object_id,
             cacheable=cacheable,
             module=module,
+            cached_tokens=cached,
         )
         return content, cost, False
 
