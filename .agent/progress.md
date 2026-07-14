@@ -279,3 +279,12 @@
 - 测试：tests/test_zh_forbidden.py 8 例（数据量/子串/词边界/复数/无误报/前缀）+ TestSeedExcluded 集成 2 例。185 pytest+ruff+mypy(61) 全绿。
 - 已知边界：旧系统三处吃 yaml（L1 excluded/R0 兜底/R2），现全数覆盖；旧 L1 的 title 关键词反查候选与 LLM 双确认仍未移植（有意）。规则数据后续入 refdata 治理（RS-04D 方向）。
 - Next：round-4 重跑；同时要 pass->reject 26 的 reject_level/hits 聚类 + NR 5 的原始输出样本（api 日志 grep audit.l3_bad_json）。
+
+### Session: 2026-07-14 (round-4 72.5% 平台期——R5 Nice 过滤 + 空响应重试)
+- **round-4（2b1143b/0018）：72.5%（+0.5）**。yaml 移植净效果+1：旧拒侧 73→76（+3），但 pass->reject 26→31（+5，yaml/gate 对部分旧 pass 商品更严——数据/规则时点差异浮现）。unmapped 14→12。NR 5→1。**平台期确认：剩余分歧结构=①pass->reject 31（主链 14 条 R4→R5→L3 判真品牌拒）②reject->pass 23③数据演进与 LLM 散差**。
+- **聚类证据（部署机回传）**：round-3 pass->reject 26 = L3 22/L1 3/L0 1；最大链 14 条 `l1_category_mapped→l2_r4→l2_r5→llm_intellectual_property`。NR 5 heads：3 空响应 + 2 截断 JSON 前缀。
+- **R5 Nice Class 过滤移植**（源仓 pt_nice_class.yaml 30 映射+default 6 类→JSON+nice_class.py 保真 classes_for；R5 SQL 加 `nice_classes && allowed`）：只查产品类目相关分类的 LIVE 商标，压通用词商标误报（源仓设计原文——GARDEN/CAR 多注册在 35 广告/41 娱乐）。**只在 L1 直判出 walmart_category 时激活**（service 传递；未跑 L1/未直判=不过滤，非 L1 流不受影响）。Nice 未知(NULL)商标行过滤态不命中（源仓 brand_nice_class join 同语义，全库仅 0.2%）。
+- **空响应重试**：call_provider 空 content 重试一次（round-3 NR 3/5 为空响应抖动），仍空抛 LLM_EMPTY_RESPONSE 走 fail-closed。截断 JSON（2/5）处置=部署侧 max_tokens 1200→2000（config SQL，无需代码）。
+- 测试：test_r5_nice_filter 3 例（过滤命中/无关类滤除+NULL 滤除/未过滤全中）+ TestEmptyResponseRetry。189 pytest+ruff+mypy(62) 全绿。
+- **战略判断（给 Owner）**：平台期残余大头疑似**groundtruth 时效**（黑名单/商标数据在旧判定之后增长——旧系统今天重跑也会拒）与 LLM 散差，需部署机做"品牌入库时间 vs 旧判定时间"核验后再谈验收口径（重采样近期判定 or 漂移行重分类）。
+- Next：round-5（含 Nice 过滤+重试+max_tokens 2000）+ 漂移核验 + reject->pass 旧因 Top10（尚未见文本）。

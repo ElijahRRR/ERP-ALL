@@ -22,7 +22,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from erp.audit import l2_content
+from erp.audit import l2_content, nice_class
 from erp.audit.blacklist_index import scan_blacklist
 
 log = structlog.get_logger()
@@ -130,7 +130,11 @@ async def _blacklist_lookup(
 _WORD_RE = re.compile(r"[a-z0-9][a-z0-9'&.-]*")
 
 
-async def run_l2(session: AsyncSession, product: dict[str, Any]) -> list[dict[str, Any]]:
+async def run_l2(
+    session: AsyncSession, product: dict[str, Any], *, walmart_category: str | None = None
+) -> list[dict[str, Any]]:
+    """walmart_category：L1 直判带出的 pt_meta.walmart_category（供 R5 Nice 过滤）。
+    None（未跑 L1 / 未直判）→ R5 不过滤（保持既有行为，信号偏多交 L3 判）。"""
     hits: list[dict[str, Any]] = []
     full_text = _norm(_product_text(product))
 
@@ -147,7 +151,9 @@ async def run_l2(session: AsyncSession, product: dict[str, Any]) -> list[dict[st
             }
         )
 
-    # R5：title 大写开头词反查 USPTO LIVE（Nice Class 过滤依赖 L1，R2 接）
+    # R5：title 大写开头词反查 USPTO LIVE。walmart_category 已知时按 Nice Class 过滤
+    # （源仓设计：只看产品类目相关分类下的商标，压掉通用词商标误报——GARDEN/CAR 等
+    # 多注册在 35 广告/41 娱乐服务类）。Nice 未知的商标行在过滤态不命中（源仓同）。
     title = product.get("title") or ""
     candidates = list(
         dict.fromkeys(
@@ -157,23 +163,24 @@ async def run_l2(session: AsyncSession, product: dict[str, Any]) -> list[dict[st
         )
     )[:20]
     if candidates:
-        marks = (
-            await session.execute(
-                text(
-                    "SELECT DISTINCT mark_norm FROM refdata.trademark"
-                    " WHERE mark_norm = ANY(:c) AND is_live"
-                    " ORDER BY mark_norm LIMIT 10"
-                ),
-                {"c": candidates},
-            )
-        ).scalars()
+        allowed = nice_class.classes_for(walmart_category) if walmart_category else None
+        sql = (
+            "SELECT DISTINCT mark_norm FROM refdata.trademark"
+            " WHERE mark_norm = ANY(:c) AND is_live"
+        )
+        params: dict[str, Any] = {"c": candidates}
+        if allowed:
+            sql += " AND nice_classes && CAST(:allowed AS smallint[])"
+            params["allowed"] = allowed
+        sql += " ORDER BY mark_norm LIMIT 10"
+        marks = (await session.execute(text(sql), params)).scalars()
         matched = list(marks)
         if matched:
             hits.append(
                 {
                     "rule_code": "l2_r5_trademark_live",
                     "is_hard": False,
-                    "evidence": {"matched_marks": matched},
+                    "evidence": {"matched_marks": matched, "nice_filtered": bool(allowed)},
                 }
             )
 

@@ -1,0 +1,148 @@
+{
+ "version": 1,
+ "updated": "2026-04-20",
+ "source": "walmart-audit-system db/seed/pt_nice_class.yaml (机械转换,类号转 int)",
+ "category_to_nice_class": {
+  "Home": [
+   6,
+   11,
+   20,
+   21
+  ],
+  "Home Improvement": [
+   6,
+   7,
+   8,
+   9,
+   11,
+   17,
+   19
+  ],
+  "Household": [
+   6,
+   20,
+   21
+  ],
+  "Electronics": [
+   9
+  ],
+  "Business & Industrial": [
+   7,
+   9
+  ],
+  "Toys": [
+   28
+  ],
+  "Games & Toys": [
+   28
+  ],
+  "Sporting Goods": [
+   28
+  ],
+  "Clothing": [
+   25
+  ],
+  "Apparel": [
+   25
+  ],
+  "Shoes": [
+   25
+  ],
+  "Beauty": [
+   3
+  ],
+  "Health": [
+   3,
+   5,
+   10
+  ],
+  "Medical": [
+   5,
+   10
+  ],
+  "Baby": [
+   5,
+   10,
+   12,
+   20,
+   25,
+   28
+  ],
+  "Food": [
+   29,
+   30,
+   31,
+   32,
+   33
+  ],
+  "Grocery": [
+   29,
+   30,
+   31,
+   32
+  ],
+  "Pet Food": [
+   31
+  ],
+  "Pet Supplies": [
+   18,
+   28,
+   31
+  ],
+  "Automotive": [
+   12
+  ],
+  "Auto & Tires": [
+   12
+  ],
+  "Vehicles": [
+   12
+  ],
+  "Garden & Patio": [
+   6,
+   8,
+   11,
+   21,
+   22,
+   31
+  ],
+  "Garden": [
+   6,
+   8,
+   21,
+   22,
+   31
+  ],
+  "Arts & Crafts": [
+   8,
+   16
+  ],
+  "Office": [
+   9,
+   16,
+   20
+  ],
+  "Musical Instruments": [
+   15
+  ],
+  "Bedding": [
+   24
+  ],
+  "Bedding & Bath": [
+   24,
+   27
+  ],
+  "Occasion & Seasonal": [
+   16,
+   28
+  ]
+ },
+ "default_classes": [
+  6,
+  8,
+  9,
+  11,
+  20,
+  21
+ ]
+}

@@ -211,24 +211,32 @@ class LlmClient:
             timeout=120,
             transport=transport,
         ) as client:
-            resp = await client.post(
-                "/chat/completions",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-        if resp.status_code != httpx.codes.OK:
-            raise BusinessError(
-                "LLM_CALL_FAILED",
-                f"LLM 调用失败 HTTP {resp.status_code}",
-                {"body": resp.text[:500]},
-            )
-        data = resp.json()
-        content = str(data["choices"][0]["message"]["content"])
+            # 空响应重试一次（R2-02 round-3 实测：5 条 NR 中 3 条为 provider 空响应，
+            # 属瞬时抖动——重试一次能自愈；仍空则抛错走 fail-closed）
+            for attempt in (0, 1):
+                resp = await client.post(
+                    "/chat/completions",
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                if resp.status_code != httpx.codes.OK:
+                    raise BusinessError(
+                        "LLM_CALL_FAILED",
+                        f"LLM 调用失败 HTTP {resp.status_code}",
+                        {"body": resp.text[:500]},
+                    )
+                data = resp.json()
+                content = str(data["choices"][0]["message"]["content"])
+                if content.strip():
+                    break
+                log.warning("llm.empty_response", model=model, attempt=attempt)
+        if not content.strip():
+            raise BusinessError("LLM_EMPTY_RESPONSE", "LLM 连续返回空响应")
         usage = data.get("usage") or {}
         details = usage.get("prompt_tokens_details") or {}
         cached = int(usage.get("prompt_cache_hit_tokens") or details.get("cached_tokens") or 0)

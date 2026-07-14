@@ -520,6 +520,48 @@ class TestCacheHitPricing:
         assert row == (800, 1000)  # 命中 token 数已入账（RS-08 实测口径）
 
 
+class TestEmptyResponseRetry:
+    def test_empty_then_ok_self_heals(self, migrated_db: str, fake_llm: _FakeLlm) -> None:
+        """provider 空响应重试一次自愈（round-3 实测 5 NR 中 3 条为空响应抖动）。"""
+        import asyncio
+
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from erp.core.db import system_tx
+
+        from .conftest import APP_URL
+
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            content = "" if calls["n"] == 1 else json.dumps(_pass_verdict(), ensure_ascii=False)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+                },
+            )
+
+        llm_client._transport_factory = lambda: httpx.MockTransport(handler)
+
+        async def _run() -> str:
+            sessions = async_sessionmaker(create_async_engine(APP_URL), expire_on_commit=False)
+            async with system_tx(sessions) as s:
+                content, _cost, _hit = await llm_client.chat(
+                    s,
+                    model="deepseek-v4-flash",
+                    messages=[{"role": "user", "content": "empty-retry-probe"}],
+                    max_tokens=100,
+                )
+                return content
+
+        content = asyncio.run(_run())
+        assert calls["n"] == 2  # 第一次空 → 重试一次拿到正常响应
+        assert "verdict" in content
+
+
 class TestApiSurface:
     def test_list_runs(self, client: TestClient, seeded: dict) -> None:
         auth = _login(client, ADMIN, PASSWORD)

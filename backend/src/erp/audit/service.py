@@ -280,6 +280,7 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
         # L1：类目判定（同步映射表直判 gate，L1-a）。命中禁做即拒（唯一 L1 硬拒）；
         # 无直判/无类目→软标记放行，L2/L3 照跑（类目缺图=数据缺口非检查异常，
         # 对拍 round-1 教训+旧系统 parity）。resolved wpt 记入命中证据供上架/L2 复用。
+        l1_walmart_category: str | None = None
         if verdict == "pass" and "l1" in levels:
             l1 = await l1_category.run_l1(s, product)
             await _write_hit(
@@ -294,11 +295,13 @@ async def audit_one(  # noqa: PLR0915, PLR0912  三段式编排（tx1→HTTP→t
             )
             if l1["verdict"] == "reject":
                 verdict, reject_level = "reject", "l1"
+            elif l1["rule_code"] == "l1_category_mapped":
+                l1_walmart_category = l1["evidence"].get("walmart_category")
 
-        # L2：软证据（不否决）
+        # L2：软证据（不否决）。L1 直判出的 walmart_category 供 R5 Nice 过滤
         l2_hits: list[dict[str, Any]] = []
         if verdict == "pass" and "l2" in levels:
-            l2_hits = await pipeline.run_l2(s, product)
+            l2_hits = await pipeline.run_l2(s, product, walmart_category=l1_walmart_category)
             for h in l2_hits:
                 await _write_hit(
                     s,
