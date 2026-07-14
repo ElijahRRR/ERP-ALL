@@ -297,3 +297,10 @@
 - 测试：lark 归一形态 L0 命中集成 1 例（_mk_product 扩 category_path）。190 pytest+ruff+mypy(63) 全绿。
 - **round-6 前置（部署机数据）**：从旧 dump 单表还原 phase0_blacklist_amazon_cats/asins/sellers → csv → import_blacklist 三域导入。**round-6 后仍开的口**：R3b NRTL（需 walmart_pt_spec 表+nrtl_classifier 移植，视 round-6 残余定）；LLM 散差与旧系统模型代际（groundtruth 跨新旧模型时代）→ 验收口径需 Owner 裁（重采样近期/散差类重分类）。
 - Next：部署机导 lark 三表 → round-6。
+
+### Session: 2026-07-14 (round-6 79%——代码保真收尾，验收语义决策点)
+- **round-6（9d42a47，lark 三表已导：类目 11,810/ASIN 18,772/卖家 1,308，零错误）：79%（+2）**。结构：reject->pass 24→11（lark 导入按预测兑现 -13）；**pass->reject 22→31（+9）**——lark 类目黑名单今天命中 47/200，旧系统当年只在 ~9 条上拒过 → **类目黑名单时效漂移**（旧判定发生在类目拉黑之前；品牌漂移核验为 0 但类目是增长最快的名单）。旧系统同一 L0 规则今天重跑也会拒这些——新系统按今日数据判得更对。
+- **残余 42 分解（估）**：pass->reject 31 ≈ 类目时效漂移大头 + LLM 散差 + R5 残余；reject->pass 11 ≈ R3b NRTL（walmart_pt_spec 驱动，表未导+分类器未移植，最后一块可移植）~4 + history_shortcut 1（结构性不可复现）+ LLM 散差 ~6。
+- **定性：代码保真基本收尾**。八轮循环共修复：L1 缺图放行/browse_node 键/召回 v2/栏剥离/R0/R1/R3a gate/L3 双维度/seed yaml 双匹配器/R5 Nice 过滤/stopwords 全量/lark 双键/空响应重试——对照清单可移植项仅剩 R3b。**90% 问题已从工程问题变成验收语义问题**（groundtruth 与今日数据/模型时代不对齐）。
+- 待部署机：①round-6 的 31 条 pass->reject reject_level 分布（jq）②phase0_blacklist_amazon_cats 是否有时间戳→类目漂移可证性 ③walmart_pt_spec 的 \d + 3 行样例（R3b 移植前置）。
+- **Owner 决策点（三选一）**：A 重采样近期判定 groundtruth（数据/模型时代对齐，90% 门槛保真）/ B 漂移行重分类（时间戳可证时从分母剔）/ C 以"分歧类别全部溯源+文档化"为验收（79% + 已证成因清单）。
