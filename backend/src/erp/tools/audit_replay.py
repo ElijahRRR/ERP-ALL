@@ -97,21 +97,29 @@ async def _upsert_product(session: AsyncSession, team_id: int, row: dict[str, An
     return int(r.id)
 
 
+_L1_INFO_KEYS = ("wpt", "access_state", "requires_certificate", "confidence", "match_type")
+
+
 async def _run_hits(
     sessions: async_sessionmaker[AsyncSession], run_id: int
-) -> list[str]:
-    """本次 run 的命中清单 → ["l0:l0_blacklist_brand", "l1:l1_unmapped", ...]（诊断用）。"""
+) -> tuple[list[str], dict[str, Any] | None]:
+    """本次 run 的命中链 + L1 证据摘要（map 旗标，判 R1/R3 类目规则缺口用）。"""
     async with system_tx(sessions) as s:
         rows = (
             await s.execute(
                 text(
-                    "SELECT level, rule_code FROM app.audit_hit"
+                    "SELECT level, rule_code, evidence FROM app.audit_hit"
                     " WHERE run_id = :r ORDER BY id"
                 ),
                 {"r": run_id},
             )
         ).all()
-    return [f"{r.level}:{r.rule_code}" for r in rows]
+    codes = [f"{r.level}:{r.rule_code}" for r in rows]
+    l1_info: dict[str, Any] | None = None
+    for r in rows:
+        if r.level == "l1" and isinstance(r.evidence, dict):
+            l1_info = {k: r.evidence[k] for k in _L1_INFO_KEYS if k in r.evidence}
+    return codes, l1_info
 
 
 async def replay(
@@ -141,6 +149,7 @@ async def replay(
         async with system_tx(sessions) as s:
             pid = await _upsert_product(s, team_id, row)
         hits: list[str] = []
+        l1_info: dict[str, Any] | None = None
         try:
             out = await service.audit_one(
                 sessions,
@@ -151,7 +160,7 @@ async def replay(
                 trigger_kind="batch",
             )
             new_v, rl = out["verdict"], out["reject_level"]
-            hits = await _run_hits(sessions, out["run_id"])
+            hits, l1_info = await _run_hits(sessions, out["run_id"])
         except Exception as e:  # 单品失败不终止整批对拍
             new_v, rl = "error", str(e)[:120]
         recs.append(
@@ -162,6 +171,7 @@ async def replay(
                 "reject_level": rl,
                 "category": row.get("category_path"),
                 "hits": hits,
+                "l1": l1_info,
                 "old_reason": row.get("old_reason") or row.get("reason"),
             }
         )
@@ -210,15 +220,17 @@ async def _run(
     gate = "✅ 达标(≥90%)" if report["rate"] >= _ACCEPT_RATE else "❌ 未达标(<90%)"
     print(f"验收闸门：{gate}")
     for bucket in ("reject->pass", "pass->reject"):
-        cats = Counter(
-            str(d.get("category") or "(无类目)")
-            for d in report["disagreements"]
-            if f"{d['old']}->{d['new']}" == bucket
-        )
-        if cats:
-            print(f"分歧 {bucket} 类目 Top5（聚类=需补类目硬规则的信号）:")
-            for c, n in cats.most_common(5):
-                print(f"  {n}× {c}")
+        rows = [d for d in report["disagreements"] if f"{d['old']}->{d['new']}" == bucket]
+        if not rows:
+            continue
+        reasons = Counter(str(d.get("old_reason") or "(无)") for d in rows)
+        print(f"分歧 {bucket} 旧因 Top10（规则缺口的直接证据）:")
+        for c, n in reasons.most_common(10):
+            print(f"  {n}× {c}")
+        cats = Counter(str(d.get("category") or "(无类目)") for d in rows)
+        print(f"分歧 {bucket} 类目 Top5:")
+        for c, n in cats.most_common(5):
+            print(f"  {n}× {c}")
     if out is not None:
         out.write_text(
             "\n".join(json.dumps(d, ensure_ascii=False) for d in report["disagreements"])

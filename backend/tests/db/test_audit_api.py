@@ -281,6 +281,15 @@ class TestCoerce:
         assert out["verdict"] == "needs_review"
         assert out.get("parse_error") is True
 
+    def test_markdown_fenced_json_parsed(self) -> None:
+        """模型偶发 ```json 栏（对拍 v4-flash 实测 9/200）：剥栏后正常解析，不落 NR。"""
+        fenced = '```json\n{"verdict": "pass", "reason_category": "none"}\n```'
+        out = coerce_l3_result(fenced)
+        assert out["verdict"] == "pass"
+        from erp.audit.pipeline import l3_response_cacheable
+
+        assert l3_response_cacheable(fenced) is True
+
     def test_real_brand_does_not_override_illegal_verdict(self) -> None:
         """顶层 verdict 非法→整份响应不可信：嵌套 is_real_brand 不升级硬拒（round-2 R2-22）。
 

@@ -30,9 +30,11 @@ class _FakeLlm:
     def __init__(self) -> None:
         self.calls = 0
         self.script: list[dict] = []
+        self.models: list[str] = []  # 每次真调用的 model 参数（验配置驱动）
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
+        self.models.append(str(json.loads(request.content).get("model")))
         body = self.script.pop(0) if self.script else {"wpt": "", "confidence": "低"}
         return httpx.Response(
             200,
@@ -73,11 +75,18 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
             " VALUES (%s,%s)",
             (f"{PREFIX}/Home", f"{PREFIX}_Drinkware"),
         )
+        # 兄弟叶子映射（'>' 分隔，真数据格式）：同分支兄弟召回（round-2 召回 v2）
+        conn.execute(
+            "INSERT INTO refdata.category_map (amazon_category, walmart_product_type)"
+            " VALUES (%s,%s)",
+            (f"{PREFIX}knit > Knitting & Crochet > Storage", f"{PREFIX}_Drinkware"),
+        )
         conn.execute(
             "INSERT INTO app.system_config (key, value) VALUES ('llm.pricing', %s)"
             " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (pricing,),
         )
+        conn.execute("DELETE FROM app.llm_cache")  # 确定性 LLM 调用数（不吃上轮陈缓存）
     yield
     with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
         _wipe(conn)
@@ -112,13 +121,28 @@ def test_rerank_cacheable() -> None:
 # ── 召回 ──
 
 
-def test_recall_ancestor_prefix() -> None:
+def _recall(target: str) -> list:
     async def _r() -> list:
         async with system_tx(_sessions()) as s:
-            return await l1_rerank.recall_candidates(s, f"{PREFIX}/Home/Mugs")
+            return await l1_rerank.recall_candidates(s, target)
 
-    cands = asyncio.run(_r())
+    return asyncio.run(_r())
+
+
+def test_recall_ancestor_prefix() -> None:
+    cands = _recall(f"{PREFIX}/Home/Mugs")
     assert any(c["wpt"] == f"{PREFIX}_Drinkware" for c in cands)
+
+
+def test_recall_sibling_branch() -> None:
+    """round-2 召回 v2：目标无祖先行，但 map 有同分支兄弟叶子（真数据 '>' 格式）→ 召回。"""
+    cands = _recall(f"{PREFIX}knit > Knitting & Crochet > Knitting Needles")
+    assert any(c["wpt"] == f"{PREFIX}_Drinkware" for c in cands)
+
+
+def test_recall_top_level_only_too_broad() -> None:
+    """仅共享顶级段（<2 段共同）→ 不召（噪声大不如无候选）。"""
+    assert _recall(f"{PREFIX}knit > TotallyDifferent > Thing") == []
 
 
 # ── resolve：写回 + L1-a 直判 + fail-closed ──
@@ -171,3 +195,28 @@ def test_resolve_no_candidates_no_llm(fake_llm: _FakeLlm) -> None:
     assert out["resolved"] is False
     assert out["reason"] == "no_candidates"
     assert fake_llm.calls == 0  # 无候选不调 LLM
+
+
+def test_rerank_model_from_config(fake_llm: _FakeLlm) -> None:
+    """模型参数化：system_config 'category_map.rerank' 驱动，不写死代码（部署可切）。"""
+    with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO app.system_config (key, value)"
+            " VALUES ('category_map.rerank', '{\"model\": \"cfg-model-x\"}')"
+            " ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+        )
+    try:
+        fake_llm.script = [{"wpt": f"{PREFIX}_Drinkware", "confidence": "高"}]
+        out = asyncio.run(l1_rerank.resolve_category(_sessions(), f"{PREFIX}/Home/CfgTest"))
+        assert out["resolved"] is True
+        assert fake_llm.models == ["cfg-model-x"]  # 用了配置里的模型
+    finally:
+        with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
+            conn.execute("DELETE FROM app.system_config WHERE key = 'category_map.rerank'")
+
+
+def test_rerank_fenced_json_accepted(fake_llm: _FakeLlm) -> None:
+    """复排输出带 markdown 栏（v4-flash 实测）→ 剥栏解析，正常写回。"""
+    fenced = f'```json\n{{"wpt": "{PREFIX}_Drinkware", "confidence": "高"}}\n```'
+    assert l1_rerank.rerank_cacheable(fenced) is True
+    assert l1_rerank.coerce_rerank(fenced, {f"{PREFIX}_Drinkware"}) is not None

@@ -21,26 +21,55 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from erp.audit.llm import cache_key, llm_client
+from erp.audit.pipeline import strip_json_fences
 from erp.core.db import system_tx
 
 log = structlog.get_logger()
 
+# 复排模型参数：system_config 'category_map.rerank' JSON（{model, temperature, max_tokens}），
+# 缺省回退此表。与 L3 的 audit_policy.config 同思路——模型选择归 DB 配置，不写死代码。
+_RERANK_DEFAULTS: dict[str, Any] = {"model": "deepseek-chat", "temperature": 0.0, "max_tokens": 400}
+
+
+async def _rerank_cfg(session: AsyncSession) -> dict[str, Any]:
+    row = (
+        await session.execute(
+            text("SELECT value FROM app.system_config WHERE key = 'category_map.rerank'")
+        )
+    ).scalar_one_or_none()
+    cfg = dict(_RERANK_DEFAULTS)
+    if isinstance(row, dict):
+        cfg.update({k: row[k] for k in ("model", "temperature", "max_tokens") if k in row})
+    return cfg
+
 _UNMAPPED_MARKER = "无对应Walmart PT"
 
-# 召回：mapped 祖先前缀（starts_with 分隔符无关）→ 其 WPT 是本类目候选。DISTINCT ON 去重，
-# 最近祖先（amazon_category 最长）优先。INNER JOIN pt_meta 滤废弃 PT，排除 unmapped 标记。
+# 召回 v2（R2-02 round-2 教训）：旧 starts_with 祖先召回在真数据上 90/189 无候选——
+# map 存的是【完整叶子路径】，目标类目往往没有"恰为其前缀的祖先行"，但有大量
+# 【同分支兄弟】（如 "…> Knitting & Crochet > Storage" 之于 "…> Knitting Needles"）。
+# 现按首段 LIKE 拉回同顶级类目行，Python 侧做分段前缀匹配（分隔符/空格宽容），
+# 从最深共同层往浅找，共同层 ≥2 段才算候选（仅同顶级过宽，噪声大不如无）。
 _RECALL_SQL = text(
-    "SELECT wpt, walmart_category, walmart_ptg, pt_forbidden FROM ("
-    "  SELECT DISTINCT ON (cm.walmart_product_type)"
-    "         cm.walmart_product_type AS wpt, pm.walmart_category, pm.walmart_ptg,"
-    "         pm.zh_seller_forbidden AS pt_forbidden, length(cm.amazon_category) AS anc_len"
-    "  FROM refdata.category_map cm"
-    "  JOIN refdata.pt_meta pm ON pm.walmart_product_type = cm.walmart_product_type"
-    "  WHERE cm.amazon_category <> '' AND starts_with(:target, cm.amazon_category)"
-    "    AND cm.walmart_product_type <> :unmapped"
-    "  ORDER BY cm.walmart_product_type, length(cm.amazon_category) DESC"
-    ") sub ORDER BY anc_len DESC LIMIT :lim"
+    "SELECT cm.walmart_product_type AS wpt, cm.amazon_category,"
+    "       pm.walmart_category, pm.walmart_ptg, pm.zh_seller_forbidden AS pt_forbidden"
+    " FROM refdata.category_map cm"
+    " JOIN refdata.pt_meta pm ON pm.walmart_product_type = cm.walmart_product_type"
+    " WHERE cm.amazon_category LIKE :pat ESCAPE '\\'"
+    "   AND cm.walmart_product_type <> :unmapped"
+    " LIMIT 5000"
 )
+
+_MIN_SHARED_SEGMENTS = 2  # 候选须与目标共享 ≥2 层路径
+
+
+def _segments(path: str) -> list[str]:
+    """路径 → 分段（'A > B > C' 或 'A/B/C' 皆可，段内空格修剪）。"""
+    sep = ">" if ">" in path else "/"
+    return [p.strip() for p in path.split(sep) if p.strip()]
+
+
+def _like_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 _WRITEBACK_SQL = text(
     "INSERT INTO refdata.category_map"
@@ -57,15 +86,38 @@ Walmart Product Type，选出语义最匹配的唯一一个 WPT。
 
 
 async def recall_candidates(session: AsyncSession, amazon_category: str) -> list[dict[str, Any]]:
-    """祖先前缀召回候选 WPT（INNER JOIN pt_meta）。无 mapped 祖先 → 空。"""
-    if not amazon_category or not amazon_category.strip():
+    """同分支召回候选 WPT（INNER JOIN pt_meta）：首段 LIKE 拉回 + 分段前缀匹配，
+    从最深共同层往浅找（≥2 段）。无 ≥2 段共同分支 → 空（不召仅同顶级的噪声）。"""
+    target_segs = _segments(amazon_category or "")
+    if not target_segs:
         return []
     rows = (
-        await session.execute(
-            _RECALL_SQL, {"target": amazon_category, "unmapped": _UNMAPPED_MARKER, "lim": 20}
+        (
+            await session.execute(
+                _RECALL_SQL,
+                {"pat": _like_escape(target_segs[0]) + "%", "unmapped": _UNMAPPED_MARKER},
+            )
         )
-    ).mappings().all()
-    return [dict(r) for r in rows]
+        .mappings()
+        .all()
+    )
+    if not rows:
+        return []
+    seg_rows = [(r, _segments(r["amazon_category"])) for r in rows]
+    for k in range(len(target_segs), _MIN_SHARED_SEGMENTS - 1, -1):
+        want = target_segs[:k]
+        by_wpt: dict[str, dict[str, Any]] = {}
+        for r, segs in seg_rows:
+            if segs[:k] == want and r["wpt"] not in by_wpt:
+                by_wpt[r["wpt"]] = {
+                    "wpt": r["wpt"],
+                    "walmart_category": r["walmart_category"],
+                    "walmart_ptg": r["walmart_ptg"],
+                    "pt_forbidden": r["pt_forbidden"],
+                }
+        if by_wpt:
+            return list(by_wpt.values())[:20]
+    return []
 
 
 def build_rerank_messages(
@@ -87,7 +139,7 @@ def build_rerank_messages(
 def rerank_cacheable(raw_text: str) -> bool:
     """可缓存谓词：JSON dict + 非空 wpt 串（坏响应不入缓存，同 L3 R2-21 纪律）。"""
     try:
-        raw = json.loads(raw_text)
+        raw = json.loads(strip_json_fences(raw_text))
     except (ValueError, json.JSONDecodeError):
         return False
     return isinstance(raw, dict) and bool(str(raw.get("wpt") or "").strip())
@@ -96,7 +148,7 @@ def rerank_cacheable(raw_text: str) -> bool:
 def coerce_rerank(raw_text: str, valid_wpts: set[str]) -> dict[str, Any] | None:
     """解析复排结果。fail-closed：非 JSON / 非 dict / wpt 不在召回候选内 → None（不写回）。"""
     try:
-        raw = json.loads(raw_text)
+        raw = json.loads(strip_json_fences(raw_text))
         if not isinstance(raw, dict):
             raise ValueError("非 dict")
     except (ValueError, json.JSONDecodeError):
@@ -129,17 +181,22 @@ async def resolve_category(
     sessions: async_sessionmaker[AsyncSession],
     amazon_category: str,
     *,
-    model: str = "deepseek-chat",
-    temperature: float = 0.0,
-    max_tokens: int = 400,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """召回 → LLM 复排 → 写回 category_map。→ {amazon_category, resolved, wpt, ...}。
 
-    resolved=False 场景：no_candidates（无 mapped 祖先，不调 LLM）/ llm_unavailable
+    模型参数：显式实参 > system_config 'category_map.rerank' > 默认。
+    resolved=False 场景：no_candidates（无 ≥2 段同分支，不调 LLM）/ llm_unavailable
     （网络失败）/ 复排非法（coerce None，fail-closed 不写回）。
     """
     # ── tx1：召回 + 组 prompt + 查缓存（命中即写回终局）──
     async with system_tx(sessions) as s:
+        cfg = await _rerank_cfg(s)
+        model = model or str(cfg["model"])
+        temperature = float(cfg["temperature"]) if temperature is None else temperature
+        max_tokens = int(cfg["max_tokens"]) if max_tokens is None else max_tokens
         candidates = await recall_candidates(s, amazon_category)
         if not candidates:
             return {

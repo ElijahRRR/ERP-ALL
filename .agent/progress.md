@@ -242,3 +242,10 @@
 - spec §03 L1 主路径正文同步修正。test_l1_category 改 3 增 2（browse_node 键/unmapped 集成放行）；test_audit_replay 增 D 品（缺图→放行→L3 过=与旧一致）。164 pytest+ruff+mypy 全绿。
 - **预期**：round-2 中 86 个 NR 桶消失（那些商品真正跑完 L2/L3）；残余分歧（17 reject->pass 等）由增强 diff 的 old_reason+hits+类目聚类定位——是否需补 L2 R1/R2/R3 届时以真数据裁决。
 - Next：Owner/部署 AI round-2 重跑（groundtruth 加 old_reason；顺带发格式样例验证类目 join 匹配率；部署库补 llm.pricing）。
+
+### Session: 2026-07-14 (round-2 64% 分析 + 召回 v2/栏剥离/模型参数化)
+- **round-2（deepseek-chat）64%**：round-1 修复验证成立——NR 桶 86→0，42%→64%。residual：reject->pass 45（最大桶）/pass->reject 27。**v4-flash 对照 61%**：更漏旧拒(54)+9 条 markdown 栏破 JSON 契约→ **模型不是杠杆**，回退 deepseek-chat。
+- **格式假设被数据否定**：两边路径都是 ' > ' 分隔，90 类目无候选=旧 map 里没有这些完整路径原文（15,744 条 map 是叶子级全路径，目标类目往往无"恰为其前缀的祖先行"，但有大量同分支兄弟叶子）。
+- **修复四件（169 测试全绿已推）**：①L1-b 召回 v2——首段 LIKE 拉回+Python 分段前缀匹配（分隔符宽容），最深共同层往浅找、≥2 段共同才算（同顶级过宽不召）；兄弟叶子召回预计解 85/90 无候选。②strip_json_fences 全线（L3 coerce/cacheable + 复排 coerce/cacheable）——v4-flash 9/200 带 ```json 栏。③复排模型参数化：system_config 'category_map.rerank' {model,temperature,max_tokens}，显式实参>配置>默认；CLI --model。④对拍增强：console 分桶旧因 Top10 聚类（规则缺口直接证据）+diff 行带 l1 map 旗标(wpt/access_state/requires_certificate)。
+- **待部署机数据（裁决 L2 R1/R2/R3 建法）**：existing diff-round2.jsonl 的 reject->pass 旧因 jq 聚类 + pt_meta.access_state / category_map.requires_certificate 值分布。假设：R1≈access_state 谓词、R3≈requires_certificate 谓词——数据已在库，缺的只是硬拒规则谓词，等分布+旧因确认再上（避免误杀 pass->reject 恶化）。
+- Next：拿到聚类/分布 → 定 R1/R3 谓词 → round-3 重跑（召回 v2 应消灭 unmapped 33）。

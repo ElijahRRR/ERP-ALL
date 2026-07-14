@@ -171,4 +171,5 @@ def test_replay_agreement_confusion_and_disagreements(fake_llm: _FakeLlm) -> Non
     assert dis[0]["category"] == f"{PREFIX}/Home/Mugs"  # 诊断字段：类目
     assert dis[0]["old_reason"] == "旧系统类目拦截"  # 诊断字段：旧因
     assert any(h.startswith("l1:") for h in dis[0]["hits"])  # 诊断字段：命中链
+    assert dis[0]["l1"]["wpt"] == f"{PREFIX}_Drinkware"  # 诊断字段：L1 map 旗标
     assert fake_llm.calls == 3  # B、C、D 到 L3（A 在 L0 短路；D 缺图不再挡 L3）

@@ -312,6 +312,21 @@ def build_user_prompt(product: dict[str, Any], l2_hits: list[dict[str, Any]]) ->
     return "\n".join(lines)
 
 
+def strip_json_fences(raw_text: str) -> str:
+    """剥掉模型偶发的 markdown 代码栏（```json … ```）——R2-02 对拍 v4-flash 实测
+    9/200 输出带栏导致解析失败。只剥外层栏，内容原样；非栏文本原样返回。"""
+    t = raw_text.strip()
+    if not t.startswith("```"):
+        return t
+    t = t[3:]
+    if t[:4].lower() == "json":
+        t = t[4:]
+    t = t.strip()
+    if t.endswith("```"):
+        t = t[:-3].strip()
+    return t
+
+
 def l3_response_cacheable(raw_text: str) -> bool:
     """L3 响应可否入 llm_cache：JSON dict + 合法 verdict 才可复用（评审 round-2 R2-21）。
 
@@ -319,7 +334,7 @@ def l3_response_cacheable(raw_text: str) -> bool:
     只用于本次判定（coerce 成 needs_review），不落缓存。
     """
     try:
-        raw = json.loads(raw_text)
+        raw = json.loads(strip_json_fences(raw_text))
     except (ValueError, json.JSONDecodeError):
         return False
     if not isinstance(raw, dict):
@@ -338,7 +353,7 @@ def coerce_l3_result(raw_text: str, valid_categories: set[str] | None = None) ->
     """
     categories = valid_categories or VALID_CATEGORIES
     try:
-        raw = json.loads(raw_text)
+        raw = json.loads(strip_json_fences(raw_text))
         if not isinstance(raw, dict):
             raise ValueError("非 dict")
     except (ValueError, json.JSONDecodeError):

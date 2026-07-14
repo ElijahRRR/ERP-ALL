@@ -42,11 +42,11 @@ async def _backlog_categories(limit: int) -> list[str]:
     return [r for r in rows if r]
 
 
-async def _run(categories: list[str]) -> dict[str, int]:
+async def _run(categories: list[str], *, model: str | None = None) -> dict[str, int]:
     sessions = get_session_factory()
     tally = {"resolved": 0, "no_candidates": 0, "rejected": 0, "unavailable": 0}
     for cat in categories:
-        out = await l1_rerank.resolve_category(sessions, cat)
+        out = await l1_rerank.resolve_category(sessions, cat, model=model)
         if out["resolved"]:
             tally["resolved"] += 1
             print(f"[✓] {cat} → {out['wpt']}")
@@ -67,6 +67,9 @@ def main() -> int:
     p.add_argument("--backlog", action="store_true", help="扫 product 无直判命中的类目")
     p.add_argument("--limit", type=int, default=500, help="积压模式上限（默认 500）")
     p.add_argument("--category", help="复排单个 Amazon 类目路径")
+    p.add_argument(
+        "--model", help="覆盖复排模型（默认读 system_config 'category_map.rerank'）"
+    )
     args = p.parse_args()
 
     if args.category:
@@ -80,7 +83,7 @@ def main() -> int:
     if not categories:
         print("无待复排类目")
         return 0
-    tally = asyncio.run(_run(categories))
+    tally = asyncio.run(_run(categories, model=args.model))
     print(
         f"完成：复排写回 {tally['resolved']} / 无候选 {tally['no_candidates']}"
         f" / 未采纳 {tally['rejected']} / LLM失败 {tally['unavailable']}（共 {len(categories)}）"
