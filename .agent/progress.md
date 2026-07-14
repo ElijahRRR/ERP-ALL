@@ -226,3 +226,10 @@
 - test_l1_rerank.py 8 例(coerce 合法/候选外None/坏JSON/cacheable/祖先召回/resolve写回+usage归因+写回后L1-a直判命中/候选外不写/无候选不调LLM)。160 pytest + ruff + mypy(59) 全绿。
 - **L1 主路径完备**：L1-a 同步直判 gate（audit 内联）+ L1-b 类目复排写回（批量作业），category_map 是共享真相源。DEFAULT_LEVELS 仍不含 l1（填 map 后由部署决定开启；R2-02 对拍显式 levels）。
 - Next: **L2 R1/R2/R3 硬规则**（商标硬拒），补齐后 L1+L2 齐 → R2-02 部署机对拍验收（Owner）。
+
+### Session: 2026-07-14 (R2-02 对拍 harness——最后一步开发，达验收闸门)
+- **L2 R1/R2/R3 改"实测"不"盲建"**：查 archaeology（R1 cat_access_blocked/R2 forbidden_mega_cat 17类/R3a cat_requires_cert FDA/UL…）——三条都是**依赖 L1 类目产物的类目硬拒**，且 L1-a 已在 zh_seller_forbidden 拦禁做。是否已被导入数据覆盖，取决于飞书类目"禁做"标注范围（Owner 知识/真数据），我看不到源码与真数据 → 盲建=空框架（评审否过）。**正解=对拍实测**。
+- **tools/audit_replay.py**（R2-02 验收工具）：groundtruth jsonl → upsert product（对拍专用 team）→ audit_one(levels=[l0,l1,l2,l3]) → verdict 对拍 → 一致率 + 混淆矩阵(old→new) + 分歧清单(带 reject_level)。verdict 归一(approved→pass/blocked→reject)。--resolve-categories 先 L1-b 填图；--out 导分歧供判 L2 类目硬规则是否需补。
+- test_audit_replay 2 例(归一 + 端到端 3 品：L0 拒一致/L1 直判过+L3 过一致/旧拒新过=分歧；calls=2 证 L0 短路)。踩坑：黑名单 brand_norm 须归一小写(L0 查表用 _norm)；llm_cache 需清以定 LLM 调用数。162 pytest + ruff + mypy(60) 全绿。
+- **R2-02 达【待验收运行】**：开发建齐（L0/L1/L2软证据/L3 + 对拍工具）。余 Owner 在部署机跑：导 groundtruth → resolve_categories 填图 → audit_replay 出一致率。≥90% 即通过；<90% 看分歧清单定 L2 硬规则（带真数据）。这是"持续推进到需要验收"的终点。
+- Next（Owner 验收后按分歧决定）：或收 R2-02，或据分歧清单补 L2 R1/R2/R3（真数据驱动）。
