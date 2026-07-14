@@ -89,8 +89,9 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
         )
         conn.execute(
             "INSERT INTO refdata.pt_meta"
-            " (walmart_product_type, walmart_category, zh_seller_forbidden)"
-            " VALUES (%s,'Home',false)",
+            " (walmart_product_type, walmart_category, zh_seller_forbidden,"
+            "  access_state, zh_can_do)"
+            " VALUES (%s,'Home',false,'普通商品','是')",
             (f"{PREFIX}_Drinkware",),
         )
         conn.execute(

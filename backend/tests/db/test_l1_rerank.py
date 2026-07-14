@@ -65,8 +65,9 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
         _wipe(conn)
         conn.execute(
             "INSERT INTO refdata.pt_meta"
-            " (walmart_product_type, walmart_category, zh_seller_forbidden)"
-            " VALUES (%s,'Home',false),(%s,'Weapons',true)",
+            " (walmart_product_type, walmart_category, zh_seller_forbidden,"
+            "  access_state, zh_can_do)"
+            " VALUES (%s,'Home',false,'普通商品','是'),(%s,'Weapons',true,'普通商品','是')",
             (f"{PREFIX}_Drinkware", f"{PREFIX}_Ammo"),
         )
         # 祖先映射：<PFX>/Home → Drinkware（供子类目祖先前缀召回）

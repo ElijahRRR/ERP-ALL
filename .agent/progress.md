@@ -249,3 +249,11 @@
 - **修复四件（169 测试全绿已推）**：①L1-b 召回 v2——首段 LIKE 拉回+Python 分段前缀匹配（分隔符宽容），最深共同层往浅找、≥2 段共同才算（同顶级过宽不召）；兄弟叶子召回预计解 85/90 无候选。②strip_json_fences 全线（L3 coerce/cacheable + 复排 coerce/cacheable）——v4-flash 9/200 带 ```json 栏。③复排模型参数化：system_config 'category_map.rerank' {model,temperature,max_tokens}，显式实参>配置>默认；CLI --model。④对拍增强：console 分桶旧因 Top10 聚类（规则缺口直接证据）+diff 行带 l1 map 旗标(wpt/access_state/requires_certificate)。
 - **待部署机数据（裁决 L2 R1/R2/R3 建法）**：existing diff-round2.jsonl 的 reject->pass 旧因 jq 聚类 + pt_meta.access_state / category_map.requires_certificate 值分布。假设：R1≈access_state 谓词、R3≈requires_certificate 谓词——数据已在库，缺的只是硬拒规则谓词，等分布+旧因确认再上（避免误杀 pass->reject 恶化）。
 - Next：拿到聚类/分布 → 定 R1/R3 谓词 → round-3 重跑（召回 v2 应消灭 unmapped 33）。
+
+### Session: 2026-07-14 (Owner 质疑触发对照审查——证实移植缺口并补齐)
+- **Owner："我原本就有完善的审核系统…可能不止数据问题，还有实现问题"→ 逐行比对源仓**（/workspace/walmart-audit-system 就在沙盒）。**证实**：不止数据。
+- **发现的实现缺口（按影响排序）**：①L2 R1 类目准入 gate 未移植——`access_state∈{普通商品,附条件允许} AND (zh_can_do='是'|'需评估*')`，源仓注释实测**拒 1223/7008 PT(17.5%)**，是 reject->pass 45 的最大嫌疑；②R0 八大 walmart_category 硬禁未移植；③R3a requirements 硬认证关键词(17 词)未移植；④L3 prompt 只移植了 5 维中的 3 维（缺"冒犯性内容"与"儿童产品/CPC 兜底"——源仓 813 行 l3_llm.py，我们当时标注'精简版'）；⑤R2 seed yaml(555 行细粒度 PT 禁售词)未移植；⑥旧 L1=映射候选+qwen-plus LLM 必走双确认+excluded_category_reason 预拦截 vs 我们 0-LLM 直判；⑦旧 L3=qwen-turbo/plus 混合路由+政策路由提示 vs 我们 deepseek 单模型；⑧**旧 L4 视觉默认开**（doubao）——groundtruth 拒样本可能含 L4 拒，纯文本管道结构性对不上。
+- **本单补齐 ①②③④**：l1_category 增 `candidate_block_reason`（R0→R1→R3a 顺序保真，rule_code 保留源仓名 cat_access_blocked/cat_zh_blocked/zh_seller_mega_cat_forbidden/cat_requires_cert_hard），sellable=候选过全部谓词；reject evidence 带全候选拒因明细。L3_SYSTEM_PROMPT 补维度 2(冒犯性)/5(儿童CPC)（源仓原文保真），VALID_CATEGORIES 静态集扩 offensive content/children's products/baby products。数据前提已满足：pt_meta.access_state/zh_can_do/requirements 迁移时已导入。
+- 测试：pt_meta 种子补 access/zh 列；TestCategoryHardGates 5 例(access 拒/zh 拒/mega 拒/cert 拒/需评估*可售)。174 pytest+ruff+mypy 全绿。
+- **未移植项与处置**：R2 yaml→以 round-3 残余分歧裁决是否补；⑥⑦是有意的成本/架构差异（残余影响以对拍量化）；⑧需部署机查 groundtruth 里 L4 拒占比（从验收分母剔除或接受为已知差异）。
+- Next：round-3 重跑（模型回退 deepseek-chat）；结果+L4 占比回来后收敛 R2-02。

@@ -229,7 +229,16 @@ L3_SYSTEM_PROMPT = """你是沃尔玛 Marketplace 合规审核 AI (站在沃尔�
   "compatible for X" / "fits X" / "replacement for X" / "works with X" /
   "designed for X" / "OEM for X" / 品牌名后紧跟型号 (如 "Dyson V6")
 
-## 2. 知识产权 (Intellectual Property)
+## 2. 冒犯性内容 (Walmart Offensive Content 政策)
+从 title/bullets/description 语义判, 命中以下任一 → reject,
+reason_category='Offensive Content':
+- 色情 / 成人主题 / 性化未成年 / 捆绑 / 性玩具
+- 种族辱骂 / 仇恨象征 (Confederate / Nazi / Swastika / KKK)
+- 恶搞冒犯 (funny + offensive 混合 / 嘲讽政治人物)
+- 仿真武器 / 玩具枪 / replica firearm (例外: 水枪 / 泡泡枪 /
+  bright orange tip 合规标识 / NERF foam dart 品牌豁免)
+
+## 3. 知识产权 (Intellectual Property)
 任一 → reject, reason_category='Intellectual Property':
 - 商标仿冒: 已通过维度 1 处理
 - 版权 IP 角色: 卡通 / 电影 / 游戏 / 动漫 IP 名 + 周边商品
@@ -238,9 +247,25 @@ L3_SYSTEM_PROMPT = """你是沃尔玛 Marketplace 合规审核 AI (站在沃尔�
 - 肖像权: 名人姓名 + 周边商品
 - 假冒: "100% Authentic <大牌>" + 显著低价
 
-## 3. 品牌字段伪装 (brand_misuse)
+## 4. 品牌字段伪装 (brand_misuse)
 brand 填 Unbranded/Generic/小品牌, 但 title/描述暗示某大牌
 → reject, reason_category='brand_misuse'
+
+## 5. 儿童产品 / CPC 兜底 (重要 — 即便类目没标 CPC 也要拦)
+美国 CPSIA 要求所有 ≤12 岁儿童产品必须有 CPC + ASTM/CPSC 实验室测试报告,
+搬运卖家无法提供。判定步骤:
+1. title/bullets/description 是否暗示 ≤12 岁儿童使用:
+   - 显式年龄: "for kids" / "ages 3+" / "infant" / "toddler" / "baby" / "婴儿" / "儿童"
+   - 儿童专用形态: onesie / bib / diaper / stroller / crib / high chair /
+     car seat / pacifier / sippy cup / swaddle
+   - 玩具/教具: squishy / plush toy / stuffed animal / fidget toy / slime kit /
+     play set / playmat / play tent
+2. 排除明确成人/兽用情形: "for adult" / "dog onesie" / "Baby's Breath Flower"(花卉) /
+   给妈妈用的 "Baby Pillow for Mom" 等 → 不算儿童产品
+   **特别注意**: 成品形态是儿童典型玩具的 (squishy/slime/plush/fidget/play dough/
+   stuffed animal), 不管文案写 DIY/adult/decor, 一律算儿童产品.
+3. 命中且无排除 → reject, reason_category="Children's Products"
+   (< 3 岁专用则 "Baby Products"), reason_text 引用 title 原文证据.
 
 # 输出规范 (严格 JSON)
 
@@ -266,10 +291,15 @@ brand 填 Unbranded/Generic/小品牌, 但 title/描述暗示某大牌
 - 不凭空添加未列出的品牌
 
 # 候选 reason_category (verdict=reject 时必选其一)
-Intellectual Property / brand_misuse
+Intellectual Property / brand_misuse / Offensive Content /
+Children's Products / Baby Products / 或下方政策清单中的 category_en
 """
 
-VALID_CATEGORIES = {"intellectual property", "brand_misuse", "none"}
+# 静态合法类目（源仓 5 维判定的产出类目；37 政策 category_en 由 service 运行时扩入）
+VALID_CATEGORIES = {
+    "intellectual property", "brand_misuse", "offensive content",
+    "children's products", "baby products", "none",
+}  # fmt: skip
 # 源仓 _coerce_result 的旧标签兼容映射
 _LEGACY_CATEGORY_MAP = {
     "ip_infringement": "intellectual property",

@@ -35,13 +35,24 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
 
     with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
         _wipe(conn)
-        # pt_meta：可售 PT + 禁做 PT（废弃 PT 'ZL1_Ghost' 故意不建，验 INNER JOIN 滤除）
-        conn.execute(
-            "INSERT INTO refdata.pt_meta"
-            " (walmart_product_type, walmart_category, zh_seller_forbidden)"
-            " VALUES (%s,%s,false),(%s,%s,true)",
-            (f"{PREFIX}_Drinkware", "Home", f"{PREFIX}_Ammo", "Weapons"),
-        )
+        # pt_meta（第 3-6 元 = zh_seller_forbidden / access_state / zh_can_do / requirements）
+        # 可售 PT 必须过 R1 双白名单；'ZL1_Ghost' 故意不建（验 INNER JOIN 滤除）
+        pt_rows = [
+            (f"{PREFIX}_Drinkware", "Home", False, "普通商品", "是", None),  # 可售
+            (f"{PREFIX}_Ammo", "Weapons", True, "普通商品", "是", None),  # zh_seller_forbidden
+            (f"{PREFIX}_Approval", "Home", False, "需Walmart审批", "是", None),  # R1 access 拒
+            (f"{PREFIX}_ZhNo", "Home", False, "普通商品", "否（进不去）", None),  # R1 zh 拒
+            (f"{PREFIX}_Mega", "Electronics", False, "普通商品", "是", None),  # R0 大类硬禁
+            (f"{PREFIX}_Cert", "Home", False, "附条件允许", "需评估上架", "需 FDA 注册"),  # R3a
+            (f"{PREFIX}_Eval", "Home", False, "附条件允许", "需评估风险", None),  # 可售（需评估*）
+        ]
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO refdata.pt_meta (walmart_product_type, walmart_category,"
+                " zh_seller_forbidden, access_state, zh_can_do, requirements)"
+                " VALUES (%s,%s,%s,%s,%s,%s)",
+                pt_rows,
+            )
         # category_map：各场景（第 3 元 = zh_seller_forbidden）
         rows = [
             (f"{PREFIX}/Home/Mugs", f"{PREFIX}_Drinkware", False),  # 可售
@@ -51,6 +62,11 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
             (f"{PREFIX}/Multi/Mixed", f"{PREFIX}_Ammo", False),  # 混合：禁
             (f"{PREFIX}/Multi/Mixed", f"{PREFIX}_Drinkware", False),  # 混合：可售
             (f"{PREFIX}/Unmapped/None", "无对应Walmart PT", False),  # unmapped 标记
+            (f"{PREFIX}/Gate/Approval", f"{PREFIX}_Approval", False),  # R1 access
+            (f"{PREFIX}/Gate/ZhNo", f"{PREFIX}_ZhNo", False),  # R1 zh_can_do
+            (f"{PREFIX}/Gate/Mega", f"{PREFIX}_Mega", False),  # R0 mega
+            (f"{PREFIX}/Gate/Cert", f"{PREFIX}_Cert", False),  # R3a cert
+            (f"{PREFIX}/Gate/Eval", f"{PREFIX}_Eval", False),  # 需评估* 可售
         ]
         with conn.cursor() as cur:
             cur.executemany(
@@ -92,7 +108,8 @@ def test_pt_forbidden_reject() -> None:
     r = _l1(category_path=f"{PREFIX}/Weapons/Ammo")
     assert r["verdict"] == "reject"
     assert r["rule_code"] == "l1_category_forbidden"
-    assert f"{PREFIX}_Ammo" in r["evidence"]["forbidden_wpts"]
+    assert r["evidence"]["candidates"][0]["wpt"] == f"{PREFIX}_Ammo"
+    assert r["evidence"]["candidates"][0]["block"] == "l1_category_forbidden"
 
 
 def test_map_forbidden_reject() -> None:
@@ -136,6 +153,36 @@ def test_browse_node_id_key_matches() -> None:
     assert r["verdict"] == "pass"
     assert r["wpt"] == f"{PREFIX}_Drinkware"
     assert r["rule_code"] == "l1_category_mapped"
+
+
+class TestCategoryHardGates:
+    """源仓 L2 R0/R1/R3a 保真移植（R2-02 对照审查补齐）。"""
+
+    def test_r1_access_blocked(self) -> None:
+        r = _l1(category_path=f"{PREFIX}/Gate/Approval")
+        assert r["verdict"] == "reject"
+        assert r["rule_code"] == "cat_access_blocked"  # 需Walmart审批 不在白名单
+
+    def test_r1_zh_can_do_blocked(self) -> None:
+        r = _l1(category_path=f"{PREFIX}/Gate/ZhNo")
+        assert r["verdict"] == "reject"
+        assert r["rule_code"] == "cat_zh_blocked"  # zh_can_do 含'否'
+
+    def test_r0_mega_category_blocked(self) -> None:
+        r = _l1(category_path=f"{PREFIX}/Gate/Mega")
+        assert r["verdict"] == "reject"
+        assert r["rule_code"] == "zh_seller_mega_cat_forbidden"  # Electronics 硬禁
+
+    def test_r3a_hard_cert_blocked(self) -> None:
+        r = _l1(category_path=f"{PREFIX}/Gate/Cert")
+        assert r["verdict"] == "reject"
+        assert r["rule_code"] == "cat_requires_cert_hard"  # requirements 含 FDA
+
+    def test_zh_can_do_eval_prefix_sellable(self) -> None:
+        """zh_can_do='需评估*' 在白名单内（源仓规则），附条件允许 + 无硬认证 → 可售。"""
+        r = _l1(category_path=f"{PREFIX}/Gate/Eval")
+        assert r["verdict"] == "pass"
+        assert r["wpt"] == f"{PREFIX}_Eval"
 
 
 def test_no_category_soft_pass() -> None:
