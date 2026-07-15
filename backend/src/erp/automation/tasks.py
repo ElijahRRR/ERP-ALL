@@ -359,6 +359,124 @@ async def _recon_one_retire(sessions: Sessions, cmd: Any, *, grace_s: int) -> st
         return "pending"  # 未过 grace：等渠道把 RETIRE feed 处理完
 
 
+# ── 告警类（单 system_tx：聚合 + notify，不动业务数据）──
+
+
+async def gtin_watermark(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """GTIN 池水位告警（D-Q39/03-catalog：按 (team, kind) 统计 free 占比 → notification）。
+
+    阈值 team_config > system_config > 默认（warn <15% / critical <5%）；
+    只告警不动池——补号动作永远是人（导入通道）。dedupe 24h=每日至多一条。
+    """
+    default_warn = float(config.get("warn_pct", 15))
+    default_critical = float(config.get("critical_pct", 5))
+    async with system_tx(sessions) as session:
+        groups = (
+            await session.execute(
+                text(
+                    "SELECT team_id, gtin_kind, count(*) AS total,"
+                    " count(*) FILTER (WHERE status = 'free') AS free"
+                    " FROM app.gtin_pool GROUP BY team_id, gtin_kind ORDER BY 1, 2"
+                )
+            )
+        ).all()
+        overrides: dict[tuple[int, str], float] = {
+            (r.team_id, r.key): float(r.value)
+            for r in await session.execute(
+                text(
+                    "SELECT team_id, key, value FROM app.team_config"
+                    " WHERE key IN ('gtin.warn_pct', 'gtin.critical_pct')"
+                )
+            )
+        }
+        system_over: dict[str, float] = {
+            r.key: float(r.value)
+            for r in await session.execute(
+                text(
+                    "SELECT key, value FROM app.system_config"
+                    " WHERE key IN ('gtin.warn_pct', 'gtin.critical_pct')"
+                )
+            )
+        }
+        warned = critical = 0
+        for g in groups:
+            warn_pct = overrides.get(
+                (g.team_id, "gtin.warn_pct"), system_over.get("gtin.warn_pct", default_warn)
+            )
+            critical_pct = overrides.get(
+                (g.team_id, "gtin.critical_pct"),
+                system_over.get("gtin.critical_pct", default_critical),
+            )
+            free_pct = g.free * 100.0 / g.total
+            if free_pct >= warn_pct:
+                continue
+            severity: Any = "critical" if free_pct < critical_pct else "warn"
+            if severity == "critical":
+                critical += 1
+            else:
+                warned += 1
+            await notify(
+                session,
+                team_id=g.team_id,
+                severity=severity,
+                category="gtin_watermark",
+                title=f"GTIN 池水位告警：{g.gtin_kind} 剩余 {free_pct:.1f}%",
+                body=f"可用 {g.free}/{g.total}；请尽快导入补号（上架管理 → GTIN 池导入）",
+                object_type="gtin_pool",
+                object_id=g.gtin_kind,
+                dedupe_key=f"gtin_watermark:{g.team_id}:{g.gtin_kind}",
+            )
+    return {"groups": len(groups), "warned": warned, "critical": critical}
+
+
+async def llm_budget_check(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """LLM 日预算闸·告警版（05-audit §预算闸：聚合 llm_usage_log → 超限 critical）。
+
+    不自动停，人决策（降级建议入通知正文）。事前原子预留是 RS-08 加固单，
+    本任务只做 schedule 底座上的事后聚合口径。预算键：team_config llm_budget_daily_usd。
+    """
+    tz = str(config.get("timezone", "Asia/Shanghai"))
+    async with system_tx(sessions) as session:
+        budgets = (
+            await session.execute(
+                text(
+                    "SELECT team_id, value FROM app.team_config WHERE key = 'llm_budget_daily_usd'"
+                )
+            )
+        ).all()
+        over = 0
+        for b in budgets:
+            budget_usd = float(b.value)
+            if budget_usd <= 0:
+                continue
+            spent = (
+                await session.execute(
+                    text(
+                        "SELECT coalesce(sum(cost_usd), 0) FROM app.llm_usage_log"
+                        " WHERE team_id = :t AND occurred_at >="
+                        "   date_trunc('day', now() AT TIME ZONE :tz) AT TIME ZONE :tz"
+                    ),
+                    {"t": b.team_id, "tz": tz},
+                )
+            ).scalar_one()
+            if float(spent) < budget_usd:
+                continue
+            over += 1
+            await notify(
+                session,
+                team_id=b.team_id,
+                severity="critical",
+                category="budget",
+                title=f"LLM 日预算超限：${float(spent):.2f} / ${budget_usd:.2f}",
+                body="建议：临时下调审核档位（L4/L3→L1/L2）或暂停批量映射后再继续"
+                "——不自动停，由人决策（D-Q19/05-audit 预算闸）",
+                object_type="team",
+                object_id=str(b.team_id),
+                dedupe_key=f"llm_budget:{b.team_id}",
+            )
+    return {"teams_with_budget": len(budgets), "over_budget": over}
+
+
 TASKS: dict[str, TaskFn] = {
     "partition_maintain": partition_maintain,
     "api_idempotency_sweep": api_idempotency_sweep,
@@ -368,4 +486,6 @@ TASKS: dict[str, TaskFn] = {
     "feed_verify_back": feed_verify_back,
     "channel_outbox_drain": channel_outbox_drain,
     "retire_recon": retire_recon,
+    "gtin_watermark": gtin_watermark,
+    "llm_budget_check": llm_budget_check,
 }
