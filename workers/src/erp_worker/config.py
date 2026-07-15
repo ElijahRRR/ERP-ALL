@@ -19,6 +19,14 @@ REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "15"))
 MAX_RETRIES = 3
 SESSION_ROTATE_EVERY = 1000
 
+# ── 中流停滞防御（2026-07-15 真机实测：TPS 坏出口 IP 收到部分响应后卡死；
+#    且重试复用连接池同一隧道=钉死同一坏 IP）──
+# 传输速率 < LIMIT 字节/秒 持续 TIME 秒 → 中止该请求（0 任一=关闭该防御）
+LOW_SPEED_LIMIT_BPS = int(os.environ.get("LOW_SPEED_LIMIT_BPS", "1024"))
+LOW_SPEED_TIME_S = int(os.environ.get("LOW_SPEED_TIME_S", "8"))
+# 连续 N 次传输停滞（跨任务累计，成功即清零）→ 轮换 session（新连接=TPS 新出口 IP）
+STALL_ROTATE_THRESHOLD = int(os.environ.get("STALL_ROTATE_THRESHOLD", "3"))
+
 # ── 令牌桶限流（QPS）──
 TOKEN_BUCKET_RATE = 64.0
 

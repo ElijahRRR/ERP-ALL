@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Optional, Dict, Any, List
 
-from curl_cffi import CurlHttpVersion
+from curl_cffi import CurlHttpVersion, CurlOpt
 from curl_cffi.requests import AsyncSession, Response
 
 from erp_worker import config
@@ -84,6 +84,15 @@ class AmazonSession:
                 try:
                     proxy = await self.proxy_manager.get_proxy()
 
+                    # 中流停滞防御（2026-07-15 真机实测：TPS 坏出口 IP 收到部分响应后
+                    # 卡死——传输速率跌破下限持续 N 秒即中止，代价 ~N 秒而非整个超时；
+                    # 中止走 resp=None 重试路径，配合停滞轮换换新出口 IP）
+                    curl_options: Optional[Dict[int, int]] = None
+                    if config.LOW_SPEED_LIMIT_BPS > 0 and config.LOW_SPEED_TIME_S > 0:
+                        curl_options = {
+                            CurlOpt.LOW_SPEED_LIMIT: config.LOW_SPEED_LIMIT_BPS,
+                            CurlOpt.LOW_SPEED_TIME: config.LOW_SPEED_TIME_S,
+                        }
                     self._session = AsyncSession(
                         impersonate=self._impersonate,
                         timeout=config.REQUEST_TIMEOUT,
@@ -93,6 +102,7 @@ class AmazonSession:
                         # HTTP/1.1: 每请求独立 TCP 连接，丢包隔离
                         # 注意：CurlHttpVersion.V1_1 的整数值 = 2 (CURL_HTTP_VERSION_1_1)
                         http_version=CurlHttpVersion.V1_1,
+                        curl_options=curl_options,
                     )
 
                     # 1. 访问首页获取初始 cookies

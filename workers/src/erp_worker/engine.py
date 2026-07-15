@@ -85,6 +85,9 @@ class ScrapeEngine:
         self._rotation_grace_until = 0.0
         self._empty_title_count = 0
         self._empty_title_rotate_threshold = 15
+        # 传输停滞连击计数（TPS 坏出口 IP 被连接池钉死的解法：达阈值换 session）
+        self._stall_count = 0
+        self._stall_rotate_threshold = config.STALL_ROTATE_THRESHOLD
 
         # 热备 session
         self._standby_session: AmazonSession | None = None
@@ -231,6 +234,20 @@ class ScrapeEngine:
         ):
             config.PROXY_BANDWIDTH_MBPS = float(bandwidth)
             changes.append(f"proxy_bandwidth={bandwidth}Mbps")
+        # 中流停滞防御参数（低速中止在 session 创建时固化 → 变更需轮换）
+        for skey, attr in (
+            ("low_speed_limit_bps", "LOW_SPEED_LIMIT_BPS"),
+            ("low_speed_time_s", "LOW_SPEED_TIME_S"),
+        ):
+            sval = s.get(skey)
+            if isinstance(sval, (int, float)) and sval >= 0 and int(sval) != getattr(config, attr):
+                setattr(config, attr, int(sval))
+                changes.append(f"{skey}={int(sval)}")
+                needs_rotate = True
+        stall = s.get("stall_rotate_threshold")
+        if isinstance(stall, int) and stall > 0 and stall != self._stall_rotate_threshold:
+            self._stall_rotate_threshold = stall
+            changes.append(f"stall_rotate_threshold={stall}")
         retries = s.get("max_retries")
         if isinstance(retries, int) and retries > 0:
             self._max_retries = retries
@@ -471,6 +488,17 @@ class ScrapeEngine:
                 logger.error("worker-%s 未捕获异常: %s", idx, e)
                 await asyncio.sleep(1)
 
+    def _note_transport_ok(self) -> None:
+        self._stall_count = 0
+
+    def _note_transport_stall(self) -> bool:
+        """→ True=连续停滞达阈值（调用方应轮换 session：新连接=TPS 新出口 IP）。"""
+        self._stall_count += 1
+        if self._stall_count >= self._stall_rotate_threshold:
+            self._stall_count = 0
+            return True
+        return False
+
     def _calc_recv_speed(self) -> int:
         bw = config.PROXY_BANDWIDTH_MBPS
         if bw <= 0:
@@ -522,8 +550,13 @@ class ScrapeEngine:
                     self._controller.record_result(req_elapsed, False, False, 0)
                     local_attempt += 1
                     last_error_type = "timeout"
+                    if self._note_transport_stall():
+                        # 重试会复用连接池同一隧道=同一坏出口 IP（2026-07-15 真机实测
+                        # 中流停滞连击）——换 session 建新连接才真正换 IP
+                        await self._rotate_session(reason="传输停滞连击")
                     await asyncio.sleep(2)
                     continue
+                self._note_transport_ok()
 
                 if session.is_blocked(resp):
                     if session.is_captcha(resp) and await session.solve_captcha(resp):
