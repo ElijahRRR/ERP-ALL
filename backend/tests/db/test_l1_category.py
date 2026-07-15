@@ -102,9 +102,7 @@ async def _run_l1(product: dict) -> dict:
 
 
 def _l1(category_path=None, amazon_leaf_id=None) -> dict:  # type: ignore[no-untyped-def]
-    return asyncio.run(
-        _run_l1({"category_path": category_path, "amazon_leaf_id": amazon_leaf_id})
-    )
+    return asyncio.run(_run_l1({"category_path": category_path, "amazon_leaf_id": amazon_leaf_id}))
 
 
 def test_mapped_sellable_pass() -> None:

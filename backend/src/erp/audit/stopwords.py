@@ -18,6 +18,7 @@ R5 喂给 L3 的商标信号偏多（pass->reject 主链成因之一）。本模
 public:
   is_stopword(token: str) -> bool
 """
+
 # ruff: noqa: SIM905, PLR0911, PLR2004, SIM103, RUF022  源仓逐字移植,不为 lint 重构
 from __future__ import annotations
 
@@ -26,7 +27,8 @@ import re
 # 通用英文词 / Amazon 页面噪音 / 产品属性词 / 常见单位
 # 初版 ~400 条, 覆盖 100 条样本观察到的命中噪音
 STOPWORDS_COMMON: frozenset[str] = frozenset(
-    w.lower() for w in """
+    w.lower()
+    for w in """
     the and or not no yes but for from to with of by at in on off up down out re
     all any some each every one two three four five six seven eight nine ten
     our us we you they them their his her my your its it is are was were be been

@@ -105,9 +105,7 @@ async def run_l0(session: AsyncSession, product: dict[str, Any]) -> dict[str, An
     #    导入的旧 phase0_blacklist_amazon_cats 数据以此形态命中）
     for cat in filter(None, (product.get("amazon_leaf_id"), product.get("category_path"))):
         for key in {_norm(str(cat)), _norm(normalize_amazon_category(str(cat)))}:
-            hit = await _blacklist_lookup(
-                session, "blacklist_category", "category_ref", key, team
-            )
+            hit = await _blacklist_lookup(session, "blacklist_category", "category_ref", key, team)
             if hit:
                 return {
                     "rule_code": "l0_blacklist_category",
@@ -187,8 +185,7 @@ async def run_l2(
     if candidates:
         allowed = nice_class.classes_for(walmart_category) if walmart_category else None
         sql = (
-            "SELECT DISTINCT mark_norm FROM refdata.trademark"
-            " WHERE mark_norm = ANY(:c) AND is_live"
+            "SELECT DISTINCT mark_norm FROM refdata.trademark WHERE mark_norm = ANY(:c) AND is_live"
         )
         params: dict[str, Any] = {"c": candidates}
         if allowed:

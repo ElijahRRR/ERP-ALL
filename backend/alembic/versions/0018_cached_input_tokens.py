@@ -15,8 +15,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute(
-        "ALTER TABLE app.llm_usage_log"
-        " ADD COLUMN cached_input_tokens int NOT NULL DEFAULT 0"
+        "ALTER TABLE app.llm_usage_log ADD COLUMN cached_input_tokens int NOT NULL DEFAULT 0"
     )
 
 

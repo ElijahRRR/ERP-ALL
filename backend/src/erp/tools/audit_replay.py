@@ -142,9 +142,7 @@ async def replay(
     对不上，从对拍分母剔除，单独计 excluded_l4。
     """
     l4_rows = [
-        r
-        for r in rows
-        if "l4" in str(r.get("old_stage") or r.get("stage") or "").strip().lower()
+        r for r in rows if "l4" in str(r.get("old_stage") or r.get("stage") or "").strip().lower()
     ]
     if l4_rows:
         excluded = {id(r) for r in l4_rows}
