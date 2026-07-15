@@ -370,3 +370,7 @@
 - 范围钉死：inbox 缓办（进站仅主动轮询，无重复消费面）至 R2-04 webhook；retire verify_pending 对账+api_idempotency 全表清扫+drain beat 化=R2-04 维护任务；ship/refund 幂等接入=R2-05。
 - 终态：**262 pytest + ruff(check+format) + mypy + 迁移 base↔head 实跑 + 前端 lint/build（契约再生）全绿**。RS-03 工单整单 done（a+b 双闸门齐）。
 - **Next**：①A152 验收②窗口可排（部署机指令任务 4 已更新：必带 Idempotency-Key 头/断连只走 verify-back/drain 工具）②R2-04 worker/beat 底座（outbox drain 周期化+retire 对账维护任务自然并入）。
+
+### Session: 2026-07-15 (A152 验收②护航：真机暴露的两笔缺陷修复)
+- **socksio 缺依赖（PR #4，已合 92fc7e9）**：网关经店铺 SOCKS5 代理发包需 httpx[socks]，镜像缺 socksio 在传输构造点即抛错。修=正式依赖 + socks5 URL 构造级回归测试。沙盒 MockTransport 从不建真实传输→只有真机能暴露。
+- **采集 worker 超时写死 15s（真机全量超时）**：config.REQUEST_TIMEOUT 源仓直连口径，TPS 代理链路整页常态更慢；且 _apply_settings 文档串声称支持"超时"下发但代码未接（配置中心铁律漏网）。修=env 兜底（REQUEST_TIMEOUT/PROXY_BANDWIDTH_MBPS）+ scrape.worker_settings 运行期下发 request_timeout/proxy_bandwidth_mbps；超时变更丢弃旧超时热备、清节流戳强制冷轮换生效；R2-01 runbook 补链路调参节（支持键全列）。workers 28 用例四关全绿。

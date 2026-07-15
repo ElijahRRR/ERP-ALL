@@ -171,9 +171,14 @@ class ScrapeEngine:
             self._apply_settings(result.get("settings") or {})
             self._draining = bool(result.get("draining"))
 
-    def _apply_settings(self, s: dict[str, Any]) -> None:
-        """应用 ERP 下发的 scrape.worker_settings（子集：代理/并发/QPS/超时/轮换）。"""
+    def _apply_settings(self, s: dict[str, Any]) -> bool:
+        """应用 ERP 下发的 scrape.worker_settings（代理/并发/QPS/超时/带宽/轮换）。
+
+        → True=需要轮换 session 才能生效的参数发生了变更（request_timeout 在
+        session 创建时固化——A152 实测 15s 写死全量超时的修复点）。
+        """
         changes: list[str] = []
+        needs_rotate = False
         proxy_url = s.get("proxy_url")
         if proxy_url and proxy_url != config.PROXY_URL:
             config.PROXY_URL = proxy_url
@@ -188,6 +193,23 @@ class ScrapeEngine:
         if isinstance(rate, (int, float)) and rate != self._rate_limiter.rate:
             self._rate_limiter.rate = float(rate)
             changes.append(f"qps={rate}")
+        timeout = s.get("request_timeout")
+        if (
+            isinstance(timeout, (int, float))
+            and timeout > 0
+            and int(timeout) != config.REQUEST_TIMEOUT
+        ):
+            config.REQUEST_TIMEOUT = int(timeout)
+            changes.append(f"request_timeout={int(timeout)}s")
+            needs_rotate = True
+        bandwidth = s.get("proxy_bandwidth_mbps")
+        if (
+            isinstance(bandwidth, (int, float))
+            and bandwidth >= 0
+            and float(bandwidth) != config.PROXY_BANDWIDTH_MBPS
+        ):
+            config.PROXY_BANDWIDTH_MBPS = float(bandwidth)
+            changes.append(f"proxy_bandwidth={bandwidth}Mbps")
         retries = s.get("max_retries")
         if isinstance(retries, int) and retries > 0:
             self._max_retries = retries
@@ -196,6 +218,7 @@ class ScrapeEngine:
             self._rotate_every = rotate
         if changes:
             logger.info("设置同步: %s", ", ".join(changes))
+        return needs_rotate
 
     async def _settings_sync(self) -> None:
         while self._running:
@@ -225,7 +248,16 @@ class ScrapeEngine:
                 metrics=metrics, window_state=window, version=WORKER_VERSION
             )
             if result:
-                self._apply_settings(result.get("settings") or {})
+                needs_rotate = self._apply_settings(result.get("settings") or {})
+                if needs_rotate and self._session is not None:
+                    # request_timeout 固化在 session 创建时——立即轮换使新值生效。
+                    # 热备是旧超时建的：丢弃走冷轮换；清节流戳保证本次轮换必执行
+                    if self._standby_session is not None:
+                        stale_standby = self._standby_session
+                        self._standby_session = None
+                        asyncio.create_task(self._delayed_close(stale_standby))
+                    self._last_rotate_time = 0.0
+                    await self._rotate_session(reason="超时参数变更")
                 if result.get("draining") and not self._draining:
                     logger.info("server 指示下线（draining），停止领新任务")
                     self._draining = True

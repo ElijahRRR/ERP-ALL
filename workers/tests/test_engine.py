@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from erp_worker import config
 from erp_worker.engine import ScrapeEngine
 
 
@@ -195,3 +196,32 @@ async def test_degraded_page_retries(degraded_price: str) -> None:
     # 降级页耗尽后失败回传
     assert client.results[0]["success"] is False
     assert client.results[0]["error_type"] == "parse_error"
+
+
+class TestApplySettings:
+    """A152 实测回归：request_timeout 写死 15s 全量超时——settings 下发必须可覆盖。"""
+
+    def test_request_timeout_and_bandwidth_wired(self) -> None:
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old_t, old_b = config.REQUEST_TIMEOUT, config.PROXY_BANDWIDTH_MBPS
+        try:
+            needs_rotate = eng._apply_settings(
+                {"request_timeout": old_t + 30, "proxy_bandwidth_mbps": 8}
+            )
+            assert needs_rotate is True  # 超时固化在 session 创建时 → 变更需轮换
+            assert config.REQUEST_TIMEOUT == old_t + 30
+            assert config.PROXY_BANDWIDTH_MBPS == 8.0
+        finally:
+            config.REQUEST_TIMEOUT, config.PROXY_BANDWIDTH_MBPS = old_t, old_b
+
+    def test_same_or_invalid_timeout_no_rotate(self) -> None:
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old_t = config.REQUEST_TIMEOUT
+        try:
+            assert eng._apply_settings({"request_timeout": old_t}) is False  # 同值不折腾
+            assert eng._apply_settings({"request_timeout": 0}) is False  # 非法值忽略
+            assert eng._apply_settings({"request_timeout": -5}) is False
+            assert config.REQUEST_TIMEOUT == old_t
+            assert eng._apply_settings({}) is False  # 未下发保持现状
+        finally:
+            config.REQUEST_TIMEOUT = old_t
