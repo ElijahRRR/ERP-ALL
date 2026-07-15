@@ -72,28 +72,48 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
             " VALUES (%s, %s), (%s, %s)",
             (f"{PREFIX}/Home/Mugs", WPT, f"{PREFIX}/Bad/Ammo", f"{PREFIX}_Forbidden"),
         )
-        # PT spec（fields 原始节点）：certification_type enum 含目标值；
-        # has_written_warranty enum 不含 'No'（验安全序列回退到 enum 首个安全值）；
-        # has_nrtl_listing_certification 不在此 PT（验"只对存在的字段强制"）
+        # PT spec（fields 原始节点，含真实 PT 都有的文案/图片字段——清洗链 strip_unknown
+        # 只保留 schema 内字段）：certification_type enum 含目标值；has_written_warranty
+        # enum 不含 'No'（验安全序列回退）；has_nrtl_listing_certification 不在此 PT
+        # （验"只对存在的字段强制"）
+        pt_fields = {
+            "type": "object",
+            "required": ["shortDescription"],
+            "properties": {
+                "shortDescription": {"type": "string", "maxLength": 4000},
+                "productName": {"type": "string", "maxLength": 199},
+                "brand": {"type": "string"},
+                "mainImageUrl": {"type": "string", "format": "uri"},
+                "productSecondaryImageURL": {
+                    "type": "array",
+                    "minItems": 5,
+                    "items": {"type": "string", "format": "uri"},
+                },
+                "keyFeatures": {"type": "array", "minItems": 3, "items": {"type": "string"}},
+                "certification_type": {
+                    "type": "string",
+                    "enum": [
+                        "Children's Product Certificate",
+                        "General Certificate of Conformity",
+                        "Neither of these applies",
+                    ],
+                },
+                "has_written_warranty": {
+                    "type": "string",
+                    "enum": ["Yes - Warranty Text", "Skip for now"],
+                },
+                "isAssemblyRequired": {"type": "string", "enum": ["Yes", "No"]},
+            },
+        }
         conn.execute(
             "INSERT INTO refdata.pt_spec (walmart_product_type, fields) VALUES (%s, %s::jsonb)",
-            (
-                WPT,
-                '{"type":"object","required":["shortDescription"],"properties":{'
-                '"shortDescription":{"type":"string","maxLength":4000},'
-                '"certification_type":{"type":"string","enum":'
-                '["Children\'s Product Certificate","General Certificate of Conformity",'
-                '"Neither of these applies"]},'
-                '"has_written_warranty":{"type":"string","enum":'
-                '["Yes - Warranty Text","Skip for now"]},'
-                '"isAssemblyRequired":{"type":"string","enum":["Yes","No"]}}}',
-            ),
+            (WPT, json.dumps(pt_fields)),
         )
         pids = {}
         attrs_by_ref: dict[str, dict[str, Any]] = {
             "SPEC001": {
                 "wpt": WPT,
-                "bullets": ["a", "b"],
+                "bullets": ["solid build", "easy clean", "large size", "food safe"],
                 "description": "d",
                 "shipping_weight": 2.5,
             },
@@ -202,7 +222,11 @@ class TestBuildItem:
         assert v["brand"] == "Unbranded"  # BR-CAT-005
         assert v["mainImageUrl"] == imgs[0]
         assert v["productSecondaryImageURL"] == imgs[1:7]  # 6 张 ≥5 写入
-        assert v["keyFeatures"] == ["a", "b"]
+        # force_amazon_copy：keyFeatures=Amazon bullets 原文；shortDescription 不足 60 词
+        # 拼 title 补（源仓文案链）
+        assert v["keyFeatures"] == ["solid build", "easy clean", "large size", "food safe"]
+        assert v["shortDescription"].startswith("Title SPEC001")
+        assert "solid build" in v["shortDescription"]
         # 零认证覆盖（BR-AUD-006）：目标值在 enum → 原值；不在 → 安全序列回退
         assert v["certification_type"] == "Neither of these applies"
         assert v["has_written_warranty"] == "Skip for now"  # enum 无 'No' → 回退

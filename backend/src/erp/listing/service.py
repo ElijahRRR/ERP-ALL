@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from erp.channel import service as channel_service
 from erp.channel.gateway import gateway
 from erp.core.errors import BusinessError
+from erp.listing import coerce
 from erp.listing import gtin as gtin_pool
 from erp.listing import spec as spec_builder
 from erp.notify.service import notify
@@ -328,6 +329,16 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
                              detail={"message": e.message}, actor_id=actor_id)  # fmt: skip
             skipped.append({"listing_id": listing["id"], "code": e.code})
             continue
+        # 提交前本地校验（增量 4）：官方 spec 层 errors=不许出门（省 10/hour 配额）
+        validation = built.get("validation") or {"ok": True}
+        if not validation["ok"]:
+            await channel_service.release_quota(session, store_id, "listing_create")
+            await transition(
+                session, listing, "failed", reason_code="ERP_SPEC_INVALID",
+                detail={"errors": validation["errors"][:8]}, actor_id=actor_id,
+            )  # fmt: skip
+            skipped.append({"listing_id": listing["id"], "code": "ERP_SPEC_INVALID"})
+            continue
         items_payload.append(built["item"])
         feed_listings.append(listing)
     if not feed_listings:
@@ -337,6 +348,8 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
         "MPItemFeedHeader": await spec_builder.feed_header(session, offer_mode),
         "MPItem": items_payload,
     }
+    # 提交边界最后一道小数位兜底（EXT_DATA_ERROR_68050064665065，源仓语义）
+    header, _num_fixes = coerce.sanitize_feed_numbers(header)
     feed_id = (
         await session.execute(
             text(
