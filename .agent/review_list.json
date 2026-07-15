@@ -237,10 +237,10 @@
   "priority": "P1",
   "dimension": "foundation",
   "check": "worker/beat 底座【L0→L1】（schedule 表驱动：feed轮询/采集回收/缓存LRU/GTIN水位/预算闸；Redis pubsub 配置广播）",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": ".agent/evidence/R2-04/",
-  "finding": null,
-  "last_checked_at": null,
+  "finding": "考古完成（archaeology.md）：schedule/task_run/run_tracked/redis 基建已备，缺 beat 执行体；拆 4 增量（核心循环+低风险任务→渠道任务→告警任务→pubsub+compose）。范围注记：erp.worker 通用队列消费者因无生产者暂不启用（compose 保留占位）；RS-08 事前预算预留不并入，本单只做 05-audit 事后聚合告警版",
+  "last_checked_at": "2026-07-15",
   "note": "验收：A152 提交后无人工点查自动轮询回写；模拟断连自动回收"
  },
  {

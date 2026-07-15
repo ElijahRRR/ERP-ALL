@@ -1,11 +1,11 @@
 # Task Definition
-- Mode: build（R2 中段——R1 全部 accepted；R2-01/R2-02 accepted；R2-03 验收①已批）
-- Task: 当前单 = **RS-03b channel 写路径 outbox+幂等**（R2-03 验收② 的前置硬闸门）。
-  R2-03 上架真实化【L2】主体已完：验收① 2026-07-15 Owner 批准（真数据 9/12 过、5 WPT）。
-- Acceptance（RS-03b，per review_list RS-03）：同key同payload同结果/异payload 409；
-  外部成功后DB回写前崩溃→verify-back不重复提交(故障注入)；lease/fencing 拒迟到 worker；
-  同store/SKU命令有序；HTTP期间行锁已释放(实证)；outbox payload 凭证/PII 脱敏。
-  —— 2026-07-15 全部测试化达成（evidence/RS-03b/acceptance.md），闸门解除。
+- Mode: build（R2 中段——R1 全部 accepted；R2-01/02/03 + RS-03 accepted）
+- Task: 当前单 = **R2-04 worker/beat 底座【L0→L1】**（schedule 表驱动：feed 自动轮询/
+  采集回收兜底/llm_cache LRU/GTIN 水位/预算闸告警版；Redis pubsub 配置广播；compose beat 启用）。
+  并入 RS-03b 尾账：outbox drain 周期化、retire verify_pending 对账、api_idempotency 清扫。
+- Acceptance（per review_list R2-04）：A152 提交后无人工点查自动轮询回写；模拟断连自动回收。
+- 考古：.agent/evidence/R2-04/archaeology.md（2026-07-15，4 增量拆分 + 设计决策 8 条）。
+  范围注记：erp.worker 队列消费者无生产者暂不启用；RS-08 事前预算预留不并入本单。
 - ✅ R2-03 整单 accepted（2026-07-15，D-Q61）：验收①②均过；live/delist 真调并入首次真实运营发布
   ——需 Owner 窗口（runbook R1-11/a152-live-runbook.md + 部署机指令任务 4 已更新）。
 - Constraints: workflow discipline per CLAUDE.md；每增量 CI 绿（pytest/ruff[check+format]/mypy）；
