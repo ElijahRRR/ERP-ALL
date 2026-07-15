@@ -287,13 +287,17 @@
   "priority": "P0",
   "dimension": "architecture",
   "check": "transactional outbox + 幂等命令表【拆双闸门】RS-03a: audit LLM调用移出行锁/请求事务(短事务落run→事务外调LLM→新事务回写)；RS-03b: channel写路径outbox/inbox+Idempotency-Key消费 [评审 A7+C2+R2-06]",
-  "status": "in_progress",
+  "status": "done",
   "evidence": [
-   "backend/src/erp/audit/service.py (三段式 tx1→HTTP→tx2)",
-   "backend/src/erp/audit/llm.py (check_cache/call_provider/record_result 原语)",
-   "backend/tests/db/test_audit_api.py::TestLlmOutOfLock"
+   "backend/src/erp/audit/service.py (RS-03a 三段式 tx1→HTTP→tx2)",
+   "backend/tests/db/test_audit_api.py::TestLlmOutOfLock",
+   "backend/alembic/versions/0021_channel_outbox.py (channel_command + api_idempotency)",
+   "backend/src/erp/channel/outbox.py (enqueue/claim/complete/resolve_verify/sweep/execute_command)",
+   "backend/src/erp/core/idempotency.py (Idempotency-Key 消费)",
+   "backend/tests/db/test_channel_outbox.py (验收单 6 项逐条对拍 9 用例)",
+   ".agent/evidence/RS-03b/ (archaeology.md + acceptance.md)"
   ],
-  "finding": "RS-03a 已完成（2026-07-12）：audit LLM 调用移出行锁/请求事务——tx1 短事务落 run+L0/L2+查缓存(命中同事务终局)→无事务 HTTP→tx2 重锁回写；并发重审新者胜；遗孤 running 懒清扫(>10min→failed)；行锁释放有 FOR UPDATE NOWAIT 旁路探针实证。R2-02 百件对拍闸门已解除。RS-03b 开工（2026-07-15，R2-03 验收①获批同日）：channel 写路径 outbox+幂等，考古→设计→实现进行中",
+  "finding": "✅ 双闸门齐了。RS-03a（2026-07-12）：audit LLM 出行锁三段式+FOR UPDATE NOWAIT 探针实证。RS-03b（2026-07-15）：channel 写路径 transactional outbox——tx1 业务+命令同事务落库(崩溃窗口消除)→HTTP 零事务→tx2 fence 校验归位；UNIQUE(team,action,idempotency_key)+payload_hash(同载荷同结果/异载荷409)；lease 过期 sweep→verify_pending 绝不重发+fence+1 拒迟到 worker；同店 FIFO 车道(verify_pending 背压=fail-closed)；verify-back 归位同步终局命令；API Idempotency-Key 三端点消费(C2 漂移闭环：前端 api.post 自动带键+delist 契约参数补漏)；payload 按构造无凭证+递归键扫描。验收 6 项全测试化(acceptance.md 对拍表)；既有 8 用例零断言改动=语义保真。inbox 缓办至 R2-04 webhook(无进站重复消费面，已记 specs)。A152 L2 真实渠道写入闸门解除",
   "last_checked_at": "2026-07-15",
   "gate": "RS-03a=R2-02 百件真实LLM对拍之前（audit暴露已存在）；RS-03b=A152 L2真实渠道写入之前",
   "depends_on": [],

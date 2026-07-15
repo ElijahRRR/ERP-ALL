@@ -23,7 +23,7 @@
   旧 erpAPI 的 pt_templates_full.json(293M) 与 walmart_official_specs/(4.3G) 在 Owner 的 T7 备份
   pt_metadata/ 目录（数据迁移时刻意未动，上架素材专用）。
 - 之后：R2-04 worker/beat 底座 → R2-05 订单履约 → RS 系列按闸门
-  （RS-03b=A152 L2 真实渠道写入前！RS-01/02=多团队/门户对外前）。
+  （RS-03b ✅已完 2026-07-15，A152 闸门解除；RS-01/02=多团队/门户对外前）。
 
 ## 协作模式（重要）
 

@@ -103,6 +103,57 @@
 约束：`uq_quota_usage (store_id, quota_kind, window_date)`。
 消耗协议：任务**下发点**原子 `INSERT … ON CONFLICT DO UPDATE SET used = used + 1 WHERE used < limit`（拿不到额度即不下发）——杜绝草稿系统里「配额闸空转」的旧病（WIRING-AUDIT 教训）。失败任务是否返还额度：create/delete 返还、maintenance 不返还（服务层规则，进总账）。
 
+## channel_command 渠道写命令（transactional outbox，RS-03b/评审 A7）
+
+渠道**写路径**（feed 提交/下架；价格/库存 feed 随 R2-04 复用）的唯一出口协议：
+业务事务内落命令行（与 feed/listing 迁移同 COMMIT），执行器领取后**事务外**发包，
+回写受 fence 校验——「渠道已收、DB 失忆」的崩溃窗口由此消除（命令行即对账线索）。
+
+| 列 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| id | BIGINT | PK identity | 同店命令按 id 定序（FIFO 车道） |
+| team_id / store_id | BIGINT | NOT NULL REFERENCES | |
+| action | TEXT | NOT NULL CHECK IN (feed_submit, item_retire) | 扩展随新写路径加枚举 |
+| object_type / object_id | TEXT / BIGINT | NULL | 业务锚点（feed / listing），对账归位入口 |
+| idempotency_key | TEXT | NOT NULL | `feed:{feed_id}` / `retire:{listing_id}:{第N轮}` |
+| payload | JSONB | NOT NULL | 完整出站请求（method/path/params/json_body）。**按构造无凭证**：只存 store_id 引用，凭证由网关执行时解密；入库前递归键名扫描（authorization/token/secret/password/credential/proxy）防御断言 |
+| payload_hash | TEXT | NOT NULL | 同键异载荷 → 409 IDEMPOTENCY_CONFLICT；同载荷 → 返既有命令（同结果） |
+| status | TEXT | NOT NULL DEFAULT 'pending' CHECK IN (pending, inflight, succeeded, failed, verify_pending) | verify_pending=结果未知，**绝不重发**，等 verify-back 对账归位 |
+| fence | INT | NOT NULL DEFAULT 0 | 每次领取 +1；回写必须携领取时的 fence 且 status='inflight'——迟到 worker（lease 过期被清扫后才回来）整体拒绝 |
+| attempts / lease_expires_at | INT / timestamptz | | lease 默认 120s（system_config `channel.outbox`）；过期 inflight 由懒清扫归 verify_pending 并 fence+1 |
+| result / error_code | JSONB / TEXT | NULL | 渠道响应摘要（channel_feed_id / http_status / dry_run） |
+| claimed_at / completed_at | timestamptz | NULL | |
+| +公共列 | | | |
+
+约束与协议：
+- `uq_channel_command_idem (team_id, action, idempotency_key)`（评审 A7 处方原文）。
+- **同店 FIFO**：领取条件=同 store 无更早未终局（pending/inflight/verify_pending）命令。
+  verify_pending 挡道是**有意背压**（fail-closed）：上一发结果未知时禁止继续发，
+  对账（adopt/lost）终局命令后车道解开——旧系统「先对账再重投」语义的推广。
+- 执行拓扑：请求内三段式（tx1 落命令→HTTP→tx2 归位，RS-03a 同模式）为主；
+  崩溃遗留 pending 由 `erp.tools.drain_channel_outbox` 补执行（beat 周期化随 R2-04）。
+- inbox（渠道进站事件去重）：当前进站只有主动轮询读，无重复消费面——
+  R2-04 接 webhook 通知订阅时按本表对称落 inbox。
+
+## api_idempotency API 幂等消费存储（RS-03b/评审 C2）
+
+契约 002 §写操作幂等（Idempotency-Key 头 24h 去重）的服务端实现。接入端点：
+listing allocate/submit/delist（ship/refund-execute 随 R2-05 用同一助手接入）。
+
+| 列 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| id | BIGINT | PK identity | |
+| team_id | BIGINT | NOT NULL | |
+| endpoint / idem_key | TEXT | NOT NULL | `uq_api_idem (team_id, endpoint, idem_key)` |
+| payload_hash | TEXT | NOT NULL | 同键异载荷 → 409 |
+| status_code / response | INT / JSONB | NULL | NULL=占位（处理中）；回填后重放原响应（带 idempotent_replay 标记） |
+| +公共列 | | | |
+
+协议：占位（唯一约束）→ 执行处理器（自管事务）→ 回填响应；并发同键后到者 409
+IDEMPOTENCY_IN_PROGRESS；错误响应不缓存（占位即删可重试）；崩溃残留占位超
+stale（默认 10min）失效可重占；TTL/stale 走 system_config `api.idempotency`；
+键内惰性清理，全表清扫随 R2-04 维护任务。
+
 ## store_incident 店铺事件（封店工作流，D-Q33）
 
 | 列 | 类型 | 约束/默认 | 说明 |

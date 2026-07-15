@@ -1129,6 +1129,313 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scrape-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 采集作业列表 */
+        get: {
+            parameters: {
+                query?: {
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                    status?: "pending" | "running" | "done" | "partial" | "failed" | "cancelled";
+                    job_kind?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScrapeJobPage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** 建采集作业（R1 仅 product_detail；input.targets=ASIN 列表） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        source: "amazon" | "walmart";
+                        /** @enum {string} */
+                        job_kind: "product_detail" | "keyword" | "seller" | "bestseller" | "price_watch";
+                        /** @description product_detail: {targets: [ASIN...]} */
+                        input: Record<string, never>;
+                        /** @default 100 */
+                        priority?: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description 已创建并展开任务 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scrape-jobs/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 作业详情（含任务状态分布） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    jobId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scrape-jobs/{jobId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 取消作业（未派发任务判死；在途迟到结果照常入库） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    jobId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/worker-nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 采集节点台账（全局基础设施） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["WorkerNode"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/{productId}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 发起单品审核（同步；R1 层级 l0/l2/l3，l4 未开放） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    productId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        levels?: ("l0" | "l1" | "l2" | "l3" | "l4")[];
+                        /**
+                         * @default manual
+                         * @enum {string}
+                         */
+                        trigger_kind?: "auto" | "manual" | "batch" | "re_audit";
+                    };
+                };
+            };
+            responses: {
+                /** @description 审核完成（run_id/verdict/reject_level/llm_cost_usd/product_status） */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 审核运行列表 */
+        get: {
+            parameters: {
+                query?: {
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                    product_id?: number;
+                    verdict?: "pass" | "reject" | "needs_review";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 审核运行详情（含逐层命中证据） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/products": {
         parameters: {
             query?: never;
@@ -1800,6 +2107,8 @@ export interface paths {
                         };
                     };
                 };
+                /** @description 幂等键冲突（同键异载荷/处理中） */
+                409: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -1884,6 +2193,8 @@ export interface paths {
                         };
                     };
                 };
+                /** @description 幂等键冲突（同键异载荷/处理中） */
+                409: components["responses"]["Error"];
                 /** @description 配额不足等业务拒绝 */
                 422: components["responses"]["Error"];
             };
@@ -1907,7 +2218,9 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
                 path: {
                     listingId: components["parameters"]["listingId"];
                 };
@@ -1922,6 +2235,7 @@ export interface paths {
                     };
                     content?: never;
                 };
+                /** @description 幂等键冲突（同键异载荷/处理中） */
                 409: components["responses"]["Error"];
             };
         };
@@ -2082,6 +2396,125 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/feeds/{feedId}/poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 手动轮询 feed 状态（item 级权威回写；beat 自动轮询 R2） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    feedId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/feeds/{feedId}/verify-back": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** verify_pending 对账归位（adopt/lost）——提交无响应永不盲重试 */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    feedId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/gtin-pool/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** GTIN 批量导入（格式+GS1校验位校验；重复逐条报告） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        gtins: string[];
+                        /**
+                         * @default generator_import
+                         * @enum {string}
+                         */
+                        source?: "generator_import" | "feishu_import" | "purchased";
+                    };
+                };
+            };
+            responses: {
+                /** @description {imported, rejected[]} */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -3156,6 +3589,38 @@ export interface components {
         };
         AuditLogPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["AuditLog"][];
+        };
+        ScrapeJob: {
+            id?: number;
+            source?: string;
+            job_kind?: string;
+            /** @enum {string} */
+            status?: "pending" | "running" | "done" | "partial" | "failed" | "cancelled";
+            priority?: number;
+            total_tasks?: number;
+            done_tasks?: number;
+            failed_tasks?: number;
+            requested_by?: number | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            /** Format: date-time */
+            created_at?: string;
+        };
+        ScrapeJobPage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["ScrapeJob"][];
+        };
+        WorkerNode: {
+            id?: number;
+            node_key?: string;
+            /** @enum {string} */
+            kind?: "scraper_amazon" | "scraper_walmart";
+            version?: string | null;
+            /** @enum {string} */
+            status?: "online" | "offline" | "draining";
+            capacity?: number;
+            /** Format: date-time */
+            last_heartbeat_at?: string | null;
+            stats?: Record<string, never>;
         };
         Store: {
             id?: number;

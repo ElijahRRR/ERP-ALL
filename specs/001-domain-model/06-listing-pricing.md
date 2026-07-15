@@ -65,7 +65,7 @@ failed → queued                           ← 修复后重投（error 处置=a
 | team_id / store_id | BIGINT | NOT NULL | |
 | channel_feed_id | TEXT | NULL UNIQUE | 渠道 feedId；**提交无响应时为 NULL → 走 verify-back，禁止直接重试** |
 | feed_kind | TEXT | NOT NULL CHECK IN (item_build, item_match, price, inventory, delete, lag_time) | item_build=MP_ITEM(10/h)、item_match=MP_ITEM_MATCH、price=PRICE_AND_PROMOTION(6/day！必聚合) |
-| status | TEXT | NOT NULL DEFAULT 'building' CHECK IN (building, submitting, verify_pending, submitted, processing, processed, partial, error, lost) | verify_pending=提交结果未知，查渠道近程 feeds 对账后归位；lost=对账确认渠道未收到 |
+| status | TEXT | NOT NULL DEFAULT 'building' CHECK IN (building, submitting, verify_pending, submitted, processing, processed, partial, error, lost) | submitting=已交 outbox 命令待发（RS-03b）；verify_pending=提交结果未知，查渠道近程 feeds 对账后归位；lost=对账确认渠道未收到 |
 | item_count | INT | NOT NULL DEFAULT 0 | |
 | headline | JSONB | NULL | 渠道汇总计数（**不可信**，仅展示；对账以 feed_item 为准——总账规则） |
 | submitted_at / last_polled_at / completed_at | timestamptz | NULL | |
@@ -75,6 +75,12 @@ failed → queued                           ← 修复后重投（error 处置=a
 
 索引：`(store_id, feed_kind, created_at DESC)`、`(status) WHERE status IN ('verify_pending','submitted','processing')`（轮询队列）。
 轮询节流：`/v3/feeds*` 共享 5000/min（网关层）；退避序列进 system_config。
+
+**提交拓扑（RS-03b，评审 A7）**：feed 创建与 channel_command（02 §channel_command）
+同事务落库（tx1，status=submitting）→ 执行器事务外发包 → tx2 fence 校验归位
+（submitted/error/verify_pending）。行锁不跨 HTTP；进程任一点崩溃命令行即恢复线索
+（pending→drain 补发；inflight 超 lease→verify_pending 对账，**绝不重发**）。
+verify-back 归位（adopt/lost）同步终局命令，解开同店 FIFO 车道。
 
 ## feed_item 提交明细（月分区，年 7 千万行量级）
 

@@ -360,3 +360,13 @@
 - **3 条失败判读=源数据贫瘠非缺陷**（各只有 1 条卖点，文案链补不满 keyFeatures minItems 3；旧系统会照发吃渠道拒 55506974520167，新系统本地拦截省配额=校验器本职）。证据 evidence/R2-03/dryrun-real-data-run1.md。
 - **harness 判定口径修正**：第 1 版 pass 要求全部产品过——严于 005 验收①原文（"≥5 个不同 WPT 的产品"）。改为原文口径（通过品覆盖 ≥5 WPT 即 PASS），failed 完整列报不隐藏；+回归测试（贫瘠品被拦不拖垮判定、errors 列报）。按原文口径**第 1 轮真数据已达标**（9 过/5 WPT），待部署机重跑出 PASS 报告归档、Owner 签字。
 - 环境注：沙盒 PG 会随容器闲置停机（stale pid），跑 db 测试前 pg_ctlcluster start。
+
+### Session: 2026-07-15 (RS-03b channel outbox+幂等：A152 闸门解除)
+- **前置**：Owner 批准 R2-03 验收①（真数据 9/12 过官方 spec、5 WPT，按 005 原文口径达标；review_list 已记账）+ "开始下一单"。PR #2 已合 main（head 2be1c88），工作分支按规程重建。
+- **考古**（evidence/RS-03b/archaeology.md）：A7 论断逐条对码全属实——submit/delist/poll/verify_back 均在请求事务内持 FOR UPDATE 行锁跨渠道 HTTP；最狠的崩溃窗口=渠道已收+请求事务未提交→feed 行整体回滚（DB 全失忆，连对账线索都没有）；Idempotency-Key 契约 required 但服务端零消费+前端零发送（C2 属实）。
+- **增量1-3（提交1）**：0021 channel_command（UNIQUE(team,action,idem_key)+payload_hash/fence/lease/同店FIFO）+ api_idempotency；outbox.py 全套原语+三段式执行器；gateway 拆 prepare（事务内 DB 读）/request_prepared（纯网络零 session）；submit/delist 改 tx1 落 feed+命令 COMMIT→HTTP→tx2 fence 归位，poll/verify_back 行锁不跨 HTTP；verify_back 归位同步终局命令解车道。模式闸 tx1 预检回滚=API 行为不变。**既有 8 用例零断言改动通过=语义保真**（永不盲重试/headline 不可信/配额/GTIN/状态链）。
+- **增量4（提交2）**：core/idempotency.run_idempotent（占位→执行→回填；同载荷重放/异载荷409/并发409/错误不缓存/残留占位超时失效）；allocate/submit/delist 三端点头转必填；前端 api.post 自动 crypto.randomUUID()；**契约内漂移顺手修**：002 YAML delist 漏 idempotencyKey 参数（README §6 明明覆盖 delist）→ 补参数+三端点 409 响应+schema.d.ts 再生。
+- **增量5（提交3）**：test_channel_outbox.py 9 用例=验收单 6 项逐条对拍（acceptance.md 对拍表）：API 重放零再发包单feed行/409 两层/故障注入 POST 后崩→verify-back 采认且请求序列断言 ["POST","GET"] 零重复提交/fence 拒迟到回写/同店 FIFO+跨店独立/HTTP 当口 listing+feed+command 三行 NOWAIT 探针全可锁/payload 敏感键拒收+真实命令全文扫描零凭证。specs 落笔：001 §02 channel_command+api_idempotency 两节、§06 feed 提交拓扑注。
+- 范围钉死：inbox 缓办（进站仅主动轮询，无重复消费面）至 R2-04 webhook；retire verify_pending 对账+api_idempotency 全表清扫+drain beat 化=R2-04 维护任务；ship/refund 幂等接入=R2-05。
+- 终态：**262 pytest + ruff(check+format) + mypy + 迁移 base↔head 实跑 + 前端 lint/build（契约再生）全绿**。RS-03 工单整单 done（a+b 双闸门齐）。
+- **Next**：①A152 验收②窗口可排（部署机指令任务 4 已更新：必带 Idempotency-Key 头/断连只走 verify-back/drain 工具）②R2-04 worker/beat 底座（outbox drain 周期化+retire 对账维护任务自然并入）。
