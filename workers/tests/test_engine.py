@@ -225,3 +225,40 @@ class TestApplySettings:
             assert eng._apply_settings({}) is False  # 未下发保持现状
         finally:
             config.REQUEST_TIMEOUT = old_t
+
+
+class TestProxyPolicy:
+    """2026-07-15 真机事故回归：容器不带 PROXY_URL 重建 → 空代理静默直连 →
+    全量超时装成"采集坏了"。fail-closed：代理缺失拒绝启动，显式 --allow-direct 才放行。"""
+
+    def test_missing_proxy_refuses_start(self) -> None:
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old = config.PROXY_URL
+        try:
+            config.PROXY_URL = ""
+            with pytest.raises(RuntimeError, match="PROXY_REQUIRED"):
+                eng._enforce_proxy_policy()
+        finally:
+            config.PROXY_URL = old
+
+    def test_proxy_present_or_explicit_direct_passes(self) -> None:
+        old = config.PROXY_URL
+        try:
+            config.PROXY_URL = "http://u:p@127.0.0.1:1080"
+            ScrapeEngine(FakeClient())._enforce_proxy_policy()  # type: ignore[arg-type]
+            config.PROXY_URL = ""
+            eng = ScrapeEngine(FakeClient(), allow_direct=True)  # type: ignore[arg-type]
+            eng._enforce_proxy_policy()  # 显式直连（开发档）不拦
+        finally:
+            config.PROXY_URL = old
+
+    def test_settings_delivered_proxy_is_dns_resolved(self) -> None:
+        """ERP 下发 proxy_url 必须与启动路径同规格走域名预解析（c-ares 坑）。"""
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old = config.PROXY_URL
+        try:
+            eng._apply_settings({"proxy_url": "http://u:p@127.0.0.1:9999"})  # IP 直通
+            assert eng.proxy_manager._proxy_url == "http://u:p@127.0.0.1:9999"
+            assert config.PROXY_URL == "http://u:p@127.0.0.1:9999"
+        finally:
+            config.PROXY_URL = old

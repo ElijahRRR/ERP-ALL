@@ -28,7 +28,7 @@ from erp_worker.erp_client import ErpWorkerClient
 from erp_worker.metrics import MetricsCollector
 from erp_worker.parser import AmazonParser
 from erp_worker.payload import to_product_payload
-from erp_worker.proxy import get_proxy_manager
+from erp_worker.proxy import _resolve_proxy_hostname, get_proxy_manager
 from erp_worker.session import AmazonSession
 
 logger = logging.getLogger(__name__)
@@ -45,9 +45,11 @@ class ScrapeEngine:
         *,
         zip_code: str | None = None,
         max_concurrency: int | None = None,
+        allow_direct: bool = False,
     ) -> None:
         self.client = client
         self.zip_code = zip_code or config.DEFAULT_ZIP_CODE
+        self._allow_direct = allow_direct
 
         self.proxy_manager = get_proxy_manager()
         self.parser = AmazonParser()
@@ -108,6 +110,7 @@ class ScrapeEngine:
         self._task_queue = asyncio.PriorityQueue(maxsize=self._queue_size)
 
         await self._pull_initial_settings()
+        self._enforce_proxy_policy()
         await self._init_session()
         await self._controller.start()
         try:
@@ -171,6 +174,23 @@ class ScrapeEngine:
             self._apply_settings(result.get("settings") or {})
             self._draining = bool(result.get("draining"))
 
+    def _enforce_proxy_policy(self) -> None:
+        """fail-closed：代理缺失拒绝启动，绝不静默直连采集。
+
+        2026-07-15 真机事故：scraper 容器不带 PROXY_URL 前缀重建 → compose 插值
+        空串 → worker 仅一行 warning 后直连 Amazon → 全量 15s 超时，且看起来像
+        "采集坏了"而不是"代理丢了"。代理可来自 CLI --proxy / env PROXY_URL /
+        ERP 下发 scrape.worker_settings.proxy_url（启动时已先拉一轮 settings）。
+        """
+        if config.PROXY_URL or self._allow_direct:
+            return
+        logger.critical(
+            "PROXY_URL 未配置：拒绝直连采集（fail-closed）。配置途径：CLI --proxy /"
+            " env PROXY_URL / system_config scrape.worker_settings.proxy_url；"
+            "开发调试显式直连用 --allow-direct"
+        )
+        raise RuntimeError("PROXY_REQUIRED: 代理未配置，拒绝直连采集")
+
     def _apply_settings(self, s: dict[str, Any]) -> bool:
         """应用 ERP 下发的 scrape.worker_settings（代理/并发/QPS/超时/带宽/轮换）。
 
@@ -182,7 +202,8 @@ class ScrapeEngine:
         proxy_url = s.get("proxy_url")
         if proxy_url and proxy_url != config.PROXY_URL:
             config.PROXY_URL = proxy_url
-            self.proxy_manager._proxy_url = proxy_url
+            # 域名预解析（c-ares 不走系统 DNS 的坑）——下发路径与启动路径同规格
+            self.proxy_manager._proxy_url = _resolve_proxy_hostname(proxy_url)
             changes.append("proxy")
         for key, attr in (("max_concurrency", "_max"), ("min_concurrency", "_min")):
             val = s.get(key)

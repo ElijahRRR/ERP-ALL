@@ -27,8 +27,19 @@ docker compose -f infra/docker-compose.yml logs -f scraper
 ```
 日志应见：`注册成功` →（心跳）→ `OK B0XXXX → M000000N | 标题…` 逐条刷出。
 
-**链路调参（2026-07-15 A152 实测教训：默认 15s 超时按源仓直连口径调校，
-TPS 代理链路整页抓取常态更慢 → 全量超时）**。两种下发方式任选：
+**⚠️ 代理必带（2026-07-15 真机事故）**：compose 的 `--proxy "${PROXY_URL:-}"` 是
+shell 插值——**任何一次不带 `PROXY_URL=` 前缀的 up/重建都会让容器拿到空代理**。
+修复后 worker 缺代理会**拒绝启动**（日志 `PROXY_REQUIRED`，crash-loop 可见），
+不再静默直连采集（直连从你的网络必然全量超时，且现象像"采集坏了"）。
+一劳永逸：把代理写进配置中心（worker 启动时先拉 settings，容器重建不再丢）：
+```sql
+INSERT INTO app.system_config(key, value) VALUES('scrape.worker_settings',
+  '{"proxy_url": "http://user:pwd@tps-host:port"}'::jsonb)
+ON CONFLICT (key) DO UPDATE SET value = app.system_config.value || excluded.value;
+```
+（注：与旧系统配置文件同等明文级别；加密收敛随 RS-02。）
+
+**链路调参**（同键合并进上面的 JSON 即可）。两种下发方式任选：
 
 - 环境变量（起 worker 时带上）：`REQUEST_TIMEOUT=45 PROXY_BANDWIDTH_MBPS=<套餐Mbps>`
 - 配置中心（运行期热生效，worker 30s 内收到并自动轮换 session）：

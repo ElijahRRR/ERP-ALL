@@ -374,3 +374,4 @@
 ### Session: 2026-07-15 (A152 验收②护航：真机暴露的两笔缺陷修复)
 - **socksio 缺依赖（PR #4，已合 92fc7e9）**：网关经店铺 SOCKS5 代理发包需 httpx[socks]，镜像缺 socksio 在传输构造点即抛错。修=正式依赖 + socks5 URL 构造级回归测试。沙盒 MockTransport 从不建真实传输→只有真机能暴露。
 - **采集 worker 超时写死 15s（真机全量超时）**：config.REQUEST_TIMEOUT 源仓直连口径，TPS 代理链路整页常态更慢；且 _apply_settings 文档串声称支持"超时"下发但代码未接（配置中心铁律漏网）。修=env 兜底（REQUEST_TIMEOUT/PROXY_BANDWIDTH_MBPS）+ scrape.worker_settings 运行期下发 request_timeout/proxy_bandwidth_mbps；超时变更丢弃旧超时热备、清节流戳强制冷轮换生效；R2-01 runbook 补链路调参节（支持键全列）。workers 28 用例四关全绿。
+- **Owner 反证推翻超时判因**（同代理同机、R2-01 时跑得通）→ 复查实锤真根因：compose `--proxy "${PROXY_URL:-}"` shell 插值，容器不带前缀重建即空代理；proxy.py 空代理仅 warning 后**静默直连** Amazon → 全量 15s 超时装成"采集坏了"。修=engine 启动 `_enforce_proxy_policy` fail-closed（缺代理拒启，--allow-direct 显式放行）+ settings 下发 proxy_url 补域名预解析（c-ares 坑，下发路径原漏接）+ runbook 补"代理必带/写配置中心防丢"节。workers 31 用例四关全绿。超时可配置化保留（配置中心铁律本就欠账）。

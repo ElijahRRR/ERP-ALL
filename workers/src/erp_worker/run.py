@@ -55,6 +55,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("PROXY_URL"),
         help="TPS 代理地址 http://user:pwd@host:port",
     )
+    p.add_argument(
+        "--allow-direct",
+        action="store_true",
+        help="显式允许无代理直连采集（仅开发调试；生产缺代理默认拒绝启动）",
+    )
     p.add_argument("--zip-code", default=None, help="配送邮编（默认 10001）")
     p.add_argument(
         "--concurrency", type=int, default=None, help="并发上限（默认 32，受 server 配额约束）"
@@ -82,7 +87,12 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"注册失败: {e}", file=sys.stderr)
         return 1
 
-    engine = ScrapeEngine(client, zip_code=args.zip_code, max_concurrency=args.concurrency)
+    engine = ScrapeEngine(
+        client,
+        zip_code=args.zip_code,
+        max_concurrency=args.concurrency,
+        allow_direct=args.allow_direct,
+    )
 
     loop = asyncio.get_running_loop()
     stopping = False
