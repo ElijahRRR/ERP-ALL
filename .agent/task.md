@@ -4,7 +4,8 @@
   四检（限价/钓鱼/黑名单/重复）→ 采购单 → 确认发货（测试单））。
   并入 RS-03b 尾账：ship/refund-execute 幂等接入（run_idempotent 同一助手）。
 - Acceptance（per review_list R2-05）：L1=真实订单只读拉取入库对账一致；L2=测试单全流程流转。
-- 考古进行中：.agent/evidence/R2-05/archaeology.md（四路并行，2026-07-16 起）。
+- 进度：5 增量全部完码（2026-07-16，313 pytest + 前端 lint/build 绿）。
+  **余项=人工验收：L1 部署机拉单对账 + L2 A152 测试单全流程（evidence/R2-05/runbook.md）**。
 - R2-04 挂账（不阻本单）：验收①机制已证实（自动轮询/回写/零人工/零错误），feed #36
   等 Walmart 终态自然闭环（1-2 天属渠道常态）；验收②「模拟断连回收」部署机实测未跑
   ——beat runbook 步骤 5。Owner 指示持续推进至需人工验收再停。

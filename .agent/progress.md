@@ -405,3 +405,4 @@
 - **增量4（6aae9d7）**：POST /orders/{id}/ship（Idempotency-Key+run_idempotent——RS-03b「ship 幂等」尾账收账）；outbox 扩 order_ack/order_ship（Created 单自动先 ack）；applier 200→落账/明确拒→failed+notify+换键重推/未知→verify_pending；ship_recon beat 渠道实况对账（0026）。drain 注册表合并 listing+order。
 - **增量5a**：L1 对账 harness（erp.tools.order_pull_verify，与拉单共用 map_order 口径）；specs 落笔（07 三处/02 actions/09 种子清单）；runbook（部署机 L1 指令+Owner L2 步骤+调参表）。
 - 终态：313 pytest + 迁移 base↔head 演练 + ruff + mypy 全绿。余：增量5b 前端订单页 → 更新 PR #7 → **停在人工验收节点（L1 部署机对账 / L2 A152 测试单）**。
+- **增量5b（fe agent 交付，主线复验 lint/build 绿）**：OrdersPage（过滤/列表/详情抽屉/四检卡片放行重跑/采购执行操作/发货 Modal）+ PurchasersPage（建档/编辑，门户字段不提供）+ 路由与权限菜单。R2-05 全部增量完码，停在人工验收节点（L1/L2）。
