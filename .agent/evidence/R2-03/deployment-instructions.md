@@ -8,7 +8,7 @@
 
 先 `cd ERP-ALL && git pull`（需要 0020 迁移与新 CLI；`alembic upgrade head` 由部署流程照常执行）。
 
-### 路 A（推荐先走，验收①够用，无需 T7）：live spec 拉取
+### 路 A（仅当本机有旧 erpAPI 仓时可走；2026-07-15 实测部署机没有 → 走路 B）：live spec 拉取
 
 1. 在旧 erpAPI 仓用既有 live_spec 通道拉官方 spec（走 walmart_client + A152 凭证，
    限流 10/min、≤20 PT/次）。Python 一段（旧仓根目录跑）：
@@ -35,11 +35,18 @@
 3. 验证：`SELECT count(*) FROM refdata.pt_spec WHERE fields IS NOT NULL;` 应 ≥ 拉取 PT 数+1
    （含 `__orderable__` 伪行）；`SELECT status, ok_rows FROM app.import_job ORDER BY id DESC LIMIT 1;` 应 done/零错误。
 
-### 路 B（全量 6,942 PT，需 Owner 从 T7 拷文件）
+### 路 B（全量，T7 monolith；2026-07-15 起为主路径）
 
-1. Owner 从 T7 备份 pt_metadata/ 拷 `MPSetup/5.0.*_MP_ITEM_0_0_en.json`（~451MB）到部署机。
-2. `pip install ijson`（流式解析，451MB 不进内存——源仓 OOM 事故教训）。
+1. Owner 从 T7 备份 pt_metadata/ 拷 `MPSetup/5.0.*_MP_ITEM_0_0_en.json`（~451MB）到部署机
+   （已完成：`5.0.20260330-14_47_14-api` 快照，SHA-256 校验过，6,951 PT）。
+2. `pip install ijson`（流式解析，451MB 不进内存——源仓 OOM 事故教训；≥3.1，
+   实测 3.5.1）。**Decimal 序列化 bug 已修**（use_float=True + 写出兜底），
+   需 main 含该修复 commit 再跑。
 3. 同上 extract（`--monolith <路径>`）→ import（--chunk-size 200，预计几分钟）→ 验证 → 删临时文件。
+4. **header version 说明**：T7 快照是 20260330，而 `listing.feed_header` 默认 version=
+   `5.0.20260304-22_45_32-api`（旧系统实测被渠道接受的提交值）。**保持默认不用改**——
+   version 串与本地规格快照不需要严格一致；A152 真调若遇 EXT_DATA_ERROR_74597363510508
+   再改 system_config 对齐 20260330。
 
 ## 任务 2：灌错误码字典（一条命令）
 

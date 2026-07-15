@@ -107,6 +107,31 @@ def test_extract_live_response_wrapped_and_pt_filter(tmp_path: Path) -> None:
     assert [r["walmart_product_type"] for r in rows] == ["Heaters"]
 
 
+def test_decimal_nodes_serializable() -> None:
+    """部署机 T7 实测回归：ijson 默认产 Decimal 数字 → 写 jsonl 不得炸
+    （iter_monolith 已加 use_float=True；本例验证写出层 _json_default 兜底）。"""
+    from decimal import Decimal
+
+    from erp.tools.extract_mp_item_spec import _json_default
+
+    assert _json_default(Decimal("2.5")) == 2.5
+    hundred = _json_default(Decimal("100"))
+    assert hundred == 100 and isinstance(hundred, int)
+
+    # 模拟 ijson 无 use_float 时的节点形态（约束数字是 Decimal），走 build_row+写出
+    node = dict(_DRINKWARE)
+    node["properties"] = dict(node["properties"])
+    node["properties"]["keyFeatures"] = {
+        "type": "array",
+        "minItems": Decimal("3"),
+        "items": {"type": "string", "maxLength": Decimal("500")},
+    }
+    line = json.dumps(build_row("Drinkware", node), ensure_ascii=False, default=_json_default)
+    parsed = json.loads(line)
+    assert parsed["fields"]["properties"]["keyFeatures"]["minItems"] == 3
+    assert parsed["fields"]["properties"]["keyFeatures"]["items"]["maxLength"] == 500
+
+
 def test_extract_merge_later_wins(tmp_path: Path) -> None:
     a = tmp_path / "a.json"
     a.write_text(json.dumps(_monolith()), encoding="utf-8")
