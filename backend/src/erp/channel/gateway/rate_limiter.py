@@ -46,6 +46,10 @@ WALMART_ENDPOINT_LIMITS: dict[str, RateLimit] = {
     "POST /v3/feeds:RETIRE_ITEM": RateLimit(20, 60),
     "POST /v3/feeds:MP_INVENTORY": RateLimit(50, 3600),
     "POST /v3/token": RateLimit(30, 60),
+    # 订单域（官方 rate-limiting 表：GET 5000/min；写操作各 60/min）
+    "GET /v3/orders": RateLimit(5000, 60),
+    "POST /v3/orders:acknowledge": RateLimit(60, 60),
+    "POST /v3/orders:shipping": RateLimit(60, 60),
     "_default": RateLimit(120, 60),
 }
 

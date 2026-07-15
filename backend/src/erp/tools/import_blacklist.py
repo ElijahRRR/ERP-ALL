@@ -9,6 +9,9 @@
   blacklist_seller   → seller_id[, seller_name, reason]
   blacklist_asin     → asin[, reason]
   blacklist_category → category[, reason]
+  blacklist_address  → street/address/地址[, reason]（R2-05 钓鱼检；BR-ORD-005 口径归一化）
+  blacklist_zip      → zip/zipcode/邮编[, reason]（取前 5 位）
+  注意：lark 钓鱼地址表表头在第 5 行（data-survey SYNTHESIS:44），导出 csv 前先删表头前噪声行。
 
 全局黑名单（team_id=NULL）默认导入；--team <id> 可限定团队。归一化与审核 L0
 查表一致，导入即生效。幂等：重复行跳过（skip），占位符品牌（unbranded 等）跳过。

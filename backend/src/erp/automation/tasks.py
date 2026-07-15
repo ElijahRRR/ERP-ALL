@@ -28,6 +28,8 @@ from erp.core.db import ctx_tx, system_tx
 from erp.core.errors import BusinessError
 from erp.listing import service as listing_service
 from erp.notify.service import notify
+from erp.order import pull as order_pull_service
+from erp.order import ship as order_ship_service
 from erp.scrape import service as scrape_service
 from erp.tools.drain_channel_outbox import drain
 
@@ -477,6 +479,128 @@ async def llm_budget_check(sessions: Sessions, config: dict[str, Any]) -> dict[s
     return {"teams_with_budget": len(budgets), "over_budget": over}
 
 
+async def order_pull(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """渠道订单增量拉取（R2-05：15min/店；协议与实战语义见 erp.order.pull 模块头注）。"""
+    return await order_pull_service.run(sessions, config)
+
+
+async def ship_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """order_ack/order_ship verify_pending 渠道对账（镜像 retire_recon；绝不重发）。
+
+    权威 = 渠道订单实况（GET /v3/orders/{po}）：
+    - order_ack：任一行已离开 Created → succeeded；仍 Created 且超 grace → failed
+      （解车道，后续 ship 在渠道端暴露真实错误）；
+    - order_ship：回传单各行渠道侧已 Shipped → succeeded + 业务落账
+      （apply_ship_success，与 applier 共用）；未 Shipped 且超 grace → failed +
+      shipment failed + notify（人工重推=换幂等键再发）。
+    """
+    batch = int(config.get("batch", 10))
+    min_age_s = int(config.get("min_age_s", 300))
+    grace_s = int(config.get("grace_s", 3600))
+    async with system_tx(sessions) as session:
+        cmds = (
+            await session.execute(
+                text(
+                    "SELECT c.id, c.action, c.team_id, c.store_id, c.object_id,"
+                    "       extract(epoch FROM now() - c.updated_at) AS age_s"
+                    " FROM app.channel_command c"
+                    " WHERE c.action IN ('order_ack','order_ship')"
+                    "   AND c.status = 'verify_pending'"
+                    "   AND c.updated_at < now() - make_interval(secs => :age)"
+                    " ORDER BY c.id LIMIT :n"
+                ),
+                {"age": min_age_s, "n": batch},
+            )
+        ).all()
+    stats = {"scanned": len(cmds), "succeeded": 0, "failed": 0, "pending": 0, "errors": 0}
+    for cmd in cmds:
+        try:
+            outcome = await _recon_one_order_cmd(sessions, cmd, grace_s=grace_s)
+        except Exception as exc:
+            stats["errors"] += 1
+            log.warning("beat.ship_recon_error", command_id=cmd.id, error=str(exc))
+            continue
+        stats[outcome] += 1
+    return stats
+
+
+async def _recon_one_order_cmd(  # noqa: PLR0911 归位分支=动作×渠道实况形态
+    sessions: Sessions, cmd: Any, *, grace_s: int
+) -> str:
+    """单命令三段式对账。返回 succeeded / failed / pending。"""
+    async with ctx_tx(sessions, team_id=None, is_super=True) as session:
+        if cmd.action == "order_ship":
+            shipment = await order_ship_service._load_shipment(session, int(cmd.object_id))
+            order_id = int(shipment["order_id"])
+            want_lines = [str(ln["line_no"]) for ln in shipment["lines"]]
+        else:
+            order_id, want_lines = int(cmd.object_id), []
+        po_no = (
+            await session.execute(
+                text("SELECT channel_order_no FROM app.channel_order WHERE id = :o"),
+                {"o": order_id},
+            )
+        ).scalar_one()
+        ctx, mode = await gateway.prepare(session, int(cmd.store_id))
+    resp = await gateway.request_prepared(
+        ctx, mode, "GET", f"/v3/orders/{po_no}", endpoint_key="GET /v3/orders"
+    )
+    if resp.dry_run or resp.status != 200 or not isinstance(resp.data, dict):  # noqa: PLR2004
+        return "pending"  # dry_run 档/传输失败/渠道侧异常：不臆断，下轮再看
+    order_obj = resp.data.get("order") or resp.data
+    statuses = {
+        str(ln.get("lineNumber")): order_pull_service._line_status_raw(ln)
+        for ln in (order_obj.get("orderLines") or {}).get("orderLine") or []
+    }
+
+    async with ctx_tx(sessions, team_id=None, is_super=True) as session:
+        if cmd.action == "order_ack":
+            acked = any(s != "Created" for s in statuses.values())
+            if acked:
+                if await outbox.resolve_verify(
+                    session, command_id=int(cmd.id), status="succeeded",
+                    result={"via": "ship_recon"},
+                ):  # fmt: skip
+                    return "succeeded"
+                return "pending"
+            if float(cmd.age_s) > grace_s and await outbox.resolve_verify(
+                session, command_id=int(cmd.id), status="failed", error_code="ACK_NOT_EFFECTIVE"
+            ):
+                return "failed"
+            return "pending"
+        # order_ship：回传单各行渠道侧均已 Shipped 才算确认
+        shipped = want_lines and all(
+            statuses.get(line_no) in ("Shipped", "Delivered") for line_no in want_lines
+        )
+        if shipped:
+            if await outbox.resolve_verify(
+                session, command_id=int(cmd.id), status="succeeded", result={"via": "ship_recon"}
+            ):
+                await order_ship_service.apply_ship_success(session, shipment_id=int(cmd.object_id))
+                return "succeeded"
+            return "pending"
+        if float(cmd.age_s) > grace_s and await outbox.resolve_verify(
+            session, command_id=int(cmd.id), status="failed", error_code="SHIP_NOT_EFFECTIVE"
+        ):
+            await session.execute(
+                text("UPDATE app.shipment SET push_status = 'failed' WHERE id = :s"),
+                {"s": int(cmd.object_id)},
+            )
+            await notify(
+                session,
+                team_id=int(cmd.team_id),
+                severity="critical",
+                category="order_flag",
+                title=f"发货回传结果未确认（订单 #{order_id}）——已判未生效",
+                body="渠道侧行状态未变更为 Shipped；核对后在订单页重新发货",
+                object_type="shipment",
+                object_id=str(cmd.object_id),
+                dedupe_key=f"ship_failed:{cmd.object_id}",
+            )
+            return "failed"
+        return "pending"
+
+
 TASKS: dict[str, TaskFn] = {
     "partition_maintain": partition_maintain,
     "api_idempotency_sweep": api_idempotency_sweep,
@@ -488,4 +612,6 @@ TASKS: dict[str, TaskFn] = {
     "retire_recon": retire_recon,
     "gtin_watermark": gtin_watermark,
     "llm_budget_check": llm_budget_check,
+    "order_pull": order_pull,
+    "ship_recon": ship_recon,
 }

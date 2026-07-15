@@ -130,6 +130,7 @@
 - **同店 FIFO**：领取条件=同 store 无更早未终局（pending/inflight/verify_pending）命令。
   verify_pending 挡道是**有意背压**（fail-closed）：上一发结果未知时禁止继续发，
   对账（adopt/lost）终局命令后车道解开——旧系统「先对账再重投」语义的推广。
+- action 已注册：feed_submit / item_retire（RS-03b）+ order_ack / order_ship（R2-05 发货回传）。
 - 执行拓扑：请求内三段式（tx1 落命令→HTTP→tx2 归位，RS-03a 同模式）为主；
   崩溃遗留 pending 由 `erp.tools.drain_channel_outbox` 补执行——已 beat 周期化
   （R2-04 schedule `channel_outbox_drain`）。

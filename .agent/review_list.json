@@ -248,10 +248,10 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": ".agent/evidence/R2-05/",
-  "finding": null,
-  "last_checked_at": null,
+  "finding": "增量1-4 完码全绿（313 pytest）：0025/0026 订单域 8 依赖件建表+order_pull 拉单（BR-ORD-001~004 保真）+四检引擎（001/002 口径 phishing/purchaser/price_limit/consistency，BR-ORD-006 粘滞）+采购执行单双入口（D-Q50①②，锁汇率 D-Q32）+ship 回传（幂等+outbox order_ack/order_ship+ship_recon）。增量5 完（L1 对账 harness+前端订单页 OrdersPage/PurchasersPage+runbook+specs 落笔）。余项=部署机 L1 真拉对账 + A152 L2 测试单实测（evidence/R2-05/runbook.md）",
+  "last_checked_at": "2026-07-16",
   "note": "验收(L1)：真实订单只读拉取对账一致；(L2)测试单全流程"
  },
  {

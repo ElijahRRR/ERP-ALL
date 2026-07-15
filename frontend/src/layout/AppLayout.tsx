@@ -6,10 +6,12 @@ import {
   DashboardOutlined,
   GlobalOutlined,
   LogoutOutlined,
+  ProfileOutlined,
   SafetyOutlined,
   ShopOutlined,
   ShoppingOutlined,
   TeamOutlined,
+  UserSwitchOutlined,
 } from '@ant-design/icons'
 import { Dropdown, Layout, Menu, Spin } from 'antd'
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -25,6 +27,8 @@ const MENU = [
   { key: '/scrape-jobs', icon: <CloudDownloadOutlined />, label: '采集作业', permission: 'scrape.job_read' },
   { key: '/products', icon: <ShoppingOutlined />, label: '产品库', permission: 'catalog.product_read' },
   { key: '/listings', icon: <ShopOutlined />, label: '上架管理', permission: 'listing.read' },
+  { key: '/orders', icon: <ProfileOutlined />, label: '订单管理', permission: 'order.read' },
+  { key: '/purchasers', icon: <UserSwitchOutlined />, label: '采购方', permission: 'procurement.read' },
   { key: '/stores', icon: <GlobalOutlined />, label: '店铺管理', permission: 'channel.store_read' },
   { key: '/proxies', icon: <ApiOutlined />, label: '代理管理', permission: 'channel.proxy_read' },
   { key: '/users', icon: <TeamOutlined />, label: '成员管理', permission: 'identity.user_read' },

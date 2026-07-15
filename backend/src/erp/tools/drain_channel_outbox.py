@@ -18,7 +18,11 @@ import structlog
 
 from erp.channel import outbox
 from erp.core.db import get_session_factory, system_tx
-from erp.listing.service import APPLIERS
+from erp.listing.service import APPLIERS as LISTING_APPLIERS
+from erp.order.ship import APPLIERS as ORDER_APPLIERS
+
+# 全量 action 归位注册表（feed_submit/item_retire + order_ack/order_ship）
+APPLIERS = {**LISTING_APPLIERS, **ORDER_APPLIERS}
 
 log = structlog.get_logger()
 
