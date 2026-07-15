@@ -7,20 +7,25 @@ import json
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
-from erp.core.db import get_session
+from erp.core.db import get_session, get_session_factory
 from erp.core.errors import BusinessError
+from erp.core.idempotency import run_idempotent
 from erp.identity.schemas import Page
 from erp.order import checks as order_checks
 from erp.order import procurement
+from erp.order import ship as ship_service
 
 order_router = APIRouter(tags=["order"])
+
+# 契约 002 §写操作幂等：Idempotency-Key 必填头（与 listing 三端点同构）
+IdemKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=64)]
 
 
 async def _load_order(session: AsyncSession, order_id: int, team_id: int) -> dict[str, Any]:
@@ -472,3 +477,60 @@ async def update_purchaser(
         "purchaser.update", "purchaser", purchaser_id, after=body.model_dump(exclude_none=True)
     )
     return {"id": purchaser_id}
+
+
+# ── 发货回传（增量4；Idempotency-Key required——RS-03b 尾账收账）──
+
+
+class ShipLineIn(BaseModel):
+    line_no: str
+    qty: int = Field(ge=1)
+
+
+class ShipIn(BaseModel):
+    lines: list[ShipLineIn] = Field(min_length=1)
+    carrier: str = Field(min_length=1, max_length=40)
+    tracking_no: str = Field(min_length=1, max_length=100)
+    procurement_order_id: int | None = None
+
+
+@order_router.post("/orders/{order_id}/ship", status_code=202)
+async def ship_order(
+    order_id: int,
+    body: ShipIn,
+    request: Request,
+    idempotency_key: IdemKey,
+    user: Annotated[CurrentUser, Depends(require_permission("order.ship"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """发货回传（异步推渠道；行级）。人工重推 = 换幂等键再次调用（生成新回传单）。"""
+    team_id = user.team_id or -1
+
+    async def _handler() -> dict[str, Any]:
+        return await ship_service.ship(
+            get_session_factory(),
+            team_id=team_id,
+            order_id=order_id,
+            lines=[ln.model_dump() for ln in body.lines],
+            carrier=body.carrier,
+            tracking_no=body.tracking_no,
+            procurement_order_id=body.procurement_order_id,
+            actor_id=user.id,
+            is_super=user.is_super,
+        )
+
+    result = await run_idempotent(
+        get_session_factory(),
+        team_id=team_id,
+        is_super=user.is_super,
+        endpoint="POST /orders/{orderId}/ship",
+        idem_key=idempotency_key,
+        payload={"order_id": order_id, **body.model_dump()},
+        created_by=user.id,
+        handler=_handler,
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "order.ship", "channel_order", order_id,
+        after={"lines": [ln.model_dump() for ln in body.lines], "tracking_no": body.tracking_no},
+    )  # fmt: skip
+    return result
