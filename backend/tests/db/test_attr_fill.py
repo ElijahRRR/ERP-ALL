@@ -279,7 +279,8 @@ class TestBuilderMerge:
         built = asyncio.run(_build())
         v = built["item"]["Visible"][WPT]
         assert v["light_bulb_type"] == "LED" and v["shade_color"] == "White"  # LLM 保留
-        assert v["shortDescription"] == "nice lamp"  # 系统字段压过 LLM
+        # 系统文案压过 LLM：force_amazon_copy 用 bullets 拼段落，<60 词拼 title 补（源仓链）
+        assert v["shortDescription"] == "Modern LED Desk Lamp. bright"
         assert v["has_written_warranty"] == "No"  # 零认证覆盖压轴（enum 含 No）
         o = built["item"]["Orderable"]
         assert o["electronicsIndicator"] == "Yes"  # LLM 非后处理字段生效

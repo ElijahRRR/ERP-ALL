@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.audit.l1_category import run_l1
 from erp.core.errors import BusinessError
-from erp.listing import wpt_schema
+from erp.listing import coerce, validator, wpt_schema
 
 # 实测校准常量（BR-LST-005/011；system_config 可覆盖，l1_rerank 配置模式）
 _HEADER_DEFAULTS: dict[str, Any] = {
@@ -276,6 +276,29 @@ def _build_orderable_template(
     return orderable
 
 
+def _amazon_copy_view(product: dict[str, Any]) -> dict[str, Any]:
+    """force_amazon_copy 的输入视图（旧 amazon_data 键名 → 新系统 product/attrs 映射）。"""
+    attrs = product.get("attrs") or {}
+    return {
+        "title": product.get("title"),
+        "bullet_points": attrs.get("bullets") or attrs.get("bullet_points"),
+        "long_description": attrs.get("long_description"),
+        "description": attrs.get("description"),
+        "product_description": attrs.get("product_description"),
+    }
+
+
+def _brands_to_scrub(product: dict[str, Any]) -> list[str]:
+    """文案去品牌词清单（源仓 main.py 过滤语义保真）。"""
+    attrs = product.get("attrs") or {}
+    out = []
+    for b in (product.get("brand"), attrs.get("brand"), attrs.get("manufacturer")):
+        s = str(b).strip() if b else ""
+        if s and s not in ("N/A", "Unbranded", "Generic", "Unknown"):
+            out.append(s)
+    return out
+
+
 def _match_identifier(product: dict[str, Any], gtin: str | None) -> tuple[str, str]:
     """match 模式标识符预检（BR-LST-015 fail-closed）：gtin 参数 > attrs.gtin/upc/ean。"""
     attrs = product.get("attrs") or {}
@@ -349,6 +372,17 @@ async def build_spec(
     )
     build_hash = hashlib.sha256(fingerprint.encode()).hexdigest()
 
+    vis_schema = None if offer_mode == "match" else await wpt_schema.load_pt_schema(session, wpt)
+    ord_schema = None if offer_mode == "match" else await wpt_schema.load_orderable_schema(session)
+
+    def _validated(item: dict[str, Any]) -> dict[str, Any]:
+        report = (
+            validator.validate_match_item(item)
+            if offer_mode == "match"
+            else validator.validate_build_item(item, wpt, vis_schema, ord_schema)
+        )
+        return {"ok": report.ok, "errors": report.errors, "warnings": report.warnings}
+
     cached = (
         await session.execute(
             text(
@@ -369,18 +403,26 @@ async def build_spec(
             "wpt": cached.wpt,
             "build_hash": build_hash,
             "spec_version": spec_version,
+            "validation": _validated(item),
         }
 
     cert_overrides: dict[str, Any] = {}
+    coerce_notes: list[str] = []
     if offer_mode == "match":
         item_template: dict[str, Any] = {"Item": _build_match_item(product, gtin)}
     else:
-        schema = await wpt_schema.load_pt_schema(session, wpt)
-        visible, cert_overrides = _build_visible(product, wpt, schema)
-        item_template = {
-            "Orderable": _build_orderable_template(product, wpt, odefaults),
-            "Visible": {wpt: visible},
-        }
+        visible, cert_overrides = _build_visible(product, wpt, vis_schema)
+        orderable = _build_orderable_template(product, wpt, odefaults)
+        # 清洗/coerce 链（增量 4，源仓 prepare_one_async 链序保真）
+        visible, orderable, coerce_notes = coerce.run_coerce_chain(
+            visible,
+            orderable,
+            amazon=_amazon_copy_view(product),
+            brands_to_remove=_brands_to_scrub(product),
+            vis_schema=vis_schema,
+            ord_schema=ord_schema,
+        )
+        item_template = {"Orderable": orderable, "Visible": {wpt: visible}}
 
     spec_id = (
         await session.execute(
@@ -415,6 +457,8 @@ async def build_spec(
         "wpt": wpt,
         "build_hash": build_hash,
         "spec_version": spec_version,
+        "coerce_notes": coerce_notes,
+        "validation": _validated(item),
     }
 
 
