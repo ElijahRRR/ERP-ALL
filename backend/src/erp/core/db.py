@@ -28,6 +28,29 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 @asynccontextmanager
+async def ctx_tx(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    team_id: int | None,
+    is_super: bool = False,
+) -> AsyncIterator[AsyncSession]:
+    """用户上下文自管短事务（RS-03 三段式）：每段事务重放请求级 GUC。
+
+    用于把网络调用移出请求事务的编排（tx1 → HTTP → tx2）——SET LOCAL 随
+    COMMIT 失效，故每段都需重放。团队/超管身份必须来自 authn 的真实用户，
+    禁止借本入口提权（与 system_tx 同一纪律）。
+    """
+    async with sessions() as s, s.begin():
+        if is_super:
+            await s.execute(text("SELECT set_config('app.is_super', 'on', true)"))
+        if team_id is not None:
+            await s.execute(
+                text("SELECT set_config('app.current_team', :t, true)"), {"t": str(team_id)}
+            )
+        yield s
+
+
+@asynccontextmanager
 async def system_tx(
     sessions: async_sessionmaker[AsyncSession],
 ) -> AsyncIterator[AsyncSession]:

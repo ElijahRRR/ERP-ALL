@@ -6,6 +6,10 @@
 - headline 计数不可信：对账一律以 feed_item 级结果为准。
 - 状态迁移全部经 transition() 写 listing_state_history。
 - 配额：submit 消耗 listing_create、delist 消耗 listing_delete；终态失败返还 create。
+
+RS-03b（评审 A7）：渠道写路径全部三段式——tx1 短事务组 feed+落 outbox 命令后
+COMMIT（行锁随之释放；渠道已收/DB 失忆的崩溃窗口消除），HTTP 段零事务，
+tx2 经 fence 校验归位。读路径（poll/verify-back）行锁同样不跨 HTTP。
 """
 
 import json
@@ -13,10 +17,13 @@ from typing import Any
 
 import structlog
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from erp.channel import outbox
 from erp.channel import service as channel_service
 from erp.channel.gateway import gateway
+from erp.channel.gateway.client import GatewayResponse
+from erp.core.db import ctx_tx
 from erp.core.errors import BusinessError
 from erp.listing import coerce
 from erp.listing import gtin as gtin_pool
@@ -239,10 +246,41 @@ async def allocate(
     return {"created": created, "rejected": rejected}
 
 
-# ── submit：spec 构建 → 组 feed → 配额 → 网关提交（verify-back 分支）──
+# ── submit：三段式（RS-03b）——tx1 组 feed+落命令 → HTTP（零锁）→ tx2 归位 ──
 
 
-async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分支（模式闸/配额/verify-back）,拆散失真
+async def submit(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    team_id: int,
+    listing_ids: list[int],
+    actor_id: int | None = None,
+    is_super: bool = False,
+) -> dict[str, Any]:
+    """批量提交上架。tx1 完成校验/配额/spec/组 feed/落 outbox 命令并 COMMIT；
+    进程在此后任一点死，命令行即恢复线索（pending→drain 补发 / inflight 超
+    lease→verify_pending 对账），渠道已收而 DB 失忆的窗口不复存在。"""
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        prep = await _submit_tx1(
+            session, team_id=team_id, listing_ids=listing_ids, actor_id=actor_id
+        )
+    response: dict[str, Any] = prep["response"]
+    if prep.get("command_id") is None:
+        return response
+    outcome = await outbox.execute_command(
+        sessions,
+        prep["command_id"],
+        team_id=team_id,
+        is_super=is_super,
+        applier=_apply_feed_submit,
+    )
+    if outcome.get("command_status") == "pending":
+        # 车道被挡（同店更早命令未终局，FIFO 背压）：命令已落库，drain/后续对账推进
+        outcome = {**outcome, "feed_status": "submitting"}
+    return {**response, **outcome}
+
+
+async def _submit_tx1(  # noqa: PLR0912, PLR0915 提交链分支=协议分支（准入/配额/校验闸）,拆散失真
     session: AsyncSession,
     *,
     team_id: int,
@@ -271,7 +309,7 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
             continue
         ready.append(listing)
     if not ready:
-        return {"queued": 0, "skipped": skipped, "feed_id": None}
+        return {"command_id": None, "response": {"queued": 0, "skipped": skipped, "feed_id": None}}
     assert store_id is not None and offer_mode is not None
 
     # 配额：listing_create 原子扣减（不足者跳过，其余照常）
@@ -282,7 +320,7 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
         else:
             skipped.append({"listing_id": listing["id"], "code": "ERP_QUOTA_EXHAUSTED"})
     if not granted:
-        return {"queued": 0, "skipped": skipped, "feed_id": None}
+        return {"command_id": None, "response": {"queued": 0, "skipped": skipped, "feed_id": None}}
 
     # spec 构建 + 组 feed
     feed_kind = "item_build" if offer_mode == "build" else "item_match"
@@ -342,14 +380,17 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
         items_payload.append(built["item"])
         feed_listings.append(listing)
     if not feed_listings:
-        return {"queued": 0, "skipped": skipped, "feed_id": None}
+        return {"command_id": None, "response": {"queued": 0, "skipped": skipped, "feed_id": None}}
 
-    header = {
+    envelope = {
         "MPItemFeedHeader": await spec_builder.feed_header(session, offer_mode),
         "MPItem": items_payload,
     }
     # 提交边界最后一道小数位兜底（EXT_DATA_ERROR_68050064665065，源仓语义）
-    header, _num_fixes = coerce.sanitize_feed_numbers(header)
+    envelope, _num_fixes = coerce.sanitize_feed_numbers(envelope)
+    # 模式闸预检（live 未放量/非测试店等拒绝 → tx1 整体回滚，API 行为与改造前一致）；
+    # 执行器在领取事务内会重新 prepare（运营切换模式的竞态由彼处兜住）
+    await gateway.prepare(session, store_id)
     feed_id = (
         await session.execute(
             text(
@@ -370,37 +411,65 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
         await transition(session, listing, "queued", reason_code=f"feed:{feed_id}",
                          actor_type="user", actor_id=actor_id)  # fmt: skip
 
-    # 网关提交（dry_run 默认拿快照；live/live_test 真发）
+    # outbox 命令与业务同事务落库（幂等键=feed id，天然一 feed 一命令）
     feed_type = FEED_TYPE_BY_KIND[feed_kind]
-    try:
-        resp = await gateway.request(
-            session,
-            store_id,
-            "POST",
-            "/v3/feeds",
-            endpoint_key=f"POST /v3/feeds:{feed_type}",
-            params={"feedType": feed_type},
-            json_body=header,
-        )
-    except BusinessError:
-        raise  # 模式闸拒绝（live 未开等）原样上抛——不是"无响应"，不进 verify-back
-    except Exception as exc:
-        # 提交无响应（超时/断连）：结果未知 → verify_pending，禁止盲重试（总账铁律）
-        await session.execute(
-            text(
-                "UPDATE app.feed SET status = 'verify_pending', submitted_at = now() WHERE id = :f"
-            ),
-            {"f": feed_id},
-        )
-        log.warning("listing.feed_verify_pending", feed_id=feed_id, error=str(exc))
-        return {
-            "queued": len(feed_listings),
-            "skipped": skipped,
-            "feed_id": feed_id,
-            "feed_status": "verify_pending",
-        }
+    await session.execute(
+        text("UPDATE app.feed SET status = 'submitting' WHERE id = :f"), {"f": feed_id}
+    )
+    enq = await outbox.enqueue(
+        session,
+        team_id=team_id,
+        store_id=store_id,
+        action="feed_submit",
+        payload={
+            "method": "POST",
+            "path": "/v3/feeds",
+            "endpoint_key": f"POST /v3/feeds:{feed_type}",
+            "params": {"feedType": feed_type},
+            "json_body": envelope,
+        },
+        idempotency_key=f"feed:{feed_id}",
+        object_type="feed",
+        object_id=feed_id,
+        created_by=actor_id,
+    )
+    return {
+        "command_id": enq["command_id"],
+        "response": {"queued": len(feed_listings), "skipped": skipped, "feed_id": feed_id},
+    }
 
-    if resp.dry_run:
+
+async def _feed_listings_for_update(session: AsyncSession, feed_id: int) -> list[dict[str, Any]]:
+    rows = (
+        (
+            await session.execute(
+                text(
+                    "SELECT l.id, l.team_id, l.status FROM app.listing l"
+                    " JOIN app.feed_item fi ON fi.listing_id = l.id"
+                    " WHERE fi.feed_id = :f ORDER BY l.id FOR UPDATE OF l"
+                ),
+                {"f": feed_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [dict(r) for r in rows]
+
+
+async def _apply_feed_submit(  # noqa: PLR0911 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）
+    session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
+) -> dict[str, Any]:
+    """feed_submit 的 tx2 归位（outbox.Applier 契约：complete(fence) 成功才落业务态）。"""
+    feed_id = int(cmd["object_id"])
+    cid, fence = int(cmd["id"]), int(cmd["fence"])
+    actor_id = cmd.get("created_by")
+
+    if resp is not None and resp.dry_run:
+        if not await outbox.complete(
+            session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
+        ):
+            return {"command_status": "superseded"}
         await session.execute(
             text(
                 "UPDATE app.feed SET status = 'building',"
@@ -409,32 +478,34 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
             {"f": feed_id, "h": json.dumps({"dry_run": True}, ensure_ascii=False)},
         )
         return {
-            "queued": len(feed_listings),
-            "skipped": skipped,
-            "feed_id": feed_id,
             "feed_status": "building",
             "dry_run": True,
             "request_snapshot": resp.request_snapshot,
         }
 
-    if resp.status is None:
-        # 网关吞掉传输错误返回 status=None = 提交结果未知 → verify_pending（永不盲重试）
+    if resp is None or resp.status is None:
+        # 提交无响应（超时/断连）：结果未知 → verify_pending，禁止盲重试（总账铁律）
+        if not await outbox.complete(session, command_id=cid, fence=fence, status="verify_pending"):
+            return {"command_status": "superseded"}
         await session.execute(
             text(
                 "UPDATE app.feed SET status = 'verify_pending', submitted_at = now() WHERE id = :f"
             ),
             {"f": feed_id},
         )
-        log.warning("listing.feed_verify_pending", feed_id=feed_id, reason="status_none")
-        return {
-            "queued": len(feed_listings),
-            "skipped": skipped,
-            "feed_id": feed_id,
-            "feed_status": "verify_pending",
-        }
+        log.warning("listing.feed_verify_pending", feed_id=feed_id)
+        return {"feed_status": "verify_pending"}
 
     channel_feed_id = (resp.data or {}).get("feedId")
     if resp.status == 200 and channel_feed_id:  # noqa: PLR2004
+        if not await outbox.complete(
+            session,
+            command_id=cid,
+            fence=fence,
+            status="succeeded",
+            result={"channel_feed_id": channel_feed_id},
+        ):
+            return {"command_status": "superseded"}
         await session.execute(
             text(
                 "UPDATE app.feed SET status = 'submitted', channel_feed_id = :cf,"
@@ -442,28 +513,33 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
             ),
             {"cf": channel_feed_id, "f": feed_id},
         )
-        for listing in feed_listings:
-            await transition(session, listing, "submitted", reason_code=f"feed:{feed_id}",
-                             actor_id=actor_id)  # fmt: skip
-        return {
-            "queued": len(feed_listings),
-            "skipped": skipped,
-            "feed_id": feed_id,
-            "feed_status": "submitted",
-            "channel_feed_id": channel_feed_id,
-        }
+        for listing in await _feed_listings_for_update(session, feed_id):
+            if listing["status"] == "queued":  # 并发动作已改状态者不强推（tx1 后世界可能已变）
+                await transition(session, listing, "submitted", reason_code=f"feed:{feed_id}",
+                                 actor_id=actor_id)  # fmt: skip
+        return {"feed_status": "submitted", "channel_feed_id": channel_feed_id}
 
     # 渠道明确拒绝（有响应但非 200）：feed error + 配额返还 + listing 回 failed
+    if not await outbox.complete(
+        session,
+        command_id=cid,
+        fence=fence,
+        status="failed",
+        result={"http_status": resp.status},
+        error_code="ERP_FEED_REJECTED",
+    ):
+        return {"command_status": "superseded"}
     await session.execute(
         text("UPDATE app.feed SET status = 'error', headline = cast(:h AS jsonb) WHERE id = :f"),
         {"f": feed_id, "h": json.dumps({"status": resp.status}, ensure_ascii=False)},
     )
-    for listing in feed_listings:
-        await channel_service.release_quota(session, store_id, "listing_create")
+    for listing in await _feed_listings_for_update(session, feed_id):
+        await channel_service.release_quota(session, int(cmd["store_id"]), "listing_create")
         await _release_gtin(session, listing["id"])
-        await transition(session, listing, "failed", reason_code="ERP_FEED_REJECTED",
-                         detail={"http_status": resp.status}, actor_id=actor_id)  # fmt: skip
-    return {"queued": 0, "skipped": skipped, "feed_id": feed_id, "feed_status": "error"}
+        if listing["status"] == "queued":
+            await transition(session, listing, "failed", reason_code="ERP_FEED_REJECTED",
+                             detail={"http_status": resp.status}, actor_id=actor_id)  # fmt: skip
+    return {"queued": 0, "feed_status": "error"}
 
 
 async def _release_gtin(session: AsyncSession, listing_id: int) -> None:
@@ -477,28 +553,39 @@ async def _release_gtin(session: AsyncSession, listing_id: int) -> None:
 # ── poll：feed 状态轮询 → item 级权威回写 ──
 
 
-async def poll_feed(session: AsyncSession, feed_id: int) -> dict[str, Any]:
-    feed = (
-        (
-            await session.execute(
-                text(
-                    "SELECT id, team_id, store_id, channel_feed_id, status FROM app.feed"
-                    " WHERE id = :f FOR UPDATE"
-                ),
-                {"f": feed_id},
+async def poll_feed(
+    sessions: async_sessionmaker[AsyncSession],
+    feed_id: int,
+    *,
+    team_id: int | None = None,
+    is_super: bool = False,
+) -> dict[str, Any]:
+    # tx1：读态校验 + prepare（RS-03b：行锁不跨 HTTP）
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        row = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT id, team_id, store_id, channel_feed_id, status FROM app.feed"
+                        " WHERE id = :f"
+                    ),
+                    {"f": feed_id},
+                )
             )
+            .mappings()
+            .one_or_none()
         )
-        .mappings()
-        .one_or_none()
-    )
-    if feed is None:
-        raise BusinessError("FEED_NOT_FOUND", "feed 不存在")
-    if feed["status"] not in ("submitted", "processing"):
-        raise BusinessError("FEED_NOT_POLLABLE", f"feed 状态 {feed['status']} 无需轮询")
+        if row is None:
+            raise BusinessError("FEED_NOT_FOUND", "feed 不存在")
+        if row["status"] not in ("submitted", "processing"):
+            raise BusinessError("FEED_NOT_POLLABLE", f"feed 状态 {row['status']} 无需轮询")
+        feed = dict(row)
+        ctx, mode = await gateway.prepare(session, feed["store_id"])
 
-    resp = await gateway.request(
-        session,
-        feed["store_id"],
+    # HTTP（零事务/零行锁）
+    resp = await gateway.request_prepared(
+        ctx,
+        mode,
         "GET",
         f"/v3/feeds/{feed['channel_feed_id']}",
         endpoint_key="GET /v3/feeds",
@@ -507,6 +594,23 @@ async def poll_feed(session: AsyncSession, feed_id: int) -> dict[str, Any]:
     if resp.dry_run:
         return {"feed_id": feed_id, "dry_run": True}
     data = resp.data or {}
+
+    # tx2：重锁复核后回写（并发轮询以先完成者为准）
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        current = (
+            await session.execute(
+                text("SELECT status FROM app.feed WHERE id = :f FOR UPDATE"), {"f": feed_id}
+            )
+        ).scalar_one()
+        if current not in ("submitted", "processing"):
+            return {"feed_id": feed_id, "feed_status": current, "concurrent": True}
+        return await _apply_poll_result(session, feed, data)
+
+
+async def _apply_poll_result(
+    session: AsyncSession, feed: dict[str, Any], data: dict[str, Any]
+) -> dict[str, Any]:
+    feed_id = feed["id"]
     await session.execute(
         text(
             "UPDATE app.feed SET last_polled_at = now(), poll_attempts = poll_attempts + 1,"
@@ -623,25 +727,37 @@ async def _ensure_error_cataloged(
 # ── verify-back：提交无响应的对账归位（adopt / lost）──
 
 
-async def verify_back(session: AsyncSession, feed_id: int) -> dict[str, Any]:
-    feed = (
-        (
-            await session.execute(
-                text(
-                    "SELECT id, team_id, store_id, feed_kind, item_count, submitted_at, status"
-                    " FROM app.feed WHERE id = :f FOR UPDATE"
-                ),
-                {"f": feed_id},
+async def verify_back(
+    sessions: async_sessionmaker[AsyncSession],
+    feed_id: int,
+    *,
+    team_id: int | None = None,
+    is_super: bool = False,
+) -> dict[str, Any]:
+    # tx1：读态校验 + prepare（RS-03b：行锁不跨 HTTP）
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        row = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT id, team_id, store_id, feed_kind, item_count, submitted_at,"
+                        " status FROM app.feed WHERE id = :f"
+                    ),
+                    {"f": feed_id},
+                )
             )
+            .mappings()
+            .one_or_none()
         )
-        .mappings()
-        .one_or_none()
-    )
-    if feed is None or feed["status"] != "verify_pending":
-        raise BusinessError("FEED_NOT_VERIFY_PENDING", "feed 不在 verify_pending 状态")
-    resp = await gateway.request(
-        session,
-        feed["store_id"],
+        if row is None or row["status"] != "verify_pending":
+            raise BusinessError("FEED_NOT_VERIFY_PENDING", "feed 不在 verify_pending 状态")
+        feed = dict(row)
+        ctx, mode = await gateway.prepare(session, feed["store_id"])
+
+    # HTTP（零事务）：对账渠道近程 feeds——绝不重发（总账铁律）
+    resp = await gateway.request_prepared(
+        ctx,
+        mode,
         "GET",
         "/v3/feeds",
         endpoint_key="GET /v3/feeds",
@@ -655,6 +771,42 @@ async def verify_back(session: AsyncSession, feed_id: int) -> dict[str, Any]:
         if str(f.get("feedType")) == FEED_TYPE_BY_KIND[feed["feed_kind"]]
         and int(f.get("itemsReceived") or -1) == feed["item_count"]
     ]
+
+    # tx2：重锁复核后归位（adopt / lost），并同步终局 outbox 命令解开店铺车道
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        current = (
+            await session.execute(
+                text("SELECT status FROM app.feed WHERE id = :f FOR UPDATE"), {"f": feed_id}
+            )
+        ).scalar_one()
+        if current != "verify_pending":
+            return {"feed_id": feed_id, "feed_status": current, "concurrent": True}
+        return await _apply_verify_back(session, feed, candidates)
+
+
+async def _resolve_feed_command(
+    session: AsyncSession, feed_id: int, *, status: str, result: dict[str, Any] | None = None,
+    error_code: str | None = None,
+) -> None:  # fmt: skip
+    cmd_id = (
+        await session.execute(
+            text(
+                "SELECT id FROM app.channel_command WHERE action = 'feed_submit'"
+                " AND object_type = 'feed' AND object_id = :f AND status = 'verify_pending'"
+            ),
+            {"f": feed_id},
+        )
+    ).scalar_one_or_none()
+    if cmd_id is not None:
+        await outbox.resolve_verify(
+            session, command_id=cmd_id, status=status, result=result, error_code=error_code
+        )
+
+
+async def _apply_verify_back(
+    session: AsyncSession, feed: dict[str, Any], candidates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    feed_id = feed["id"]
     if len(candidates) == 1 and candidates[0].get("feedId"):
         cf = candidates[0]["feedId"]
         await session.execute(
@@ -679,6 +831,12 @@ async def verify_back(session: AsyncSession, feed_id: int) -> dict[str, Any]:
             if listing["status"] == "queued":
                 await transition(session, listing, "submitted", reason_code="verify_back_adopt",
                                  detail={"feed_id": feed_id})  # fmt: skip
+        await _resolve_feed_command(
+            session,
+            feed_id,
+            status="succeeded",
+            result={"channel_feed_id": cf, "via": "verify_back_adopt"},
+        )
         log.info("listing.verify_back_adopted", feed_id=feed_id, channel_feed_id=cf)
         return {"feed_id": feed_id, "feed_status": "submitted", "channel_feed_id": cf}
     # 对账确认渠道未收到（或无法唯一匹配→保守按 lost，人工核对后重投）
@@ -701,6 +859,7 @@ async def verify_back(session: AsyncSession, feed_id: int) -> dict[str, Any]:
         await channel_service.release_quota(session, feed["store_id"], "listing_create")
         await transition(session, listing, "queued", reason_code="feed_lost",
                          detail={"feed_id": feed_id})  # fmt: skip
+    await _resolve_feed_command(session, feed_id, status="failed", error_code="FEED_LOST")
     return {"feed_id": feed_id, "feed_status": "lost", "requeued": len(rows)}
 
 
@@ -708,36 +867,112 @@ async def verify_back(session: AsyncSession, feed_id: int) -> dict[str, Any]:
 
 
 async def delist(
-    session: AsyncSession, *, team_id: int, listing_id: int, actor_id: int | None = None
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    team_id: int,
+    listing_id: int,
+    actor_id: int | None = None,
+    is_super: bool = False,
 ) -> dict[str, Any]:
-    listing = await _load_listing(session, listing_id)
-    if listing["team_id"] != team_id:
-        raise BusinessError("LISTING_NOT_FOUND", "listing 不存在")
-    if listing["status"] != "live":
-        raise BusinessError("LISTING_STATE_INVALID", f"状态 {listing['status']} 不可下架")
-    if not await channel_service.consume_quota(session, listing["store_id"], "listing_delete"):
-        raise BusinessError("ERP_QUOTA_EXHAUSTED", "listing_delete 配额不足")
-    await transition(session, listing, "delist_pending", actor_type="user", actor_id=actor_id)
-    resp = await gateway.request(
-        session,
-        listing["store_id"],
-        "POST",
-        "/v3/feeds",
-        endpoint_key="POST /v3/feeds:RETIRE_ITEM",
-        params={"feedType": "RETIRE_ITEM"},
-        json_body={"sku": listing["channel_sku"]},
+    """下架。三段式：tx1 锁品/配额/迁 delist_pending/落 outbox 命令 → HTTP → tx2 归位。"""
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        listing = await _load_listing(session, listing_id)
+        if listing["team_id"] != team_id:
+            raise BusinessError("LISTING_NOT_FOUND", "listing 不存在")
+        if listing["status"] != "live":
+            raise BusinessError("LISTING_STATE_INVALID", f"状态 {listing['status']} 不可下架")
+        if not await channel_service.consume_quota(session, listing["store_id"], "listing_delete"):
+            raise BusinessError("ERP_QUOTA_EXHAUSTED", "listing_delete 配额不足")
+        await transition(session, listing, "delist_pending", actor_type="user", actor_id=actor_id)
+        # 同一 listing 多轮下架各占新幂等键（第 N 次 delist_pending 迁移=第 N 轮）
+        episode = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM app.listing_state_history"
+                    " WHERE listing_id = :l AND to_status = 'delist_pending'"
+                ),
+                {"l": listing_id},
+            )
+        ).scalar_one()
+        # 模式闸预检（拒绝 → tx1 整体回滚：配额/迁移一并还原，API 行为与改造前一致）
+        await gateway.prepare(session, listing["store_id"])
+        enq = await outbox.enqueue(
+            session,
+            team_id=team_id,
+            store_id=listing["store_id"],
+            action="item_retire",
+            payload={
+                "method": "POST",
+                "path": "/v3/feeds",
+                "endpoint_key": "POST /v3/feeds:RETIRE_ITEM",
+                "params": {"feedType": "RETIRE_ITEM"},
+                "json_body": {"sku": listing["channel_sku"]},
+            },
+            idempotency_key=f"retire:{listing_id}:{episode}",
+            object_type="listing",
+            object_id=listing_id,
+            created_by=actor_id,
+        )
+    outcome = await outbox.execute_command(
+        sessions,
+        enq["command_id"],
+        team_id=team_id,
+        is_super=is_super,
+        applier=_apply_item_retire,
     )
-    if resp.dry_run:
-        return {"listing_id": listing_id, "status": "delist_pending", "dry_run": True}
-    if resp.status is None:
-        # 结果未知：保持 delist_pending（不返还配额、不重发），人工/维护任务核对渠道侧
-        return {"listing_id": listing_id, "status": "delist_pending", "verify": "unknown"}
+    if outcome.get("error_code") == "ERP_FEED_REJECTED":
+        raise BusinessError("ERP_FEED_REJECTED", f"下架提交被拒 HTTP {outcome.get('http_status')}")
+    extras: dict[str, Any] = {
+        k: outcome[k] for k in ("dry_run", "verify", "command_status") if k in outcome
+    }
+    return {"listing_id": listing_id, "status": outcome.get("status", "delist_pending"), **extras}
+
+
+async def _apply_item_retire(  # noqa: PLR0911 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）
+    session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
+) -> dict[str, Any]:
+    """item_retire 的 tx2 归位（outbox.Applier 契约：complete(fence) 成功才落业务态）。"""
+    listing_id = int(cmd["object_id"])
+    cid, fence = int(cmd["id"]), int(cmd["fence"])
+    actor_id = cmd.get("created_by")
+    listing = await _load_listing(session, listing_id)
+
+    if resp is not None and resp.dry_run:
+        if not await outbox.complete(
+            session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
+        ):
+            return {"command_status": "superseded"}
+        return {"status": "delist_pending", "dry_run": True}
+
+    if resp is None or resp.status is None:
+        # 结果未知：保持 delist_pending（不返还配额、不重发）；渠道侧核对随维护任务（R2-04）
+        if not await outbox.complete(session, command_id=cid, fence=fence, status="verify_pending"):
+            return {"command_status": "superseded"}
+        return {"status": "delist_pending", "verify": "unknown"}
+
     if resp.status == 200:  # noqa: PLR2004
-        await transition(session, listing, "delisted", reason_code="retire_submitted",
-                         actor_id=actor_id)  # fmt: skip
-        return {"listing_id": listing_id, "status": "delisted"}
-    await channel_service.release_quota(session, listing["store_id"], "listing_delete")
-    raise BusinessError("ERP_FEED_REJECTED", f"下架提交被拒 HTTP {resp.status}")
+        if not await outbox.complete(session, command_id=cid, fence=fence, status="succeeded"):
+            return {"command_status": "superseded"}
+        if listing["status"] == "delist_pending":
+            await transition(session, listing, "delisted", reason_code="retire_submitted",
+                             actor_id=actor_id)  # fmt: skip
+        return {"status": "delisted"}
+
+    # 渠道明确拒绝：配额返还 + 占位迁移还原（delist_pending → live），错误上抛由调用方处理
+    if not await outbox.complete(
+        session,
+        command_id=cid,
+        fence=fence,
+        status="failed",
+        result={"http_status": resp.status},
+        error_code="ERP_FEED_REJECTED",
+    ):
+        return {"command_status": "superseded"}
+    await channel_service.release_quota(session, int(cmd["store_id"]), "listing_delete")
+    if listing["status"] == "delist_pending":
+        await transition(session, listing, "live", reason_code="ERP_FEED_REJECTED",
+                         detail={"http_status": resp.status}, actor_id=actor_id)  # fmt: skip
+    return {"status": "live", "error_code": "ERP_FEED_REJECTED", "http_status": resp.status}
 
 
 async def retry_failed(
@@ -765,3 +1000,10 @@ async def retry_failed(
     await transition(session, listing, "queued", reason_code="manual_retry",
                      actor_type="user", actor_id=actor_id)  # fmt: skip
     return {"listing_id": listing_id, "status": "queued"}
+
+
+# outbox 命令 → tx2 归位函数（drain 工具按 action 索取；请求内三段式直接传引用）
+APPLIERS: dict[str, outbox.Applier] = {
+    "feed_submit": _apply_feed_submit,
+    "item_retire": _apply_item_retire,
+}

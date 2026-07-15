@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
-from erp.core.db import get_session
+from erp.core.db import get_session, get_session_factory
 from erp.core.errors import BusinessError
 from erp.identity.schemas import Page
 from erp.listing import gtin as gtin_service
@@ -164,8 +164,14 @@ async def submit(
 ) -> dict[str, Any]:
     if user.team_id is None:
         raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
+    # RS-03b：三段式自管短事务（sessionmaker + 用户 GUC 上下文）——渠道 HTTP 期间
+    # 不持行锁/事务；本请求事务（session）只承载末尾的 audit_log 写
     result = await service.submit(
-        session, team_id=user.team_id, listing_ids=body.listing_ids, actor_id=user.id
+        get_session_factory(),
+        team_id=user.team_id,
+        listing_ids=body.listing_ids,
+        actor_id=user.id,
+        is_super=user.is_super,
     )
     await AuditWriter.for_user(session, user, request).log(
         "listing.submit", "feed", result.get("feed_id"), after={"queued": result["queued"]}
@@ -183,7 +189,11 @@ async def delist(
     if user.team_id is None:
         raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
     result = await service.delist(
-        session, team_id=user.team_id, listing_id=listing_id, actor_id=user.id
+        get_session_factory(),
+        team_id=user.team_id,
+        listing_id=listing_id,
+        actor_id=user.id,
+        is_super=user.is_super,
     )
     await AuditWriter.for_user(session, user, request).log("listing.delist", "listing", listing_id)
     return result
@@ -300,20 +310,22 @@ async def feed_items(
 async def poll_feed(
     feed_id: int,
     user: Annotated[CurrentUser, Depends(require_permission("listing.submit"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """手动触发轮询（beat 自动轮询随 R2；A152 试点期人工点查）。"""
-    return await service.poll_feed(session, feed_id)
+    return await service.poll_feed(
+        get_session_factory(), feed_id, team_id=user.team_id, is_super=user.is_super
+    )
 
 
 @listing_router.post("/feeds/{feed_id}/verify-back")
 async def verify_back(
     feed_id: int,
     user: Annotated[CurrentUser, Depends(require_permission("listing.submit"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """verify_pending 对账归位（adopt/lost）——总账铁律：永不盲重试。"""
-    return await service.verify_back(session, feed_id)
+    return await service.verify_back(
+        get_session_factory(), feed_id, team_id=user.team_id, is_super=user.is_super
+    )
 
 
 # ── GTIN 池 ──
