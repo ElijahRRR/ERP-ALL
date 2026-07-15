@@ -338,3 +338,17 @@
 - **工作区收口**：`.agent/handoff.md` 重写为迁移交接版——新工作区直接绑 ERP-ALL；含当前状态/队列（下一单 R2-03 上架真实化）/部署机协作模式/源仓依赖提示（walmart-audit-system 与旧 erpAPI 仓是旧工作区独有资产，移植类工作需重挂）/决策链/Read first 顺序。
 - 本工作区历史贡献归档：R2-02 全程（数据迁移方法论+十轮对拍+14 项修复移植）、D-Q55~60 六轮决策、迁移 0012~0019、审核全链路（L0/L1-a/L1-b/L2/L3）真数据化。
 - **新工作区第一单：R2-03 上架真实化**（handoff 已给起点与注意事项）。
+
+### Session: 2026-07-15 (🚀 新工作区接手 + R2-03 上架真实化六增量全部落地)
+- **新工作区就位**（绑 ERP-ALL，旧 erpAPI 仓挂载于 /home/user/erpAPI）；开发分支 claude/r2-03-launch-leg5n8（PR #1 draft）——本工作区环境要求分支开发+PR，不直推 main；每增量四关绿（pytest/ruff check+**format**/mypy）后提交推送。
+- **接手第一笔欠账**：远端 main CI 自 85ff698 (07-14) 起红——backend job 挂 `ruff format --check`（round-7~10 期间本地只跑了 ruff check）。纯格式化 10 文件修复（2ad1663）。教训入纪律：本地四关必须含 format --check，且 format 改动后要**重跑 check**（RUF100 又踩一次，fee98d7）。
+- **考古**：五路并行（旧 auto_listing 管线 14,400 行 / 新骨架 / 图纸 / spec 素材盘点 / 可复用基建）→ `.agent/evidence/R2-03/archaeology.md`（812 行，file:line 全）。关键结论：①旧校验/coerce 12 函数群每行都是错误码换来的，保真移植不重写；②本地无 MPSetup monolith/pt_templates_full（T7 独有），且旧审核库 walmart_pt_spec.fields 是**压缩版**（enum 截 10/丢 length/pattern/allOf）直接用会假拒→定案 pt_spec 加无损 fields 列+提取工具；③图纸警报 9 条（pt_spec 无列级图纸/dry-run 无契约落点/GTIN 释放语义歧义等，部分移交 RS-11）。
+- **增量1（9f31658）pt_spec fields 通道**：0020 迁移（fields jsonb + ck_llm_usage_module+='listing' + ck_import_job_domain+='listing_error_catalog'）；extract_mp_item_spec.py 无损提取（T7 monolith ijson 流式 / live spec 响应两输入；cert 集合逐字保真 sync_pt_specs 重导不改 R3b）；import fields 列 COALESCE（子集行重导不清全量）；'__orderable__' 伪行协议；specs 001 §03/§05、04、005 随改。extract→import→查回 E2E 实跑通过。
+- **CI 踩坑修复（8bba194）**：CI 迁移演练在 pytest 之后跑同一库——0020 downgrade 恢复旧 CHECK 被测试遗留 module='listing' 行打爆。修：downgrade 先重映射 'listing'→'other' + 删新域 job 行；测试夹具补 usage 清理。带杂行降级+全程 base 往返实测过。
+- **增量2（e91e4e8）spec 构建器真实化**：v5 header 只 3 字段+完整时间戳（原骨架 v4.8 式 "1.5" 废弃，BR-LST-005）；WPT 链 attrs.wpt > run_l1 直判（与审核同一可售语义）> 配置；Orderable 强制格式源仓 force_overrides 保真（identifiers 单对象 UPC/EAN 按位数、price 裸 number、inventory=[{quantity,fulfillmentCenterID=store.profile.partner_id}]、endDate ISO）；零认证覆盖记 cert_overrides；match=v4.2 五字段+identifier 预检 fail-closed；缓存=单 MPItem 模板，build_hash 含 pt_spec dataset_revision。
+- **增量3（b11158a）AI 属性填写**：attr_fill.py——SYSTEM 零认证铁律+USER 五块 prompt 逐字保真（静态前缀 cache 友好）；三段纪律（RS-03a）tx1 缓存→HTTP→tx2 记账+写 attrs['walmart_fill'][wpt]；module='listing' 归因；fail-closed 坏输出不写回不入缓存；合并序 LLM打底<系统字段<零认证压轴；fill_listing_attrs CLI。
+- **增量4（341726e）清洗链+本地校验器**：coerce.py 源仓 12 函数群逐函数保真（safe_default/force_amazon_copy/条件必填不动点/类型枚举修复/strip_unknown/stateRestrictions/minItems/copy_limits/round/sanitize_feed_numbers，链序=prepare_one_async）；validator.py 官方 schema 层 errors+实践规则层 warnings；submit errors→ERP_SPEC_INVALID failed（配额返还，省 10/hour）。
+- **增量5（e079f2d）错误码灌入**：import 域 listing_error_catalog+CLI+实战种子 65 码（auto_listing 数字码 20+erp-core error_classifier 符号码 44+ERP_SPEC_INVALID）；新旧处置映射拍定不扩枚举（retire→fatal 注可申诉/reallocate_upc→rebuild_spec 重投自动领新号/resubmit_*→manual 待 R2-04 承接），映射入 notes 运营可改（D-Q11）。CLI 实跑 65/65。
+- **增量6 验收① harness**：listing_dryrun.py（build_spec 产物+官方校验+feed 封套+PASS 判定=全 ok 且 distinct WPT≥5）；沙盒 5 WPT fixture 自测 PASS（evidence/dryrun-harness-selftest.json）；部署机真数据指令 evidence/deployment-instructions.md（路A live spec 拉取不等 T7 / 路B monolith 全量；错误码一条命令；dry-run --auto --fill 出验收报告）。
+- 终态：249 pytest + ruff(check+format) + mypy 全绿；PR #1 全部增量已推送。
+- **Next（需 Owner/部署机）**：①部署机按 deployment-instructions 跑任务 1-3 回传 dry-run 报告（验收①真数据版）②验收② A152 真调前必须先做 **RS-03b**（channel outbox+幂等，闸门在案）——云端下一单直接开工 RS-03b，不等验收①回传。
