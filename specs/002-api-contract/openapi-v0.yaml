@@ -675,6 +675,7 @@ paths:
                         product_id: {type: integer}
                         code: {type: string, examples: [LISTING_DUP_IN_TEAM, BRAND_OCCUPIED_OTHER_STORE, GTIN_POOL_EMPTY, PRODUCT_NOT_READY]}
                         message: {type: string}
+        '409': {description: 幂等键冲突（同键异载荷/处理中）, $ref: '#/components/responses/Error'}
   /listings/{listingId}:
     get:
       tags: [Listing]
@@ -696,14 +697,15 @@ paths:
               properties: {listing_ids: {type: array, items: {type: integer}, maxItems: 500}}
       responses:
         '202': {description: 已入队, content: {application/json: {schema: {type: object, properties: {queued: {type: integer}, skipped: {type: array, items: {type: object}}}}}}}
+        '409': {description: 幂等键冲突（同键异载荷/处理中）, $ref: '#/components/responses/Error'}
         '422': {description: 配额不足等业务拒绝, $ref: '#/components/responses/Error'}
   /listings/{listingId}/delist:
     post:
       tags: [Listing]
       summary: 下架（异步；消耗 listing_delete 配额）
       x-permission: listing.delist
-      parameters: [{$ref: '#/components/parameters/listingId'}]
-      responses: {'202': {description: 已入队}, '409': {$ref: '#/components/responses/Error'}}
+      parameters: [{$ref: '#/components/parameters/listingId'}, {$ref: '#/components/parameters/idempotencyKey'}]
+      responses: {'202': {description: 已入队}, '409': {description: 幂等键冲突（同键异载荷/处理中）, $ref: '#/components/responses/Error'}}
   /listings/{listingId}/retry:
     post:
       tags: [Listing]

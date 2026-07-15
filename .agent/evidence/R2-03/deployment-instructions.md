@@ -75,9 +75,16 @@ uv run python -m erp.tools.listing_dryrun --auto 12 --fill \
 - 第 1 轮真数据结果（9/12 过、5 WPT，按原文口径已达标）见
   `.agent/evidence/R2-03/dryrun-real-data-run1.md`。
 
-## 任务 4（Owner 窗口，验收②，先不做）
+## 任务 4（Owner 窗口，验收②，可排期）
 
 A152 真调 1 SKU → PROCESSED → live 回写 → 后台截图 → delist。
 runbook：`.agent/evidence/R1-11/a152-live-runbook.md`。
-**前置闸门：RS-03b（channel 写路径 outbox+幂等）必须先完成**——云端 AI 下一单做，
-做完会更新本文件。届时再排窗口。
+**前置闸门 RS-03b 已完成（2026-07-15）**：channel 写路径 outbox+幂等已合入
+（验收证据 `.agent/evidence/RS-03b/acceptance.md`）——A152 窗口可排。
+真调注意（RS-03b 后新语义，runbook 原步骤不变）：
+- submit/delist 的 API 调用现在**必带 `Idempotency-Key` 头**（curl 加
+  `-H "Idempotency-Key: $(uuidgen)"`；前端页面已自动带）。
+- 提交若遇断连：feed 与命令自动进 verify_pending，**只做**
+  `POST /feeds/{id}/verify-back` 对账归位，绝不手工重发（同店后续提交会被
+  车道背压挡住，属预期——对账归位后自动解锁）。
+- 崩溃遗留 pending 命令补发：`uv run python -m erp.tools.drain_channel_outbox`。
