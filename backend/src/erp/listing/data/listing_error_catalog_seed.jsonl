@@ -1,0 +1,65 @@
+{"error_code": "ERR_EXT_DATA_0101119", "category": "GTIN", "title": "UPC 已被占用（撞库）", "disposition": "rebuild_spec", "max_retries": 3, "notes": "源处置=reallocate_upc：原号标 conflict 永不复用（BR-UPC-005 提交后不回收），重投自动领新号"}
+{"error_code": "ERR_EXT_DATA_0101211", "category": "渠道锁定", "title": "SKU 锁死（SKU_LOCKED）", "disposition": "skip", "max_retries": 0, "notes": "is_locked+unlock_probe 承接；源系统链=RETIRE→24h 冷却→relist（BR-LC-005）；禁止换 UPC 重发同 SKU"}
+{"error_code": "EXT_DATA_ERROR_56026862530206", "category": "异步审核", "title": "异步审核伪错误（几小时-几天自然 SUCCESS）", "disposition": "backoff_retry", "max_retries": 10, "notes": "不动，等渠道异步完成（总账 async-review fake errors）"}
+{"error_code": "EXT_DATA_ERROR_66547201695750", "category": "异步审核", "title": "异步审核伪错误（变体关联处理中）", "disposition": "backoff_retry", "max_retries": 10, "notes": "同 56026862530206"}
+{"error_code": "EXT_DATA_ERROR_72600149546850", "category": "内容", "title": "必填属性缺失（含 allOf 条件必填链）", "disposition": "rebuild_spec", "max_retries": 3, "notes": "fill_known_walmart_required 白名单的实战来源；修规格数据后重建 spec"}
+{"error_code": "IB.VALIDATION.DATA.001", "category": "内容", "title": "字段值校验失败（枚举/单位非法）", "disposition": "rebuild_spec", "max_retries": 3, "notes": "fix_invalid_enums/fix_type_mismatches 防线对应码"}
+{"error_code": "ERR_OFFER_2020", "category": "系统", "title": "offer 暂时性冲突", "disposition": "auto_retry", "max_retries": 3}
+{"error_code": "ERR_INT_SYS_01010010", "category": "系统", "title": "渠道内部错误", "disposition": "auto_retry", "max_retries": 3}
+{"error_code": "EXT_DATA_ERROR_71666506605865", "category": "合规", "title": "军警用品禁售", "disposition": "fatal", "max_retries": 0, "notes": "写 PROHIBITED 永久淘汰（源系统 D=fail）"}
+{"error_code": "EXT_DATA_ERROR_61696573580701", "category": "合规", "title": "枪械配件禁售", "disposition": "fatal", "max_retries": 0, "notes": "同上"}
+{"error_code": "EXT_DATA_ERROR_61020366035308", "category": "合规", "title": "通用禁售政策命中", "disposition": "fatal", "max_retries": 0, "notes": "同上"}
+{"error_code": "EXT_DATA_ERROR_60670554076755", "category": "格式", "title": "feed header 含非法字段", "disposition": "rebuild_spec", "max_retries": 3, "notes": "header 只能 businessUnit/locale/version 3 字段（BR-LST-005）；构建器已固化，出现=回归"}
+{"error_code": "EXT_DATA_ERROR_74597363510508", "category": "格式", "title": "spec version 非完整时间戳", "disposition": "rebuild_spec", "max_retries": 3, "notes": "BR-LST-005"}
+{"error_code": "EXT_DATA_ERROR_00030257670757", "category": "格式", "title": "endDate 非 ISO DateTime", "disposition": "rebuild_spec", "max_retries": 3, "notes": "BR-LST-006；构建器已固化"}
+{"error_code": "EXT_DATA_ERROR_68050064665065", "category": "格式", "title": "数值超 2 位小数", "disposition": "rebuild_spec", "max_retries": 3, "notes": "round_decimals+sanitize_feed_numbers 防线"}
+{"error_code": "EXT_DATA_ERROR_01076067496949", "category": "格式", "title": "manufacturer 超 60 字符", "disposition": "rebuild_spec", "max_retries": 3, "notes": "enforce_copy_limits 防线"}
+{"error_code": "EXT_DATA_ERROR_55506974520167", "category": "格式", "title": "keyFeatures 少于 minItems", "disposition": "rebuild_spec", "max_retries": 3, "notes": "force_amazon_copy 拆句补齐防线"}
+{"error_code": "EXT_DATA_ERROR_50716566635066", "category": "格式", "title": "数组类型字段给了标量", "disposition": "rebuild_spec", "max_retries": 3, "notes": "fix_type_mismatches 防线"}
+{"error_code": "EXT_DATA_ERROR_49505365506868", "category": "格式", "title": "URL 数组含占位值", "disposition": "rebuild_spec", "max_retries": 3, "notes": "URL 数组禁占位防线"}
+{"error_code": "EXT_DATA_ERROR_54514906640101", "category": "GTIN", "title": "UPC 首位前缀拒收", "disposition": "rebuild_spec", "max_retries": 3, "notes": "BR-UPC-002；重投领新号"}
+{"error_code": "INVALID_BRAND", "category": "品牌", "title": "品牌无效", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire（可申诉重激活）"}
+{"error_code": "BRAND_NOT_AUTHORIZED", "category": "品牌", "title": "品牌未授权", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "BRAND_RESTRICTED", "category": "品牌", "title": "品牌受限", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "GATED_BRAND", "category": "品牌", "title": "品牌闸门（需审批）", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "INVALID_BRAND_NAME", "category": "品牌", "title": "品牌名非法", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "INVALID_PRODUCT_TYPE", "category": "类目", "title": "PT 无效", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire；核对 category_map/pt_meta"}
+{"error_code": "INVALID_CATEGORY", "category": "类目", "title": "类目无效", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "CATEGORY_RESTRICTED", "category": "类目", "title": "类目受限", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "PROHIBITED_CATEGORY", "category": "类目", "title": "类目禁售", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "PRODUCT_TYPE_NOT_ALLOWED", "category": "类目", "title": "PT 不允许", "disposition": "fatal", "max_retries": 0, "notes": "源处置=retire"}
+{"error_code": "INVALID_IMAGE_URL", "category": "图片", "title": "图片 URL 无效", "disposition": "manual", "max_retries": 3, "notes": "源处置=replace_image"}
+{"error_code": "IMAGE_NOT_REACHABLE", "category": "图片", "title": "图片不可达", "disposition": "manual", "max_retries": 3, "notes": "源处置=replace_image"}
+{"error_code": "IMAGE_FORMAT_ERROR", "category": "图片", "title": "图片格式错误", "disposition": "manual", "max_retries": 3, "notes": "源处置=replace_image"}
+{"error_code": "IMAGE_TOO_SMALL", "category": "图片", "title": "图片尺寸过小", "disposition": "manual", "max_retries": 3, "notes": "源处置=replace_image"}
+{"error_code": "IMAGE_DOWNLOAD_FAILED", "category": "图片", "title": "图片下载失败", "disposition": "manual", "max_retries": 3, "notes": "源处置=replace_image"}
+{"error_code": "MAIN_IMAGE_INVALID", "category": "图片", "title": "主图无效", "disposition": "manual", "max_retries": 3, "notes": "源处置=replace_image"}
+{"error_code": "PRICE_TOO_LOW", "category": "价格", "title": "价格过低", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_price（R2-04 维护任务承接）"}
+{"error_code": "PRICE_TOO_HIGH", "category": "价格", "title": "价格过高", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_price"}
+{"error_code": "MAP_PRICE_VIOLATION", "category": "价格", "title": "违反 MAP 限价", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_price"}
+{"error_code": "INVALID_PRICE", "category": "价格", "title": "价格无效", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_price"}
+{"error_code": "INVALID_CURRENCY", "category": "价格", "title": "币种无效", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_price"}
+{"error_code": "PRICE_THRESHOLD_VIOLATION", "category": "价格", "title": "价格阈值违规", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_price"}
+{"error_code": "INVALID_QUANTITY", "category": "库存", "title": "库存数量无效", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_inv（R2-04 inventory_sync 承接）"}
+{"error_code": "INVALID_FULFILLMENT_LAG_TIME", "category": "库存", "title": "备货时效无效", "disposition": "manual", "max_retries": 3, "notes": "源处置=human_review"}
+{"error_code": "INVENTORY_OUT_OF_RANGE", "category": "库存", "title": "库存超范围", "disposition": "manual", "max_retries": 3, "notes": "源处置=resubmit_inv"}
+{"error_code": "DUPLICATE_GTIN", "category": "GTIN", "title": "GTIN 重复", "disposition": "rebuild_spec", "max_retries": 3, "notes": "源处置=reallocate_upc：重投自动领新号"}
+{"error_code": "INVALID_UPC", "category": "GTIN", "title": "UPC 无效", "disposition": "rebuild_spec", "max_retries": 3, "notes": "源处置=reallocate_upc"}
+{"error_code": "INVALID_GTIN", "category": "GTIN", "title": "GTIN 无效", "disposition": "rebuild_spec", "max_retries": 3, "notes": "源处置=reallocate_upc"}
+{"error_code": "GTIN_ALREADY_EXISTS", "category": "GTIN", "title": "GTIN 已存在", "disposition": "rebuild_spec", "max_retries": 3, "notes": "源处置=reallocate_upc"}
+{"error_code": "INVALID_PRODUCT_ID", "category": "GTIN", "title": "商品标识无效", "disposition": "rebuild_spec", "max_retries": 3, "notes": "源处置=reallocate_upc"}
+{"error_code": "PRODUCT_ID_TYPE_REQUIRED", "category": "GTIN", "title": "标识类型缺失", "disposition": "rebuild_spec", "max_retries": 3, "notes": "源处置=reallocate_upc"}
+{"error_code": "MISSING_REQUIRED_ATTRIBUTE", "category": "内容", "title": "必填属性缺失", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "INVALID_ATTRIBUTE_VALUE", "category": "内容", "title": "属性值无效", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "INVALID_DATA_TYPE", "category": "内容", "title": "数据类型错误", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "INVALID_FIELD_LENGTH", "category": "内容", "title": "字段长度违规", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "REQUIRED_FIELD_MISSING", "category": "内容", "title": "必填字段缺失", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "MISSING_ATTRIBUTE", "category": "内容", "title": "属性缺失", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "INVALID_PRODUCT_NAME", "category": "内容", "title": "商品名非法", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "INVALID_DESCRIPTION", "category": "内容", "title": "描述非法", "disposition": "rebuild_spec", "max_retries": 3}
+{"error_code": "SYSTEM_PROBLEM", "category": "系统", "title": "渠道系统故障", "disposition": "auto_retry", "max_retries": 5}
+{"error_code": "INTERNAL_ERROR", "category": "系统", "title": "渠道内部错误", "disposition": "auto_retry", "max_retries": 5}
+{"error_code": "TIMEOUT", "category": "系统", "title": "渠道超时", "disposition": "auto_retry", "max_retries": 5}
+{"error_code": "TEMPORARY_FAILURE", "category": "系统", "title": "暂时性失败", "disposition": "auto_retry", "max_retries": 5}
+{"error_code": "SERVICE_UNAVAILABLE", "category": "系统", "title": "服务不可用", "disposition": "auto_retry", "max_retries": 5}
+{"error_code": "ERP_SPEC_INVALID", "category": "内部", "title": "本地 spec 校验拦截（未出门）", "disposition": "rebuild_spec", "max_retries": 3, "notes": "增量4 本地校验器：官方 schema 层 errors；修数据/规格后重投"}

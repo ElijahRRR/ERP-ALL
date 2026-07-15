@@ -72,6 +72,7 @@ POLICY_DOMAIN = "policy"
 CATEGORY_MAP_DOMAIN = "category_map"
 PT_META_DOMAIN = "pt_meta"
 PT_SPEC_DOMAIN = "pt_spec"
+LISTING_ERROR_CATALOG_DOMAIN = "listing_error_catalog"
 SUPPORTED_DOMAINS = (
     *_DOMAINS,
     TRADEMARK_DOMAIN,
@@ -79,6 +80,7 @@ SUPPORTED_DOMAINS = (
     CATEGORY_MAP_DOMAIN,
     PT_META_DOMAIN,
     PT_SPEC_DOMAIN,
+    LISTING_ERROR_CATALOG_DOMAIN,
 )
 
 # 商标行列名兼容（源仓 USPTO ETL 惯用名：serial_number/mark_identification/filing_date…）
@@ -235,6 +237,8 @@ async def import_rows(
             await _apply_pt_meta_row(s, row, line, c)
         elif domain == PT_SPEC_DOMAIN:
             await _apply_pt_spec_row(s, row, line, c)
+        elif domain == LISTING_ERROR_CATALOG_DOMAIN:
+            await _apply_listing_error_row(s, row, line, c)
         else:  # create_job 已闸，理论不达
             raise BusinessError("IMPORT_DOMAIN_UNSUPPORTED", f"域 {domain} 无处理器")
 
@@ -683,6 +687,62 @@ async def _apply_pt_spec_row(
             "reqcnt": _parse_int(row, ("required_count",)),
             "reqf": _jsonb_or_none(row.get("required_fields")),
             "fields": _jsonb_or_none(row.get("fields")),
+        },
+    )
+    c.ok += 1
+
+
+# 错误码字典行（R2-03 增量 5：listing_error_catalog 批量灌入）
+_EC_CODE_KEYS = ("error_code", "code")
+_EC_DISPOSITIONS = ("auto_retry", "backoff_retry", "rebuild_spec", "skip", "manual", "fatal")
+
+
+async def _apply_listing_error_row(
+    session: AsyncSession, row: dict[str, Any], line: int, c: _Counters
+) -> None:
+    """幂等 upsert 一行到 app.listing_error_catalog（键 error_code，全局字典 D-Q11）。
+
+    err：error_code 缺失 / disposition 非法（六值 CHECK，DB 拒绝前先在应用层报行号）。
+    category/title 缺省宽容（'未分类'/error_code 本身）——运行时草稿行
+    （_ensure_error_cataloged）同款语义，导入可覆盖草稿。
+    """
+    code = _first(row, _EC_CODE_KEYS)
+    if not code:
+        c.err += 1
+        c.errors.append({"line": line, "reason": "error_code 缺失", "row": None})
+        return
+    disposition = str(row.get("disposition") or "manual").strip()
+    if disposition not in _EC_DISPOSITIONS:
+        c.err += 1
+        c.errors.append(
+            {"line": line, "reason": f"disposition 非法：{disposition}", "row": code.strip()}
+        )
+        return
+    max_retries = _parse_int(row, ("max_retries",))
+    # enabled 缺省=true（字典行默认启用）；显式给值才解析（_parse_flag 缺省 False 不适用）
+    enabled = _parse_flag(row, ("enabled",)) if row.get("enabled") is not None else None
+    await session.execute(
+        text(
+            "INSERT INTO app.listing_error_catalog"
+            " (error_code, category, title, disposition, max_retries, notes, enabled)"
+            " VALUES (:code, :cat, :title, :disp, COALESCE(:mr, 3), :notes,"
+            "  COALESCE(:enabled, true))"
+            " ON CONFLICT (error_code) DO UPDATE SET"
+            "  category = EXCLUDED.category,"
+            "  title = EXCLUDED.title,"
+            "  disposition = EXCLUDED.disposition,"
+            "  max_retries = EXCLUDED.max_retries,"
+            "  notes = EXCLUDED.notes,"
+            "  enabled = EXCLUDED.enabled"
+        ),
+        {
+            "code": code.strip(),
+            "cat": str(row.get("category") or "未分类").strip(),
+            "title": str(row.get("title") or code).strip(),
+            "disp": disposition,
+            "mr": max_retries,
+            "notes": (str(row["notes"]).strip() or None) if row.get("notes") else None,
+            "enabled": enabled,
         },
     )
     c.ok += 1
