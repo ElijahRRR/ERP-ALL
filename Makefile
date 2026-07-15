@@ -1,8 +1,8 @@
 # 常用入口（详见 specs/003-r1-plan）
 COMPOSE = docker compose -f infra/docker-compose.yml
 
-up:            ## 起全栈（db+redis+migrate+api）
-	$(COMPOSE) up -d --build db redis migrate api
+up:            ## 起全栈（db+redis+migrate+api+beat）
+	$(COMPOSE) up -d --build db redis migrate api beat
 
 up-full:       ## 含前端 dev server
 	$(COMPOSE) --profile dev up -d --build

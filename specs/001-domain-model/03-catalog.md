@@ -96,7 +96,7 @@
 状态机与并发协议：
 - 分配：`UPDATE gtin_pool SET status='held', held_listing_id=$1, held_at=now() WHERE id = (SELECT id … WHERE team_id=$t AND gtin_kind=$k AND status='free' LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING gtin` —— 单语句防双占。
 - held → used：listing 首次 published；held → free：上架终态失败释放；used **永不回收**（防跨店重用关联）。
-- 水位告警：automation 域按 (team, kind) 统计 free 占比，阈值进 team_config（默认 <15% warn、<5% critical）→ notification。
+- 水位告警：automation 域按 (team, kind) 统计 free 占比，阈值进 team_config（默认 <15% warn、<5% critical）→ notification——已落地（R2-04 beat `gtin_watermark`，阈值键 `gtin.warn_pct`/`gtin.critical_pct`，dedupe 24h）。
 
 ## category_map 类目映射（全局参考数据 refdata，D-Q21 + D-Q55 修订）
 

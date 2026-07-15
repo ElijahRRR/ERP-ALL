@@ -181,6 +181,14 @@ flow_code 注册清单（v1，代码 Enum 对照 + CI 校验）：
 
 作用域：全局（团队差异走 automation_policy）。种子清单在 EA-003 R1 分解冻结。
 
+已登记种子（R2-04 beat 上线，`erp.beat`，tick 默认 30s = system_config `beat.tick_seconds`）：
+`partition_maintain / scrape_reclaim / api_idempotency_sweep / llm_cache_lru /
+feed_poll / feed_verify_back / channel_outbox_drain / retire_recon /
+gtin_watermark / llm_budget_check`——节奏与阈值在 schedule.cron/config（运营可改）；
+任务注册表 `erp.automation.tasks.TASKS`（未注册 code → task_run failed + notify，
+不静默跳过）；调度领取为单语句乐观更新（多副本/与人工改表并发安全）；
+配置失效跨进程广播经 Redis pubsub `erp:config:invalidate`（fail-open，TTL 兜底）。
+
 ### task_run 任务运行记录（月分区，12 个月）
 
 | 列 | 类型 | 约束/默认 | 说明 |

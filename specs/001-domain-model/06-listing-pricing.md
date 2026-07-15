@@ -75,6 +75,9 @@ failed → queued                           ← 修复后重投（error 处置=a
 
 索引：`(store_id, feed_kind, created_at DESC)`、`(status) WHERE status IN ('verify_pending','submitted','processing')`（轮询队列）。
 轮询节流：`/v3/feeds*` 共享 5000/min（网关层）；退避序列进 system_config。
+自动轮询/对账（R2-04 beat）：`feed_poll`（submitted/processing，min_interval 节流 +
+poll_attempts 卡死告警）与 `feed_verify_back`（verify_pending，min_age 滞留门槛）
+周期驱动；人工端点 `/feeds/{id}/poll`、`/feeds/{id}/verify-back` 保留（并发安全，先完成者为准）。
 
 **提交拓扑（RS-03b，评审 A7）**：feed 创建与 channel_command（02 §channel_command）
 同事务落库（tx1，status=submitting）→ 执行器事务外发包 → tx2 fence 校验归位

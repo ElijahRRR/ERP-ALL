@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from erp.automation.task_runner import run_tracked
 from erp.automation.tasks import TASKS, TaskFn
+from erp.core.config_service import get_config_service, run_invalidation_subscriber
 from erp.core.db import get_session_factory, system_tx
 
 log = structlog.get_logger()
@@ -131,20 +132,27 @@ async def run_forever() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
+    # 配置失效订阅（R2-04 pubsub；beat 与 api 对等各持一份进程缓存）
+    subscriber = asyncio.create_task(run_invalidation_subscriber(get_config_service()))
     log.info("beat.start")
-    while not stop.is_set():
-        try:
-            stats = await tick(sessions)
-            if any(stats.values()):
-                log.info("beat.tick", **stats)
-        except Exception as exc:  # DB 闪断等：beat 不退出，下一 tick 重试
-            log.error("beat.tick_error", error=str(exc))
-        try:
-            interval = await _tick_seconds(sessions)
-        except Exception:
-            interval = _DEFAULT_TICK_SECONDS
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop.wait(), timeout=interval)
+    try:
+        while not stop.is_set():
+            try:
+                stats = await tick(sessions)
+                if any(stats.values()):
+                    log.info("beat.tick", **stats)
+            except Exception as exc:  # DB 闪断等：beat 不退出，下一 tick 重试
+                log.error("beat.tick_error", error=str(exc))
+            try:
+                interval = await _tick_seconds(sessions)
+            except Exception:
+                interval = _DEFAULT_TICK_SECONDS
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+    finally:
+        subscriber.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await subscriber
     log.info("beat.stop")
 
 

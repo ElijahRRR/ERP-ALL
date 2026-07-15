@@ -381,3 +381,12 @@
 - **D-Q61**：验收②口径调整并通过——live→截图→delist 分支因无真实购入 UPC 不可达成（Owner 确认），渠道写路径全链真调（提交/确收/轮询/权威回写/错误处置闭环）即达标；live/delist 真调并入首次真实运营发布。**R2-03 整单 accepted**。
 - 采集器插曲收束：TPS 停滞间歇自愈（"刚才又可以了"），Owner 指示稳定性项搁置——中流停滞防御（低速中止+停滞连击轮换）已完码存档 PR #5（draft，含代理 fail-closed+超时可配置化，共 3 commit 全绿），待后续窗口再验再合。
 - Next：R2-04 worker/beat 底座（outbox drain 周期化/feed 自动轮询/retire 对账维护任务/api_idempotency 清扫自然并入）；真 UPC 到位后灌 GTIN 池即可上真品。
+
+### Session: 2026-07-15 (R2-04 worker/beat 底座：4 增量完码全绿)
+- **考古**（evidence/R2-04/archaeology.md，四路并行）：底座存储层早已就位（0004 schedule/task_run 表+partition_maintain 种子、run_tracked 记账、compose redis 服务+redis 依赖），缺的只是执行体。设计拍板 8 条：cronsim（croniter 上游已归档）、单语句乐观领取、任务注册表显式化、pubsub fail-open、erp.worker 队列消费者因无生产者暂不启用（compose 保留占位）、RS-08 事前预算预留不并入。
+- **增量1（2a33190）**：erp.beat 调度循环（NULL 初始化防重启风暴/坏 cron 1h 兜底并记失败/run_tracked 记账）+ 0022（种子3条+ensure_month_partitions SECURITY DEFINER 提权，search_path 首位坑：pg_catalog 在前会成为 CREATE TABLE 落点）+ 低风险任务四件。验收②锚点测试化：死心跳节点+硬超时任务，仅 beat tick 即回收。发现并修测试跨模块污染：回收用例遗留 pending 采集任务会被 scrape 套件节点领走（pull 队列全局）——收尾终局化。
+- **增量2（78453e7）**：run_tracked 契约演进为 fn 自管事务（渠道任务三段式不挂外层连接）；渠道任务四件全复用既有函数（poll_feed/verify_back/drain/resolve_verify）零新渠道调用面。retire_recon 收 RS-03b 尾账：商品实况权威（404/RETIRED→delisted；在架超 grace→failed 归位配额返还回 live；未过 grace 维持背压）。验收①锚点测试化：提交后无人工点查 beat tick 自动轮询回写至 live（假渠道按 method+path 路由防批扫顺序依赖）。
+- **增量3（a02e90c）**：gtin_watermark（team_config 阈值覆盖 15/5 默认，dedupe 24h）+ llm_budget_check（北京时区日聚合 vs llm_budget_daily_usd，超限 critical 含降级建议，不自动停）。
+- **增量4**：ConfigService 接 Redis pubsub（写后 PUBLISH erp:config:invalidate，api/beat lifespan 各起订阅循环，fail-open=TTL 兜底）；compose beat 启用+make up 并入；CI 加 redis 服务；round-trip 真 redis 测试+fail-open 测试。specs 落笔（02/03/06/09 四处）；runbook（evidence/R2-04/runbook.md，含部署机整段指令+任务节奏速查）。
+- 终态：289 pytest + ruff + mypy + 迁移 base↔head 演练全绿。**工单余项=部署机启 beat 后 A152 实测两条验收**（无人工点查自动轮询回写；模拟断连自动回收）——runbook 步骤 4/5。
+- 注：R2-04 全部增量压在 PR #5 分支（单分支纪律），PR 标题/描述已更新反映实际内容。

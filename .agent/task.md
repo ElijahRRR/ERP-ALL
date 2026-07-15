@@ -4,6 +4,8 @@
   采集回收兜底/llm_cache LRU/GTIN 水位/预算闸告警版；Redis pubsub 配置广播；compose beat 启用）。
   并入 RS-03b 尾账：outbox drain 周期化、retire verify_pending 对账、api_idempotency 清扫。
 - Acceptance（per review_list R2-04）：A152 提交后无人工点查自动轮询回写；模拟断连自动回收。
+- 进度：4 增量完码全绿（2026-07-15，289 pytest）；两条验收已测试化锚定；
+  **余项=部署机启 beat 后 A152 实测**（evidence/R2-04/runbook.md 步骤 4/5，指令可整段粘贴）。
 - 考古：.agent/evidence/R2-04/archaeology.md（2026-07-15，4 增量拆分 + 设计决策 8 条）。
   范围注记：erp.worker 队列消费者无生产者暂不启用；RS-08 事前预算预留不并入本单。
 - ✅ R2-03 整单 accepted（2026-07-15，D-Q61）：验收①②均过；live/delist 真调并入首次真实运营发布

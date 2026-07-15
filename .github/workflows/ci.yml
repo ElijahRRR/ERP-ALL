@@ -21,9 +21,16 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres -d erp_all"
           --health-interval 3s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s --health-timeout 3s --health-retries 20
     env:
       ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/erp_all
       ERP_DATABASE_URL: postgresql+psycopg://erp_app:erp_app@localhost:5432/erp_all
+      ERP_REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
