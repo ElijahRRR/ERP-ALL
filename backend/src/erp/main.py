@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(BusinessError)
     async def business_error_handler(request: Request, exc: BusinessError) -> JSONResponse:
-        return _envelope(request, 422, exc.code, exc.message, exc.detail)
+        return _envelope(request, exc.http_status, exc.code, exc.message, exc.detail)
 
     @app.exception_handler(AuthError)
     async def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:

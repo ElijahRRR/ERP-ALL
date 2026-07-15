@@ -228,9 +228,9 @@
   "check": "上架真实化【L2】（MPSetup v5 官方规格+AI属性填写+category_map+本地校验器+错误码灌入）",
   "status": "in_progress",
   "evidence": ".agent/evidence/R2-03/ (archaeology.md + dryrun-harness-selftest.json + deployment-instructions.md)",
-  "finding": "2026-07-15 开发六增量全部落地（见 progress 当日节）：pt_spec fields 无损通道(0020+提取工具+E2E 实跑)/spec 构建器真实化(v5 header+WPT 链+零认证+match v4.2)/AI 属性填写(prompt 逐字保真+RS-03a 三段+module=listing)/清洗链 12 函数群保真+本地校验器(ERP_SPEC_INVALID 前置闸)/错误码 65 码灌入(处置映射拍定不扩枚举)/验收① harness(沙盒 5 WPT fixture 自测 PASS)。249 pytest+四关全绿。待部署机：pt_spec 真数据(路A live spec/路B T7 monolith)→dry-run 真数据报告=验收①；验收② A152 前置 RS-03b 闸门",
+  "finding": "✅ 验收①通过（2026-07-15，Owner 批准）：部署机真数据 dry-run（T7 monolith 6,951 PT+__orderable__ 经 0020 通道导入 job14 零错、错误码 job15 65/65）--auto 12 --fill：9/12 过官方 spec 校验、覆盖 5 个不同 WPT（Drinkware/Furniture Grippers Pads & Sliders/Grill Grid Lifters/Hardware Screws/Other Fishing Accessories），按 005 验收①原文口径达标；3 条失败全部溯源=源数据贫瘠（1 条卖点补不满 keyFeatures minItems=3，旧系统会照发吃渠道拒 EXT_DATA_ERROR_55506974520167，新系统本地拦截省 10/hour 配额），处置=补文案重投不改业务数据。证据=evidence/R2-03/dryrun-real-data-run1.md。开发六增量+两轮真数据修复（ijson Decimal/判定口径）全部合入 main（PR #1/#2，head 2be1c88d）。余验收② A152 真调——前置 RS-03b 闸门",
   "last_checked_at": "2026-07-15",
-  "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT)——harness 就绪，等部署机真数据报告 ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist——前置 RS-03b（channel outbox+幂等，闸门=真实渠道写入前）。部署机指令=evidence/deployment-instructions.md"
+  "note": "验收(L2)：①✅已过（Owner 2026-07-15 批准）②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist——前置 RS-03b（channel outbox+幂等，闸门=真实渠道写入前，已开工）。部署机指令=evidence/deployment-instructions.md；数据贫瘠品(16/17/23)补文案后重投属运营事项"
  },
  {
   "id": "R2-04",
@@ -293,8 +293,8 @@
    "backend/src/erp/audit/llm.py (check_cache/call_provider/record_result 原语)",
    "backend/tests/db/test_audit_api.py::TestLlmOutOfLock"
   ],
-  "finding": "RS-03a 已完成（2026-07-12）：audit LLM 调用移出行锁/请求事务——tx1 短事务落 run+L0/L2+查缓存(命中同事务终局)→无事务 HTTP→tx2 重锁回写；并发重审新者胜；遗孤 running 懒清扫(>10min→failed)；行锁释放有 FOR UPDATE NOWAIT 旁路探针实证。R2-02 百件对拍闸门已解除。余 RS-03b channel outbox（闸门=A152 L2 写入前）",
-  "last_checked_at": "2026-07-12",
+  "finding": "RS-03a 已完成（2026-07-12）：audit LLM 调用移出行锁/请求事务——tx1 短事务落 run+L0/L2+查缓存(命中同事务终局)→无事务 HTTP→tx2 重锁回写；并发重审新者胜；遗孤 running 懒清扫(>10min→failed)；行锁释放有 FOR UPDATE NOWAIT 旁路探针实证。R2-02 百件对拍闸门已解除。RS-03b 开工（2026-07-15，R2-03 验收①获批同日）：channel 写路径 outbox+幂等，考古→设计→实现进行中",
+  "last_checked_at": "2026-07-15",
   "gate": "RS-03a=R2-02 百件真实LLM对拍之前（audit暴露已存在）；RS-03b=A152 L2真实渠道写入之前",
   "depends_on": [],
   "acceptance": "同key同payload同结果/异payload 409；外部成功后DB回写前崩溃→verify-back不重复提交(故障注入)；lease/fencing token拒迟到worker；同store/SKU命令有序；HTTP调用期间行锁已释放(实证)；outbox payload凭证/PII脱敏"

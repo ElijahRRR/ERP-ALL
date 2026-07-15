@@ -221,6 +221,24 @@ class WalmartGateway:
 
     # ── 请求主路径 ──
 
+    async def prepare(
+        self,
+        session: AsyncSession,
+        store_id: int,
+        *,
+        mode_override: GatewayMode | None = None,
+    ) -> tuple[_StoreContext, GatewayMode]:
+        """解析店铺上下文 + 模式闸（全部 DB 读集中于此，供三段式在事务内预取）。
+
+        RS-03b：写路径执行器在短事务里 prepare，随后用 request_prepared 发包——
+        HTTP 期间零 DB 会话/零事务/零行锁。模式闸拒绝（live 未放量等）在这里抛出，
+        调用方可借事务回滚保持原子性。
+        """
+        ctx = await self._context(session, store_id)
+        mode = mode_override or await self._resolve_mode(session)
+        await self._enforce_mode(session, ctx, mode)
+        return ctx, mode
+
     async def request(
         self,
         session: AsyncSession,
@@ -235,10 +253,32 @@ class WalmartGateway:
         mode_override: GatewayMode | None = None,
     ) -> GatewayResponse:
         """渠道调用唯一入口。endpoint_key 用于限流桶（缺省 = "METHOD path"）。"""
+        ctx, mode = await self.prepare(session, store_id, mode_override=mode_override)
+        return await self.request_prepared(
+            ctx,
+            mode,
+            method,
+            path,
+            endpoint_key=endpoint_key,
+            json_body=json_body,
+            params=params,
+            max_retries=max_retries,
+        )
+
+    async def request_prepared(
+        self,
+        ctx: _StoreContext,
+        mode: GatewayMode,
+        method: str,
+        path: str,
+        *,
+        endpoint_key: str | None = None,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        max_retries: int = 0,
+    ) -> GatewayResponse:
+        """已 prepare 上下文的纯网络发包（无 session——RS-03b 三段式 HTTP 段）。"""
         method = method.upper()
-        ctx = await self._context(session, store_id)
-        mode = mode_override or await self._resolve_mode(session)
-        await self._enforce_mode(session, ctx, mode)
         url = f"{get_settings().channel_base_url}{path}"
         ep = endpoint_key or f"{method} {path.split('?', maxsplit=1)[0]}"
 

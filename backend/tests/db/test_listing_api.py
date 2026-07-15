@@ -91,6 +91,8 @@ def seeded(migrated_db: str) -> dict[str, int]:
             (team_id,),
         )
         conn.execute("DELETE FROM app.listing_state_history WHERE team_id = %s", (team_id,))
+        conn.execute("DELETE FROM app.channel_command WHERE team_id = %s", (team_id,))
+        conn.execute("DELETE FROM app.api_idempotency WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.feed_item WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.feed WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.maintenance_task WHERE team_id = %s", (team_id,))
