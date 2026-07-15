@@ -100,14 +100,21 @@ failed → queued                           ← 修复后重投（error 处置=a
 | team_id | BIGINT | NOT NULL | |
 | product_id | BIGINT | NOT NULL REFERENCES product | |
 | offer_mode | TEXT | NOT NULL CHECK IN (build, match) | 双模式 spec 构建器不同（D-Q3 分叉点之一） |
-| wpt | TEXT | NOT NULL | 来自 category_map |
-| spec_version | TEXT | NOT NULL DEFAULT 'v5' | Item Spec v5 |
-| payload | JSONB | NOT NULL | 最终提交体（含变体组展开） |
-| cert_overrides | JSONB | NOT NULL DEFAULT '{}' | 零认证覆盖记录（哪些合规字段被策略填充） |
-| build_hash | TEXT | NOT NULL | 输入指纹（product.attrs+映射+策略版本）；输入未变直接复用 |
+| wpt | TEXT | NOT NULL | 链：attrs.wpt 显式 > L1 直判（category_map，与审核同语义）> 默认配置；match 模式无 WPT 存 ''（R2-03） |
+| spec_version | TEXT | NOT NULL DEFAULT 'v5' | build=header 完整时间戳版本（如 `5.0.20260304-22_45_32-api`，BR-LST-005）；match='4.2'（R2-03 实现修订） |
+| payload | JSONB | NOT NULL | **单个 MPItem 元素模板**（build={Visible,Orderable}；match={Item}）——feed 级 header 是提交时组装，不入产品级缓存（R2-03 修订：原「最终提交体」含 header 的设计随构建器真实化调整）。SKU/GTIN/价格/库存/日期/PartnerID 为 listing/store 级参数经占位符实例化注入 |
+| cert_overrides | JSONB | NOT NULL DEFAULT '{}' | 零认证覆盖记录（BR-AUD-006：被强制的字段→值 + `__cleared__` 被清除的文档字段） |
+| build_hash | TEXT | NOT NULL | 输入指纹（product 关键属性+wpt+模式+配置+pt_spec dataset_revision）；输入未变直接复用，规格数据更新自动失效 |
 | built_at | timestamptz | NOT NULL DEFAULT now() | |
 
 约束：`uq_listing_spec (product_id, offer_mode, build_hash)`。
+
+> **实测格式注记（BR-LST-005/006/007，构建器已固化）**：feed header 只能 3 字段
+> （businessUnit/locale/version，官方 sample 的 sellingChannel/processMode/subset 会被拒）；
+> `endDate` 必须 ISO DateTime（listing.end_date DATE 列在构建时转 `T00:00:00Z`，
+> 纯日期被拒 EXT_DATA_ERROR_00030257670757）；productIdentifiers 单对象非数组、
+> price 裸 number、inventory=[{quantity, fulfillmentCenterID=PartnerID}]
+> （PartnerID 维护在 store.profile.partner_id）。
 
 ## listing_error_catalog 错误分类字典（全局，运营可维护 D-Q11）
 

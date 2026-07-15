@@ -1,22 +1,260 @@
-"""Item Spec v5 构建器（build 模式最小版；match 模式 R2）。
+"""Item Spec v5 构建器（R2-03 真实化：官方规格接入 + 双模式差异化 payload）。
 
-- payload = MPItemFeedHeader + MPItem[]（v5 JSON 形态；字段随 A152 真调校准，
-  walmart_official_specs/MPSetup 为权威——本构建器只落骨架与已有属性）。
-- build_hash = sha256(product 关键属性 + wpt + mode)：输入未变直接复用缓存行。
-- WPT 来源：product.attrs.wpt 显式指定 > system_config listing.default_wpt；
-  category_map 自动映射随 R2 类目域接入。
+build（MP_ITEM v5，feed_kind=item_build）：
+- WPT 链：product.attrs.wpt 显式 > audit L1 直判（run_l1——与审核同一可售语义，
+  单一真相源）> system_config listing.default_wpt。
+- Visible：产品基础字段 + 零认证覆盖（BR-AUD-006：只对该 PT spec 存在的字段强制、
+  enum 不含目标值按安全序列回退、同步清掉文档字段防幻觉；覆盖记录进
+  listing_spec.cert_overrides）。规格源=refdata.pt_spec.fields（0020 无损列）。
+- Orderable：强制格式源仓 force_overrides 保真（BR-LST-007/008/011：
+  productIdentifiers 单对象、price 裸 number、inventory=[{quantity,fulfillmentCenterID}]、
+  endDate 必须 ISO DateTime——EXT_DATA_ERROR_00030257670757）。
+- header 只能 3 字段 + version 完整时间戳（BR-LST-005；官方 sample 的
+  sellingChannel/processMode/subset 会被拒——EXT_DATA_ERROR_60670554076755/74597363510508）。
+
+match（MP_ITEM_MATCH v4.2，feed_kind=item_match，BR-LST-015）：
+- 仅 offer 字段：sku/productIdentifiers/price/ShippingWeight/condition；
+  identifier 预检 fail-closed（无标识符不可跟卖）。
+- header = {sellingChannel: mpsetupbymatch, version: 4.2, locale: en}
+  （walmart_official_specs/MP_ITEM_MATCH_v4.2.json required 三字段）。
+
+缓存：listing_spec 模板 = 单个 MPItem 元素（header 是 feed 级不入缓存）；
+build_hash 含 pt_spec dataset_revision 与配置——规格数据/配置更新自动失效。
+SKU/GTIN/价格/库存/日期/PartnerID 是 listing/store 级参数，经 _instantiate 注入不进缓存键。
 """
 
 import hashlib
 import json
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.audit.l1_category import run_l1
 from erp.core.errors import BusinessError
+from erp.listing import wpt_schema
 
-SPEC_VERSION = "v5"
+# 实测校准常量（BR-LST-005/011；system_config 可覆盖，l1_rerank 配置模式）
+_HEADER_DEFAULTS: dict[str, Any] = {
+    "business_unit": "WALMART_US",
+    "locale": "en",
+    "version": "5.0.20260304-22_45_32-api",  # 完整时间戳，裸 "5.0" 拒收
+}
+_ORDERABLE_DEFAULTS: dict[str, Any] = {
+    "fulfillment_lag_days": 1,
+    "must_ship_alone": "No",
+    "country_of_origin": "China",
+}
+_FORCE_BRAND = "Unbranded"  # BR-CAT-005：上架商品强制品牌
+
+# 零认证覆盖（BR-AUD-006，源仓 NO_CERT_FORCES 逐字保真）
+_NO_CERT_FORCES: dict[str, str] = {
+    "certification_type": "Neither of these applies",
+    "has_nrtl_listing_certification": "No",
+    "isProp65WarningRequired": "No",
+    "has_written_warranty": "No",
+    "isAssemblyRequired": "No",
+}
+_SAFE_ENUM_SEQUENCE = ("No", "Neither of these applies", "Skip for now", "None")
+_DANGEROUS_DOC_FIELDS = (
+    "warrantyText",
+    "warrantyURL",
+    "prop65WarningText",
+    "children_product_certificate_document_reference_id",
+    "children_product_test_report_document_reference_id",
+    "general_certificate_of_conformity_document_reference_id",
+    "nrtl_information",
+    "assemblyInstructions",
+    "suggested_number_of_people_for_assembly",
+)
+
+# 副图 schema minItems=5：不足 5 张不写（源仓实测规则）
+_SECONDARY_IMAGE_MIN = 5
+_SECONDARY_IMAGE_MAX = 8
+_PRODUCT_NAME_MAX = 199
+_SHORT_DESC_MAX = 4000
+_KEY_FEATURES_CAP = 10
+
+_MATCH_HEADER = {"sellingChannel": "mpsetupbymatch", "version": "4.2", "locale": "en"}
+_MATCH_CONDITION = "New"
+SPEC_VERSION_MATCH = "4.2"
+
+_UPC_LEN = 12
+_EAN_LEN = 13
+
+
+async def _cfg(session: AsyncSession, key: str, defaults: dict[str, Any]) -> dict[str, Any]:
+    """system_config JSON 键逐字段覆盖默认（category_map.rerank 同款模式）。"""
+    cfg = dict(defaults)
+    row = (
+        await session.execute(
+            text("SELECT value FROM app.system_config WHERE key = :k"), {"k": key}
+        )
+    ).scalar_one_or_none()
+    if isinstance(row, str):
+        try:
+            row = json.loads(row)
+        except ValueError:
+            row = None
+    if isinstance(row, dict):
+        cfg.update({k: row[k] for k in defaults if k in row})
+    return cfg
+
+
+async def feed_header(session: AsyncSession, offer_mode: str) -> dict[str, Any]:
+    """feed 级 header。build=v5 三字段（多一个都拒）；match=v4.2 required 三字段。"""
+    if offer_mode == "match":
+        return dict(_MATCH_HEADER)
+    cfg = await _cfg(session, "listing.feed_header", _HEADER_DEFAULTS)
+    return {
+        "businessUnit": cfg["business_unit"],
+        "locale": cfg["locale"],
+        "version": cfg["version"],
+    }
+
+
+def _identifier_type(gtin: str) -> str:
+    if len(gtin) == _UPC_LEN:
+        return "UPC"
+    if len(gtin) == _EAN_LEN:
+        return "EAN"
+    return "GTIN"
+
+
+async def _resolve_wpt(session: AsyncSession, product: dict[str, Any]) -> tuple[str, str]:
+    """→ (wpt, source)。链：attrs.wpt > L1 直判 > default 配置；全空 fail-closed。"""
+    attrs = product.get("attrs") or {}
+    if attrs.get("wpt"):
+        return str(attrs["wpt"]), "attrs"
+    l1 = await run_l1(session, product)
+    if l1["verdict"] == "reject":
+        raise BusinessError(
+            "ERP_SPEC_BUILD_FAILED",
+            f"类目硬拒不可上架（{l1['rule_code']}）",
+            {"l1": l1["rule_code"]},
+        )
+    if l1.get("wpt"):
+        return str(l1["wpt"]), "category_map"
+    default = (
+        await session.execute(
+            text("SELECT value #>> '{}' FROM app.system_config WHERE key = 'listing.default_wpt'")
+        )
+    ).scalar_one_or_none()
+    if default:
+        return str(default), "config"
+    raise BusinessError(
+        "ERP_SPEC_BUILD_FAILED",
+        "无法确定 Walmart Product Type（attrs.wpt 未设、类目无直判、无默认配置）",
+        {"l1": l1["rule_code"]},
+    )
+
+
+def _zero_cert_overrides(
+    visible: dict[str, Any], pt_props: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """BR-AUD-006 零认证覆盖（源仓 force_overrides 保真）。→ (visible, 覆盖记录)。
+
+    只对该 PT spec 存在的字段强制；目标值不在 enum 时按安全序列回退（最后 enum[0]）；
+    同步清掉文档字段（LLM 幻觉的 fake 证书 ID 会被渠道拒）。
+    """
+    visible = dict(visible)
+    overrides: dict[str, Any] = {}
+    for fname, forced in _NO_CERT_FORCES.items():
+        if fname not in pt_props:
+            continue
+        forced_val = forced
+        f_def = pt_props[fname] if isinstance(pt_props[fname], dict) else {}
+        f_enum = f_def.get("enum") or []
+        if isinstance(f_enum, list) and f_enum and forced_val not in f_enum:
+            forced_val = next((s for s in _SAFE_ENUM_SEQUENCE if s in f_enum), f_enum[0])
+        visible[fname] = forced_val
+        overrides[fname] = forced_val
+    cleared = [f for f in _DANGEROUS_DOC_FIELDS if f in visible]
+    for fname in cleared:
+        visible.pop(fname, None)
+    if cleared:
+        overrides["__cleared__"] = cleared
+    return visible, overrides
+
+
+def _build_visible(
+    product: dict[str, Any], wpt: str, schema: wpt_schema.PtSchema | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """build 模式 Visible 基础字段 + 零认证覆盖。AI 属性填写（增量 3）在此之上补缺。"""
+    attrs = product.get("attrs") or {}
+    images = [u for u in (product.get("images") or []) if isinstance(u, str) and u.strip()]
+    visible: dict[str, Any] = {
+        "brand": _FORCE_BRAND,
+        "shortDescription": str(attrs.get("description") or product.get("title") or "")[
+            :_SHORT_DESC_MAX
+        ],
+    }
+    if images:
+        visible["mainImageUrl"] = images[0]
+        secondary = images[1 : 1 + _SECONDARY_IMAGE_MAX]
+        if len(secondary) >= _SECONDARY_IMAGE_MIN:
+            visible["productSecondaryImageURL"] = secondary
+    bullets = [b for b in (attrs.get("bullets") or []) if isinstance(b, str) and b.strip()]
+    if bullets:
+        visible["keyFeatures"] = bullets[:_KEY_FEATURES_CAP]
+    pt_props = schema.properties if schema is not None else {}
+    return _zero_cert_overrides(visible, pt_props)
+
+
+def _build_orderable_template(
+    product: dict[str, Any], wpt: str, odefaults: dict[str, Any]
+) -> dict[str, Any]:
+    """build 模式 Orderable 模板（源仓 force_overrides Orderable 段保真；
+    SKU/GTIN/价格/库存/日期/PartnerID 用占位符，_instantiate 注入）。"""
+    attrs = product.get("attrs") or {}
+    return {
+        "sku": "{SKU}",
+        "productIdentifiers": {"productIdType": "{GTIN_TYPE}", "productId": "{GTIN}"},
+        "productName": (product.get("title") or "")[:_PRODUCT_NAME_MAX],
+        "brand": _FORCE_BRAND,
+        "price": "{PRICE}",  # 裸 number（非对象），实例化时注入
+        "ShippingWeight": float(attrs.get("shipping_weight") or 1),
+        "electronicsIndicator": "No",
+        "batteryTechnologyType": "Does Not Contain a Battery",
+        "chemicalAerosolPesticide": "No",
+        "shipsInOriginalPackaging": "No",
+        "specProductType": wpt,
+        "country_of_origin_substantial_transformation": str(
+            attrs.get("country_of_origin") or odefaults["country_of_origin"]
+        ),
+        "MustShipAlone": odefaults["must_ship_alone"],
+        "fulfillmentLagTime": int(odefaults["fulfillment_lag_days"]),
+        "startDate": "{START_DATE}",
+        "endDate": "{END_DATE}",
+        "inventory": "{INVENTORY}",
+    }
+
+
+def _match_identifier(product: dict[str, Any], gtin: str | None) -> tuple[str, str]:
+    """match 模式标识符预检（BR-LST-015 fail-closed）：gtin 参数 > attrs.gtin/upc/ean。"""
+    attrs = product.get("attrs") or {}
+    candidate = gtin or attrs.get("gtin") or attrs.get("upc") or attrs.get("ean")
+    if not candidate or not str(candidate).strip():
+        raise BusinessError(
+            "ERP_SPEC_BUILD_FAILED",
+            "match 模式缺商品标识符（gtin/upc/ean 均空），无法跟卖",
+        )
+    ident = str(candidate).strip()
+    return _identifier_type(ident), ident
+
+
+def _build_match_item(product: dict[str, Any], gtin: str | None) -> dict[str, Any]:
+    """MP_ITEM_MATCH v4.2 Item（required 五字段，BR-LST-015）。"""
+    attrs = product.get("attrs") or {}
+    id_type, ident = _match_identifier(product, gtin)
+    return {
+        "sku": "{SKU}",
+        "productIdentifiers": {"productIdType": id_type, "productId": ident},
+        "price": "{PRICE}",
+        "ShippingWeight": float(attrs.get("shipping_weight") or 1),
+        "condition": _MATCH_CONDITION,
+    }
 
 
 async def build_spec(
@@ -28,23 +266,25 @@ async def build_spec(
     channel_sku: str,
     price: float | None,
     inventory: int,
+    end_date: date | None = None,
+    partner_id: str | None = None,
 ) -> dict[str, Any]:
-    """→ {spec_id, payload, wpt, build_hash}（命中缓存直接复用）。"""
+    """→ {spec_id, item, wpt, build_hash, spec_version}（命中缓存直接复用模板）。
+
+    item = 单个 MPItem 元素（build={Visible,Orderable}；match={Item}）；
+    feed 级 header 由 feed_header() 供 service 组装。
+    """
     attrs = product.get("attrs") or {}
-    wpt = attrs.get("wpt")
-    if not wpt:
-        wpt = (
-            await session.execute(
-                text(
-                    "SELECT value #>> '{}' FROM app.system_config WHERE key = 'listing.default_wpt'"
-                )
-            )
-        ).scalar_one_or_none()
-    if not wpt:
-        raise BusinessError(
-            "ERP_SPEC_BUILD_FAILED",
-            "无法确定 Walmart Product Type（product.attrs.wpt 未设且无默认配置）",
-        )
+    header_cfg = await _cfg(session, "listing.feed_header", _HEADER_DEFAULTS)
+    odefaults = await _cfg(session, "listing.orderable_defaults", _ORDERABLE_DEFAULTS)
+    pt_rev = await wpt_schema.pt_spec_revision(session)
+
+    if offer_mode == "match":
+        wpt, wpt_source = attrs.get("wpt") or "", "match_na"  # match 不需要 WPT
+        spec_version = SPEC_VERSION_MATCH
+    else:
+        wpt, wpt_source = await _resolve_wpt(session, product)
+        spec_version = str(header_cfg["version"])
 
     fingerprint = json.dumps(
         {
@@ -53,8 +293,11 @@ async def build_spec(
             "images": product.get("images"),
             "attrs": attrs,
             "wpt": wpt,
+            "wpt_source": wpt_source,
             "mode": offer_mode,
-            "spec_version": SPEC_VERSION,
+            "spec_version": spec_version,
+            "odefaults": odefaults,
+            "pt_spec_revision": pt_rev,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -71,55 +314,36 @@ async def build_spec(
         )
     ).one_or_none()
     if cached is not None:
-        payload = _instantiate(cached.payload, channel_sku, gtin, price, inventory)
+        item = _instantiate(
+            cached.payload, channel_sku, gtin, price, inventory,
+            end_date=end_date, partner_id=partner_id,
+        )  # fmt: skip
         return {
             "spec_id": cached.id,
-            "payload": payload,
+            "item": item,
             "wpt": cached.wpt,
             "build_hash": build_hash,
+            "spec_version": spec_version,
         }
 
-    images = product.get("images") or []
-    mp_item: dict[str, Any] = {
-        "Orderable": {
-            "sku": "{SKU}",
-            "productIdentifiers": {"productIdType": "EAN", "productId": "{GTIN}"},
-            "productName": (product.get("title") or "")[:199],
-            "brand": "unbranded",  # 审核通过后统一 unbranded（源系统流程）
-            "price": "{PRICE}",
-            "ShippingWeight": float(attrs.get("shipping_weight") or 1),
-            "electronicsIndicator": "No",
-            "batteryTechnologyType": "Does Not Contain a Battery",
-            "chemicalAerosolPesticide": "No",
-            "shipsInOriginalPackaging": "No",
-        },
-        "Visible": {
-            wpt: {
-                "shortDescription": str(attrs.get("description") or product.get("title") or "")[
-                    :4000
-                ],
-                "mainImageUrl": images[0] if images else None,
-                "productSecondaryImageURL": images[1:5] or None,
-                "keyFeatures": (attrs.get("bullets") or [])[:5] or None,
-            }
-        },
-    }
-    payload_template = {
-        "MPItemFeedHeader": {
-            "sellingChannel": "mpsetupbymatch" if offer_mode == "match" else "mpmaintenance",
-            "processMode": "REPLACE",
-            "subset": "EXTERNAL",
-            "locale": "en",
-            "version": "1.5",
-        },
-        "MPItem": [mp_item],
-    }
+    cert_overrides: dict[str, Any] = {}
+    if offer_mode == "match":
+        item_template: dict[str, Any] = {"Item": _build_match_item(product, gtin)}
+    else:
+        schema = await wpt_schema.load_pt_schema(session, wpt)
+        visible, cert_overrides = _build_visible(product, wpt, schema)
+        item_template = {
+            "Orderable": _build_orderable_template(product, wpt, odefaults),
+            "Visible": {wpt: visible},
+        }
+
     spec_id = (
         await session.execute(
             text(
                 "INSERT INTO app.listing_spec"
-                " (team_id, product_id, offer_mode, wpt, spec_version, payload, build_hash)"
-                " VALUES (:t, :p, :m, :w, :v, cast(:pl AS jsonb), :h)"
+                " (team_id, product_id, offer_mode, wpt, spec_version, payload,"
+                "  cert_overrides, build_hash)"
+                " VALUES (:t, :p, :m, :w, :v, cast(:pl AS jsonb), cast(:co AS jsonb), :h)"
                 " ON CONFLICT (product_id, offer_mode, build_hash) DO UPDATE"
                 "   SET built_at = now()"
                 " RETURNING id"
@@ -128,25 +352,65 @@ async def build_spec(
                 "t": product["team_id"],
                 "p": product["id"],
                 "m": offer_mode,
-                "w": wpt,
-                "v": SPEC_VERSION,
-                "pl": json.dumps(payload_template, ensure_ascii=False),
+                "w": wpt,  # match 模式无 WPT 存 ''（列 NOT NULL；build 恒非空）
+                "v": spec_version,
+                "pl": json.dumps(item_template, ensure_ascii=False),
+                "co": json.dumps(cert_overrides, ensure_ascii=False),
                 "h": build_hash,
             },
         )
     ).scalar_one()
-    payload = _instantiate(payload_template, channel_sku, gtin, price, inventory)
-    return {"spec_id": spec_id, "payload": payload, "wpt": wpt, "build_hash": build_hash}
+    item = _instantiate(
+        item_template, channel_sku, gtin, price, inventory,
+        end_date=end_date, partner_id=partner_id,
+    )  # fmt: skip
+    return {
+        "spec_id": spec_id,
+        "item": item,
+        "wpt": wpt,
+        "build_hash": build_hash,
+        "spec_version": spec_version,
+    }
 
 
 def _instantiate(
-    template: dict[str, Any], sku: str, gtin: str | None, price: float | None, inventory: int
+    template: dict[str, Any],
+    sku: str,
+    gtin: str | None,
+    price: float | None,
+    inventory: int,
+    *,
+    end_date: date | None = None,
+    partner_id: str | None = None,
 ) -> dict[str, Any]:
-    """把缓存模板实例化为具体 listing 的提交体（SKU/GTIN/价格是 listing 级，不进缓存键）。"""
+    """缓存模板 → 具体 listing 提交体（listing/store 级参数注入，不进缓存键）。
+
+    实测格式（BR-LST-006/007）：endDate 必须 ISO DateTime（纯日期拒收，
+    EXT_DATA_ERROR_00030257670757）；inventory=[{quantity, fulfillmentCenterID=PartnerID}]
+    ——PartnerID 缺失时省略该键（本地校验器实践规则层负责提示，官方 schema 不含它）。
+    """
     payload: dict[str, Any] = json.loads(json.dumps(template))
-    item = payload["MPItem"][0]["Orderable"]
-    item["sku"] = sku
-    item["productIdentifiers"]["productId"] = gtin or ""
-    item["price"] = float(price) if price is not None else 0.0
-    payload["MPItem"][0]["Orderable"]["inventory"] = {"fulfillmentLagTime": 1, "amount": inventory}
+    if "Item" in payload:  # match
+        item = payload["Item"]
+        item["sku"] = sku
+        item["price"] = float(price) if price is not None else 0.0
+        return payload
+
+    orderable = payload["Orderable"]
+    orderable["sku"] = sku
+    if gtin:
+        orderable["productIdentifiers"] = {
+            "productIdType": _identifier_type(gtin),
+            "productId": gtin,
+        }
+    else:
+        orderable.pop("productIdentifiers", None)
+    orderable["price"] = float(price) if price is not None else 0.0
+    orderable["startDate"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = end_date or date(2049, 12, 31)  # D-Q9 统一远期
+    orderable["endDate"] = f"{end.isoformat()}T00:00:00Z"
+    inv_entry: dict[str, Any] = {"quantity": int(inventory)}
+    if partner_id:
+        inv_entry["fulfillmentCenterID"] = str(partner_id)
+    orderable["inventory"] = [inv_entry]
     return payload
