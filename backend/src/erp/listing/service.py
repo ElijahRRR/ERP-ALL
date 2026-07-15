@@ -80,7 +80,8 @@ async def _load_listing(session: AsyncSession, listing_id: int) -> dict[str, Any
             await session.execute(
                 text(
                     "SELECT id, team_id, store_id, product_id, offer_mode, channel_sku,"
-                    " gtin, status, error_code, is_locked, current_price, current_inventory"
+                    " gtin, status, error_code, is_locked, current_price, current_inventory,"
+                    " end_date"
                     " FROM app.listing WHERE id = :id FOR UPDATE"
                 ),
                 {"id": listing_id},
@@ -284,6 +285,14 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
 
     # spec 构建 + 组 feed
     feed_kind = "item_build" if offer_mode == "build" else "item_match"
+    # PartnerID（inventory[].fulfillmentCenterID 实测必填，BR-LST-007）：store.profile
+    # 维护（A152 runbook / GET /v3/settings/partnerprofile 回填）；缺失时构建器省略该键
+    partner_id = (
+        await session.execute(
+            text("SELECT profile ->> 'partner_id' FROM app.store WHERE id = :s"),
+            {"s": store_id},
+        )
+    ).scalar_one_or_none()
     items_payload: list[dict[str, Any]] = []
     feed_listings: list[dict[str, Any]] = []
     for listing in granted:
@@ -291,7 +300,8 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
             (
                 await session.execute(
                     text(
-                        "SELECT id, team_id, title, brand, images, attrs, price_snapshot"
+                        "SELECT id, team_id, title, brand, images, attrs, price_snapshot,"
+                        " category_path, amazon_leaf_id"
                         " FROM app.product WHERE id = :p"
                     ),
                     {"p": listing["product_id"]},
@@ -309,6 +319,8 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
                 channel_sku=listing["channel_sku"],
                 price=listing["current_price"],
                 inventory=listing["current_inventory"],
+                end_date=listing["end_date"],
+                partner_id=partner_id,
             )
         except BusinessError as e:
             await channel_service.release_quota(session, store_id, "listing_create")
@@ -316,19 +328,13 @@ async def submit(  # noqa: PLR0911, PLR0912, PLR0915 提交链分支=协议分�
                              detail={"message": e.message}, actor_id=actor_id)  # fmt: skip
             skipped.append({"listing_id": listing["id"], "code": e.code})
             continue
-        items_payload.extend(built["payload"]["MPItem"])
+        items_payload.append(built["item"])
         feed_listings.append(listing)
     if not feed_listings:
         return {"queued": 0, "skipped": skipped, "feed_id": None}
 
     header = {
-        "MPItemFeedHeader": {
-            "sellingChannel": "mpsetupbymatch" if offer_mode == "match" else "mpmaintenance",
-            "processMode": "REPLACE",
-            "subset": "EXTERNAL",
-            "locale": "en",
-            "version": "1.5",
-        },
+        "MPItemFeedHeader": await spec_builder.feed_header(session, offer_mode),
         "MPItem": items_payload,
     }
     feed_id = (
