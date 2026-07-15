@@ -68,9 +68,7 @@ async def _rebuild(session: AsyncSession) -> tuple[str, set[str], list[str]]:
         cat_zh = (r["category_zh"] or "").strip()
         status = (r["overall_status"] or "").strip().replace("\n", " ")[:50]
         risk = (r["zh_seller_risk"] or "").strip().replace("\n", " ")[:30]
-        prohib = (
-            (r["prohibited_items"] or "").replace("\n", " ").replace("•", "/").strip()[:240]
-        )
+        prohib = (r["prohibited_items"] or "").replace("\n", " ").replace("•", "/").strip()[:240]
         notes = (r["zh_seller_notes"] or "").replace("\n", " ").strip()[:80]
         categories.add(cat_en.lower())
         display.append(cat_en)
@@ -119,6 +117,4 @@ async def valid_reason_categories(session: AsyncSession) -> set[str]:
 
 def clear_cache() -> None:
     """测试隔离用：清缓存强制下次重建。"""
-    _CACHE.update(
-        version=None, block="", categories=_STATIC_CATEGORIES, display=_STATIC_DISPLAY
-    )
+    _CACHE.update(version=None, block="", categories=_STATIC_CATEGORIES, display=_STATIC_DISPLAY)

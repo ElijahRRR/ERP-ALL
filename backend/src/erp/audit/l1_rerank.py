@@ -46,6 +46,7 @@ async def _rerank_cfg(session: AsyncSession) -> dict[str, Any]:
         cfg.update({k: row[k] for k in ("model", "temperature", "max_tokens") if k in row})
     return cfg
 
+
 _UNMAPPED_MARKER = "无对应Walmart PT"
 
 # 召回 v2（R2-02 round-2 教训）：旧 starts_with 祖先召回在真数据上 90/189 无候选——
@@ -74,6 +75,7 @@ def _segments(path: str) -> list[str]:
 
 def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 
 _WRITEBACK_SQL = text(
     "INSERT INTO refdata.category_map"

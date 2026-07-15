@@ -24,15 +24,19 @@ def test_excluded_amazon_category_substring() -> None:
 
 def test_excluded_walmart_pt_substring() -> None:
     # yaml: match="Laptops" scope=walmart_pt
-    assert zh_forbidden.check_excluded(
-        category_path=None, title=None, walmart_pt="Gaming Laptops"
-    ) is not None
+    assert (
+        zh_forbidden.check_excluded(category_path=None, title=None, walmart_pt="Gaming Laptops")
+        is not None
+    )
 
 
 def test_excluded_no_hit() -> None:
-    assert zh_forbidden.check_excluded(
-        category_path="Home & Kitchen > Mugs", title="Plain Ceramic Mug"
-    ) is None
+    assert (
+        zh_forbidden.check_excluded(
+            category_path="Home & Kitchen > Mugs", title="Plain Ceramic Mug"
+        )
+        is None
+    )
 
 
 def test_mega_word_boundary_and_plural() -> None:

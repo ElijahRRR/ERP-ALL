@@ -51,7 +51,8 @@ def _r5(title: str, walmart_category: str | None) -> list[str]:
     async def _run() -> list[str]:
         async with system_tx(_sessions()) as s:
             hits = await pipeline.run_l2(
-                s, {"title": title, "team_id": 0, "attrs": {}},
+                s,
+                {"title": title, "team_id": 0, "attrs": {}},
                 walmart_category=walmart_category,
             )
         for h in hits:

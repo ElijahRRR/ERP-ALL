@@ -67,9 +67,7 @@ def main() -> int:
     p.add_argument("--backlog", action="store_true", help="扫 product 无直判命中的类目")
     p.add_argument("--limit", type=int, default=500, help="积压模式上限（默认 500）")
     p.add_argument("--category", help="复排单个 Amazon 类目路径")
-    p.add_argument(
-        "--model", help="覆盖复排模型（默认读 system_config 'category_map.rerank'）"
-    )
+    p.add_argument("--model", help="覆盖复排模型（默认读 system_config 'category_map.rerank'）")
     args = p.parse_args()
 
     if args.category:
