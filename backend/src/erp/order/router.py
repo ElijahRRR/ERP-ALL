@@ -1,12 +1,14 @@
-"""订单域 API（R2-05 增量2；契约 002 §Order——列表/详情/四检重跑/人工放行）。
+"""订单域 API（R2-05；契约 002 §Order——订单/四检/采购执行单/采购方）。
 
-发货 /orders/{id}/ship 随增量4（outbox + 幂等）；采购执行单端点随增量3。
+发货 /orders/{id}/ship 随增量4（outbox + 幂等）；portal 外部端点随 R2#6。
 """
 
+import json
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,7 @@ from erp.core.db import get_session
 from erp.core.errors import BusinessError
 from erp.identity.schemas import Page
 from erp.order import checks as order_checks
+from erp.order import procurement
 
 order_router = APIRouter(tags=["order"])
 
@@ -200,3 +203,272 @@ async def resolve_check(
         "order.check_resolve", "channel_order", order_id, after={"check_kind": check_kind}
     )
     return {"order_id": order_id, "check_kind": check_kind, "resolved": True}
+
+
+# ── 采购执行单（D-Q50 双入口①②）与采购方 ──
+
+
+class ProcurementCreateIn(BaseModel):
+    order_id: int
+    purchaser_id: int | None = None
+
+
+class AssignIn(BaseModel):
+    purchaser_id: int
+
+
+class BackfillIn(BaseModel):
+    purchase_platform: str | None = None
+    purchase_order_ref: str | None = None
+    purchase_cost: float | None = None
+    purchase_currency: str | None = Field(default=None, max_length=3)
+    freight_cost: float | None = None
+    carrier: str | None = None
+    tracking_no: str | None = None
+    note: str | None = None
+
+
+class ExceptionIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class PurchaserIn(BaseModel):
+    name: str | None = None
+    purchaser_kind: str | None = Field(default=None, pattern="^(internal|external)$")
+    user_id: int | None = None
+    contact: dict[str, Any] | None = None
+    exchange_rate: float | None = None
+    status: str | None = Field(default=None, pattern="^(active|disabled)$")
+    portal_username: str | None = None
+    portal_password: str | None = None
+
+
+@order_router.get("/procurement-orders")
+async def list_procurement(
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.read"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    status: str | None = Query(default=None),
+    purchaser_id: int | None = Query(default=None),
+    mine: bool = Query(default=False, description="内部采购执行入口「我的单」（D-Q50①）"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
+) -> Page[dict[str, Any]]:
+    where = "WHERE p.team_id = :team"
+    params: dict[str, Any] = {"team": user.team_id}
+    if status:
+        where += " AND p.status = :st"
+        params["st"] = status
+    if purchaser_id is not None:
+        where += " AND p.purchaser_id = :pid"
+        params["pid"] = purchaser_id
+    if mine:
+        where += " AND p.purchaser_id IN (SELECT id FROM app.purchaser WHERE user_id = :uid)"
+        params["uid"] = user.id
+    total = (
+        await session.execute(text(f"SELECT count(*) FROM app.procurement_order p {where}"), params)
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            text(
+                "SELECT p.id, p.order_id, p.store_id, p.status, p.assignee_kind,"
+                " p.purchaser_id, p.purchase_platform, p.purchase_order_ref, p.purchase_cost,"
+                " p.purchase_currency, p.exchange_rate_locked, p.freight_cost, p.carrier,"
+                " p.tracking_no, p.exception_reason, p.created_at"
+                f" FROM app.procurement_order p {where}"
+                " ORDER BY p.id DESC LIMIT :lim OFFSET :off"
+            ),
+            {**params, "lim": size, "off": (page - 1) * size},
+        )
+    ).mappings()
+    return Page(items=[dict(r) for r in rows], total=total, page=page, size=size)
+
+
+@order_router.post("/procurement-orders", status_code=201)
+async def create_procurement(
+    body: ProcurementCreateIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("order.assign"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    out = await procurement.create_po(
+        session,
+        team_id=user.team_id or -1,
+        order_id=body.order_id,
+        purchaser_id=body.purchaser_id,
+        actor_id=user.id,
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "procurement.create", "procurement_order", out["id"], after=body.model_dump()
+    )
+    return out
+
+
+@order_router.post("/procurement-orders/{po_id}/assign")
+async def assign_procurement(
+    po_id: int,
+    body: AssignIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("order.assign"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    await procurement.assign_po(
+        session,
+        team_id=user.team_id or -1,
+        po_id=po_id,
+        purchaser_id=body.purchaser_id,
+        actor_id=user.id,
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "procurement.assign", "procurement_order", po_id, after=body.model_dump()
+    )
+    return {"id": po_id, "status": "assigned"}
+
+
+@order_router.post("/procurement-orders/{po_id}/claim")
+async def claim_procurement(
+    po_id: int,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.execute"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    await procurement.claim_po(session, team_id=user.team_id or -1, po_id=po_id)
+    await AuditWriter.for_user(session, user, request).log(
+        "procurement.claim", "procurement_order", po_id
+    )
+    return {"id": po_id, "status": "claimed"}
+
+
+@order_router.post("/procurement-orders/{po_id}/backfill")
+async def backfill_procurement(
+    po_id: int,
+    body: BackfillIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.execute"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    await procurement.backfill_po(
+        session,
+        team_id=user.team_id or -1,
+        po_id=po_id,
+        actor_id=user.id,
+        fields=body.model_dump(exclude_none=True),
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "procurement.backfill", "procurement_order", po_id,
+        after=body.model_dump(exclude_none=True),
+    )  # fmt: skip
+    return {"id": po_id, "status": "backfilled"}
+
+
+@order_router.post("/procurement-orders/{po_id}/exception")
+async def exception_procurement(
+    po_id: int,
+    body: ExceptionIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.execute"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    await procurement.exception_po(
+        session, team_id=user.team_id or -1, po_id=po_id, reason=body.reason
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "procurement.exception", "procurement_order", po_id, after={"reason": body.reason}
+    )
+    return {"id": po_id, "status": "exception"}
+
+
+@order_router.get("/purchasers")
+async def list_purchasers(
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.read"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict[str, Any]]:
+    rows = (
+        await session.execute(
+            text(
+                "SELECT id, name, purchaser_kind, user_id, contact, exchange_rate,"
+                " settle_currency, status FROM app.purchaser WHERE team_id = :t ORDER BY id"
+            ),
+            {"t": user.team_id},
+        )
+    ).mappings()
+    return [dict(r) for r in rows]
+
+
+@order_router.post("/purchasers", status_code=201)
+async def create_purchaser(
+    body: PurchaserIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    if not body.name or not body.purchaser_kind or body.exchange_rate is None:
+        raise BusinessError("PURCHASER_FIELDS_REQUIRED", "name/purchaser_kind/exchange_rate 必填")
+    if body.purchaser_kind == "internal" and body.user_id is None:
+        raise BusinessError("PURCHASER_USER_REQUIRED", "internal 采购方必须绑定内部成员（1:1）")
+    if body.portal_username or body.portal_password:
+        raise BusinessError(
+            "PORTAL_NOT_AVAILABLE", "采购方门户账号随 R2#6 上线——本期仅建档，分配走内部双入口"
+        )
+    pid = (
+        await session.execute(
+            text(
+                "INSERT INTO app.purchaser"
+                " (team_id, name, purchaser_kind, user_id, contact, exchange_rate,"
+                "  status, created_by)"
+                " VALUES (:t, :n, :k, :u, cast(:c AS jsonb), :r, :st, :by) RETURNING id"
+            ),
+            {
+                "t": user.team_id,
+                "n": body.name,
+                "k": body.purchaser_kind,
+                "u": body.user_id,
+                "c": json.dumps(body.contact or {}, ensure_ascii=False),
+                "r": body.exchange_rate,
+                "st": body.status or "active",
+                "by": user.id,
+            },
+        )
+    ).scalar_one()
+    await AuditWriter.for_user(session, user, request).log(
+        "purchaser.create", "purchaser", pid, after={"name": body.name}
+    )
+    return {"id": int(pid)}
+
+
+@order_router.patch("/purchasers/{purchaser_id}")
+async def update_purchaser(
+    purchaser_id: int,
+    body: PurchaserIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    if body.portal_username or body.portal_password:
+        raise BusinessError("PORTAL_NOT_AVAILABLE", "采购方门户账号随 R2#6 上线")
+    owned = (
+        await session.execute(
+            text("SELECT team_id FROM app.purchaser WHERE id = :p"), {"p": purchaser_id}
+        )
+    ).scalar_one_or_none()
+    if owned is None or owned != user.team_id:
+        raise BusinessError("PURCHASER_NOT_FOUND", "采购方不存在")
+    sets: list[str] = []
+    params: dict[str, Any] = {"id": purchaser_id}
+    for col, val in (
+        ("name", body.name), ("user_id", body.user_id),
+        ("exchange_rate", body.exchange_rate), ("status", body.status),
+    ):  # fmt: skip
+        if val is not None:
+            sets.append(f"{col} = :{col}")
+            params[col] = val
+    if body.contact is not None:
+        sets.append("contact = cast(:contact AS jsonb)")
+        params["contact"] = json.dumps(body.contact, ensure_ascii=False)
+    if sets:
+        await session.execute(
+            text(f"UPDATE app.purchaser SET {', '.join(sets)} WHERE id = :id"), params
+        )
+    await AuditWriter.for_user(session, user, request).log(
+        "purchaser.update", "purchaser", purchaser_id, after=body.model_dump(exclude_none=True)
+    )
+    return {"id": purchaser_id}
