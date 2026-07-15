@@ -1,13 +1,13 @@
 # Task Definition
-- Mode: build（R2 中段——R1 全部 accepted；R2-01/02/03 + RS-03 accepted）
-- Task: 当前单 = **R2-04 worker/beat 底座【L0→L1】**（schedule 表驱动：feed 自动轮询/
-  采集回收兜底/llm_cache LRU/GTIN 水位/预算闸告警版；Redis pubsub 配置广播；compose beat 启用）。
-  并入 RS-03b 尾账：outbox drain 周期化、retire verify_pending 对账、api_idempotency 清扫。
-- Acceptance（per review_list R2-04）：A152 提交后无人工点查自动轮询回写；模拟断连自动回收。
-- 进度：4 增量完码全绿（2026-07-15，289 pytest）；两条验收已测试化锚定；
-  **余项=部署机启 beat 后 A152 实测**（evidence/R2-04/runbook.md 步骤 4/5，指令可整段粘贴）。
-- 考古：.agent/evidence/R2-04/archaeology.md（2026-07-15，4 增量拆分 + 设计决策 8 条）。
-  范围注记：erp.worker 队列消费者无生产者暂不启用；RS-08 事前预算预留不并入本单。
+- Mode: build（R2 中段——R1 全部 accepted；R2-01/02/03 + RS-03 accepted；R2-04 完码待实测）
+- Task: 当前单 = **R2-05 订单履约最小闭环【L1→L2】**（订单拉取真实只读起步 →
+  四检（限价/钓鱼/黑名单/重复）→ 采购单 → 确认发货（测试单））。
+  并入 RS-03b 尾账：ship/refund-execute 幂等接入（run_idempotent 同一助手）。
+- Acceptance（per review_list R2-05）：L1=真实订单只读拉取入库对账一致；L2=测试单全流程流转。
+- 考古进行中：.agent/evidence/R2-05/archaeology.md（四路并行，2026-07-16 起）。
+- R2-04 挂账（不阻本单）：验收①机制已证实（自动轮询/回写/零人工/零错误），feed #36
+  等 Walmart 终态自然闭环（1-2 天属渠道常态）；验收②「模拟断连回收」部署机实测未跑
+  ——beat runbook 步骤 5。Owner 指示持续推进至需人工验收再停。
 - ✅ R2-03 整单 accepted（2026-07-15，D-Q61）：验收①②均过；live/delist 真调并入首次真实运营发布
   ——需 Owner 窗口（runbook R1-11/a152-live-runbook.md + 部署机指令任务 4 已更新）。
 - Constraints: workflow discipline per CLAUDE.md；每增量 CI 绿（pytest/ruff[check+format]/mypy）；

@@ -248,7 +248,7 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": ".agent/evidence/R2-05/",
   "finding": null,
   "last_checked_at": null,
