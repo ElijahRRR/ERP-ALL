@@ -226,11 +226,11 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "上架真实化【L2】（MPSetup v5 官方规格+AI属性填写+category_map+本地校验器+错误码灌入）",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": ".agent/evidence/R2-03/",
-  "finding": null,
-  "last_checked_at": null,
-  "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT) ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist"
+  "finding": "2026-07-15 新工作区接手动工：五路考古（旧 auto_listing 管线/新骨架/图纸/spec 素材/可复用基建）→ archaeology.md；接手时发现 main CI 自 85ff698 起红（ruff format --check 10 文件，round-7~10 本地未跑 format 检查），已修复（2ad1663）",
+  "last_checked_at": "2026-07-15",
+  "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT) ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist。数据注意：refdata.pt_spec 0019 只导审核子集列（fields 全量列需经 import 通道补）；pt_templates_full.json(293M)+walmart_official_specs 全量(4.3G)在 Owner T7 备份 pt_metadata/"
  },
  {
   "id": "R2-04",
