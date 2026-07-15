@@ -12,7 +12,7 @@
 （终校验 validate 在 validator.py，提交边界另有 sanitize_feed_numbers。）
 """
 
-# ruff: noqa: E501, PLR0911, PLR0912, PLR0915, PLR2004, PLR1714, SIM102  源仓函数群逐函数保真，不为 lint 重构
+# ruff: noqa: PLR0911, PLR0912, PLR0915, PLR2004, PLR1714, SIM102  源仓函数群逐函数保真，不为 lint 重构
 
 import copy
 import re
