@@ -396,3 +396,12 @@
 - **缺陷①**：gtin.hold_one 默认 kind='ean_13' 写死——upc_a 池 30 free 永远取不到 → GTIN_POOL_EMPTY。修=占号优先序进配置中心 `gtin.kind_preference`（team>system>默认 [upc_a, ean_13]，真实购入 UPC 优先），按序逐池单语句尝试；allocate/retry_failed 两调用点自动受益；spec.py 本就按长度判 UPC/EAN 无需改。
 - **缺陷②**：allocate 池空补偿走 `DELETE FROM app.listing`，而 erp_app 无 DELETE 权限（0009 最小授权，listing 本就不许物理删）——权限错误把池空业务提示覆盖成 500。修=INSERT+占号包进 SAVEPOINT（begin_nested），失败回滚本品插入不影响批内其它产品，**不扩权限、不加迁移**。
 - 回归测试 test_gtin_allocation.py ×3（仅 upc_a 有号可占到/池空干净 rejected 零残留行/配置覆盖优先序），291 pytest + ruff + mypy 绿（redis round-trip 沙箱跳过，CI 有服务）。03-catalog 分配协议补占号优先序一句。
+
+### Session: 2026-07-16 (R2-05 订单履约最小闭环：考古 + 增量1-4 完码 + 5a 文档)
+- **考古**（evidence/R2-05/archaeology.md，四路并行）：订单域全零起建，基座全齐。口径裁定 5 条：四检以 001+002 冻结契约为准（phishing/purchaser/price_limit/consistency——005 一句话「黑名单/重复」无 BR 依据）；refund/returns 随售后单（契约未冻结）；portal③=R2#6；ack=内部自动步骤（FIFO 保序）；BR-ORD-007 候选匹配降档（purchaser 表无区间/配送方式列，扩列待决）。
+- **增量1（4527c71）**：0025 订单域 6 表+automation_policy+blacklist_address/zip+sync_state+ck_cc_action 扩展；分区预建 [-7..+3]+DEFAULT 兜底（order_date 外部数据）。order_pull beat（15min）：lastModified 增量（重叠1h/成功才推 sync_state）+createdStartDate=179d 恒传+nextCursor 完整串翻页+upsert 同步列/内部列分离+行状态[-1]+Cancelled 强制覆盖+通知。
+- **增量2（83ce01b）**：四检引擎（钓鱼双向 substring+前5位邮编+<8跳过；BR-ORD-006 flagged 粘滞人工 resolve 才清；限价 0.85×6.8÷汇率进 order.checks 配置；一致性 ratio<0.9 品名缓存 detail）；拉单即检 pulled→checked；order_flag 通知；GET /orders 列表/详情+rerun/resolve 契约端点；import_blacklist 扩 address/zip 域（_Domain.normalizer）。
+- **增量3（86b57a6）**：采购执行单双入口（建单/分配/领单锁汇率/回填 op_direct/异常+mine=我的单）+purchaser CRUD（internal 1:1 绑成员；portal 字段 422 拒）；order_block 档位闸（semi/auto+flagged 未放行→409 冻结）。
+- **增量4（6aae9d7）**：POST /orders/{id}/ship（Idempotency-Key+run_idempotent——RS-03b「ship 幂等」尾账收账）；outbox 扩 order_ack/order_ship（Created 单自动先 ack）；applier 200→落账/明确拒→failed+notify+换键重推/未知→verify_pending；ship_recon beat 渠道实况对账（0026）。drain 注册表合并 listing+order。
+- **增量5a**：L1 对账 harness（erp.tools.order_pull_verify，与拉单共用 map_order 口径）；specs 落笔（07 三处/02 actions/09 种子清单）；runbook（部署机 L1 指令+Owner L2 步骤+调参表）。
+- 终态：313 pytest + 迁移 base↔head 演练 + ruff + mypy 全绿。余：增量5b 前端订单页 → 更新 PR #7 → **停在人工验收节点（L1 部署机对账 / L2 A152 测试单）**。

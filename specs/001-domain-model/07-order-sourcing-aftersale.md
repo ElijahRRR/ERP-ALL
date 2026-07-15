@@ -43,6 +43,7 @@
 约束：`uq_channel_order (store_id, channel_order_no, order_date)`（分区唯一须含分区键；同单重拉 upsert）。
 索引：`(team_id, internal_status, order_date DESC)`、`(store_id, order_date DESC)`、`(has_flag, order_date DESC) WHERE has_flag`。
 拉单协议：15min/店（schedule）；upsert 幂等；channel_status 变化驱动 internal_status 推进（服务层状态机；渠道 Cancelled 强制覆盖内部状态并出 notification）。
+已落地（R2-05 beat `order_pull`）：增量主键 lastModifiedStartDate（窗口 = max(last_sync−1h, now−30d)，恒传 createdStartDate=now−179d——BR-ORD-002）；high-water mark 在 sync_state(scope='order_pull', ref_id=store_id)，整店成功才推进；订单级 channel_status = 各行聚合（最落后未取消行；全取消=Cancelled）；行状态取 orderLineStatuses[-1]（实战语义）。
 
 ## order_line 订单行（月分区，随单）
 
@@ -80,6 +81,7 @@
 
 约束：`uq_order_check (order_id, check_kind, order_date)`（重检 upsert）。
 拦截开关：automation_policy flow=order_block —— off=纯软标记（默认），on=flagged 单冻结在 checked 不进分配（D-Q14/29 同款三档思路）。
+已落地（R2-05）：mode manual=软标记；semi/auto=建执行单/分配 409 冻结。四检参数键 `order.checks`（team>system>默认 {margin_factor:0.85, usd_rmb_rate:6.8, consistency_ratio:0.9}，D-Q11/C10）；phishing 数据源 blacklist_address/blacklist_zip（BR-ORD-005 口径归一化）；purchaser 检降档=存在 active 采购方（候选区间/配送方式档案列未入本表设计，扩列待决——BR-ORD-007 注记）。
 
 ## procurement_order 采购执行单（双入口核心表，D-Q50）
 
@@ -150,6 +152,7 @@ WHERE p.assignee_kind = 'external'
 
 索引：`(push_status) WHERE push_status='pending'`、`(order_id)`。
 推送失败处置：失败保留 pending 重试（网关退避）；连续失败 → notification + 订单页人工重推按钮。
+已落地（R2-05）：push 走 channel outbox（action=order_ship；Created 单自动前置 order_ack，同店 FIFO 保序）；明确拒=failed+notification，人工重推=换 Idempotency-Key 再发（新回传单新命令）；结果未知=verify_pending → beat `ship_recon` 以渠道订单实况对账（绝不重发，BR-GW-005）。发货请求 methodCode 走 system_config `order.ship`。
 
 ## channel_return 渠道退货（量小不分区，永久保留）
 
