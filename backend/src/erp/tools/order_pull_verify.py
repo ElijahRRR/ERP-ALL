@@ -81,9 +81,7 @@ async def verify(store_id: int, days: int) -> dict[str, Any]:
                 "（可能为窗口内正常滞后，重跑 order_pull 后复核）"
             )
         if abs(float(row.order_total) - float(mapped["order_total"])) > 0.01:  # noqa: PLR2004
-            diffs.append(
-                f"金额差：{po} 渠道={mapped['order_total']} DB={float(row.order_total)}"
-            )
+            diffs.append(f"金额差：{po} 渠道={mapped['order_total']} DB={float(row.order_total)}")
         if int(row.line_rows) != mapped["item_count"]:
             diffs.append(f"行数差：{po} 渠道={mapped['item_count']} DB={row.line_rows}")
     for po in set(db) - set(channel):
