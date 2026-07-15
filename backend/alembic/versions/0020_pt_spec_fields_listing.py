@@ -12,8 +12,10 @@
 3) ck_import_job_domain += 'listing_error_catalog'：错误码字典批量灌入
    （R2-03 增量 5；service 侧 SUPPORTED_DOMAINS 在该增量同步放行）。
 
-downgrade 还原三处（生产降级前提：无 module='listing' usage 行与
-listing_error_catalog job 行——空库演练不受影响）。
+downgrade 还原三处。CHECK 收窄前先处理存量行（否则 ADD CONSTRAINT 验证失败——
+CI 演练在 pytest 之后跑，库里有测试写入的 'listing' usage 行）：
+module='listing' → 重映射 'other'（保留计费记录，语义=0020 前无此归因）；
+domain='listing_error_catalog' 的 import_job 行随特性删除（该域在旧 schema 不存在）。
 """
 
 from alembic import op
@@ -59,6 +61,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DELETE FROM app.import_job WHERE domain = 'listing_error_catalog'")
     op.execute(_domain_check(_DOMAINS_0019))
+    op.execute("UPDATE app.llm_usage_log SET module = 'other' WHERE module = 'listing'")
     op.execute(_module_check(_MODULES_0008))
     op.execute("ALTER TABLE refdata.pt_spec DROP COLUMN fields")

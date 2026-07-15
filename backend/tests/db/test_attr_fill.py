@@ -105,6 +105,9 @@ def _seed(migrated_db: str):  # type: ignore[no-untyped-def]
         team = conn.execute("SELECT id FROM app.team WHERE name = %s", (TEAM,)).fetchone()
         if team:
             conn.execute("DELETE FROM app.listing_spec WHERE team_id = %s", (team[0],))
+            # usage 行必须清：CI 迁移演练在 pytest 后跑，遗留 module='listing' 行
+            # 会让 0020 downgrade 的 CHECK 收窄验证失败（本文件是唯一写入方）
+            conn.execute("DELETE FROM app.llm_usage_log WHERE team_id = %s", (team[0],))
             conn.execute("DELETE FROM app.product WHERE team_id = %s", (team[0],))
 
     pricing = json.dumps(
