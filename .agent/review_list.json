@@ -227,10 +227,10 @@
   "dimension": "feature",
   "check": "上架真实化【L2】（MPSetup v5 官方规格+AI属性填写+category_map+本地校验器+错误码灌入）",
   "status": "in_progress",
-  "evidence": ".agent/evidence/R2-03/",
-  "finding": "2026-07-15 新工作区接手动工：五路考古（旧 auto_listing 管线/新骨架/图纸/spec 素材/可复用基建）→ archaeology.md；接手时发现 main CI 自 85ff698 起红（ruff format --check 10 文件，round-7~10 本地未跑 format 检查），已修复（2ad1663）",
+  "evidence": ".agent/evidence/R2-03/ (archaeology.md + dryrun-harness-selftest.json + deployment-instructions.md)",
+  "finding": "2026-07-15 开发六增量全部落地（见 progress 当日节）：pt_spec fields 无损通道(0020+提取工具+E2E 实跑)/spec 构建器真实化(v5 header+WPT 链+零认证+match v4.2)/AI 属性填写(prompt 逐字保真+RS-03a 三段+module=listing)/清洗链 12 函数群保真+本地校验器(ERP_SPEC_INVALID 前置闸)/错误码 65 码灌入(处置映射拍定不扩枚举)/验收① harness(沙盒 5 WPT fixture 自测 PASS)。249 pytest+四关全绿。待部署机：pt_spec 真数据(路A live spec/路B T7 monolith)→dry-run 真数据报告=验收①；验收② A152 前置 RS-03b 闸门",
   "last_checked_at": "2026-07-15",
-  "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT) ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist。数据注意：refdata.pt_spec 0019 只导审核子集列（fields 全量列需经 import 通道补）；pt_templates_full.json(293M)+walmart_official_specs 全量(4.3G)在 Owner T7 备份 pt_metadata/"
+  "note": "验收(L2)：①dry-run 过官方 spec 校验(≥5 WPT)——harness 就绪，等部署机真数据报告 ②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist——前置 RS-03b（channel outbox+幂等，闸门=真实渠道写入前）。部署机指令=evidence/deployment-instructions.md"
  },
  {
   "id": "R2-04",
