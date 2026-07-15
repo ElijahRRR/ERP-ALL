@@ -4,6 +4,10 @@
 - 开始/结束落 app.task_run（事实源，Redis 之外的对账依据）；
 - 失败 → 通知中心 critical（dedupe 按 task_code 每日一条，防风暴）——
   「任何静默失败都是缺陷」（00-conventions/草稿系统教训）。
+
+fn 接 sessionmaker 自管事务（R2-04）：渠道类任务是三段式（tx → HTTP → tx），
+若由本层包一个大事务，HTTP 期间会挂着空转连接/快照——RS-03「行锁不跨 HTTP」
+纪律的连接版。短任务自己开一个 system_tx 即可。
 """
 
 import json
@@ -23,12 +27,12 @@ log = structlog.get_logger()
 async def run_tracked(
     sessions: async_sessionmaker[AsyncSession],
     task_code: str,
-    fn: Callable[[AsyncSession], Awaitable[dict[str, Any] | None]],
+    fn: Callable[[async_sessionmaker[AsyncSession]], Awaitable[dict[str, Any] | None]],
     *,
     team_id: int | None = None,
     schedule_id: int | None = None,
 ) -> bool:
-    """执行任务并记账。返回是否成功。fn 返回的 dict 记入 stats。"""
+    """执行任务并记账。返回是否成功。fn 自管事务；返回的 dict 记入 stats。"""
     async with system_tx(sessions) as s:
         row = (
             await s.execute(
@@ -41,8 +45,7 @@ async def run_tracked(
         ).one()
 
     try:
-        async with system_tx(sessions) as s:
-            stats = await fn(s) or {}
+        stats = await fn(sessions) or {}
         async with system_tx(sessions) as s:
             await s.execute(
                 text(

@@ -234,9 +234,7 @@ class TestMaintenanceTasks:
                 " (%(t)s, 'e', 'fresh-placeholder', 'h', NULL, now() - interval '1 minute')",
                 {"t": team_id},
             )
-        sessions = get_session_factory()
-        async with system_tx(sessions) as s:
-            stats = await tasks.api_idempotency_sweep(s, {})
+        stats = await tasks.api_idempotency_sweep(get_session_factory(), {})
         assert stats["swept"] >= 2  # 全表清扫可能连带他团队过期残留，本团队断言看集合
         with psycopg.connect(migrated_db) as conn:
             left = {
@@ -260,8 +258,7 @@ class TestMaintenanceTasks:
                 " ('beat-t-cool', 'm', 'x', now(), now() - interval '10 days')"
             )
         sessions = get_session_factory()
-        async with system_tx(sessions) as s:
-            stats = await tasks.llm_cache_lru(s, {"max_idle_days": 90, "max_rows": 1_000_000})
+        stats = await tasks.llm_cache_lru(sessions, {"max_idle_days": 90, "max_rows": 1_000_000})
         assert stats["idle_evicted"] >= 2  # idle 与 nohit-old 必中（同库他团队行不计入断言）
         with psycopg.connect(migrated_db) as conn:
             left = {
@@ -276,7 +273,7 @@ class TestMaintenanceTasks:
             await s.execute(
                 text("UPDATE app.llm_cache SET last_hit_at = now() WHERE cache_key = 'beat-t-warm'")
             )
-            stats = await tasks.llm_cache_lru(s, {"max_idle_days": 3650, "max_rows": 1})
+        stats = await tasks.llm_cache_lru(sessions, {"max_idle_days": 3650, "max_rows": 1})
         with psycopg.connect(migrated_db) as conn:
             left = {
                 r[0]
@@ -295,9 +292,7 @@ class TestMaintenanceTasks:
                 "   || to_char(now() + interval '4 months', 'YYYYMM');"
                 " END $$"
             )
-        sessions = get_session_factory()
-        async with system_tx(sessions) as s:
-            stats = await tasks.partition_maintain(s, {"months_ahead": 4})
+        stats = await tasks.partition_maintain(get_session_factory(), {"months_ahead": 4})
         assert stats["parents"] >= 8  # audit_log/task_run/notification/scrape_*/audit_run/...
         assert stats["created"] >= 1
         with psycopg.connect(migrated_db) as conn:

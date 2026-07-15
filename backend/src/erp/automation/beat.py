@@ -38,14 +38,14 @@ def next_fire(cron: str, timezone: str, after: datetime) -> datetime:
 
 
 def _bind(fn: TaskFn, config: dict[str, Any]) -> Any:
-    async def run(session: AsyncSession) -> dict[str, Any]:
-        return await fn(session, config)
+    async def run(sessions: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
+        return await fn(sessions, config)
 
     return run
 
 
 def _raiser(message: str) -> Any:
-    async def run(_session: AsyncSession) -> dict[str, Any]:
+    async def run(_sessions: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
         raise RuntimeError(message)
 
     return run
