@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.audit.pipeline import NON_BRAND_PLACEHOLDERS, _norm
 from erp.core.errors import BusinessError
+from erp.order.checks import normalize_street, normalize_zip5
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class _Domain:
     subject_keys: tuple[str, ...]  # 行中主体字段名（按序取第一个非空）
     display_keys: tuple[str, ...] = ()
     skip_placeholder: bool = False  # 仅品牌：占位符（unbranded/generic…）不入黑名单
+    normalizer: Callable[[str], str] | None = None  # 缺省 _norm；钓鱼域用 BR-ORD-005 口径
 
 
 # 归一化统一走 _norm（lowercase + 多空格压一），与 L0 查表一致
@@ -62,6 +64,21 @@ _DOMAINS: dict[str, _Domain] = {
         "category_ref",
         None,
         subject_keys=("category", "category_ref"),
+    ),
+    # 钓鱼黑名单（R2-05 四检 phishing；归一化与查表共用 order.checks 口径）
+    "blacklist_address": _Domain(
+        "blacklist_address",
+        "street_norm",
+        None,
+        subject_keys=("street", "address", "street_norm", "地址"),
+        normalizer=normalize_street,
+    ),
+    "blacklist_zip": _Domain(
+        "blacklist_zip",
+        "zip5",
+        None,
+        subject_keys=("zip", "zipcode", "postal_code", "邮编", "zip5"),
+        normalizer=normalize_zip5,
     ),
 }
 
@@ -318,7 +335,7 @@ async def _apply_row(
     c: _Counters,
 ) -> None:
     raw = _first(row, dom.subject_keys)
-    subject = _norm(raw) if raw else ""
+    subject = (dom.normalizer or _norm)(raw) if raw else ""
     if not subject:
         c.err += 1
         c.errors.append({"line": line, "reason": "主体字段为空", "row": row})

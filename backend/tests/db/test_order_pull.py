@@ -212,7 +212,8 @@ class TestPullIngest:
                 " ship_to->>'address1', customer->>'name'"
                 " FROM app.channel_order WHERE channel_order_no = 'PO-1001'"
             ).fetchone()
-            assert row == ("Created", "pulled", 21.00, 1, "123 Fake Street", "Test Buyer")
+            # 拉单即四检（增量2 接线）：pulled → checked
+            assert row == ("Created", "checked", 21.00, 1, "123 Fake Street", "Test Buyer")
             line = conn.execute(
                 "SELECT ol.line_status, ol.qty, ol.unit_price, ol.carrier, ol.tracking_no"
                 " FROM app.order_line ol JOIN app.channel_order o ON o.id = ol.order_id"

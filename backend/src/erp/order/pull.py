@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from erp.channel.gateway import gateway
 from erp.core.db import system_tx
 from erp.notify.service import notify
+from erp.order import checks as order_checks
 
 log = structlog.get_logger()
 
@@ -194,6 +195,16 @@ async def _upsert_order(
                 "tn": ln["tracking_no"],
                 "sa": ln["shipped_at"],
             },
+        )
+    # 拉单→四检（PRD:84 主流程；仅未检的 pulled 单，取消单跳过）
+    if row.internal_status == "pulled" and mapped["channel_status"] != "Cancelled":
+        titles = {ln["channel_line_no"]: ln["product_name"] for ln in mapped["lines"]}
+        await order_checks.run_order_checks(
+            session,
+            order_id=order_id,
+            order_date=mapped["order_date"],
+            team_id=team_id,
+            channel_titles=titles,
         )
     # 渠道 Cancelled 强制覆盖内部状态并出 notification（001/07:45）
     cancelled_now = mapped["channel_status"] == "Cancelled" and row.internal_status != "cancelled"
