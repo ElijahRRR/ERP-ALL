@@ -28,6 +28,7 @@ from erp.core.db import ctx_tx, system_tx
 from erp.core.errors import BusinessError
 from erp.listing import service as listing_service
 from erp.notify.service import notify
+from erp.order import pull as order_pull_service
 from erp.scrape import service as scrape_service
 from erp.tools.drain_channel_outbox import drain
 
@@ -477,6 +478,11 @@ async def llm_budget_check(sessions: Sessions, config: dict[str, Any]) -> dict[s
     return {"teams_with_budget": len(budgets), "over_budget": over}
 
 
+async def order_pull(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """渠道订单增量拉取（R2-05：15min/店；协议与实战语义见 erp.order.pull 模块头注）。"""
+    return await order_pull_service.run(sessions, config)
+
+
 TASKS: dict[str, TaskFn] = {
     "partition_maintain": partition_maintain,
     "api_idempotency_sweep": api_idempotency_sweep,
@@ -488,4 +494,5 @@ TASKS: dict[str, TaskFn] = {
     "retire_recon": retire_recon,
     "gtin_watermark": gtin_watermark,
     "llm_budget_check": llm_budget_check,
+    "order_pull": order_pull,
 }
