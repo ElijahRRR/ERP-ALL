@@ -370,3 +370,23 @@
 - 范围钉死：inbox 缓办（进站仅主动轮询，无重复消费面）至 R2-04 webhook；retire verify_pending 对账+api_idempotency 全表清扫+drain beat 化=R2-04 维护任务；ship/refund 幂等接入=R2-05。
 - 终态：**262 pytest + ruff(check+format) + mypy + 迁移 base↔head 实跑 + 前端 lint/build（契约再生）全绿**。RS-03 工单整单 done（a+b 双闸门齐）。
 - **Next**：①A152 验收②窗口可排（部署机指令任务 4 已更新：必带 Idempotency-Key 头/断连只走 verify-back/drain 工具）②R2-04 worker/beat 底座（outbox drain 周期化+retire 对账维护任务自然并入）。
+
+### Session: 2026-07-15 (A152 验收②护航：真机暴露的两笔缺陷修复)
+- **socksio 缺依赖（PR #4，已合 92fc7e9）**：网关经店铺 SOCKS5 代理发包需 httpx[socks]，镜像缺 socksio 在传输构造点即抛错。修=正式依赖 + socks5 URL 构造级回归测试。沙盒 MockTransport 从不建真实传输→只有真机能暴露。
+- **采集 worker 超时写死 15s（真机全量超时）**：config.REQUEST_TIMEOUT 源仓直连口径，TPS 代理链路整页常态更慢；且 _apply_settings 文档串声称支持"超时"下发但代码未接（配置中心铁律漏网）。修=env 兜底（REQUEST_TIMEOUT/PROXY_BANDWIDTH_MBPS）+ scrape.worker_settings 运行期下发 request_timeout/proxy_bandwidth_mbps；超时变更丢弃旧超时热备、清节流戳强制冷轮换生效；R2-01 runbook 补链路调参节（支持键全列）。workers 28 用例四关全绿。
+- **Owner 反证推翻超时判因**（同代理同机、R2-01 时跑得通）→ 复查实锤真根因：compose `--proxy "${PROXY_URL:-}"` shell 插值，容器不带前缀重建即空代理；proxy.py 空代理仅 warning 后**静默直连** Amazon → 全量 15s 超时装成"采集坏了"。修=engine 启动 `_enforce_proxy_policy` fail-closed（缺代理拒启，--allow-direct 显式放行）+ settings 下发 proxy_url 补域名预解析（c-ares 坑，下发路径原漏接）+ runbook 补"代理必带/写配置中心防丢"节。workers 31 用例四关全绿。超时可配置化保留（配置中心铁律本就欠账）。
+
+### Session: 2026-07-15 (验收② A152 真调通过 · R2-03 整单收账 · D-Q61)
+- **A152 真调全链首跑成功**（部署机+Owner）：HEAD 92fc7e9 部署 → socksio ok → partnerprofile 经网关+SOCKS 代理 HTTP 200（partner_id=10003098102 回填）→ live_test 档真实提交 1 SKU → **Walmart 后台可见 feed** → 轮询成功 → item 级 error 回写（测试 UPC 随机编造被渠道驳回=预期）→ listing failed+错误码入字典+配额返还+GTIN 归还。**RS-03b outbox 三段式在真渠道首跑即工作**。
+- **D-Q61**：验收②口径调整并通过——live→截图→delist 分支因无真实购入 UPC 不可达成（Owner 确认），渠道写路径全链真调（提交/确收/轮询/权威回写/错误处置闭环）即达标；live/delist 真调并入首次真实运营发布。**R2-03 整单 accepted**。
+- 采集器插曲收束：TPS 停滞间歇自愈（"刚才又可以了"），Owner 指示稳定性项搁置——中流停滞防御（低速中止+停滞连击轮换）已完码存档 PR #5（draft，含代理 fail-closed+超时可配置化，共 3 commit 全绿），待后续窗口再验再合。
+- Next：R2-04 worker/beat 底座（outbox drain 周期化/feed 自动轮询/retire 对账维护任务/api_idempotency 清扫自然并入）；真 UPC 到位后灌 GTIN 池即可上真品。
+
+### Session: 2026-07-15 (R2-04 worker/beat 底座：4 增量完码全绿)
+- **考古**（evidence/R2-04/archaeology.md，四路并行）：底座存储层早已就位（0004 schedule/task_run 表+partition_maintain 种子、run_tracked 记账、compose redis 服务+redis 依赖），缺的只是执行体。设计拍板 8 条：cronsim（croniter 上游已归档）、单语句乐观领取、任务注册表显式化、pubsub fail-open、erp.worker 队列消费者因无生产者暂不启用（compose 保留占位）、RS-08 事前预算预留不并入。
+- **增量1（2a33190）**：erp.beat 调度循环（NULL 初始化防重启风暴/坏 cron 1h 兜底并记失败/run_tracked 记账）+ 0022（种子3条+ensure_month_partitions SECURITY DEFINER 提权，search_path 首位坑：pg_catalog 在前会成为 CREATE TABLE 落点）+ 低风险任务四件。验收②锚点测试化：死心跳节点+硬超时任务，仅 beat tick 即回收。发现并修测试跨模块污染：回收用例遗留 pending 采集任务会被 scrape 套件节点领走（pull 队列全局）——收尾终局化。
+- **增量2（78453e7）**：run_tracked 契约演进为 fn 自管事务（渠道任务三段式不挂外层连接）；渠道任务四件全复用既有函数（poll_feed/verify_back/drain/resolve_verify）零新渠道调用面。retire_recon 收 RS-03b 尾账：商品实况权威（404/RETIRED→delisted；在架超 grace→failed 归位配额返还回 live；未过 grace 维持背压）。验收①锚点测试化：提交后无人工点查 beat tick 自动轮询回写至 live（假渠道按 method+path 路由防批扫顺序依赖）。
+- **增量3（a02e90c）**：gtin_watermark（team_config 阈值覆盖 15/5 默认，dedupe 24h）+ llm_budget_check（北京时区日聚合 vs llm_budget_daily_usd，超限 critical 含降级建议，不自动停）。
+- **增量4**：ConfigService 接 Redis pubsub（写后 PUBLISH erp:config:invalidate，api/beat lifespan 各起订阅循环，fail-open=TTL 兜底）；compose beat 启用+make up 并入；CI 加 redis 服务；round-trip 真 redis 测试+fail-open 测试。specs 落笔（02/03/06/09 四处）；runbook（evidence/R2-04/runbook.md，含部署机整段指令+任务节奏速查）。
+- 终态：289 pytest + ruff + mypy + 迁移 base↔head 演练全绿。**工单余项=部署机启 beat 后 A152 实测两条验收**（无人工点查自动轮询回写；模拟断连自动回收）——runbook 步骤 4/5。
+- 注：R2-04 全部增量压在 PR #5 分支（单分支纪律），PR 标题/描述已更新反映实际内容。

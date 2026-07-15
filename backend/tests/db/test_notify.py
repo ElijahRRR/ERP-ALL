@@ -122,8 +122,11 @@ class TestNotifyService:
         sessions = _sessions()
         code = f"demo_ok_{uuid.uuid4().hex[:6]}"
 
-        async def work(s) -> dict[str, int]:  # type: ignore[no-untyped-def]
-            await s.execute(text("SELECT 1"))
+        async def work(sess) -> dict[str, int]:  # type: ignore[no-untyped-def]
+            from erp.core.db import system_tx
+
+            async with system_tx(sess) as s:  # fn 自管事务（R2-04 契约）
+                await s.execute(text("SELECT 1"))
             return {"processed": 42}
 
         assert asyncio.run(run_tracked(sessions, code, work)) is True

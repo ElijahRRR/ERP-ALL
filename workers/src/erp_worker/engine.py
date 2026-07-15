@@ -28,7 +28,7 @@ from erp_worker.erp_client import ErpWorkerClient
 from erp_worker.metrics import MetricsCollector
 from erp_worker.parser import AmazonParser
 from erp_worker.payload import to_product_payload
-from erp_worker.proxy import get_proxy_manager
+from erp_worker.proxy import _resolve_proxy_hostname, get_proxy_manager
 from erp_worker.session import AmazonSession
 
 logger = logging.getLogger(__name__)
@@ -45,9 +45,11 @@ class ScrapeEngine:
         *,
         zip_code: str | None = None,
         max_concurrency: int | None = None,
+        allow_direct: bool = False,
     ) -> None:
         self.client = client
         self.zip_code = zip_code or config.DEFAULT_ZIP_CODE
+        self._allow_direct = allow_direct
 
         self.proxy_manager = get_proxy_manager()
         self.parser = AmazonParser()
@@ -83,6 +85,9 @@ class ScrapeEngine:
         self._rotation_grace_until = 0.0
         self._empty_title_count = 0
         self._empty_title_rotate_threshold = 15
+        # 传输停滞连击计数（TPS 坏出口 IP 被连接池钉死的解法：达阈值换 session）
+        self._stall_count = 0
+        self._stall_rotate_threshold = config.STALL_ROTATE_THRESHOLD
 
         # 热备 session
         self._standby_session: AmazonSession | None = None
@@ -108,6 +113,7 @@ class ScrapeEngine:
         self._task_queue = asyncio.PriorityQueue(maxsize=self._queue_size)
 
         await self._pull_initial_settings()
+        self._enforce_proxy_policy()
         await self._init_session()
         await self._controller.start()
         try:
@@ -171,13 +177,36 @@ class ScrapeEngine:
             self._apply_settings(result.get("settings") or {})
             self._draining = bool(result.get("draining"))
 
-    def _apply_settings(self, s: dict[str, Any]) -> None:
-        """应用 ERP 下发的 scrape.worker_settings（子集：代理/并发/QPS/超时/轮换）。"""
+    def _enforce_proxy_policy(self) -> None:
+        """fail-closed：代理缺失拒绝启动，绝不静默直连采集。
+
+        2026-07-15 真机事故：scraper 容器不带 PROXY_URL 前缀重建 → compose 插值
+        空串 → worker 仅一行 warning 后直连 Amazon → 全量 15s 超时，且看起来像
+        "采集坏了"而不是"代理丢了"。代理可来自 CLI --proxy / env PROXY_URL /
+        ERP 下发 scrape.worker_settings.proxy_url（启动时已先拉一轮 settings）。
+        """
+        if config.PROXY_URL or self._allow_direct:
+            return
+        logger.critical(
+            "PROXY_URL 未配置：拒绝直连采集（fail-closed）。配置途径：CLI --proxy /"
+            " env PROXY_URL / system_config scrape.worker_settings.proxy_url；"
+            "开发调试显式直连用 --allow-direct"
+        )
+        raise RuntimeError("PROXY_REQUIRED: 代理未配置，拒绝直连采集")
+
+    def _apply_settings(self, s: dict[str, Any]) -> bool:
+        """应用 ERP 下发的 scrape.worker_settings（代理/并发/QPS/超时/带宽/轮换）。
+
+        → True=需要轮换 session 才能生效的参数发生了变更（request_timeout 在
+        session 创建时固化——A152 实测 15s 写死全量超时的修复点）。
+        """
         changes: list[str] = []
+        needs_rotate = False
         proxy_url = s.get("proxy_url")
         if proxy_url and proxy_url != config.PROXY_URL:
             config.PROXY_URL = proxy_url
-            self.proxy_manager._proxy_url = proxy_url
+            # 域名预解析（c-ares 不走系统 DNS 的坑）——下发路径与启动路径同规格
+            self.proxy_manager._proxy_url = _resolve_proxy_hostname(proxy_url)
             changes.append("proxy")
         for key, attr in (("max_concurrency", "_max"), ("min_concurrency", "_min")):
             val = s.get(key)
@@ -188,6 +217,37 @@ class ScrapeEngine:
         if isinstance(rate, (int, float)) and rate != self._rate_limiter.rate:
             self._rate_limiter.rate = float(rate)
             changes.append(f"qps={rate}")
+        timeout = s.get("request_timeout")
+        if (
+            isinstance(timeout, (int, float))
+            and timeout > 0
+            and int(timeout) != config.REQUEST_TIMEOUT
+        ):
+            config.REQUEST_TIMEOUT = int(timeout)
+            changes.append(f"request_timeout={int(timeout)}s")
+            needs_rotate = True
+        bandwidth = s.get("proxy_bandwidth_mbps")
+        if (
+            isinstance(bandwidth, (int, float))
+            and bandwidth >= 0
+            and float(bandwidth) != config.PROXY_BANDWIDTH_MBPS
+        ):
+            config.PROXY_BANDWIDTH_MBPS = float(bandwidth)
+            changes.append(f"proxy_bandwidth={bandwidth}Mbps")
+        # 中流停滞防御参数（低速中止在 session 创建时固化 → 变更需轮换）
+        for skey, attr in (
+            ("low_speed_limit_bps", "LOW_SPEED_LIMIT_BPS"),
+            ("low_speed_time_s", "LOW_SPEED_TIME_S"),
+        ):
+            sval = s.get(skey)
+            if isinstance(sval, (int, float)) and sval >= 0 and int(sval) != getattr(config, attr):
+                setattr(config, attr, int(sval))
+                changes.append(f"{skey}={int(sval)}")
+                needs_rotate = True
+        stall = s.get("stall_rotate_threshold")
+        if isinstance(stall, int) and stall > 0 and stall != self._stall_rotate_threshold:
+            self._stall_rotate_threshold = stall
+            changes.append(f"stall_rotate_threshold={stall}")
         retries = s.get("max_retries")
         if isinstance(retries, int) and retries > 0:
             self._max_retries = retries
@@ -196,6 +256,7 @@ class ScrapeEngine:
             self._rotate_every = rotate
         if changes:
             logger.info("设置同步: %s", ", ".join(changes))
+        return needs_rotate
 
     async def _settings_sync(self) -> None:
         while self._running:
@@ -225,7 +286,16 @@ class ScrapeEngine:
                 metrics=metrics, window_state=window, version=WORKER_VERSION
             )
             if result:
-                self._apply_settings(result.get("settings") or {})
+                needs_rotate = self._apply_settings(result.get("settings") or {})
+                if needs_rotate and self._session is not None:
+                    # request_timeout 固化在 session 创建时——立即轮换使新值生效。
+                    # 热备是旧超时建的：丢弃走冷轮换；清节流戳保证本次轮换必执行
+                    if self._standby_session is not None:
+                        stale_standby = self._standby_session
+                        self._standby_session = None
+                        asyncio.create_task(self._delayed_close(stale_standby))
+                    self._last_rotate_time = 0.0
+                    await self._rotate_session(reason="超时参数变更")
                 if result.get("draining") and not self._draining:
                     logger.info("server 指示下线（draining），停止领新任务")
                     self._draining = True
@@ -418,6 +488,17 @@ class ScrapeEngine:
                 logger.error("worker-%s 未捕获异常: %s", idx, e)
                 await asyncio.sleep(1)
 
+    def _note_transport_ok(self) -> None:
+        self._stall_count = 0
+
+    def _note_transport_stall(self) -> bool:
+        """→ True=连续停滞达阈值（调用方应轮换 session：新连接=TPS 新出口 IP）。"""
+        self._stall_count += 1
+        if self._stall_count >= self._stall_rotate_threshold:
+            self._stall_count = 0
+            return True
+        return False
+
     def _calc_recv_speed(self) -> int:
         bw = config.PROXY_BANDWIDTH_MBPS
         if bw <= 0:
@@ -469,8 +550,13 @@ class ScrapeEngine:
                     self._controller.record_result(req_elapsed, False, False, 0)
                     local_attempt += 1
                     last_error_type = "timeout"
+                    if self._note_transport_stall():
+                        # 重试会复用连接池同一隧道=同一坏出口 IP（2026-07-15 真机实测
+                        # 中流停滞连击）——换 session 建新连接才真正换 IP
+                        await self._rotate_session(reason="传输停滞连击")
                     await asyncio.sleep(2)
                     continue
+                self._note_transport_ok()
 
                 if session.is_blocked(resp):
                     if session.is_captcha(resp) and await session.solve_captcha(resp):

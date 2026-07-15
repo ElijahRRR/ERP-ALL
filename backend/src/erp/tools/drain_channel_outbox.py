@@ -14,9 +14,13 @@ import argparse
 import asyncio
 import sys
 
+import structlog
+
 from erp.channel import outbox
 from erp.core.db import get_session_factory, system_tx
 from erp.listing.service import APPLIERS
+
+log = structlog.get_logger()
 
 
 async def drain(*, sweep_only: bool = False, limit: int = 100) -> dict[str, int]:
@@ -39,7 +43,7 @@ async def drain(*, sweep_only: bool = False, limit: int = 100) -> dict[str, int]
             stats["blocked"] += 1  # 车道被挡（verify_pending 背压）——等待对账归位
             break
         stats["executed"] += 1
-        print(f"command {cid}: {outcome}")
+        log.info("outbox.drained", command_id=cid, outcome=outcome)
     return stats
 
 

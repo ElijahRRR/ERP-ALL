@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from erp_worker import config
 from erp_worker.engine import ScrapeEngine
 
 
@@ -195,3 +196,69 @@ async def test_degraded_page_retries(degraded_price: str) -> None:
     # 降级页耗尽后失败回传
     assert client.results[0]["success"] is False
     assert client.results[0]["error_type"] == "parse_error"
+
+
+class TestApplySettings:
+    """A152 实测回归：request_timeout 写死 15s 全量超时——settings 下发必须可覆盖。"""
+
+    def test_request_timeout_and_bandwidth_wired(self) -> None:
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old_t, old_b = config.REQUEST_TIMEOUT, config.PROXY_BANDWIDTH_MBPS
+        try:
+            needs_rotate = eng._apply_settings(
+                {"request_timeout": old_t + 30, "proxy_bandwidth_mbps": 8}
+            )
+            assert needs_rotate is True  # 超时固化在 session 创建时 → 变更需轮换
+            assert config.REQUEST_TIMEOUT == old_t + 30
+            assert config.PROXY_BANDWIDTH_MBPS == 8.0
+        finally:
+            config.REQUEST_TIMEOUT, config.PROXY_BANDWIDTH_MBPS = old_t, old_b
+
+    def test_same_or_invalid_timeout_no_rotate(self) -> None:
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old_t = config.REQUEST_TIMEOUT
+        try:
+            assert eng._apply_settings({"request_timeout": old_t}) is False  # 同值不折腾
+            assert eng._apply_settings({"request_timeout": 0}) is False  # 非法值忽略
+            assert eng._apply_settings({"request_timeout": -5}) is False
+            assert config.REQUEST_TIMEOUT == old_t
+            assert eng._apply_settings({}) is False  # 未下发保持现状
+        finally:
+            config.REQUEST_TIMEOUT = old_t
+
+
+class TestProxyPolicy:
+    """2026-07-15 真机事故回归：容器不带 PROXY_URL 重建 → 空代理静默直连 →
+    全量超时装成"采集坏了"。fail-closed：代理缺失拒绝启动，显式 --allow-direct 才放行。"""
+
+    def test_missing_proxy_refuses_start(self) -> None:
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old = config.PROXY_URL
+        try:
+            config.PROXY_URL = ""
+            with pytest.raises(RuntimeError, match="PROXY_REQUIRED"):
+                eng._enforce_proxy_policy()
+        finally:
+            config.PROXY_URL = old
+
+    def test_proxy_present_or_explicit_direct_passes(self) -> None:
+        old = config.PROXY_URL
+        try:
+            config.PROXY_URL = "http://u:p@127.0.0.1:1080"
+            ScrapeEngine(FakeClient())._enforce_proxy_policy()  # type: ignore[arg-type]
+            config.PROXY_URL = ""
+            eng = ScrapeEngine(FakeClient(), allow_direct=True)  # type: ignore[arg-type]
+            eng._enforce_proxy_policy()  # 显式直连（开发档）不拦
+        finally:
+            config.PROXY_URL = old
+
+    def test_settings_delivered_proxy_is_dns_resolved(self) -> None:
+        """ERP 下发 proxy_url 必须与启动路径同规格走域名预解析（c-ares 坑）。"""
+        eng = ScrapeEngine(FakeClient())  # type: ignore[arg-type]
+        old = config.PROXY_URL
+        try:
+            eng._apply_settings({"proxy_url": "http://u:p@127.0.0.1:9999"})  # IP 直通
+            assert eng.proxy_manager._proxy_url == "http://u:p@127.0.0.1:9999"
+            assert config.PROXY_URL == "http://u:p@127.0.0.1:9999"
+        finally:
+            config.PROXY_URL = old

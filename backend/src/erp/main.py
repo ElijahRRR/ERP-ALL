@@ -1,7 +1,9 @@
 """API entrypoint（运行角色之一；worker/beat 有各自 entrypoint，共享同一代码库）。"""
 
+import asyncio
+import contextlib
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -14,6 +16,7 @@ from erp.catalog.router import catalog_router
 from erp.channel.router import channel_router
 from erp.compliance.router import compliance_router
 from erp.core.authn import AuthError, PermissionDenied
+from erp.core.config_service import get_config_service, run_invalidation_subscriber
 from erp.core.errors import BusinessError
 from erp.core.logging import setup_logging
 from erp.core.settings import get_settings
@@ -27,6 +30,18 @@ log = structlog.get_logger()
 __all__ = ["BusinessError", "app", "create_app"]
 
 
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # 配置失效订阅（R2-04 pubsub 广播；fail-open——Redis 不可用只降级为 TTL 收敛）
+    subscriber = asyncio.create_task(run_invalidation_subscriber(get_config_service()))
+    try:
+        yield
+    finally:
+        subscriber.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await subscriber
+
+
 def create_app() -> FastAPI:
     setup_logging()
     settings = get_settings()
@@ -34,6 +49,7 @@ def create_app() -> FastAPI:
         title="ERP-ALL API",
         version=__version__,
         docs_url="/api/docs" if settings.env != "prod" else None,
+        lifespan=_lifespan,
     )
 
     @app.middleware("http")

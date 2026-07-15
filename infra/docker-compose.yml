@@ -54,14 +54,23 @@ services:
       redis: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
 
-  # 后端 worker / beat 角色随 R2-04 启用（同镜像不同 command）：
+  # beat：schedule 表驱动的周期任务（R2-04）——feed 自动轮询/采集回收/对账/清扫/告警。
+  # 回滚 = 停本容器（无状态残留，人工端点全部保留）。
+  beat:
+    build: ../backend
+    restart: unless-stopped
+    command: ["python", "-m", "erp.beat"]
+    environment: *backend_env
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  # 通用队列 worker 占位：代码中尚无任何队列生产者（审核走请求内三段式、采集走
+  # PG 拉取协议）——随首个队列生产者启用，空转消费者不上线（R2-04 范围注记）。
   # worker:
   #   build: ../backend
   #   command: ["python", "-m", "erp.worker"]
-  #   environment: *backend_env
-  # beat:
-  #   build: ../backend
-  #   command: ["python", "-m", "erp.beat"]
   #   environment: *backend_env
 
   # 采集 worker（R2-01）：独立镜像，出站拨入 api 领任务真抓 Amazon。

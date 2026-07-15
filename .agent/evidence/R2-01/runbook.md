@@ -27,6 +27,32 @@ docker compose -f infra/docker-compose.yml logs -f scraper
 ```
 日志应见：`注册成功` →（心跳）→ `OK B0XXXX → M000000N | 标题…` 逐条刷出。
 
+**⚠️ 代理必带（2026-07-15 真机事故）**：compose 的 `--proxy "${PROXY_URL:-}"` 是
+shell 插值——**任何一次不带 `PROXY_URL=` 前缀的 up/重建都会让容器拿到空代理**。
+修复后 worker 缺代理会**拒绝启动**（日志 `PROXY_REQUIRED`，crash-loop 可见），
+不再静默直连采集（直连从你的网络必然全量超时，且现象像"采集坏了"）。
+一劳永逸：把代理写进配置中心（worker 启动时先拉 settings，容器重建不再丢）：
+```sql
+INSERT INTO app.system_config(key, value) VALUES('scrape.worker_settings',
+  '{"proxy_url": "http://user:pwd@tps-host:port"}'::jsonb)
+ON CONFLICT (key) DO UPDATE SET value = app.system_config.value || excluded.value;
+```
+（注：与旧系统配置文件同等明文级别；加密收敛随 RS-02。）
+
+**链路调参**（同键合并进上面的 JSON 即可）。两种下发方式任选：
+
+- 环境变量（起 worker 时带上）：`REQUEST_TIMEOUT=45 PROXY_BANDWIDTH_MBPS=<套餐Mbps>`
+- 配置中心（运行期热生效，worker 30s 内收到并自动轮换 session）：
+  ```sql
+  INSERT INTO app.system_config(key, value) VALUES('scrape.worker_settings',
+    '{"request_timeout": 45, "proxy_bandwidth_mbps": 10}'::jsonb)
+  ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+  ```
+  支持键：`proxy_url` / `request_timeout`（秒）/ `proxy_bandwidth_mbps`（0=不限）/
+  `max_concurrency` / `min_concurrency` / `token_bucket_rate`（QPS）/
+  `max_retries` / `session_rotate_every`。
+  声明真实代理带宽后，AIMD 会在用量达 80% 软顶时自动背压，避免并发把链路挤到超时。
+
 ### ③ 看产品库（前端）
 产品库页应出现 ≥10 条真实产品。**点标题或点「详情」按钮**打开产品详情抽屉，确认字段完整：
 - **标题**（真实商品名，非 Demo）· **品牌** · **类目**

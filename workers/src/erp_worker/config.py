@@ -12,9 +12,20 @@ import os
 # ── 采集基础 ──
 DEFAULT_ZIP_CODE = os.environ.get("DEFAULT_ZIP_CODE", "10001")
 MAX_CLIENTS = 32
-REQUEST_TIMEOUT = 15
+# 单请求总超时（秒）。源仓默认 15 按直连/大带宽调校；TPS 代理链路整页抓取常态更慢
+# ——部署侧必须按实际链路调（env REQUEST_TIMEOUT 或 scrape.worker_settings.request_timeout，
+# 运行期下发变更会触发 session 轮换生效）。A152 真调实测 15s 全量超时的教训。
+REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "15"))
 MAX_RETRIES = 3
 SESSION_ROTATE_EVERY = 1000
+
+# ── 中流停滞防御（2026-07-15 真机实测：TPS 坏出口 IP 收到部分响应后卡死；
+#    且重试复用连接池同一隧道=钉死同一坏 IP）──
+# 传输速率 < LIMIT 字节/秒 持续 TIME 秒 → 中止该请求（0 任一=关闭该防御）
+LOW_SPEED_LIMIT_BPS = int(os.environ.get("LOW_SPEED_LIMIT_BPS", "1024"))
+LOW_SPEED_TIME_S = int(os.environ.get("LOW_SPEED_TIME_S", "8"))
+# 连续 N 次传输停滞（跨任务累计，成功即清零）→ 轮换 session（新连接=TPS 新出口 IP）
+STALL_ROTATE_THRESHOLD = int(os.environ.get("STALL_ROTATE_THRESHOLD", "3"))
 
 # ── 令牌桶限流（QPS）──
 TOKEN_BUCKET_RATE = 64.0
@@ -24,7 +35,9 @@ INITIAL_CONCURRENCY = 16
 MIN_CONCURRENCY = 16
 MAX_CONCURRENCY = 32
 
-PROXY_BANDWIDTH_MBPS = 0
+# 代理套餐带宽（Mbps）。0=不启用带宽软顶/分摊限速；声明真实值后 AIMD 会在
+# 用量达 BANDWIDTH_SOFT_CAP 时背压（env PROXY_BANDWIDTH_MBPS 或 settings 下发）
+PROXY_BANDWIDTH_MBPS = float(os.environ.get("PROXY_BANDWIDTH_MBPS", "0"))
 ADJUST_INTERVAL_S = 3
 TARGET_LATENCY_S = 5.0
 MAX_LATENCY_S = 8.0

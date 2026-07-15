@@ -131,9 +131,13 @@
   verify_pending 挡道是**有意背压**（fail-closed）：上一发结果未知时禁止继续发，
   对账（adopt/lost）终局命令后车道解开——旧系统「先对账再重投」语义的推广。
 - 执行拓扑：请求内三段式（tx1 落命令→HTTP→tx2 归位，RS-03a 同模式）为主；
-  崩溃遗留 pending 由 `erp.tools.drain_channel_outbox` 补执行（beat 周期化随 R2-04）。
+  崩溃遗留 pending 由 `erp.tools.drain_channel_outbox` 补执行——已 beat 周期化
+  （R2-04 schedule `channel_outbox_drain`）。
+- item_retire 的 verify_pending 对账：beat `retire_recon`（R2-04）——商品实况为权威
+  （GET /v3/items/{sku} 404/RETIRED → succeeded+delisted；仍在架超 grace →
+  failed+配额返还+回 live；未过 grace 维持背压），绝不重发。
 - inbox（渠道进站事件去重）：当前进站只有主动轮询读，无重复消费面——
-  R2-04 接 webhook 通知订阅时按本表对称落 inbox。
+  接 webhook 通知订阅时按本表对称落 inbox（R2-04 序列 webhook 单，未随底座）。
 
 ## api_idempotency API 幂等消费存储（RS-03b/评审 C2）
 
@@ -152,7 +156,7 @@ listing allocate/submit/delist（ship/refund-execute 随 R2-05 用同一助手�
 协议：占位（唯一约束）→ 执行处理器（自管事务）→ 回填响应；并发同键后到者 409
 IDEMPOTENCY_IN_PROGRESS；错误响应不缓存（占位即删可重试）；崩溃残留占位超
 stale（默认 10min）失效可重占；TTL/stale 走 system_config `api.idempotency`；
-键内惰性清理，全表清扫随 R2-04 维护任务。
+键内惰性清理 + beat 全表按龄清扫（R2-04 schedule `api_idempotency_sweep`，同一配置源）。
 
 ## store_incident 店铺事件（封店工作流，D-Q33）
 

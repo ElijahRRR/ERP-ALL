@@ -226,21 +226,21 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "上架真实化【L2】（MPSetup v5 官方规格+AI属性填写+category_map+本地校验器+错误码灌入）",
-  "status": "in_progress",
+  "status": "done",
   "evidence": ".agent/evidence/R2-03/ (archaeology.md + dryrun-harness-selftest.json + deployment-instructions.md)",
   "finding": "✅ 验收①通过（2026-07-15，Owner 批准）：部署机真数据 dry-run（T7 monolith 6,951 PT+__orderable__ 经 0020 通道导入 job14 零错、错误码 job15 65/65）--auto 12 --fill：9/12 过官方 spec 校验、覆盖 5 个不同 WPT（Drinkware/Furniture Grippers Pads & Sliders/Grill Grid Lifters/Hardware Screws/Other Fishing Accessories），按 005 验收①原文口径达标；3 条失败全部溯源=源数据贫瘠（1 条卖点补不满 keyFeatures minItems=3，旧系统会照发吃渠道拒 EXT_DATA_ERROR_55506974520167，新系统本地拦截省 10/hour 配额），处置=补文案重投不改业务数据。证据=evidence/R2-03/dryrun-real-data-run1.md。开发六增量+两轮真数据修复（ijson Decimal/判定口径）全部合入 main（PR #1/#2，head 2be1c88d）。余验收② A152 真调——前置 RS-03b 闸门",
   "last_checked_at": "2026-07-15",
-  "note": "验收(L2)：①✅已过（Owner 2026-07-15 批准）②A152 真调 1 SKU→PROCESSED→live 回写→截图→delist——前置 RS-03b（channel outbox+幂等，闸门=真实渠道写入前，已开工）。部署机指令=evidence/deployment-instructions.md；数据贫瘠品(16/17/23)补文案后重投属运营事项"
+  "note": "✅ 整单收账（2026-07-15）：验收①过（真数据 9/12、5 WPT）；验收②过（D-Q61 口径：A152 真调全链=partnerprofile 200/真提交/后台见 feed/轮询/item 级 error 回写/错误码入字典/配额 GTIN 归还——live/delist 分支因无真 UPC 并入首次真实运营发布验证）。RS-03b outbox 真渠道首跑即工作。遗留运营项：真 UPC 到位后灌 GTIN 池即可上真品"
  },
  {
   "id": "R2-04",
   "priority": "P1",
   "dimension": "foundation",
   "check": "worker/beat 底座【L0→L1】（schedule 表驱动：feed轮询/采集回收/缓存LRU/GTIN水位/预算闸；Redis pubsub 配置广播）",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": ".agent/evidence/R2-04/",
-  "finding": null,
-  "last_checked_at": null,
+  "finding": "4 增量完码全绿（289 pytest+迁移演练）：beat 循环+任务10件（feed_poll/feed_verify_back/outbox_drain/retire_recon/scrape_reclaim/partition_maintain/api_idempotency_sweep/llm_cache_lru/gtin_watermark/llm_budget_check）+ pubsub 配置广播 + compose beat 启用。两条验收均已测试化锚定；余项=部署机启 beat 后 A152 实测（evidence/R2-04/runbook.md 步骤4/5）。范围注记：erp.worker 队列消费者无生产者暂不启用；RS-08 事前预算预留不并入（告警版已落）",
+  "last_checked_at": "2026-07-15",
   "note": "验收：A152 提交后无人工点查自动轮询回写；模拟断连自动回收"
  },
  {
