@@ -48,6 +48,26 @@ _ORDERABLE_DEFAULTS: dict[str, Any] = {
 }
 _FORCE_BRAND = "Unbranded"  # BR-CAT-005：上架商品强制品牌
 
+# 系统后处理字段（源仓 mapper.py:14-29 逐字保真）：不喂 LLM、不采纳其输出——
+# 文案/品牌/图片/SKU/价格/日期/库存由系统用 Amazon 原文与店铺配置决定。
+# （定义放本模块供构建器合并过滤；attr_fill 从这里导入，避免循环依赖。）
+SYSTEM_COPY_FIELDS = {"productName", "shortDescription", "keyFeatures"}
+SYSTEM_BRAND_FIELDS = {"brand"}
+SYSTEM_IMAGE_FIELDS = {"mainImageUrl", "productSecondaryImageURL", "swatchImageUrl"}
+SYSTEM_VISIBLE_POSTPROCESS_FIELDS = SYSTEM_COPY_FIELDS | SYSTEM_BRAND_FIELDS | SYSTEM_IMAGE_FIELDS
+SYSTEM_ORDERABLE_POSTPROCESS_FIELDS = {
+    "sku",
+    "productIdentifiers",
+    "price",
+    "country_of_origin_substantial_transformation",
+    "specProductType",
+    "inventory",
+    "startDate",
+    "endDate",
+    "MustShipAlone",
+    "fulfillmentLagTime",
+}
+
 # 零认证覆盖（BR-AUD-006，源仓 NO_CERT_FORCES 逐字保真）
 _NO_CERT_FORCES: dict[str, str] = {
     "certification_type": "Neither of these applies",
@@ -178,18 +198,27 @@ def _zero_cert_overrides(
     return visible, overrides
 
 
+def _llm_fill(product: dict[str, Any], wpt: str) -> dict[str, Any]:
+    """attrs['walmart_fill'][wpt]（attr_fill 增量 3 产物；无则空）。"""
+    attrs = product.get("attrs") or {}
+    fill = (attrs.get("walmart_fill") or {}).get(wpt)
+    return fill if isinstance(fill, dict) else {}
+
+
 def _build_visible(
     product: dict[str, Any], wpt: str, schema: wpt_schema.PtSchema | None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """build 模式 Visible 基础字段 + 零认证覆盖。AI 属性填写（增量 3）在此之上补缺。"""
+    """build 模式 Visible：LLM 填充打底 → 系统字段覆盖 → 零认证覆盖压轴。"""
     attrs = product.get("attrs") or {}
     images = [u for u in (product.get("images") or []) if isinstance(u, str) and u.strip()]
+    fill_visible = _llm_fill(product, wpt).get("visible") or {}
     visible: dict[str, Any] = {
-        "brand": _FORCE_BRAND,
-        "shortDescription": str(attrs.get("description") or product.get("title") or "")[
-            :_SHORT_DESC_MAX
-        ],
+        k: v for k, v in fill_visible.items() if k not in SYSTEM_VISIBLE_POSTPROCESS_FIELDS
     }
+    visible["brand"] = _FORCE_BRAND
+    visible["shortDescription"] = str(attrs.get("description") or product.get("title") or "")[
+        :_SHORT_DESC_MAX
+    ]
     if images:
         visible["mainImageUrl"] = images[0]
         secondary = images[1 : 1 + _SECONDARY_IMAGE_MAX]
@@ -205,30 +234,46 @@ def _build_visible(
 def _build_orderable_template(
     product: dict[str, Any], wpt: str, odefaults: dict[str, Any]
 ) -> dict[str, Any]:
-    """build 模式 Orderable 模板（源仓 force_overrides Orderable 段保真；
-    SKU/GTIN/价格/库存/日期/PartnerID 用占位符，_instantiate 注入）。"""
+    """build 模式 Orderable 模板（源仓 force_overrides Orderable 段保真）。
+
+    合并序：模板默认 < LLM 填充（非后处理字段，如 electronicsIndicator/ShippingWeight
+    推断）< 系统强制（后处理字段占位符，_instantiate 注入）。attrs.shipping_weight
+    实抓值 > LLM 推断 > 默认 1。"""
     attrs = product.get("attrs") or {}
-    return {
-        "sku": "{SKU}",
-        "productIdentifiers": {"productIdType": "{GTIN_TYPE}", "productId": "{GTIN}"},
+    orderable: dict[str, Any] = {
         "productName": (product.get("title") or "")[:_PRODUCT_NAME_MAX],
         "brand": _FORCE_BRAND,
-        "price": "{PRICE}",  # 裸 number（非对象），实例化时注入
-        "ShippingWeight": float(attrs.get("shipping_weight") or 1),
+        "ShippingWeight": 1.0,
         "electronicsIndicator": "No",
         "batteryTechnologyType": "Does Not Contain a Battery",
         "chemicalAerosolPesticide": "No",
         "shipsInOriginalPackaging": "No",
-        "specProductType": wpt,
-        "country_of_origin_substantial_transformation": str(
-            attrs.get("country_of_origin") or odefaults["country_of_origin"]
-        ),
-        "MustShipAlone": odefaults["must_ship_alone"],
-        "fulfillmentLagTime": int(odefaults["fulfillment_lag_days"]),
-        "startDate": "{START_DATE}",
-        "endDate": "{END_DATE}",
-        "inventory": "{INVENTORY}",
     }
+    fill_orderable = _llm_fill(product, wpt).get("orderable") or {}
+    orderable.update(
+        {k: v for k, v in fill_orderable.items() if k not in SYSTEM_ORDERABLE_POSTPROCESS_FIELDS}
+    )
+    if attrs.get("shipping_weight"):
+        orderable["ShippingWeight"] = float(attrs["shipping_weight"])
+    orderable["productName"] = (product.get("title") or "")[:_PRODUCT_NAME_MAX]
+    orderable["brand"] = _FORCE_BRAND
+    orderable.update(
+        {
+            "sku": "{SKU}",
+            "productIdentifiers": {"productIdType": "{GTIN_TYPE}", "productId": "{GTIN}"},
+            "price": "{PRICE}",  # 裸 number（非对象），实例化时注入
+            "specProductType": wpt,
+            "country_of_origin_substantial_transformation": str(
+                attrs.get("country_of_origin") or odefaults["country_of_origin"]
+            ),
+            "MustShipAlone": odefaults["must_ship_alone"],
+            "fulfillmentLagTime": int(odefaults["fulfillment_lag_days"]),
+            "startDate": "{START_DATE}",
+            "endDate": "{END_DATE}",
+            "inventory": "{INVENTORY}",
+        }
+    )
+    return orderable
 
 
 def _match_identifier(product: dict[str, Any], gtin: str | None) -> tuple[str, str]:
