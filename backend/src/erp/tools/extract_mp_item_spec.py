@@ -30,6 +30,7 @@ pt_spec.py:9-14 OOM 事故教训）；无 ijson 时回退 json.load（仅适合�
 """
 
 import argparse
+import decimal
 import json
 import sys
 from collections.abc import Iterator
@@ -83,6 +84,14 @@ ORDERABLE_PSEUDO_PT = "__orderable__"
 
 # 无 ijson 时允许整载的文件上限（超过则警告可能 OOM——源仓 451MB 整载事故教训）
 _WHOLE_LOAD_WARN_MB = 64
+
+
+def _json_default(o: Any) -> Any:
+    """写出兜底：Decimal → int/float（ijson 等解析器的数字类型，json.dumps 不认）。"""
+    if isinstance(o, decimal.Decimal):
+        return int(o) if o == o.to_integral_value() else float(o)
+    raise TypeError(f"不可序列化类型：{type(o).__name__}")
+
 
 _VISIBLE_PREFIX = "properties.MPItem.items.properties.Visible.properties"
 _ORDERABLE_PREFIX = "properties.MPItem.items.properties.Orderable"
@@ -147,13 +156,15 @@ def iter_monolith(path: Path) -> tuple[Iterator[tuple[str, dict[str, Any]]], Any
         with path.open(encoding="utf-8") as f:
             return _iter_loaded(json.load(f))
 
+    # use_float=True：ijson 默认把 JSON 数字产成 decimal.Decimal，json.dumps 不可序列化
+    # （部署机 T7 monolith 实测报错）；float 与 json.load 路径语义一致
     def _pairs() -> Iterator[tuple[str, dict[str, Any]]]:
         with path.open("rb") as fb:
-            yield from ijson.kvitems(fb, _VISIBLE_PREFIX)
+            yield from ijson.kvitems(fb, _VISIBLE_PREFIX, use_float=True)
 
     orderable = None
     with path.open("rb") as fb:
-        for node in ijson.items(fb, _ORDERABLE_PREFIX):
+        for node in ijson.items(fb, _ORDERABLE_PREFIX, use_float=True):
             orderable = node
             break
     return _pairs(), orderable
@@ -186,7 +197,7 @@ def extract(
         rows[ORDERABLE_PSEUDO_PT] = build_row(ORDERABLE_PSEUDO_PT, orderable_node)
     with out.open("w", encoding="utf-8") as f:
         for row in rows.values():
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.write(json.dumps(row, ensure_ascii=False, default=_json_default) + "\n")
     stats = {
         "pts": len(rows) - (1 if ORDERABLE_PSEUDO_PT in rows else 0),
         "orderable": 1 if ORDERABLE_PSEUDO_PT in rows else 0,
