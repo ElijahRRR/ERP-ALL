@@ -57,25 +57,51 @@ async def import_batch(
     return {"imported": imported, "rejected": rejected}
 
 
+# 占号优先序默认值：真实购入 UPC 优先于生成号段（可被配置覆盖，见 _kind_preference）
+_DEFAULT_KIND_PREFERENCE = ("upc_a", "ean_13")
+
+
+async def _kind_preference(session: AsyncSession, team_id: int) -> list[str]:
+    """占号优先序：team_config > system_config > 默认（键 gtin.kind_preference，JSON 数组）。"""
+    for sql, params in (
+        (
+            "SELECT value FROM app.team_config WHERE team_id = :t AND key = 'gtin.kind_preference'",
+            {"t": team_id},
+        ),
+        ("SELECT value FROM app.system_config WHERE key = 'gtin.kind_preference'", {}),
+    ):
+        row = (await session.execute(text(sql), params)).first()
+        if row is not None and isinstance(row[0], list) and row[0]:
+            return [str(k) for k in row[0]]
+    return list(_DEFAULT_KIND_PREFERENCE)
+
+
 async def hold_one(
-    session: AsyncSession, *, team_id: int, listing_id: int, kind: str = "ean_13"
+    session: AsyncSession, *, team_id: int, listing_id: int, kind: str | None = None
 ) -> str:
-    """占用一枚 free GTIN（单语句防双占）。池空 → GTIN_POOL_EMPTY。"""
-    gtin = (
-        await session.execute(
-            text(
-                "UPDATE app.gtin_pool SET status = 'held', held_listing_id = :l, held_at = now()"
-                " WHERE id = (SELECT id FROM app.gtin_pool"
-                "             WHERE team_id = :t AND gtin_kind = :k AND status = 'free'"
-                "             LIMIT 1 FOR UPDATE SKIP LOCKED)"
-                " RETURNING gtin"
-            ),
-            {"l": listing_id, "t": team_id, "k": kind},
-        )
-    ).scalar_one_or_none()
-    if gtin is None:
-        raise BusinessError("GTIN_POOL_EMPTY", f"GTIN 池（{kind}）无可用号码")
-    return str(gtin)
+    """占用一枚 free GTIN（单语句防双占）。
+
+    kind=None（常规路径）按优先序逐池尝试——真机教训：写死 ean_13 时导入的
+    真实 UPC（upc_a 池）永远取不到。全部池空 → GTIN_POOL_EMPTY。
+    """
+    kinds = [kind] if kind else await _kind_preference(session, team_id)
+    for k in kinds:
+        gtin = (
+            await session.execute(
+                text(
+                    "UPDATE app.gtin_pool SET status = 'held', held_listing_id = :l,"
+                    " held_at = now()"
+                    " WHERE id = (SELECT id FROM app.gtin_pool"
+                    "             WHERE team_id = :t AND gtin_kind = :k AND status = 'free'"
+                    "             LIMIT 1 FOR UPDATE SKIP LOCKED)"
+                    " RETURNING gtin"
+                ),
+                {"l": listing_id, "t": team_id, "k": k},
+            )
+        ).scalar_one_or_none()
+        if gtin is not None:
+            return str(gtin)
+    raise BusinessError("GTIN_POOL_EMPTY", f"GTIN 池（{'/'.join(kinds)}）无可用号码")
 
 
 async def mark_used(session: AsyncSession, listing_id: int) -> None:

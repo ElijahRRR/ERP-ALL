@@ -390,3 +390,9 @@
 - **增量4**：ConfigService 接 Redis pubsub（写后 PUBLISH erp:config:invalidate，api/beat lifespan 各起订阅循环，fail-open=TTL 兜底）；compose beat 启用+make up 并入；CI 加 redis 服务；round-trip 真 redis 测试+fail-open 测试。specs 落笔（02/03/06/09 四处）；runbook（evidence/R2-04/runbook.md，含部署机整段指令+任务节奏速查）。
 - 终态：289 pytest + ruff + mypy + 迁移 base↔head 演练全绿。**工单余项=部署机启 beat 后 A152 实测两条验收**（无人工点查自动轮询回写；模拟断连自动回收）——runbook 步骤 4/5。
 - 注：R2-04 全部增量压在 PR #5 分支（单分支纪律），PR 标题/描述已更新反映实际内容。
+
+### Session: 2026-07-15 (真机缺陷修复：真实 UPC 入池后 allocate 500)
+- **背景**：PR #5 已合（main 5ccbe37，R2-04 完码待实测），Owner 导入 30 枚真实 UPC（upc_a 池）试真品分配 → API 500。部署机定位两问题叠加，GitHub 端修复。
+- **缺陷①**：gtin.hold_one 默认 kind='ean_13' 写死——upc_a 池 30 free 永远取不到 → GTIN_POOL_EMPTY。修=占号优先序进配置中心 `gtin.kind_preference`（team>system>默认 [upc_a, ean_13]，真实购入 UPC 优先），按序逐池单语句尝试；allocate/retry_failed 两调用点自动受益；spec.py 本就按长度判 UPC/EAN 无需改。
+- **缺陷②**：allocate 池空补偿走 `DELETE FROM app.listing`，而 erp_app 无 DELETE 权限（0009 最小授权，listing 本就不许物理删）——权限错误把池空业务提示覆盖成 500。修=INSERT+占号包进 SAVEPOINT（begin_nested），失败回滚本品插入不影响批内其它产品，**不扩权限、不加迁移**。
+- 回归测试 test_gtin_allocation.py ×3（仅 upc_a 有号可占到/池空干净 rejected 零残留行/配置覆盖优先序），291 pytest + ruff + mypy 绿（redis round-trip 沙箱跳过，CI 有服务）。03-catalog 分配协议补占号优先序一句。

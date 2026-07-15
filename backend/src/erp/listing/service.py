@@ -191,40 +191,43 @@ async def allocate(
         snap = product.get("price_snapshot") or {}
         if isinstance(snap, dict) and snap.get("list") is not None:
             price = float(snap["list"])
-        listing_id = (
-            await session.execute(
-                text(
-                    "INSERT INTO app.listing"
-                    " (team_id, store_id, product_id, offer_mode, channel_sku,"
-                    "  current_price, created_by)"
-                    " VALUES (:t, :s, :p, :m, :sku, :pr, :u)"
-                    " RETURNING id"
-                ),
-                {
-                    "t": team_id,
-                    "s": store_id,
-                    "p": pid,
-                    "m": offer_mode,
-                    "sku": product["master_sku"],
-                    "pr": price,
-                    "u": actor_id,
-                },
-            )
-        ).scalar_one()
         gtin_val: str | None = None
-        if offer_mode == "build":
-            try:
-                gtin_val = await gtin_pool.hold_one(session, team_id=team_id, listing_id=listing_id)
-            except BusinessError as e:
-                await session.execute(
-                    text("DELETE FROM app.listing WHERE id = :id"), {"id": listing_id}
-                )
-                rejected.append({"product_id": pid, "code": e.code, "message": e.message})
-                continue
-            await session.execute(
-                text("UPDATE app.listing SET gtin = :g WHERE id = :id"),
-                {"g": gtin_val, "id": listing_id},
-            )
+        try:
+            # SAVEPOINT：占号失败回滚本品 INSERT，不影响批内其它产品。
+            # 真机教训：此前用 DELETE 补偿，而 erp_app 无 DELETE 权限（最小权限，
+            # listing 本就不允许物理删）——权限错误把池空业务提示覆盖成 500。
+            async with session.begin_nested():
+                listing_id = (
+                    await session.execute(
+                        text(
+                            "INSERT INTO app.listing"
+                            " (team_id, store_id, product_id, offer_mode, channel_sku,"
+                            "  current_price, created_by)"
+                            " VALUES (:t, :s, :p, :m, :sku, :pr, :u)"
+                            " RETURNING id"
+                        ),
+                        {
+                            "t": team_id,
+                            "s": store_id,
+                            "p": pid,
+                            "m": offer_mode,
+                            "sku": product["master_sku"],
+                            "pr": price,
+                            "u": actor_id,
+                        },
+                    )
+                ).scalar_one()
+                if offer_mode == "build":
+                    gtin_val = await gtin_pool.hold_one(
+                        session, team_id=team_id, listing_id=listing_id
+                    )
+                    await session.execute(
+                        text("UPDATE app.listing SET gtin = :g WHERE id = :id"),
+                        {"g": gtin_val, "id": listing_id},
+                    )
+        except BusinessError as e:
+            rejected.append({"product_id": pid, "code": e.code, "message": e.message})
+            continue
         await session.execute(
             text(
                 "INSERT INTO app.listing_state_history"
