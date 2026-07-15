@@ -1,16 +1,18 @@
-"""PT 官方 spec 导入 CLI（R3b 弹药：认证字段层，refdata.pt_spec）。
+"""PT 官方 spec 导入 CLI（R3b 认证字段层 + R2-03 上架全量规格，refdata.pt_spec）。
 
 用法：
   docker compose -f infra/docker-compose.yml exec api \\
-    python -m erp.tools.import_pt_spec --file /data/pt_spec.jsonl
+    python -m erp.tools.import_pt_spec --file /data/pt_spec.jsonl [--chunk-size 200]
 
-数据来源：源仓 walmart_audit.walmart_pt_spec（官方 MPSetup spec ETL，6,942 行）。
-R3b：has_real_cert=true 且 PT 为整机（nrtl 分类器）→ 类目硬拒。
+数据来源两代：
+  R3b（审核子集）：源仓 walmart_audit.walmart_pt_spec 投影（6,942 行，无 fields）。
+  R2-03（上架全量）：tools/extract_mp_item_spec.py 无损产出（fields=per-PT 官方 v5
+    原始 schema 节点 + '__orderable__' 伪行）。行大（10-100KB），建议 --chunk-size 200。
 
 文件格式（推荐 jsonl，jsonb 列原生保真）；列：
   walmart_product_type（必填）· has_real_cert · real_cert_fields ·
-  has_soft_cert · soft_cert_fields · total_fields · required_count · required_fields
-（源表 fields/synced_at 列忽略——审核只需 cert 与统计列）
+  has_soft_cert · soft_cert_fields · total_fields · required_count · required_fields ·
+  fields（可缺省；缺省时不清库中已有值——COALESCE 保留，两代数据可交替重导）
 
 全局参考数据（refdata，无团队属性），走超管 system_tx。幂等：以 walmart_product_type
 为键 ON CONFLICT 恒更新，重导不产生新行。
@@ -54,7 +56,7 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
     raise ValueError(f"不支持的文件格式：{suffix}（用 csv/xlsx/jsonl）")
 
 
-async def _run(path: Path) -> dict[str, Any]:
+async def _run(path: Path, chunk_size: int = 5000) -> dict[str, Any]:
     rows = _read_rows(path)
     if not rows:
         print("文件无数据行")
@@ -67,6 +69,7 @@ async def _run(path: Path) -> dict[str, Any]:
             source_name=path.name,
             total_rows=len(rows),
             fmt="jsonl" if path.suffix.lower() == ".jsonl" else path.suffix.lower().lstrip("."),
+            chunk_size=chunk_size,
         )
     job_id = job["id"]
     try:
@@ -88,13 +91,16 @@ async def _run(path: Path) -> dict[str, Any]:
 def main() -> int:
     p = argparse.ArgumentParser(description="ERP PT spec 导入（refdata.pt_spec，全局参考数据）")
     p.add_argument("--file", required=True, help="本地文件（csv/xlsx/jsonl）")
+    p.add_argument(
+        "--chunk-size", type=int, default=5000, help="分批提交行数（全量 fields jsonl 建议 200）"
+    )
     args = p.parse_args()
     path = Path(args.file)
     if not path.is_file():
         print(f"文件不存在：{path}", file=sys.stderr)
         return 2
     try:
-        asyncio.run(_run(path))
+        asyncio.run(_run(path, chunk_size=args.chunk_size))
     except Exception:
         return 1
     return 0

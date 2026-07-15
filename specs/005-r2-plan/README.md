@@ -34,9 +34,11 @@
   重跑新系统 → verdict 一致率 ≥90%（差异逐条归因）；成本记账与缓存命中复核。
 
 ### R2-03 上架真实化【L2】← 解决"spec 骨架撑不起真上架"
-- spec 构建器真实化：接 MPSetup v5 官方规格（按 WPT 取必填属性 schema）+ AI 属性填写
-  （走 llm_cache/usage_log 既有记账）+ category_map 导入（6672+15771 映射）+ 提交前
-  本地 schema 校验器；listing_error_catalog 灌入渠道实战错误码。
+- spec 构建器真实化：接 MPSetup v5 官方规格（按 WPT 取必填属性 schema，规格数据走
+  refdata.pt_spec.fields 无损列 + extract_mp_item_spec 提取工具，0020）+ AI 属性填写
+  （走 llm_cache/usage_log 既有记账，module=listing）+ WPT 解析接入 category_map/L1
+  产物（映射数据本身已由 DG1 落库：category_map 15,987 + pt_meta 7,008，2026-07-13）
+  + 提交前本地 schema 校验器；listing_error_catalog 灌入渠道实战错误码。
 - **验收（L2，分两档）**：①dry-run 产物通过官方 spec 校验（≥5 个不同 WPT 的产品）；
   ②A152 真调 1 SKU → PROCESSED → live 回写 → Walmart 后台截图 → delist 收尾
   （即原 R1-11 尾巴，正式挂在此处）。

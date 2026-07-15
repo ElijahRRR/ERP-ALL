@@ -79,7 +79,7 @@ verdict 语义：pass → product.status=audit_passed；reject → audit_rejecte
 |---|---|---|---|
 | id | BIGINT | identity | PK=(id, occurred_at) |
 | team_id | BIGINT | NULL | 全局任务（类目映射批量）为 NULL |
-| module | TEXT | NOT NULL CHECK IN (audit, category_map, mail_classify, other) | |
+| module | TEXT | NOT NULL CHECK IN (audit, category_map, mail_classify, listing, other) | listing=上架 AI 属性填写（0020，R2-03） |
 | model | TEXT | NOT NULL | v4flash/v4pro…（团队自管模型选择，D-Q19）；标准模型=deepseek-v4-flash（D-Q58） |
 | prompt_tokens / completion_tokens | INT | NOT NULL | |
 | cached_input_tokens | INT | NOT NULL DEFAULT 0 | 输入中命中 provider prefix-cache 的 token 数（0018；DeepSeek 命中价≈未命中 1/50，计价与 RS-08 实测用） |
