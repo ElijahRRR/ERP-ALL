@@ -139,6 +139,29 @@ required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤�
   候选 → 写回 map（match_type=ai_rerank；非法/候选外/无候选 → 不写回，绝不写脏映射）。
   命中即 0 LLM（PRD §9）。
 
+## refdata.pt_spec 官方 PT 规格（R3b 引入，R2-03 补列级图纸与 fields 全量列）
+
+> 迁移 0019（审核子集列）+ 0020（fields 全量列）。全局参考数据（无 team_id），
+> dataset_revision('pt_spec') 触发器版本失效；溯源走 import_job（无 synced_at，
+> 有意区别于源表 walmart_pt_spec）。
+
+| 列 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| walmart_product_type | TEXT | PK | 官方 PT 名；伪行 `'__orderable__'` 见下 |
+| has_real_cert | BOOLEAN | NOT NULL DEFAULT false | 必填字段含"真认证"集合（NRTL/CPSIA/FDA/OTC/危险品，集合定义在 extract_mp_item_spec.py，逐字保真源仓 sync_pt_specs）→ R3b：整机 PT 硬拒 |
+| real_cert_fields | JSONB | NULL | 命中的真认证必填字段名数组 |
+| has_soft_cert / soft_cert_fields | BOOLEAN/JSONB | | 软合规（警告/披露类），提醒不硬拒 |
+| total_fields / required_count | INT | NULL | 统计列（审核/展示用） |
+| required_fields | JSONB | NULL | 必填字段名数组 |
+| fields | JSONB | NULL（0020） | **per-PT 官方 MP_ITEM v5 原始 schema 节点原样**（properties/required/allOf 零损）。上架 spec 构建器/本地校验器/AI 属性填写的唯一规格源。不用旧审核库压缩版（enum 截断 10、丢 length/pattern/allOf——会假拒） |
+
+- **伪行协议**：`walmart_product_type='__orderable__'` 存共享 Orderable 段 schema
+  （全 PT 共用一份，~25KB）。不与真实 PT 名冲突；`INNER JOIN pt_meta` 类消费方天然滤掉。
+- **数据生产**（部署机）：`tools/extract_mp_item_spec.py`（输入=T7 MPSetup monolith 流式
+  或 `POST /v3/items/spec` live 响应）→ jsonl → `tools/import_pt_spec.py --chunk-size 200`。
+  fields 列 COALESCE 语义：行内缺省不清库中已有值（审核子集与上架全量两代数据可交替重导）。
+- 消费方：R3b 认证 gate（audit）、上架 spec 构建器 + 本地校验器 + AI 属性填写（R2-03）。
+
 ## product_source 货源记录（占位设计，D-Q41）
 
 | 列 | 类型 | 约束/默认 | 说明 |

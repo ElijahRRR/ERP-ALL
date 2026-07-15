@@ -641,11 +641,13 @@ def _jsonb_or_none(v: Any) -> str | None:
 async def _apply_pt_spec_row(
     session: AsyncSession, row: dict[str, Any], line: int, c: _Counters
 ) -> None:
-    """幂等 upsert 一行到 refdata.pt_spec（键 walmart_product_type，R3b 弹药）。
+    """幂等 upsert 一行到 refdata.pt_spec（键 walmart_product_type，R3b+R2-03 弹药）。
 
     err 仅一种：walmart_product_type 缺失。has_real_cert/has_soft_cert 布尔宽容
-    （_parse_flag）；jsonb 列（real_cert_fields/soft_cert_fields/required_fields/
-    fields 忽略 fields——审核只需 cert 与统计列）。
+    （_parse_flag）；jsonb 列（real_cert_fields/soft_cert_fields/required_fields/fields）。
+    fields=per-PT 官方 v5 原始 schema 节点（0020，extract_mp_item_spec 无损产出；
+    含 '__orderable__' 伪行）——行内缺省时 COALESCE 保留库中已有值：审核子集重导
+    不得清掉上架已灌的全量规格。
     """
     pt = _first(row, _PS_TYPE_KEYS)
     if not pt:
@@ -656,9 +658,10 @@ async def _apply_pt_spec_row(
         text(
             "INSERT INTO refdata.pt_spec"
             " (walmart_product_type, has_real_cert, real_cert_fields, has_soft_cert,"
-            "  soft_cert_fields, total_fields, required_count, required_fields, updated_at)"
+            "  soft_cert_fields, total_fields, required_count, required_fields, fields,"
+            "  updated_at)"
             " VALUES (:pt, :hrc, cast(:rcf AS jsonb), :hsc, cast(:scf AS jsonb),"
-            "  :total, :reqcnt, cast(:reqf AS jsonb), now())"
+            "  :total, :reqcnt, cast(:reqf AS jsonb), cast(:fields AS jsonb), now())"
             " ON CONFLICT (walmart_product_type) DO UPDATE SET"
             "  has_real_cert = EXCLUDED.has_real_cert,"
             "  real_cert_fields = EXCLUDED.real_cert_fields,"
@@ -667,6 +670,7 @@ async def _apply_pt_spec_row(
             "  total_fields = EXCLUDED.total_fields,"
             "  required_count = EXCLUDED.required_count,"
             "  required_fields = EXCLUDED.required_fields,"
+            "  fields = COALESCE(EXCLUDED.fields, pt_spec.fields),"
             "  updated_at = now()"
         ),
         {
@@ -678,6 +682,7 @@ async def _apply_pt_spec_row(
             "total": _parse_int(row, ("total_fields", "total")),
             "reqcnt": _parse_int(row, ("required_count",)),
             "reqf": _jsonb_or_none(row.get("required_fields")),
+            "fields": _jsonb_or_none(row.get("fields")),
         },
     )
     c.ok += 1

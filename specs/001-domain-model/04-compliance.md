@@ -86,7 +86,7 @@
 |---|---|---|---|
 | id | BIGINT | PK identity | |
 | team_id | BIGINT | NULL | 全局数据导入为 NULL（超管） |
-| domain | TEXT | NOT NULL CHECK IN (blacklist_brand, blacklist_seller, blacklist_asin, blacklist_category, tro, phishing, category_map, gtin, trademark, suspension_case, product) | 一 job 一目标域 |
+| domain | TEXT | NOT NULL CHECK IN (blacklist_brand, blacklist_seller, blacklist_asin, blacklist_category, tro, phishing, category_map, gtin, trademark, suspension_case, product, policy, pt_meta, pt_spec, listing_error_catalog) | 一 job 一目标域（policy=0011、pt_meta=0016、pt_spec=0019、listing_error_catalog=0020 陆续扩入） |
 | source_kind | TEXT | NOT NULL CHECK IN (file, api) | |
 | source_name | TEXT | NOT NULL | 文件名/来源标识 |
 | format | TEXT | NOT NULL CHECK IN (csv, xlsx, jsonl) | 模板格式由 ERP 定义并可下载（D-Q35） |
