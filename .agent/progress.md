@@ -352,3 +352,11 @@
 - **增量6 验收① harness**：listing_dryrun.py（build_spec 产物+官方校验+feed 封套+PASS 判定=全 ok 且 distinct WPT≥5）；沙盒 5 WPT fixture 自测 PASS（evidence/dryrun-harness-selftest.json）；部署机真数据指令 evidence/deployment-instructions.md（路A live spec 拉取不等 T7 / 路B monolith 全量；错误码一条命令；dry-run --auto --fill 出验收报告）。
 - 终态：249 pytest + ruff(check+format) + mypy 全绿；PR #1 全部增量已推送。
 - **Next（需 Owner/部署机）**：①部署机按 deployment-instructions 跑任务 1-3 回传 dry-run 报告（验收①真数据版）②验收② A152 真调前必须先做 **RS-03b**（channel outbox+幂等，闸门在案）——云端下一单直接开工 RS-03b，不等验收①回传。
+
+### Session: 2026-07-15 (R2-03 部署机真数据闭环：Decimal 修复 + 验收①判定口径修正)
+- **PR #1 已按 Owner 指示合入 main**（rebase，新 head 820a2a7）——部署机拉不到分支代码的阻塞解除；工作分支按规程从 main 重建。
+- **部署机路 B 实测抓出 extract 真 bug**：ijson 默认产 decimal.Decimal，json.dumps 写 jsonl 报 TypeError。修复=iter_monolith 两处 use_float=True + 写出层 _json_default 兜底（双保险）；与部署机同版 ijson 3.5.1 真流式实测（小数约束零损）+ 回归单测（bff03e6，PR #2）。路 A 在部署机不可用（无旧 erpAPI 仓）→ 指令改路 B 为主路径；header version 保持默认 20260304（与 T7 快照 20260330 不需严格一致，遇 74597363510508 再对齐）。
+- **部署机真数据全链完成**：pt_spec.fields 6,952（6,951 PT + __orderable__，job 14 零错误）；错误码 65/65（job 15，字典 70 码）；dry-run --auto 12 --fill：9/12 过官方 spec 校验、覆盖 5 个不同 WPT、llm_unavailable=0。
+- **3 条失败判读=源数据贫瘠非缺陷**（各只有 1 条卖点，文案链补不满 keyFeatures minItems 3；旧系统会照发吃渠道拒 55506974520167，新系统本地拦截省配额=校验器本职）。证据 evidence/R2-03/dryrun-real-data-run1.md。
+- **harness 判定口径修正**：第 1 版 pass 要求全部产品过——严于 005 验收①原文（"≥5 个不同 WPT 的产品"）。改为原文口径（通过品覆盖 ≥5 WPT 即 PASS），failed 完整列报不隐藏；+回归测试（贫瘠品被拦不拖垮判定、errors 列报）。按原文口径**第 1 轮真数据已达标**（9 过/5 WPT），待部署机重跑出 PASS 报告归档、Owner 签字。
+- 环境注：沙盒 PG 会随容器闲置停机（stale pid），跑 db 测试前 pg_ctlcluster start。
