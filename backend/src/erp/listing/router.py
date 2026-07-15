@@ -7,15 +7,16 @@ R1 注记：submit/delist 契约标 202 异步——试点期在请求内同步�
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
-from erp.core.db import get_session, get_session_factory
+from erp.core.db import ctx_tx, get_session, get_session_factory
 from erp.core.errors import BusinessError
+from erp.core.idempotency import run_idempotent
 from erp.identity.schemas import Page
 from erp.listing import gtin as gtin_service
 from erp.listing import service
@@ -129,22 +130,44 @@ async def get_listing(
     return {**dict(row), "state_history": [dict(h) for h in history]}
 
 
+# Idempotency-Key（契约 002 必填头，RS-03b/C2 起消费）：同键同载荷重放存储响应，
+# 异载荷 409；处理器错误不缓存。头缺失由 FastAPI 按契约拒 422。
+IdemKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=64)]
+
+
 @listing_router.post("/listings/allocate")
 async def allocate(
     body: AllocateIn,
     request: Request,
+    idempotency_key: IdemKey,
     user: Annotated[CurrentUser, Depends(require_permission("listing.allocate"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     if user.team_id is None:
         raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
-    result = await service.allocate(
-        session,
-        team_id=user.team_id,
-        store_id=body.store_id,
-        product_ids=body.product_ids,
-        offer_mode=body.offer_mode,
-        actor_id=user.id,
+    team_id = user.team_id
+
+    async def _handler() -> dict[str, Any]:
+        # 自管事务：结果先于响应存储落库（请求事务失败不产生"响应有、数据无"的谎言）
+        async with ctx_tx(get_session_factory(), team_id=team_id, is_super=user.is_super) as s:
+            return await service.allocate(
+                s,
+                team_id=team_id,
+                store_id=body.store_id,
+                product_ids=body.product_ids,
+                offer_mode=body.offer_mode,
+                actor_id=user.id,
+            )
+
+    result = await run_idempotent(
+        get_session_factory(),
+        team_id=team_id,
+        is_super=user.is_super,
+        endpoint="POST /listings/allocate",
+        idem_key=idempotency_key,
+        payload=body.model_dump(),
+        created_by=user.id,
+        handler=_handler,
     )
     await AuditWriter.for_user(session, user, request).log(
         "listing.allocate",
@@ -159,19 +182,34 @@ async def allocate(
 async def submit(
     body: SubmitIn,
     request: Request,
+    idempotency_key: IdemKey,
     user: Annotated[CurrentUser, Depends(require_permission("listing.submit"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     if user.team_id is None:
         raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
+    team_id = user.team_id
+
     # RS-03b：三段式自管短事务（sessionmaker + 用户 GUC 上下文）——渠道 HTTP 期间
     # 不持行锁/事务；本请求事务（session）只承载末尾的 audit_log 写
-    result = await service.submit(
+    async def _handler() -> dict[str, Any]:
+        return await service.submit(
+            get_session_factory(),
+            team_id=team_id,
+            listing_ids=body.listing_ids,
+            actor_id=user.id,
+            is_super=user.is_super,
+        )
+
+    result = await run_idempotent(
         get_session_factory(),
-        team_id=user.team_id,
-        listing_ids=body.listing_ids,
-        actor_id=user.id,
+        team_id=team_id,
         is_super=user.is_super,
+        endpoint="POST /listings/submit",
+        idem_key=idempotency_key,
+        payload=body.model_dump(),
+        created_by=user.id,
+        handler=_handler,
     )
     await AuditWriter.for_user(session, user, request).log(
         "listing.submit", "feed", result.get("feed_id"), after={"queued": result["queued"]}
@@ -183,17 +221,32 @@ async def submit(
 async def delist(
     listing_id: int,
     request: Request,
+    idempotency_key: IdemKey,
     user: Annotated[CurrentUser, Depends(require_permission("listing.delist"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     if user.team_id is None:
         raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
-    result = await service.delist(
+    team_id = user.team_id
+
+    async def _handler() -> dict[str, Any]:
+        return await service.delist(
+            get_session_factory(),
+            team_id=team_id,
+            listing_id=listing_id,
+            actor_id=user.id,
+            is_super=user.is_super,
+        )
+
+    result = await run_idempotent(
         get_session_factory(),
-        team_id=user.team_id,
-        listing_id=listing_id,
-        actor_id=user.id,
+        team_id=team_id,
         is_super=user.is_super,
+        endpoint="POST /listings/{listingId}/delist",
+        idem_key=idempotency_key,
+        payload={"listing_id": listing_id},
+        created_by=user.id,
+        handler=_handler,
     )
     await AuditWriter.for_user(session, user, request).log("listing.delist", "listing", listing_id)
     return result

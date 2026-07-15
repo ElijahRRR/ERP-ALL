@@ -7,6 +7,7 @@ verify-back 分支（channel_feed_id=NULL 永不盲重试）单独验证。
 """
 
 import json
+import uuid
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,11 @@ from .test_identity_api import PASSWORD, _login
 ADMIN = "listing_admin"
 TEAM = "上架测试团队"
 STORE_CODE = "A152L"
+
+
+def _idem(auth: dict) -> dict:
+    """写端点必填 Idempotency-Key（契约 002，RS-03b 起消费）——每次调用新键。"""
+    return {**auth, "Idempotency-Key": str(uuid.uuid4())}
 
 
 def _ean13(seed: int) -> str:
@@ -179,7 +185,7 @@ class TestAllocate:
         auth = _login(client, ADMIN, PASSWORD)
         r = client.post(
             "/api/v1/listings/allocate",
-            headers=auth,
+            headers=_idem(auth),
             json={
                 "product_ids": [
                     seeded["B0LIST0001"],
@@ -201,7 +207,7 @@ class TestAllocate:
         # 同 product 再分配 → 团队内去重拒绝
         r2 = client.post(
             "/api/v1/listings/allocate",
-            headers=auth,
+            headers=_idem(auth),
             json={
                 "product_ids": [seeded["B0LIST0001"]],
                 "store_id": seeded["store"],
@@ -233,7 +239,7 @@ class TestSubmitChain:
         ids = self._listing_ids(migrated_db, seeded["team"], "draft")
         assert len(ids) == 2
         fake.script = [httpx.Response(200, json={"feedId": "F-CHAN-001"})]
-        r = client.post("/api/v1/listings/submit", headers=auth, json={"listing_ids": ids})
+        r = client.post("/api/v1/listings/submit", headers=_idem(auth), json={"listing_ids": ids})
         assert r.status_code == 202, r.text
         body = r.json()
         assert body["queued"] == 2
@@ -324,7 +330,7 @@ class TestSubmitChain:
                 (seeded["team"],),
             ).fetchone()[0]
         fake.script = [httpx.Response(200, json={"feedId": "F-RETIRE-01"})]
-        r = client.post(f"/api/v1/listings/{live_id}/delist", headers=auth)
+        r = client.post(f"/api/v1/listings/{live_id}/delist", headers=_idem(auth))
         assert r.status_code == 202, r.text
         assert r.json()["status"] == "delisted"
 
@@ -374,7 +380,9 @@ class TestVerifyBack:
                 (seeded["team"],),
             ).fetchone()[0]
         fake.script = [httpx.ConnectTimeout("boom")]
-        r = client.post("/api/v1/listings/submit", headers=auth, json={"listing_ids": [queued_id]})
+        r = client.post(
+            "/api/v1/listings/submit", headers=_idem(auth), json={"listing_ids": [queued_id]}
+        )
         body = r.json()
         assert body["feed_status"] == "verify_pending"
         feed_id = body["feed_id"]
@@ -404,7 +412,7 @@ class TestVerifyBack:
             ).fetchone()[0]
         fake.script = [httpx.ConnectTimeout("boom")]
         feed_id = client.post(
-            "/api/v1/listings/submit", headers=auth, json={"listing_ids": [queued_id]}
+            "/api/v1/listings/submit", headers=_idem(auth), json={"listing_ids": [queued_id]}
         ).json()["feed_id"]
         fake.script = [
             httpx.Response(
@@ -443,7 +451,9 @@ class TestDryRunEvidence:
             # 拨回 queued 以便重新提交（直改状态仅测试用）
             conn.execute("UPDATE app.listing SET status = 'queued' WHERE id = %s", (sub_id,))
         auth = _login(client, ADMIN, PASSWORD)
-        r = client.post("/api/v1/listings/submit", headers=auth, json={"listing_ids": [sub_id]})
+        r = client.post(
+            "/api/v1/listings/submit", headers=_idem(auth), json={"listing_ids": [sub_id]}
+        )
         body = r.json()
         assert body.get("dry_run") is True
         assert body["feed_status"] == "building"

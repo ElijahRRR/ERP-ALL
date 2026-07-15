@@ -98,8 +98,14 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 
 export const api = {
   get: <T>(path: string) => request<T>(path),
+  // Idempotency-Key：契约必填的写操作幂等头（服务端 24h 去重）。每次调用生成一次；
+  // 401 刷新后的重放复用同一 init => 同键，网络层自动重试不会造成重复执行。
   post: <T>(path: string, data?: unknown) =>
-    request<T>(path, { method: 'POST', body: data === undefined ? undefined : JSON.stringify(data) }),
+    request<T>(path, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      body: data === undefined ? undefined : JSON.stringify(data),
+    }),
   put: <T>(path: string, data: unknown) =>
     request<T>(path, { method: 'PUT', body: JSON.stringify(data) }),
   patch: <T>(path: string, data: unknown) =>
