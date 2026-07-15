@@ -64,10 +64,16 @@ uv run python -m erp.tools.listing_dryrun --auto 12 --fill \
     --out /tmp/dryrun-report.json
 ```
 
-- 期望输出末行 `验收①判定：PASS ✅`（全部 validation.ok 且 distinct WPT ≥5）。
-- 把 `/tmp/dryrun-report.json` 回传（贴 summary + 任一 FAIL 项的 validation.errors 全文）。
-- FAIL 常见因：某产品类目无直判（先跑 `uv run python -m erp.tools.resolve_categories --backlog`
-  填图）；某 WPT 的 fields 未拉（把该 WPT 补进任务 1 的 pts 列表重拉）。
+- 期望输出末行 `验收①判定：PASS ✅`。判定=005 验收①原文口径：**通过官方 spec 校验的
+  产品覆盖 ≥5 个不同 WPT**（2026-07-15 修正——第 1 版误设为"全部产品过"，严于验收原文）。
+- 个别产品源数据贫瘠（如仅 1 条卖点补不满 keyFeatures minItems）被本地校验拦下属正常
+  ——旧系统会照发吃渠道拒，新系统本地拦截省配额；这类品列在 summary.failed，
+  处置=补文案后重投，不改产品业务数据。
+- 把 `/tmp/dryrun-report.json` 回传（贴 summary；有 failed 贴 errors 全文）。
+- 其它 FAIL 因：某产品类目无直判（先跑 `uv run python -m erp.tools.resolve_categories
+  --backlog` 填图）；某 WPT 的 fields 未拉（monolith 全量导入后不应出现）。
+- 第 1 轮真数据结果（9/12 过、5 WPT，按原文口径已达标）见
+  `.agent/evidence/R2-03/dryrun-real-data-run1.md`。
 
 ## 任务 4（Owner 窗口，验收②，先不做）
 

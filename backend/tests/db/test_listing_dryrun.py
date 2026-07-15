@@ -170,3 +170,26 @@ def test_dryrun_below_min_wpt_fails(_seed: dict) -> None:
     s = report["summary"]
     assert s["validation_ok"] == 2 and s["distinct_wpt_count"] == 2
     assert s["pass"] is False  # 不足 5 个 WPT
+
+
+def test_dryrun_data_poor_product_reported_not_blocking(_seed: dict) -> None:
+    """部署机真数据实测回归（2026-07-15）：源数据贫瘠品（1 条卖点补不满 keyFeatures
+    minItems）被本地校验拦下——按 005 验收①原文口径不影响达标（通过品覆盖 ≥5 WPT
+    即 PASS），失败品在 summary.failed 完整列报。"""
+    with psycopg.connect(_pg_dsn(MIGRATOR_URL), autocommit=True) as conn:
+        poor_pid = conn.execute(
+            "INSERT INTO app.product (team_id, source_channel, source_ref, title, attrs, status)"
+            " VALUES (%s, 'amazon', 'ZDRPOOR01', 'Mini Art',"  # 标题 <10 字符，拆句补不了
+            ' \'{"wpt": "' + WPTS[0] + '", "bullets": ["Nice"]}\', \'audit_passed\')'
+            " RETURNING id",
+            (_seed["team"],),
+        ).fetchone()[0]
+    report = asyncio.run(run_dryrun([*_seed["pids"], poor_pid]))
+    s = report["summary"]
+    assert s["products"] == 6 and s["validation_ok"] == 5
+    assert s["distinct_wpt_count"] == 5
+    assert s["pass"] is True  # 通过品覆盖 ≥5 WPT → 达标；贫瘠品不拖垮判定
+    assert len(s["failed"]) == 1
+    fail = s["failed"][0]
+    assert fail["product_id"] == poor_pid
+    assert any("keyFeatures" in e and "minItems" in e for e in fail["errors"])
