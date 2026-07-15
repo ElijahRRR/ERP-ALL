@@ -6,7 +6,7 @@
   外部成功后DB回写前崩溃→verify-back不重复提交(故障注入)；lease/fencing 拒迟到 worker；
   同store/SKU命令有序；HTTP期间行锁已释放(实证)；outbox payload 凭证/PII 脱敏。
   —— 2026-07-15 全部测试化达成（evidence/RS-03b/acceptance.md），闸门解除。
-- 余项（R2-03 收尾）：验收② A152 真调 1 SKU → PROCESSED → live → 截图 → delist
+- ✅ R2-03 整单 accepted（2026-07-15，D-Q61）：验收①②均过；live/delist 真调并入首次真实运营发布
   ——需 Owner 窗口（runbook R1-11/a152-live-runbook.md + 部署机指令任务 4 已更新）。
 - Constraints: workflow discipline per CLAUDE.md；每增量 CI 绿（pytest/ruff[check+format]/mypy）；
   业务参数一律 system_config；不绕过 walmart_client 语义直连渠道；fail-closed 底线（D-Q60 先例）；

@@ -375,3 +375,9 @@
 - **socksio 缺依赖（PR #4，已合 92fc7e9）**：网关经店铺 SOCKS5 代理发包需 httpx[socks]，镜像缺 socksio 在传输构造点即抛错。修=正式依赖 + socks5 URL 构造级回归测试。沙盒 MockTransport 从不建真实传输→只有真机能暴露。
 - **采集 worker 超时写死 15s（真机全量超时）**：config.REQUEST_TIMEOUT 源仓直连口径，TPS 代理链路整页常态更慢；且 _apply_settings 文档串声称支持"超时"下发但代码未接（配置中心铁律漏网）。修=env 兜底（REQUEST_TIMEOUT/PROXY_BANDWIDTH_MBPS）+ scrape.worker_settings 运行期下发 request_timeout/proxy_bandwidth_mbps；超时变更丢弃旧超时热备、清节流戳强制冷轮换生效；R2-01 runbook 补链路调参节（支持键全列）。workers 28 用例四关全绿。
 - **Owner 反证推翻超时判因**（同代理同机、R2-01 时跑得通）→ 复查实锤真根因：compose `--proxy "${PROXY_URL:-}"` shell 插值，容器不带前缀重建即空代理；proxy.py 空代理仅 warning 后**静默直连** Amazon → 全量 15s 超时装成"采集坏了"。修=engine 启动 `_enforce_proxy_policy` fail-closed（缺代理拒启，--allow-direct 显式放行）+ settings 下发 proxy_url 补域名预解析（c-ares 坑，下发路径原漏接）+ runbook 补"代理必带/写配置中心防丢"节。workers 31 用例四关全绿。超时可配置化保留（配置中心铁律本就欠账）。
+
+### Session: 2026-07-15 (验收② A152 真调通过 · R2-03 整单收账 · D-Q61)
+- **A152 真调全链首跑成功**（部署机+Owner）：HEAD 92fc7e9 部署 → socksio ok → partnerprofile 经网关+SOCKS 代理 HTTP 200（partner_id=10003098102 回填）→ live_test 档真实提交 1 SKU → **Walmart 后台可见 feed** → 轮询成功 → item 级 error 回写（测试 UPC 随机编造被渠道驳回=预期）→ listing failed+错误码入字典+配额返还+GTIN 归还。**RS-03b outbox 三段式在真渠道首跑即工作**。
+- **D-Q61**：验收②口径调整并通过——live→截图→delist 分支因无真实购入 UPC 不可达成（Owner 确认），渠道写路径全链真调（提交/确收/轮询/权威回写/错误处置闭环）即达标；live/delist 真调并入首次真实运营发布。**R2-03 整单 accepted**。
+- 采集器插曲收束：TPS 停滞间歇自愈（"刚才又可以了"），Owner 指示稳定性项搁置——中流停滞防御（低速中止+停滞连击轮换）已完码存档 PR #5（draft，含代理 fail-closed+超时可配置化，共 3 commit 全绿），待后续窗口再验再合。
+- Next：R2-04 worker/beat 底座（outbox drain 周期化/feed 自动轮询/retire 对账维护任务/api_idempotency 清扫自然并入）；真 UPC 到位后灌 GTIN 池即可上真品。
