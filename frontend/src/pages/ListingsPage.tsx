@@ -340,15 +340,34 @@ function RepriceModal({
   onClose: () => void
   onDone: () => void
 }) {
-  async function onFinish(values: { price: number }) {
+  async function submit(price: number, force: boolean) {
     try {
       // PATCH /listings/{id} 为契约新增端点，schema.d.ts 尚未重新生成，先走宽松调用
-      await api.patch(`/listings/${listing.id}`, { price: values.price })
+      await api.patch(`/listings/${listing.id}`, force ? { price, force: true } : { price })
       message.success('改价成功')
       onDone()
     } catch (e) {
+      // BR-PR-008：变动超确认阈值（默认 30%）→ 422 PRICING_CONFIRM_REQUIRED（detail 带 old/new），
+      // 弹确认后带 { price, force: true } 重发
+      if (e instanceof ApiError && e.code === 'PRICING_CONFIRM_REQUIRED') {
+        const d = (e.detail ?? {}) as { old?: number; new?: number }
+        Modal.confirm({
+          title: '价格变动超过确认阈值',
+          content: `${e.message}：${d.old ?? '?'} → ${d.new ?? price}。确认强制改价？`,
+          okText: '强制改价',
+          okButtonProps: { danger: true },
+          cancelText: '取消',
+          onOk: () => submit(price, true),
+        })
+        return
+      }
+      // 其余业务拒绝（含低于底线的 PRICING_BELOW_MIN_PRICE）直接展示后端 message
       message.error(e instanceof ApiError ? e.message : '改价失败')
     }
+  }
+
+  async function onFinish(values: { price: number }) {
+    await submit(values.price, false)
   }
 
   return (

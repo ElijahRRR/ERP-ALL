@@ -772,6 +772,20 @@ async def _apply_poll_result(
             object_id=str(feed_id),
             dedupe_key=f"feed_result:{feed_id}",
         )
+    elif ok:
+        # 全部成功 → info 结果通知（SM-0716①：此前只报忧不报喜）
+        # dedupe 与失败通知同键——一个 feed 只发一条结果通知
+        await notify(
+            session,
+            team_id=feed["team_id"],
+            severity="info",
+            category="listing_feed",
+            title=f"上架 Feed #{feed_id} 全部成功",
+            body=f"{ok} 个 listing 已 live",
+            object_type="feed",
+            object_id=str(feed_id),
+            dedupe_key=f"feed_result:{feed_id}",
+        )
     return {"feed_id": feed_id, "feed_status": final, "success": ok, "error": err}
 
 

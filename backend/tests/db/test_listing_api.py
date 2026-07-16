@@ -37,6 +37,12 @@ def _ean13(seed: int) -> str:
     return body + str((10 - total % 10) % 10)
 
 
+def _gs1(body: str) -> str:
+    """任意 11/12 位主体 → 补 GS1 校验位的完整 UPC-A/EAN-13。"""
+    total = sum(int(c) * (3 if (len(body) - 1 - i) % 2 == 0 else 1) for i, c in enumerate(body))
+    return body + str((10 - total % 10) % 10)
+
+
 class _FakeChannel:
     """渠道替身：/v3/token 发 token；业务路径按脚本队列响应。"""
 
@@ -163,16 +169,21 @@ class TestGtinPool:
         auth = _login(client, ADMIN, PASSWORD)
         gtins = [_ean13(i) for i in range(1, 21)]
         bad = "6900000000010"  # 校验位错误
+        # BR-UPC-002 受限前缀（校验位全对，卡在有效首位）：
+        # 2 开头 UPC-A / 2 开头 EAN-13 / "0" 补零 EAN-13 实为 2 开头 UPC（判第 2 位）
+        unsafe = [_gs1("20000000001"), _gs1("200000000001"), _gs1("020000000001")]
         r = client.post(
             "/api/v1/gtin-pool/import",
             headers=auth,
-            json={"gtins": [*gtins, bad, gtins[0]]},
+            json={"gtins": [*gtins, bad, gtins[0], *unsafe]},
         )
         assert r.status_code == 201, r.text
         body = r.json()
-        assert body["imported"] == 20
+        assert body["imported"] == 20  # 好号不受前缀白名单影响
         codes = {x["code"] for x in body["rejected"]}
-        assert codes == {"GTIN_CHECKSUM"}  # 同批重复被输入级去重静默合并
+        assert codes == {"GTIN_CHECKSUM", "GTIN_UNSAFE_PREFIX"}  # 同批重复被输入级去重静默合并
+        rejected_unsafe = {x["gtin"] for x in body["rejected"] if x["code"] == "GTIN_UNSAFE_PREFIX"}
+        assert rejected_unsafe == set(unsafe)
         # 跨批重复 → GTIN_DUPLICATE
         r2 = client.post("/api/v1/gtin-pool/import", headers=auth, json={"gtins": [gtins[0]]})
         assert r2.json()["rejected"][0]["code"] == "GTIN_DUPLICATE"
@@ -318,6 +329,12 @@ class TestSubmitChain:
                 " WHERE error_code = 'WM_TEST_NEWCODE'"
             ).fetchone()
             assert dispo == ("manual", "未分类")
+            # partial → warn 结果通知保持不变（SM-0716①；dedupe 键一 feed 一条）
+            notif = conn.execute(
+                "SELECT severity FROM app.notification WHERE dedupe_key = %s",
+                (f"feed_result:{feed_id}",),
+            ).fetchall()
+            assert notif == [("warn",)]
 
     def test_state_history_full_chain_and_delist(
         self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
@@ -510,3 +527,65 @@ class TestPriceUpdate:
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             conn.execute("DELETE FROM app.listing WHERE id = %s", (lid,))
             conn.execute("DELETE FROM app.product WHERE id = %s", (pid,))
+
+
+class TestFeedSuccessNotification:
+    def test_poll_all_success_emits_info_notification(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        """SM-0716①：feed 终态 processed（err==0 且 ok>0）→ info 结果通知（此前只报忧）。
+
+        既有 poll→live 主链用例是一成一败（partial→warn），info 分支需全成功链路：
+        独立建品→allocate→submit→poll 全 SUCCESS，断言 notification 表出现 info 行。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.product (team_id, source_channel, source_ref, title, attrs,"
+                " price_snapshot, status)"
+                " VALUES (%s, 'amazon', 'B0NOTIF001', 'Notify Success Mug',"
+                '  \'{"wpt": "Drinkware", "bullets": ["solid"], "description": "nice"}\','
+                "  '{\"list\": 19.99}', 'audit_passed') RETURNING id",
+                (seeded["team"],),
+            ).fetchone()[0]
+        created = client.post(
+            "/api/v1/listings/allocate",
+            headers=_idem(auth),
+            json={"product_ids": [pid], "store_id": seeded["store"], "offer_mode": "build"},
+        ).json()["created"]
+        assert len(created) == 1
+        fake.script = [httpx.Response(200, json={"feedId": "F-CHAN-OK"})]
+        feed_id = client.post(
+            "/api/v1/listings/submit",
+            headers=_idem(auth),
+            json={"listing_ids": [created[0]["id"]]},
+        ).json()["feed_id"]
+        fake.script = [
+            httpx.Response(
+                200,
+                json={
+                    "feedStatus": "PROCESSED",
+                    "itemDetails": {
+                        "itemIngestionStatus": [
+                            {
+                                "sku": created[0]["channel_sku"],
+                                "ingestionStatus": "SUCCESS",
+                                "wpid": "WPIDOK1",
+                            }
+                        ]
+                    },
+                },
+            )
+        ]
+        pr = client.post(f"/api/v1/feeds/{feed_id}/poll", headers=auth).json()
+        assert pr["feed_status"] == "processed"
+        assert pr["success"] == 1 and pr["error"] == 0
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT status FROM app.listing WHERE id = %s", (created[0]["id"],)
+            ).fetchone() == ("live",)
+            rows = conn.execute(
+                "SELECT severity, category, title FROM app.notification WHERE dedupe_key = %s",
+                (f"feed_result:{feed_id}",),
+            ).fetchall()
+        assert rows == [("info", "listing_feed", f"上架 Feed #{feed_id} 全部成功")]

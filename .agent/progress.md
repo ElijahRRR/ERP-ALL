@@ -461,3 +461,9 @@
   非未知结果）+ 429 同类处置 + drain 按店轮转防跨店饿死；rate_limiter 价格桶键修正
   （10/hour 官方现行）；dry-run 证据（PUT 快照无促销字段）。经工作流三镜头评审+对抗核实：
   6 项确认发现（1 critical）全部修复。min_price 可选落码（D-Q62 补充）。402 pytest 全绿。
+- **R2-06 增量4 完成（全单完码）**：前端定价页（策略 CRUD/试算/批量重定价/改价 force 确认，
+  区间模板 D-Q62 定值预填、min_price 留空即不设防）+ SM-0716 三件（上架成功 info 通知/
+  GTIN 首位白名单 gtin.safe_prefixes/PATCH listings 契约冻结）+ erpAPI 速查修正（erpAPI PR#2）。
+  合并树复验：403 pytest + ruff + mypy + 前端 lint/build 全绿。验收 runbook 就绪
+  （evidence/R2-06/runbook.md）——**停在人工验收节点**：①新 listing 自动带策略价
+  ②A152 真机改价 listing#46（渠道价变 + 两段式回填闭环）。

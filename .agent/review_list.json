@@ -467,9 +467,9 @@
     "priority": "P2",
     "dimension": "chore",
     "check": "小账三件：①feed 全部成功/listing 转 live 的 info 级通知（现只报失败）②GTIN 池导入首位前缀白名单（BR-UPC-002 回植：0/1/6/7/8/9，挡 2000000000xxx 类受限号入池）③PATCH /listings/{id} 补 OpenAPI 契约冻结+前端 schema 重生成",
-    "status": "todo",
+    "status": "done",
     "evidence": [],
-    "finding": "随 R2-06 增量顺带收（2026-07-16 真机观察产物：Owner 未见成功通知；#38 撞 EXT_DATA_ERROR_54514906640101 前缀拒收；fe agent 契约注记）",
+    "finding": "三件全收（随 R2-06 增量4）：①feed 全成功 info 通知（dedupe 与失败同键）②GTIN 导入首位白名单 gtin.safe_prefixes 默认 0/1/6/7/8/9（UPC 判首位/补零 EAN 判第2位，拒 code=GTIN_UNSAFE_PREFIX）③PATCH /listings 契约冻结；前端 schema.d.ts 重生成仍欠（codegen 待通），页面按局部类型惯例不阻验收",
     "last_checked_at": "2026-07-16",
     "acceptance": "上架成功出现 info 通知；受限前缀 GTIN 导入被拒且提示；schema.d.ts 含 PATCH listings"
   },
@@ -478,11 +478,11 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "定价引擎最小闭环：策略配置（build 成本加成/match 跟卖分套，D-Q3/23）→ allocate/submit 自动算价（替代 0 价兜底）→ 批量重定价预览 → PRICE_AND_PROMOTION 价格同步管道（6/day 聚合，outbox 三段式）→ 与限价检口径联动 + 前端定价面板",
-    "status": "in_progress",
+    "status": "done-pending-verify",
     "evidence": [
       ".agent/evidence/R2-06/"
     ],
-    "finding": "2026-07-16 立单开工（Owner 授权：收掉 feed#37 后走 R2-06）。动因：HF-0716 两单缺陷根子皆为价格空档；上架/订单双链已通，定价是运营化最后卡点。考古四路并行中",
+    "finding": "四增量全部完码（2026-07-16，403 pytest+前端 lint/build 绿）：①0027/0028/0029 迁移+引擎纯函数+策略 CRUD ②allocate 自动算价（fail-closed）+改价守护+30% force+预览 ③价格同步管道（PUT/feed 双通道路由 D-Q62、三段式幂等带轮次、pending_price 两段式、price_recon 收敛、drain 按店轮转、限流桶键修正；经 45-agent 工作流三镜头评审+对抗核实，6 项确认发现全修）④前端定价页+SM-0716 三件+erpAPI 速查修正（erpAPI PR#2）。min_price 可选（D-Q62 补充）。余项=人工验收：①新 listing 自动带策略价 ②A152 真机改价 listing#46 渠道价变+两段式回填（evidence/R2-06/runbook.md）",
     "last_checked_at": "2026-07-16",
     "acceptance": "①A152 真机一次改价经价格管道同步成功+影子对拍；②新建 listing 自动带策略价（不再 0 价/手工价）；③CI 全绿"
   }

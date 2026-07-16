@@ -682,6 +682,24 @@ paths:
       x-permission: listing.read
       parameters: [{$ref: '#/components/parameters/listingId'}]
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListingDetail'}}}}}
+    patch:
+      tags: [Listing]
+      summary: 提交前改价（draft/failed 直改；live 归定价管道推渠道）——HF-0716/R2-06
+      x-permission: listing.submit
+      parameters: [{$ref: '#/components/parameters/listingId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [price]
+              properties:
+                price: {type: number}
+                force: {type: boolean, default: false, description: BR-PR-008 变动超阈（默认 30%）需二次确认}
+      responses:
+        '200': {description: OK}
+        '422': {description: 价格非法/状态不可改/超阈未 force, $ref: '#/components/responses/Error'}
   /listings/submit:
     post:
       tags: [Listing]
@@ -758,7 +776,7 @@ paths:
   /gtin-pool/import:
     post:
       tags: [Catalog]
-      summary: GTIN 批量导入（格式+GS1校验位校验；重复逐条报告）
+      summary: GTIN 批量导入（格式+GS1校验位+首位白名单 BR-UPC-002；重复/受限前缀逐条报告）
       x-permission: catalog.import_write
       requestBody:
         required: true
