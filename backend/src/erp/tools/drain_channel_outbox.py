@@ -35,20 +35,26 @@ async def drain(*, sweep_only: bool = False, limit: int = 100) -> dict[str, int]
         stats["swept"] = len(await outbox.sweep_expired(s))
     if sweep_only:
         return stats
+    # 单店受阻（限流闸拒 → 归还 pending / 车道 verify_pending 背压）只封该店本轮，
+    # 继续排其他店铺——否则全局最低 id 恒被同一受限店占住，其余店被跨店饿死
+    # （R2-06 增量3 评审发现 3）。
+    blocked_stores: set[int] = set()
     for _ in range(limit):
         async with system_tx(sessions) as s:
-            cid = await outbox.pick_next(s)
-            cmd = await outbox.command_state(s, cid) if cid is not None else None
-        if cid is None or cmd is None:
+            pick = await outbox.pick_next(s, exclude_store_ids=sorted(blocked_stores))
+            cmd = await outbox.command_state(s, pick["id"]) if pick is not None else None
+        if pick is None or cmd is None:
             break
         outcome = await outbox.execute_command(
-            sessions, cid, team_id=None, is_super=True, applier=APPLIERS[cmd["action"]]
+            sessions, pick["id"], team_id=None, is_super=True, applier=APPLIERS[cmd["action"]]
         )
-        if outcome.get("command_status") == "pending":
-            stats["blocked"] += 1  # 车道被挡（verify_pending 背压）——等待对账归位
-            break
+        status = outcome.get("command_status") or outcome.get("status")
+        if status == "pending":
+            stats["blocked"] += 1  # 该店本轮受阻（限流待恢复/对账背压）——跳店继续
+            blocked_stores.add(int(pick["store_id"]))
+            continue
         stats["executed"] += 1
-        log.info("outbox.drained", command_id=cid, outcome=outcome)
+        log.info("outbox.drained", command_id=pick["id"], outcome=outcome)
     return stats
 
 

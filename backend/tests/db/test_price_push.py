@@ -98,6 +98,8 @@ def seeded(migrated_db: str) -> dict[str, int]:
         conn.execute("DELETE FROM app.listing_state_history WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.channel_command WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.api_idempotency WHERE team_id = %s", (team_id,))
+        conn.execute("DELETE FROM app.feed_item WHERE team_id = %s", (team_id,))
+        conn.execute("DELETE FROM app.feed WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.listing WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.pricing_strategy WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.product WHERE team_id = %s", (team_id,))
@@ -300,16 +302,20 @@ class TestTransportFailThenRecon:
         assert all(x.method == "GET" for x in fake.requests[1:])
         assert _command(migrated_db, lid)[0] == "succeeded"
         with psycopg.connect(migrated_db) as conn:
-            cp = conn.execute(
-                "SELECT current_price FROM app.listing WHERE id = %s", (lid,)
-            ).fetchone()[0]
-            assert float(cp) == 60.0
-            reason, detail = conn.execute(
-                "SELECT reason, detail FROM app.price_history WHERE listing_id = %s"
-                " ORDER BY id DESC LIMIT 1",
-                (lid,),
+            cp, pp = conn.execute(
+                "SELECT current_price, pending_price FROM app.listing WHERE id = %s", (lid,)
             ).fetchone()
-        assert reason == "manual" and detail["via"] == "price_recon"
+            assert float(cp) == 60.0
+            assert pp is None  # 在途标记随确认清除（BR-LC-011 两段式）
+            hist = conn.execute(
+                "SELECT old_price, new_price, reason, detail FROM app.price_history"
+                " WHERE listing_id = %s ORDER BY id",
+                (lid,),
+            ).fetchall()
+        assert len(hist) == 1
+        old, new, reason, detail = hist[0]
+        assert (float(old), float(new), reason) == (STRATEGY_PRICE, 60.0, "manual")
+        assert detail["via"] == "price_recon" and float(detail["channel_price"]) == 60.0
 
 
 class TestUnchangedSkip:
@@ -359,17 +365,27 @@ class TestRepriceBatch:
         assert body["pushed"] == 1 and body["failed"] == []
         assert body["skipped"] == [{"listing_id": lid_same, "reason": "unchanged"}]
 
+        # 出门请求恰一发（多发即静默超发配额），体内价格 = 策略算价 54.97
+        assert len(fake.requests) == 1
+        req = fake.requests[0]
+        assert req.method == "PUT" and req.url.path == "/v3/price"
+        sent = json.loads(req.content)
+        assert sent["pricing"][0]["currentPrice"]["amount"] == STRATEGY_PRICE
+
         with psycopg.connect(migrated_db) as conn:
             cp = conn.execute(
                 "SELECT current_price FROM app.listing WHERE id = %s", (lid_change,)
             ).fetchone()[0]
             assert float(cp) == STRATEGY_PRICE
-            reason, sid = conn.execute(
-                "SELECT reason, strategy_id FROM app.price_history WHERE listing_id = %s"
-                " ORDER BY id DESC LIMIT 1",
+            hist = conn.execute(
+                "SELECT old_price, new_price, reason, strategy_id, strategy_version"
+                " FROM app.price_history WHERE listing_id = %s ORDER BY id",
                 (lid_change,),
-            ).fetchone()
-        assert reason == "strategy" and sid == seeded["strategy"]
+            ).fetchall()
+        assert len(hist) == 1
+        old, new, reason, sid, sver = hist[0]
+        assert (float(old), float(new)) == (50.0, STRATEGY_PRICE)
+        assert reason == "strategy" and sid == seeded["strategy"] and sver == 1
         assert _command(migrated_db, lid_change)[0] == "succeeded"
 
 
@@ -422,3 +438,515 @@ class TestRateLimiterKeys:
         assert (bucket.limit, bucket.period) == (10, 3600)
         put_bucket = reg.get("s1", "PUT /v3/price")
         assert (put_bucket.limit, put_bucket.period) == (100, 3600)
+
+
+# ── R2-06 增量3 评审修复回归（幂等轮次/429/对账收敛/阈值守护/路由/两段式）──
+
+
+def _listing_state(migrated_db: str, lid: int) -> tuple[float | None, float | None, int]:
+    """→ (current_price, pending_price, price_history 行数)。"""
+    with psycopg.connect(migrated_db) as conn:
+        cp, pp = conn.execute(
+            "SELECT current_price, pending_price FROM app.listing WHERE id = %s", (lid,)
+        ).fetchone()
+        n = conn.execute(
+            "SELECT count(*) FROM app.price_history WHERE listing_id = %s", (lid,)
+        ).fetchone()[0]
+    return (float(cp) if cp is not None else None, float(pp) if pp is not None else None, n)
+
+
+def _command_count(migrated_db: str, lid: int) -> int:
+    with psycopg.connect(migrated_db) as conn:
+        return conn.execute(
+            "SELECT count(*) FROM app.channel_command"
+            " WHERE action = 'price_push' AND object_id = %s",
+            (lid,),
+        ).fetchone()[0]
+
+
+def _mk_listing(
+    migrated_db: str,
+    seeded: dict,
+    tag: str,
+    *,
+    status: str = "live",
+    current_price: float | None = 50.0,
+    offer_mode: str = "build",
+    is_locked: bool = False,
+    pending_price: float | None = None,
+    price_snapshot: str = '{"list": 19.99}',
+    store_id: int | None = None,
+) -> int:
+    """评审回归用 listing 工厂（product + listing 一体，channel_sku 唯一）。"""
+    with psycopg.connect(migrated_db, autocommit=True) as conn:
+        pid = conn.execute(
+            "INSERT INTO app.product (team_id, master_sku, source_channel, source_ref,"
+            " title, price_snapshot, status)"
+            " VALUES (%s, %s, 'amazon', %s, %s, %s, 'ready') RETURNING id",
+            (seeded["team"], f"MPPX{tag}", f"B0PX{tag}", f"评审商品{tag}", price_snapshot),
+        ).fetchone()[0]
+        return conn.execute(
+            "INSERT INTO app.listing (team_id, store_id, product_id, offer_mode, channel_sku,"
+            " status, current_price, is_locked, pending_price)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                seeded["team"],
+                store_id or seeded["store"],
+                pid,
+                offer_mode,
+                f"MPPX{tag}",
+                status,
+                current_price,
+                is_locked,
+                pending_price,
+            ),
+        ).fetchone()[0]
+
+
+class TestEpisodeRetryAfterFailure:
+    """评审发现 1/7/17：failed 终局后同价重推必须真发包（幂等键带轮次不复用旧命令）。"""
+
+    def test_same_price_retry_after_channel_reject_sends_new_put(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid2"]  # 测试②里 60.0 已被渠道 4xx 拒、命令终局 failed
+        assert _command(migrated_db, lid) == ("failed", "HTTP_400")
+        before = _command_count(migrated_db, lid)
+        fake.script = [httpx.Response(200, json={"message": "Thank you."})]
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 60.0})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "succeeded"
+        # 真发了新 PUT（旧实现：复用 failed 命令 → 零发包返回 failed）
+        assert len(fake.requests) == 1 and fake.requests[0].method == "PUT"
+        assert _command_count(migrated_db, lid) == before + 1
+        assert _command(migrated_db, lid)[0] == "succeeded"
+        cp, pp, hist_n = _listing_state(migrated_db, lid)
+        assert (cp, pp, hist_n) == (60.0, None, 1)
+
+    def test_price_oscillation_a_b_a_no_conflict(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        """A→B→A 回摆不撞历史幂等键（旧实现：payload_hash 异 → 409）。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid1"]  # 当前 60.0
+        fake.script = [httpx.Response(200, json={}), httpx.Response(200, json={})]
+        r1 = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 65.0})
+        assert r1.status_code == 200 and r1.json()["status"] == "succeeded"
+        r2 = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 60.0})
+        assert r2.status_code == 200, r2.text  # 旧实现此处 409 IDEMPOTENCY_CONFLICT
+        assert r2.json()["status"] == "succeeded"
+        cp, pp, _ = _listing_state(migrated_db, lid)
+        assert (cp, pp) == (60.0, None)
+
+
+class TestChannel429:
+    """评审发现 5/13：429=渠道确定未受理（暂态）——归还 pending 等 beat，绝非终局 failed。"""
+
+    def test_channel_429_releases_command_to_pending(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid4"]  # 当前 54.97
+        _, _, hist_before = _listing_state(migrated_db, lid)
+        fake.script = [httpx.Response(429, headers={"retry-after": "0"}, json={})]
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 58.0})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "pending" and body["error_code"] == "HTTP_429"
+        status, _error_code = _command(migrated_db, lid)
+        assert status == "pending"  # 留 pending 由 beat 续推，不判 failed
+        cp, pp, hist_n = _listing_state(migrated_db, lid)
+        assert (cp, pp) == (STRATEGY_PRICE, 58.0)  # 价格不动，在途标记保留
+        assert hist_n == hist_before
+        # 清场：终局残留命令 + 复位在途标记（防跨文件 drain 领走污染）
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM app.channel_command WHERE action = 'price_push'"
+                " AND object_id = %s AND status = 'pending'",
+                (lid,),
+            )
+            conn.execute("UPDATE app.listing SET pending_price = NULL WHERE id = %s", (lid,))
+
+    def test_gate_refused_keeps_pending_zero_bytes(
+        self,
+        client: TestClient,
+        seeded: dict,
+        migrated_db: str,
+        fake: _FakeChannel,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """限流闸拒绝（发包前）：命令留 pending、计入 pushed、零字节出门。"""
+        from erp.channel.gateway.rate_limiter import registry
+
+        async def _refuse(*_a: object, **_k: object) -> float:
+            return -1.0
+
+        monkeypatch.setattr(registry, "gate", _refuse)
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid4"]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("UPDATE app.listing SET current_price = 50.0 WHERE id = %s", (lid,))
+        r = client.post("/api/v1/pricing/reprice", headers=_idem(auth), json={"listing_ids": [lid]})
+        assert r.status_code == 202, r.text
+        body = r.json()
+        assert body["pushed"] == 1 and body["failed"] == [] and body["skipped"] == []
+        assert fake.requests == []  # 零字节出门
+        assert _command(migrated_db, lid)[0] == "pending"
+        cp, pp, _ = _listing_state(migrated_db, lid)
+        assert (cp, pp) == (50.0, STRATEGY_PRICE)
+        # 清场：删残留 pending 命令 + 复位（防跨文件 drain 领走）
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM app.channel_command WHERE action = 'price_push'"
+                " AND object_id = %s AND status = 'pending'",
+                (lid,),
+            )
+            conn.execute(
+                "UPDATE app.listing SET pending_price = NULL, current_price = %s WHERE id = %s",
+                (STRATEGY_PRICE, lid),
+            )
+
+
+class TestPriceReconBranches:
+    """评审发现 2/14：不等分支（grace 内 pending / 超 grace 判败）+ 非 200 确定态收敛。"""
+
+    async def test_mismatch_within_grace_then_fail_over_grace(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid5"]  # 当前 54.97，无历史命令
+        sku = _sku(migrated_db, lid)
+        fake.script = [httpx.ConnectTimeout("boom")]
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 60.0})
+        assert r.json()["status"] == "verify_pending"
+        cp, pp, _ = _listing_state(migrated_db, lid)
+        assert (cp, pp) == (STRATEGY_PRICE, 60.0)
+
+        # ① 渠道价不等 + 未超 grace → pending（命令滞留 verify_pending，不判败）
+        mismatch = httpx.Response(
+            200,
+            json={"ItemResponse": [{"sku": sku, "price": {"currency": "USD", "amount": 59.0}}]},
+        )
+        fake.script = [mismatch]
+        stats = await tasks.price_recon(
+            get_session_factory(), {"batch": 10, "min_age_s": 0, "grace_s": 3600}
+        )
+        assert stats["pending"] == 1 and stats["failed"] == 0
+        assert _command(migrated_db, lid)[0] == "verify_pending"
+
+        # ② 渠道 404（确定态非 200）+ 未超 grace → 仍 pending（不臆断）
+        fake.script = [httpx.Response(404, json={})]
+        stats = await tasks.price_recon(
+            get_session_factory(), {"batch": 10, "min_age_s": 0, "grace_s": 3600}
+        )
+        assert stats["pending"] == 1 and stats["failed"] == 0
+
+        # ③ 渠道价不等 + 超 grace → failed + PRICE_PUSH_NOT_EFFECTIVE + notify，不回填
+        fake.script = [
+            httpx.Response(
+                200,
+                json={"ItemResponse": [{"sku": sku, "price": {"currency": "USD", "amount": 59.0}}]},
+            )
+        ]
+        stats = await tasks.price_recon(
+            get_session_factory(), {"batch": 10, "min_age_s": 0, "grace_s": 0}
+        )
+        assert stats["failed"] == 1
+        assert _command(migrated_db, lid) == ("failed", "PRICE_PUSH_NOT_EFFECTIVE")
+        cp, pp, hist_n = _listing_state(migrated_db, lid)
+        assert (cp, pp, hist_n) == (STRATEGY_PRICE, None, 0)  # 不回填 + 在途标记复位
+        with psycopg.connect(migrated_db) as conn:
+            note = conn.execute(
+                "SELECT severity, category FROM app.notification WHERE dedupe_key = %s",
+                (f"price_push:{lid}",),
+            ).fetchone()
+        assert note == ("warn", "pricing")
+
+    async def test_persistent_404_converges_to_failed_over_grace(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        """确定态 404 超 grace 必须收敛 failed——不许 verify_pending 永久堵死店铺车道。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid6"]
+        fake.script = [httpx.ConnectTimeout("boom")]
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 62.0})
+        assert r.json()["status"] == "verify_pending"
+        fake.script = [httpx.Response(404, json={})]
+        stats = await tasks.price_recon(
+            get_session_factory(), {"batch": 10, "min_age_s": 0, "grace_s": 0}
+        )
+        assert stats["failed"] == 1  # 旧实现：非 200 永远 pending，车道死锁
+        assert _command(migrated_db, lid) == ("failed", "PRICE_PUSH_NOT_EFFECTIVE")
+        cp, pp, hist_n = _listing_state(migrated_db, lid)
+        assert (cp, pp, hist_n) == (STRATEGY_PRICE, None, 0)
+
+
+class TestConfirmThresholdLive:
+    """评审发现 15：BR-PR-008 30% 阈值 / min_price 守护在 live 推送路径的行为钉死。"""
+
+    def test_patch_live_over_threshold_requires_force(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid3"]  # 当前 60.0
+        before = _command_count(migrated_db, lid)
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 100.0})
+        assert r.status_code == 422, r.text
+        assert r.json()["error"]["code"] == "PRICING_CONFIRM_REQUIRED"
+        assert fake.requests == []  # tx1 拒绝，零发包
+        assert _command_count(migrated_db, lid) == before  # 无残留命令
+        cp, pp, _ = _listing_state(migrated_db, lid)
+        assert (cp, pp) == (60.0, None)
+
+        fake.script = [httpx.Response(200, json={})]
+        r2 = client.patch(
+            f"/api/v1/listings/{lid}", headers=auth, json={"price": 100.0, "force": True}
+        )
+        assert r2.status_code == 200 and r2.json()["status"] == "succeeded"
+        cp, _, _ = _listing_state(migrated_db, lid)
+        assert cp == 100.0
+
+    def test_patch_live_below_min_price_rejected(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid3"]
+        r = client.patch(
+            f"/api/v1/listings/{lid}", headers=auth, json={"price": 5.0, "force": True}
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["error"]["code"] == "PRICING_BELOW_MIN_PRICE"  # 策略 min_price=6.99
+        assert fake.requests == []
+
+    def test_reprice_over_threshold_failed_then_force_pushes(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = seeded["lid4"]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("UPDATE app.listing SET current_price = 10.0 WHERE id = %s", (lid,))
+        r = client.post("/api/v1/pricing/reprice", headers=_idem(auth), json={"listing_ids": [lid]})
+        assert r.status_code == 202, r.text
+        body = r.json()
+        assert body["pushed"] == 0
+        assert body["failed"] == [{"listing_id": lid, "code": "PRICING_CONFIRM_REQUIRED"}]
+        assert fake.requests == []
+
+        fake.script = [httpx.Response(200, json={})]
+        r2 = client.post(
+            "/api/v1/pricing/reprice",
+            headers=_idem(auth),
+            json={"listing_ids": [lid], "force": True},
+        )
+        assert r2.status_code == 202, r2.text
+        assert r2.json()["pushed"] == 1 and r2.json()["failed"] == []
+        cp, pp, _ = _listing_state(migrated_db, lid)
+        assert (cp, pp) == (STRATEGY_PRICE, None)
+
+
+class TestRepriceSkipReasons:
+    """评审发现 16：skipped.reason 枚举全量钉死（重构 _reprice_gate 的回归网）。"""
+
+    def test_all_skip_reasons_exact(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        delisted = _mk_listing(migrated_db, seeded, "SK01", status="delisted")
+        locked = _mk_listing(migrated_db, seeded, "SK02", is_locked=True)
+        no_strategy = _mk_listing(migrated_db, seeded, "SK03", offer_mode="match")
+        no_source = _mk_listing(migrated_db, seeded, "SK04", price_snapshot='{"list": "N/A"}')
+        in_flight = _mk_listing(migrated_db, seeded, "SK05", pending_price=99.0)
+        # 店铺级 manual 策略（store2）：resolve 优先 store 级 → manual 跳过
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            channel_id = conn.execute(
+                "SELECT id FROM app.channel WHERE code='walmart_us'"
+            ).fetchone()[0]
+            store2 = conn.execute(
+                "INSERT INTO app.store (team_id, channel_id, code, name, is_test)"
+                " VALUES (%s, %s, 'A152PS2', '价格同步店2', true) RETURNING id",
+                (seeded["team"], channel_id),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO app.pricing_strategy"
+                " (team_id, store_id, offer_mode, name, algo_code, params, created_by)"
+                " VALUES (%s, %s, 'build', '人工策略', 'manual', %s, %s)",
+                (seeded["team"], store2, json.dumps({"min_price": 6.99}), seeded["user"]),
+            )
+        manual = _mk_listing(migrated_db, seeded, "SK06", store_id=store2)
+        missing = 999999999
+        ids = [missing, delisted, locked, no_strategy, manual, no_source, in_flight]
+        r = client.post("/api/v1/pricing/reprice", headers=_idem(auth), json={"listing_ids": ids})
+        assert r.status_code == 202, r.text
+        body = r.json()
+        assert body["pushed"] == 0 and body["failed"] == []
+        assert fake.requests == []  # 全部预检拦截，零发包
+        reasons = {s["listing_id"]: s["reason"] for s in body["skipped"]}
+        assert reasons == {
+            missing: "not_found",
+            delisted: "not_live",
+            locked: "locked",
+            no_strategy: "no_strategy",
+            manual: "manual",
+            no_source: "no_source_price",
+            in_flight: "push_in_flight",
+        }
+
+
+class TestPublishedListingPipeline:
+    """评审发现 16：published 口径钉死——PATCH 与 reprice 都走定价管道（与 push_price
+    准入 live/published 对齐，不再掉进 draft 直改分支）。"""
+
+    def test_published_patch_and_reprice_go_through_pipeline(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = _mk_listing(migrated_db, seeded, "PB01", status="published")
+        fake.script = [httpx.Response(200, json={})]
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 60.0})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "succeeded"  # 渠道管道（draft 直改无 status 键值）
+        assert _command(migrated_db, lid)[0] == "succeeded"  # 真走了 outbox price_push
+        cp, _, _ = _listing_state(migrated_db, lid)
+        assert cp == 60.0
+
+        fake.script = [httpx.Response(200, json={})]
+        r2 = client.post(
+            "/api/v1/pricing/reprice", headers=_idem(auth), json={"listing_ids": [lid]}
+        )
+        assert r2.status_code == 202 and r2.json()["pushed"] == 1  # gate 放行 published
+        cp, _, _ = _listing_state(migrated_db, lid)
+        assert cp == STRATEGY_PRICE
+
+
+class TestFeedRoutingBatch:
+    """评审发现 4/6：D-Q62 双通道路由——单店 > 阈值(5) 聚合 PRICE_AND_PROMOTION feed；
+    pending_price 两段式：派发只记在途，item 级 SUCCESS 才回填。"""
+
+    async def test_batch_over_threshold_routes_to_feed_then_poll_backfills(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lids = [_mk_listing(migrated_db, seeded, f"FD{i:02d}") for i in range(1, 8)]  # 7 条
+        fake.script = [httpx.Response(200, json={"feedId": "PF0001"})]
+        r = client.post("/api/v1/pricing/reprice", headers=_idem(auth), json={"listing_ids": lids})
+        assert r.status_code == 202, r.text
+        body = r.json()
+        assert body["pushed"] == 7 and body["failed"] == [] and body["skipped"] == []
+
+        # 出门恰一发：POST /v3/feeds?feedType=PRICE_AND_PROMOTION，canonical envelope
+        assert len(fake.requests) == 1
+        req = fake.requests[0]
+        assert req.method == "POST" and req.url.path == "/v3/feeds"
+        assert req.url.params["feedType"] == "PRICE_AND_PROMOTION"
+        envelope = json.loads(req.content)
+        assert envelope["MPItemFeedHeader"] == {
+            "businessUnit": "WALMART_US",
+            "locale": "en",
+            "version": "2.0.20240126-12_25_52-api",
+        }
+        assert len(envelope["MPItem"]) == 7
+        for item in envelope["MPItem"]:
+            assert set(item) == {"Promo&Discount"}
+            assert set(item["Promo&Discount"]) == {"sku", "price"}
+            assert item["Promo&Discount"]["price"] == STRATEGY_PRICE
+
+        with psycopg.connect(migrated_db) as conn:
+            feed_id, kind, fstatus, cf, n = conn.execute(
+                "SELECT id, feed_kind, status, channel_feed_id, item_count FROM app.feed"
+                " WHERE feed_kind = 'price' AND team_id = %s ORDER BY id DESC LIMIT 1",
+                (seeded["team"],),
+            ).fetchone()
+            cmd_status = conn.execute(
+                "SELECT status FROM app.channel_command WHERE action = 'feed_submit'"
+                " AND object_type = 'feed' AND object_id = %s",
+                (feed_id,),
+            ).fetchone()[0]
+        assert (kind, fstatus, cf, n) == ("price", "submitted", "PF0001", 7)
+        assert cmd_status == "succeeded"
+        # 两段式派发半程：current_price 不动、pending_price 记在途
+        for lid in lids:
+            cp, pp, hist_n = _listing_state(migrated_db, lid)
+            assert (cp, pp, hist_n) == (50.0, STRATEGY_PRICE, 0)
+
+        # feed_poll price 分支：6 SUCCESS 回填 + 1 error 复位
+        from erp.listing import service as listing_service
+
+        skus = {lid: _sku(migrated_db, lid) for lid in lids}
+        statuses = [
+            {"sku": skus[lid], "ingestionStatus": "SUCCESS", "wpid": None} for lid in lids[:6]
+        ]
+        statuses.append(
+            {
+                "sku": skus[lids[6]],
+                "ingestionStatus": "DATA_ERROR",
+                "ingestionErrors": {
+                    "ingestionError": [{"code": "ERR_PRICE_X", "description": "bad price"}]
+                },
+            }
+        )
+        fake.script = [
+            httpx.Response(
+                200,
+                json={
+                    "feedStatus": "PROCESSED",
+                    "itemDetails": {"itemIngestionStatus": statuses},
+                },
+            )
+        ]
+        out = await listing_service.poll_feed(get_session_factory(), feed_id, is_super=True)
+        assert out["feed_status"] == "partial" and out["success"] == 6 and out["error"] == 1
+        for lid in lids[:6]:
+            cp, pp, hist_n = _listing_state(migrated_db, lid)
+            assert (cp, pp, hist_n) == (STRATEGY_PRICE, None, 1)
+            with psycopg.connect(migrated_db) as conn:
+                old, new, reason, detail = conn.execute(
+                    "SELECT old_price, new_price, reason, detail FROM app.price_history"
+                    " WHERE listing_id = %s",
+                    (lid,),
+                ).fetchone()
+            assert (float(old), float(new), reason) == (50.0, STRATEGY_PRICE, "strategy")
+            assert detail["via"] == "price_feed" and detail["feed_id"] == feed_id
+        # 失败项：不回填 + 在途复位
+        cp, pp, hist_n = _listing_state(migrated_db, lids[6])
+        assert (cp, pp, hist_n) == (50.0, None, 0)
+        with psycopg.connect(migrated_db) as conn:
+            fi = conn.execute(
+                "SELECT status, error_code FROM app.feed_item WHERE feed_id = %s"
+                " AND channel_sku = %s",
+                (feed_id, skus[lids[6]]),
+            ).fetchone()
+            note = conn.execute(
+                "SELECT severity, category FROM app.notification WHERE dedupe_key = %s",
+                (f"price_feed_result:{feed_id}",),
+            ).fetchone()
+        assert fi == ("error", "ERR_PRICE_X")
+        assert note == ("warn", "pricing")
+
+
+class TestPushInFlightGuard:
+    """评审发现 9：前一命令未终局时新推价必须被拒（409），不许以陈旧 old_price 入队。"""
+
+    def test_patch_while_verify_pending_rejected_409(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        lid = _mk_listing(migrated_db, seeded, "IF01")
+        fake.script = [httpx.ConnectTimeout("boom")]
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 60.0})
+        assert r.json()["status"] == "verify_pending"
+        before = _command_count(migrated_db, lid)
+        # 在途窗口内改回原价：旧实现静默 unchanged 吞掉用户意图；现拒 409 明示在途
+        r2 = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 50.0})
+        assert r2.status_code == 409, r2.text
+        assert r2.json()["error"]["code"] == "PRICING_PUSH_IN_FLIGHT"
+        assert _command_count(migrated_db, lid) == before  # 未入队新命令
+        # 清场：终局残留 verify_pending 命令 + 复位在途标记
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.channel_command SET status = 'failed', completed_at = now(),"
+                " lease_expires_at = NULL WHERE action = 'price_push' AND object_id = %s"
+                " AND status = 'verify_pending'",
+                (lid,),
+            )
+            conn.execute("UPDATE app.listing SET pending_price = NULL WHERE id = %s", (lid,))

@@ -2,7 +2,7 @@
 
 - (team_id, COALESCE(store_id,0), offer_mode) 活跃唯一（0027 部分唯一索引），
   撞唯一 → 409 PRICING_STRATEGY_CONFLICT；
-- params 必含 min_price 硬底线（001/06:173，fail-closed：缺失/非正数拒绝入库）；
+- params.min_price 底线可选（D-Q62 补充裁定）：填了必须 > 0，缺省不设防；
   cost_plus 另需非空 bands（区间数组，倍数由 engine.parse_multiplier 防御解析）；
 - params 每改 version +1（001/06:175）——计算明细回溯用（price_history.strategy_version）。
 """
@@ -21,11 +21,21 @@ from erp.core.authn import CurrentUser, require_permission
 from erp.core.db import ctx_tx, get_session, get_session_factory
 from erp.core.errors import BusinessError
 from erp.core.idempotency import run_idempotent
+from erp.listing.service import APPLIERS as _LISTING_APPLIERS
 from erp.pricing import engine, service
 
 pricing_router = APIRouter(tags=["Listing"])
 
 _ALGO_CODES = ("cost_plus", "manual")
+
+# price feed 走 action='feed_submit'（tx2 归位在 listing._apply_feed_submit，
+# 其按 feed_kind='price' 分派回 pricing.apply_price_feed_submit）
+_FEED_SUBMIT_APPLIER = _LISTING_APPLIERS["feed_submit"]
+
+# reprice 同步批量最坏时长（单店 ≤5 条 PUT × (闸等待 10s + 超时 30s) + feed 提交，
+# 跨店累加）可远超 run_idempotent 默认 10 分钟失效占位阈值——同键重试会重占占位
+# 并发双跑（评审发现 12）。显式给出大于最坏执行时长的覆盖值。
+_REPRICE_STALE_MINUTES = 180
 
 
 class PricingStrategyIn(BaseModel):
@@ -55,10 +65,12 @@ IdemKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_lengt
 
 def _validate_params(algo_code: str, params: dict[str, Any]) -> None:
     min_price = params.get("min_price")
-    if isinstance(min_price, bool) or not isinstance(min_price, (int, float)) or min_price <= 0:
+    if min_price is not None and (
+        isinstance(min_price, bool) or not isinstance(min_price, (int, float)) or min_price <= 0
+    ):
         raise BusinessError(
-            "PRICING_MIN_PRICE_REQUIRED",
-            "params.min_price 硬底线必填且必须 > 0（001/06 图纸；低于底线不出价）",
+            "PRICING_MIN_PRICE_INVALID",
+            "params.min_price 若填必须为 > 0 的数字（可选底线，D-Q62 补充；低于底线不出价）",
         )
     if algo_code == "cost_plus":
         bands = params.get("bands")
@@ -215,14 +227,27 @@ async def update_strategy(
     return {"id": strategy_id, "version": int(version)}
 
 
+def _outcome_status(outcome: dict[str, Any]) -> str:
+    """push 结果状态统一提取：applier 返回 'status'，claim 不可用路径返回
+    'command_status'（评审发现 8：漏读 command_status 会把终局 failed 误计 pushed）。"""
+    return str(outcome.get("status") or outcome.get("command_status") or "unknown")
+
+
+# 在途/已入队状态（计入 pushed）：succeeded / verify_pending（对账中）/
+# pending（限流闸拒或渠道 429 归还，beat 在配额恢复后继续推——已入队必达）
+_PUSHED_STATUSES = ("succeeded", "verify_pending", "pending")
+
+
 async def _reprice_run(
     *, team_id: int, listing_ids: list[int], force: bool, actor_id: int, is_super: bool
 ) -> dict[str, Any]:
     """批量重定价执行体（run_idempotent handler，自管短事务——不嵌请求事务）。
 
-    逐条对 live listing 解析策略算价（cost_plus）→ price_changed 过滤 →
-    push_price(reason='strategy') 同步逐条执行。限流语义：PUT /v3/price 100/hour
-    限流器挡超额——被挡的命令留 pending（零字节出门，非盲重试），由 beat
+    逐条对 live/published listing 解析策略算价（cost_plus）→ price_changed 过滤 →
+    按 D-Q62/BR-PR-007 路由：单店改价条数 ≤ put_route_threshold（默认 5，配置中心
+    可覆盖）逐条走 PUT /v3/price；更多聚合为一个 PRICE_AND_PROMOTION feed
+    （10/hour 店铺级共享池——批量 >100 逐条 PUT 必然撞 100/hour 配额堆积 pending）。
+    限流语义：闸挡超额的命令留 pending（零字节出门，非盲重试），由 beat
     channel_outbox_drain 在配额恢复后继续推，此类命令计入 pushed（已入队必达）。
     """
     sessions = get_session_factory()
@@ -231,7 +256,7 @@ async def _reprice_run(
             await s.execute(
                 text(
                     "SELECT l.id AS listing_id, l.store_id, l.offer_mode, l.status,"
-                    " l.is_locked, l.current_price, p.attrs, p.price_snapshot"
+                    " l.is_locked, l.current_price, l.pending_price, p.attrs, p.price_snapshot"
                     " FROM app.listing l JOIN app.product p ON p.id = l.product_id"
                     " WHERE l.team_id = :t AND l.id = ANY(:ids)"
                 ),
@@ -246,10 +271,12 @@ async def _reprice_run(
                 strategies[key] = await service.resolve_strategy(
                     s, team_id=team_id, store_id=key[0], offer_mode=key[1]
                 )
+        route_max = await service.put_route_threshold(s, team_id)
 
     pushed = 0
     skipped: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    plan: dict[int, list[dict[str, Any]]] = {}  # store_id → 可推清单（保持入参顺序）
     for lid in dict.fromkeys(listing_ids):
         row = by_id.get(lid)
         strategy = strategies.get((int(row["store_id"]), str(row["offer_mode"]))) if row else None
@@ -257,30 +284,92 @@ async def _reprice_run(
         if skip_reason is not None:
             skipped.append({"listing_id": lid, "reason": skip_reason})
             continue
-        assert result is not None and result.price is not None and strategy is not None
+        assert row is not None and result is not None and result.price is not None
+        plan.setdefault(int(row["store_id"]), []).append(
+            {
+                "listing_id": lid,
+                "new_price": result.price,
+                "reason": "strategy",
+                "strategy": strategy,
+                "detail": result.detail,
+            }
+        )
+
+    for store_id, entries in plan.items():
+        if len(entries) <= route_max:
+            for entry in entries:
+                pushed += await _push_one_put(
+                    sessions, entry, team_id=team_id, force=force, actor_id=actor_id,
+                    is_super=is_super, skipped=skipped, failed=failed,
+                )  # fmt: skip
+            continue
+        # 聚合 feed 通道（D-Q62：单店 > 阈值）
         try:
-            outcome = await service.push_price(
+            outcome = await service.push_price_feed(
                 sessions,
                 team_id=team_id,
-                listing_id=lid,
-                new_price=result.price,
-                reason="strategy",
-                strategy=strategy,
-                detail=result.detail,
+                store_id=store_id,
+                items=entries,
+                applier=_FEED_SUBMIT_APPLIER,
                 force=force,
                 actor_id=actor_id,
                 is_super=is_super,
             )
         except BusinessError as exc:
-            failed.append({"listing_id": lid, "code": exc.code})
+            failed.extend({"listing_id": int(e["listing_id"]), "code": exc.code} for e in entries)
             continue
-        if outcome.get("skipped"):
-            skipped.append({"listing_id": lid, "reason": str(outcome.get("reason"))})
-        elif outcome.get("status") == "failed":
-            failed.append({"listing_id": lid, "code": outcome.get("error_code")})
+        skipped.extend(outcome["skipped"])
+        failed.extend(outcome["failed"])
+        in_feed: list[int] = outcome["pushed"]
+        if not in_feed:
+            continue
+        status = _outcome_status(outcome)
+        if status in _PUSHED_STATUSES:
+            pushed += len(in_feed)  # 回填等 feed_poll item 级结果（两段式）
         else:
-            pushed += 1  # succeeded / verify_pending（对账中）/ pending（限流待 beat 推）
+            failed.extend(
+                {"listing_id": lid, "code": outcome.get("error_code") or status} for lid in in_feed
+            )
     return {"pushed": pushed, "skipped": skipped, "failed": failed}
+
+
+async def _push_one_put(
+    sessions: Any,
+    entry: dict[str, Any],
+    *,
+    team_id: int,
+    force: bool,
+    actor_id: int,
+    is_super: bool,
+    skipped: list[dict[str, Any]],
+    failed: list[dict[str, Any]],
+) -> int:
+    """单条 PUT 路推送 → 计入 pushed 的数量（0/1）；skip/fail 就地追加到出参列表。"""
+    lid = int(entry["listing_id"])
+    try:
+        outcome = await service.push_price(
+            sessions,
+            team_id=team_id,
+            listing_id=lid,
+            new_price=float(entry["new_price"]),
+            reason="strategy",
+            strategy=entry["strategy"],
+            detail=entry["detail"],
+            force=force,
+            actor_id=actor_id,
+            is_super=is_super,
+        )
+    except BusinessError as exc:
+        failed.append({"listing_id": lid, "code": exc.code})
+        return 0
+    if outcome.get("skipped"):
+        skipped.append({"listing_id": lid, "reason": str(outcome.get("reason"))})
+        return 0
+    status = _outcome_status(outcome)
+    if status in _PUSHED_STATUSES:
+        return 1
+    failed.append({"listing_id": lid, "code": outcome.get("error_code") or status})
+    return 0
 
 
 def _reprice_gate(  # noqa: PLR0911 预检分支=跳过原因清单（契约 skipped.reason 枚举）
@@ -288,15 +377,19 @@ def _reprice_gate(  # noqa: PLR0911 预检分支=跳过原因清单（契约 ski
 ) -> tuple[str | None, Any]:
     """单条预检 → (跳过原因, 出价结果)。原因为 None 表示可推（结果必非空）。
 
+    live/published 可推（与 push_price 准入同口径，评审发现 16 对齐）；
+    push_in_flight = 改价在途（pending_price 非空——上一命令/feed 未终局）；
     manual 策略跳过（D-Q23 match 现行=人工指定价，不自动重定价）；
     unchanged = BR-PR-006 价差 < $0.01 省配额过滤。
     """
     if row is None:
         return "not_found", None
-    if row["status"] != "live":
+    if row["status"] not in ("live", "published"):
         return "not_live", None
     if row["is_locked"]:
         return "locked", None
+    if row.get("pending_price") is not None:
+        return "push_in_flight", None
     if strategy is None:
         return "no_strategy", None
     if strategy["algo_code"] == "manual":
@@ -339,6 +432,7 @@ async def reprice(
         payload=body.model_dump(),
         created_by=user.id,
         handler=_handler,
+        stale_minutes=_REPRICE_STALE_MINUTES,
     )
     await AuditWriter.for_user(session, user, request).log(
         "pricing.reprice", "listing", None,

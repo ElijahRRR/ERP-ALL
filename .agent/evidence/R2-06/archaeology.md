@@ -29,15 +29,23 @@
 5. **两段式写回保真 BR-LC-011**：派发只写 pending_price + 状态 updating；渠道终态 SUCCESS
    才回填 current_price + price_history，失败清 pending 复位。stale-update 假成功
    （ERR_EXT_DATA_0101198）按 STALE_NO_OP 处理不当真。
+   > 勘注（2026-07-16 增量3 评审修复）：pending_price 在途标记照原样落地
+   > （0029 迁移；派发 tx1 写入、成功回填清除、失败复位清除，兼作改价并发闸——
+   > 在途期间拒绝新推，防陈旧 old_price 竞态）；「状态 updating」**不落
+   > listing.status 枚举**——新系统状态机不引入渠道暂态（live/published 在途改价
+   > 不改变生命周期状态），以 `pending_price IS NOT NULL` 表达 updating 语义，
+   > 前端/查询按此判定。旧仓的 status=updating 为其无独立在途列时的权宜，不保真。
 6. **CAP 归因终裁**：CAP 计划（Walmart-funded incentives）只降展示价、渠道补差、不动提交价
    与回款——与 HF-0716 的 field=CAP 拒收无关（那是 ingestion 定价校验的内部字段标签）。
    0 价本地拦截维持，定价引擎不需要为 CAP 计划做任何事。
 7. **区间边界数据冲突消解**：BR-PR-001 文字（FBM 30-100/100-300）与 legacy 实表
    （FBM 15-80/80-1000）不一致——区间本属 params 数据（D-Q11/23 前台按团队配置），代码只冻结
    params schema（区间数组任意段数）；默认模板采 legacy 实表值（生产在用的那套）。→ 需 Owner 认可。
-8. **min_price 口径（图纸空白的最小冻结）**：params.min_price = 策略级绝对值底线（USD）；
-   算出价 < min_price → 不出价（fail-closed，同区间外语义），detail 记 below_min_price。
-   建档必填（001/06:173「min_price 硬底线必填」）。
+8. **min_price 口径**：params.min_price = 策略级绝对值底线（USD）；算出价 < min_price →
+   不出价，detail 记 below_min_price。
+   > 勘注（D-Q62 补充裁定 2026-07-16）：改为**可选**——Owner 裁定：区间从 $0 起、
+   > 便宜商品常态，绝对底线拦不住抓错价、只误伤真便宜货。填了才生效且必须 >0，
+   > 缺省不设防；001/06「必填」表述已同步勘注废止。
 9. **30% 变动阈值（BR-PR-008 未固化 → 参数化落地）**：pricing 配置 confirm_threshold_pct
    默认 0.30，超阈需 force 二次确认（旧仓 erp-core 语义保真）。
 
@@ -86,4 +94,4 @@
    10/hour 共享池（官方现行）；路由改为「≤5 条走 PUT，否则聚合 feed」（不再"永远 PUT"）。
 2. **默认区间模板取 legacy 实表值**（FBA 0-30/30-80、FBM 15-80/80-1000）而非 BR-PR-001 文字值
    （→ 修 ledger BR-PR-001 注记）；区间本身前台可配，此项只定默认模板。
-3. **min_price 必填**：建策略必须填绝对值底线，算出价低于它不出价——运营侧每店/团队建策略时多一个必填项。
+3. **min_price 必填** → 已裁定改**可选**（D-Q62 补充，2026-07-16 Owner「可选」）。

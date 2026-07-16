@@ -7,7 +7,7 @@
 - source_total：current 优先于 buybox（BR-PR-002，2026-05-14 校正）；运费缺视 0；
   新系统 price_snapshot 'list' 形态直取；数字 0 不误判空（不带 `a or b` 旧债）
 - compute_price：区间低含高不含（pricing.py:244-246）；out_of_band / below_min_price /
-  min_price_required 三种不出价（fail-closed，001/06:173 min_price 硬底线必填）
+  两种不出价（out_of_band/below_min_price；min_price 可选——D-Q62 补充）
 - compute_price_clamped：区间外仍出价 + out_of_band 标记（pricing.py:253-302 展示/上架分离）
 - price_changed：BR-PR-006 价差 < $0.01 跳过
 - exceeds_confirm_threshold：BR-PR-008 30% 确认阈值（old=None/0 首次定价不需确认）
@@ -159,10 +159,11 @@ class TestComputePrice:
         assert res.detail["price"] == 5.5
         assert res.detail["min_price"] == 6.99
 
-    def test_min_price_required_fail_closed(self) -> None:
-        """缺 min_price 即便区间内也不出价（001/06:173 硬底线必填）。"""
+    def test_min_price_optional_no_floor(self) -> None:
+        """缺 min_price = 不设防，区间内正常出价（D-Q62 补充：可选）。"""
         res = compute_price(25.0, fulfillment="FBA", params=PARAMS_NO_MIN)
-        assert not res.ok and res.price is None and res.reason == "min_price_required"
+        assert res.ok and res.price is not None
+        assert "min_price" not in res.detail
 
     def test_multiplier_percent_string_in_params(self) -> None:
         """params 里的倍数是 '275%' 字符串也能算（防御解析下沉到引擎）。"""
@@ -275,9 +276,10 @@ class TestGuardManualPrice:
         res = guard_manual_price(5.0, PARAMS)
         assert not res.ok and res.price is None and res.reason == "below_min_price"
 
-    def test_manual_min_price_required(self) -> None:
+    def test_manual_without_min_price_passes(self) -> None:
+        """manual 无底线直接放行（D-Q62 补充：可选）。"""
         res = guard_manual_price(5.0, PARAMS_NO_MIN)
-        assert not res.ok and res.reason == "min_price_required"
+        assert res.ok and res.price == 5.0
 
     def test_manual_at_min_price_boundary_ok(self) -> None:
         res = guard_manual_price(6.99, PARAMS)

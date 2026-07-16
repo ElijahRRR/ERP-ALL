@@ -456,11 +456,13 @@ async def price_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, A
     """price_push verify_pending 渠道对账（R2-06 增量3，镜像 retire_recon）——绝不重发。
 
     权威 = 渠道商品实价（GET /v3/items/{sku} 的 price.amount）：
-    - 渠道价 == 目标价（±$0.01）→ succeeded + 补两段式回填（current_price + 价史）；
-    - ≠ 且命令滞龄 > grace_s → 判提交未生效：failed + notify（价格不回填，
-      人工核对后重推=价格链再走一次 push_price）；
-    - 渠道查不到/暂态（dry_run 档、非 200、传输失败）→ 留待下轮
-      （该店车道继续背压，有意 fail-closed）。
+    - 渠道价 == 目标价（±$0.01，含浮点补偿）→ succeeded + 补两段式回填
+      （current_price + 价史 + 清 pending_price）；
+    - 任何确定态不匹配（200 价不等 / 404 / 403 / 5xx 等明确 HTTP 状态）且命令
+      滞龄 > grace_s → 判提交未生效：failed + notify + 清 pending_price 复位
+      （价格不回填，人工核对后重推=价格链再走一次 push_price）——与 retire_recon
+      同等收敛保证：确定态最终必归位，不许 verify_pending 永久堵死店铺车道；
+    - 真暂态（dry_run 档、传输失败无状态）→ 留待下轮（车道继续背压，fail-closed）。
     """
     batch = int(config.get("batch", 10))
     min_age_s = int(config.get("min_age_s", 300))
@@ -505,6 +507,11 @@ def _channel_item_price(data: dict[str, Any]) -> float | None:
         return None
 
 
+# 对账容差 ±$0.01（docstring 契约）：裸浮点 <= 会把恰好 1 美分差误判不匹配
+# （abs(59.99-60.0)=0.01000…5 > 0.01）——同 engine._EPS 口径补偿二进制误差
+_PRICE_RECON_TOL = 0.01 + 1e-9
+
+
 async def _recon_one_price(sessions: Sessions, cmd: Any, *, grace_s: int) -> str:
     """单命令三段式对账。返回 succeeded / failed / pending。"""
     # tx1：prepare（读凭证/模式，无行锁跨 HTTP）
@@ -514,14 +521,20 @@ async def _recon_one_price(sessions: Sessions, cmd: Any, *, grace_s: int) -> str
     resp = await gateway.request_prepared(
         ctx, mode, "GET", f"/v3/items/{cmd.channel_sku}", endpoint_key="GET /v3/items/{id}"
     )
-    if resp.dry_run or resp.status != 200 or not isinstance(resp.data, dict):  # noqa: PLR2004
-        return "pending"  # dry_run 档/传输失败/渠道查不到（404 暂态）：不臆断，下轮再看
-    channel_price = _channel_item_price(resp.data)
+    if resp.dry_run or resp.status is None:
+        return "pending"  # dry_run 档/传输失败：不臆断，下轮再看
+    # 确定态：200 取实价对比；404/403/5xx 等一律 channel_price=None（渠道价未确认），
+    # 与「价不等」同走 grace 判败通道——保证 verify_pending 最终收敛（评审发现 2）
+    channel_price = (
+        _channel_item_price(resp.data)
+        if resp.status == 200 and isinstance(resp.data, dict)  # noqa: PLR2004
+        else None
+    )
     target = float(cmd.payload["new_price"])
 
     # tx2：重锁复核归位（resolve_verify 自带 status='verify_pending' 守卫）
     async with ctx_tx(sessions, team_id=None, is_super=True) as session:
-        if channel_price is not None and abs(channel_price - target) <= 0.01:  # noqa: PLR2004
+        if channel_price is not None and abs(channel_price - target) <= _PRICE_RECON_TOL:
             if await outbox.resolve_verify(
                 session,
                 command_id=int(cmd.id),
@@ -545,8 +558,14 @@ async def _recon_one_price(sessions: Sessions, cmd: Any, *, grace_s: int) -> str
                 command_id=int(cmd.id),
                 status="failed",
                 error_code="PRICE_PUSH_NOT_EFFECTIVE",
-                result={"via": "price_recon", "channel_price": channel_price},
+                result={
+                    "via": "price_recon",
+                    "channel_price": channel_price,
+                    "http_status": resp.status,
+                },
             ):
+                # 失败半程复位（BR-LC-011）：清在途标记，价格不回填
+                await pricing_service.clear_pending_price(session, [int(cmd.object_id)])
                 await notify(
                     session,
                     team_id=int(cmd.team_id),
@@ -554,8 +573,8 @@ async def _recon_one_price(sessions: Sessions, cmd: Any, *, grace_s: int) -> str
                     category="pricing",
                     title=f"改价结果未确认（listing #{cmd.object_id}）——已判未生效",
                     body=(
-                        f"渠道现价 {channel_price} ≠ 目标 {target}（超对账宽限）；"
-                        "价格未回填，核对后在定价页重推"
+                        f"渠道现价 {channel_price}（HTTP {resp.status}）≠ 目标 {target}"
+                        "（超对账宽限）；价格未回填，核对后在定价页重推"
                     ),
                     object_type="listing",
                     object_id=str(cmd.object_id),

@@ -38,6 +38,20 @@ log = structlog.get_logger()
 CONFIRM_THRESHOLD_KEY = "pricing.confirm_threshold_pct"
 DEFAULT_CONFIRM_THRESHOLD = 0.30
 
+# D-Q62/BR-PR-007：改价路由阈值——单店改价条数 ≤ 阈值走 PUT /v3/price（100/hour），
+# 更多聚合一个 PRICE_AND_PROMOTION feed（10/hour 店铺级共享池）。默认 5，配置中心可覆盖。
+PUT_ROUTE_THRESHOLD_KEY = "pricing.put_route_threshold"
+DEFAULT_PUT_ROUTE_THRESHOLD = 5
+
+# PRICE_AND_PROMOTION feed header（考古口径2 canonical envelope；技术校准常量，
+# system_config `pricing.price_feed_header` 可逐字段覆盖——spec.py _HEADER_DEFAULTS 同款模式）
+PRICE_FEED_TYPE = "PRICE_AND_PROMOTION"
+_PRICE_FEED_HEADER_DEFAULTS: dict[str, Any] = {
+    "business_unit": "WALMART_US",
+    "locale": "en",
+    "version": "2.0.20240126-12_25_52-api",  # 旧仓 A 版生产验证 + 官方 curl 示例一致
+}
+
 # 限流闸最长等待（秒，技术参数非业务参数）：PUT /v3/price 100/hour 配额耗尽时
 # 快速拒绝（命令归还 pending 由 beat 兜底），绝不在同步请求内长睡等 token；
 # 必须远小于 outbox lease_seconds（默认 120s），否则睡眠中 lease 过期会被误扫。
@@ -46,8 +60,7 @@ _GATE_MAX_WAIT_S = 10.0
 # allocate 拒绝口径（rejected.code = 'PRICING_' + reason.upper()）的中文说明
 REJECT_MESSAGES = {
     "out_of_band": "成本总价不在策略区间内，不出价（BR-PR-004 区间外不上架）",
-    "below_min_price": "算出价低于策略 min_price 硬底线，不出价",
-    "min_price_required": "策略缺 min_price 硬底线（fail-closed 不出价）",
+    "below_min_price": "算出价低于策略 min_price 底线，不出价",
     "no_source_price": "产品无可计价源价（price_snapshot 缺失或无法解析）",
     "no_bands": "策略无该履约类型的可解析区间，不出价",
     "manual_price_required": "manual 策略不自动出价，需人工经改价入口给价",
@@ -131,6 +144,24 @@ async def confirm_threshold(session: AsyncSession, team_id: int) -> float:
         )
     ).scalar_one_or_none()
     return float(raw) if raw is not None else DEFAULT_CONFIRM_THRESHOLD
+
+
+async def put_route_threshold(session: AsyncSession, team_id: int) -> int:
+    """PUT/feed 路由阈值（D-Q62）：team_config > system_config > 默认 5。"""
+    raw = (
+        await session.execute(
+            text(
+                "SELECT value #>> '{}' AS v FROM ("
+                "  SELECT value, 0 AS pri FROM app.team_config"
+                "   WHERE team_id = :t AND key = :k"
+                "  UNION ALL"
+                "  SELECT value, 1 AS pri FROM app.system_config WHERE key = :k"
+                ") c ORDER BY pri LIMIT 1"
+            ),
+            {"t": team_id, "k": PUT_ROUTE_THRESHOLD_KEY},
+        )
+    ).scalar_one_or_none()
+    return int(float(raw)) if raw is not None else DEFAULT_PUT_ROUTE_THRESHOLD
 
 
 def _fulfillment(product: Mapping[Any, Any], params: dict[str, Any]) -> str:
@@ -223,13 +254,15 @@ async def apply_price_backfill(
     detail_extra: dict[str, Any] | None = None,
     actor_id: int | None = None,
 ) -> None:
-    """两段式回填（BR-LC-011 保真）：渠道确认成功后才落 current_price + 价史。
+    """两段式回填（BR-LC-011 保真）：渠道确认成功后才落 current_price + 价史，
+    并清 pending_price 在途标记（派发半程在 push_price/push_price_feed tx1 写入）。
 
-    applier（HTTP 200）与 price_recon（对账确认）共用——两条确认路径同一落账口径。
+    applier（HTTP 200）/price_recon（对账确认）/feed 结果回写共用——
+    全部确认路径同一落账口径。
     """
     new_price = float(payload["new_price"])
     await session.execute(
-        text("UPDATE app.listing SET current_price = :p WHERE id = :id"),
+        text("UPDATE app.listing SET current_price = :p, pending_price = NULL WHERE id = :id"),
         {"p": new_price, "id": listing_id},
     )
     strategy: dict[str, Any] | None = None
@@ -250,6 +283,55 @@ async def apply_price_backfill(
     )
 
 
+async def clear_pending_price(session: AsyncSession, listing_ids: list[int]) -> None:
+    """终态失败复位（BR-LC-011 失败半程）：只清在途标记，current_price/价史不动。"""
+    if not listing_ids:
+        return
+    await session.execute(
+        text("UPDATE app.listing SET pending_price = NULL WHERE id = ANY(:ids)"),
+        {"ids": listing_ids},
+    )
+
+
+async def _lock_listing_for_push(
+    session: AsyncSession, listing_id: int, team_id: int
+) -> dict[str, Any]:
+    """tx1 行锁 + 推价准入校验（PUT 单品与 feed 聚合两条派发路径共用一套口径）。"""
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, team_id, store_id, offer_mode, channel_sku, status,"
+                    " is_locked, current_price, pending_price"
+                    " FROM app.listing WHERE id = :id FOR UPDATE"
+                ),
+                {"id": listing_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None or row["team_id"] != team_id:
+        raise BusinessError("LISTING_NOT_FOUND", "listing 不存在")
+    listing = dict(row)
+    if listing["is_locked"]:
+        raise BusinessError("LISTING_LOCKED", "listing 已锁定")
+    if listing["status"] not in ("live", "published"):
+        raise BusinessError(
+            "LISTING_STATE_INVALID",
+            f"状态 {listing['status']} 不可推渠道价（仅 live/published）",
+        )
+    if listing["pending_price"] is not None:
+        raise BusinessError(
+            "PRICING_PUSH_IN_FLIGHT",
+            f"该 listing 有改价在途（目标 {float(listing['pending_price'])}），"
+            "待渠道终态确认后再推",
+            detail={"pending_price": float(listing["pending_price"])},
+            http_status=409,
+        )
+    return listing
+
+
 async def push_price(
     sessions: async_sessionmaker[AsyncSession],
     *,
@@ -267,39 +349,22 @@ async def push_price(
     tx1 校验+守护+落 outbox 命令 → COMMIT → HTTP（PUT /v3/price）→ tx2 归位。
 
     - 仅 live/published 可推渠道价；锁定拒绝；
+    - 同 listing 改价在途（pending_price 非空——上一命令/feed 未终局）→ 409 拒绝：
+      FIFO 车道只串行化命令执行、不拦 enqueue，若放行会以陈旧 old_price 落命令
+      （价史链断裂 + 30% 阈值基数错误 + 用户回摆被吞，评审发现 9）；
     - reason='manual'：策略 min_price 守护先行（guard_manual_price fail-closed）；
     - 30% 确认阈值对 live 同样先行（BR-PR-008，force 透传）；
     - 价差 < $0.01 直接跳过不 enqueue（BR-PR-006 省配额）；
+    - 幂等键带轮次（episode = 该 listing 既有 price_push 命令数，retire 房例同款）：
+      失败后同价重推开新命令、价格回摆 A→B→A 不撞历史键（评审发现 1/7/17）；
     - 传输失败/结果未知 → 命令 verify_pending 等 price_recon 对账（BR-GW-005
-      永不盲重试）；限流闸拒绝 → 命令留 pending 由 beat 兜底继续推。
+      永不盲重试）；限流闸拒绝/渠道 429 → 命令留 pending 由 beat 兜底继续推。
     """
     if new_price <= 0:
         raise BusinessError("LISTING_PRICE_INVALID", "价格必须大于 0")
     price = round(float(new_price), 2)
     async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
-        row = (
-            (
-                await session.execute(
-                    text(
-                        "SELECT id, team_id, store_id, offer_mode, channel_sku, status,"
-                        " is_locked, current_price FROM app.listing WHERE id = :id FOR UPDATE"
-                    ),
-                    {"id": listing_id},
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if row is None or row["team_id"] != team_id:
-            raise BusinessError("LISTING_NOT_FOUND", "listing 不存在")
-        listing = dict(row)
-        if listing["is_locked"]:
-            raise BusinessError("LISTING_LOCKED", "listing 已锁定")
-        if listing["status"] not in ("live", "published"):
-            raise BusinessError(
-                "LISTING_STATE_INVALID",
-                f"状态 {listing['status']} 不可推渠道价（仅 live/published）",
-            )
+        listing = await _lock_listing_for_push(session, listing_id, team_id)
         old_price = (
             float(listing["current_price"]) if listing["current_price"] is not None else None
         )
@@ -316,7 +381,7 @@ async def push_price(
                 if not guard.ok:
                     raise BusinessError(
                         "PRICING_BELOW_MIN_PRICE",
-                        "人工价未过策略 min_price 硬底线（fail-closed 拒绝）",
+                        "人工价低于策略 min_price 底线（拒绝）",
                         detail=guard.detail,
                     )
                 guard_detail.update(guard.detail)
@@ -344,6 +409,19 @@ async def push_price(
             }
         # 模式闸预检（live 未放量等拒绝 → tx1 整体回滚，无残留命令）
         await gateway.prepare(session, listing["store_id"])
+        # 轮次维度（retire:{id}:{episode} 房例）：同 listing 第 N 次派发占第 N 个键——
+        # 渠道拒/对账判败后同价重推开新命令，不复用终态旧命令（否则永久黑洞）；
+        # in-flight 守卫保证计数时既有命令均已终局，无并发跳号。
+        episode = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM app.channel_command"
+                    " WHERE action = 'price_push' AND object_type = 'listing'"
+                    "   AND object_id = :l"
+                ),
+                {"l": listing_id},
+            )
+        ).scalar_one()
         enq = await outbox.enqueue(
             session,
             team_id=team_id,
@@ -364,10 +442,16 @@ async def push_price(
                 "strategy_version": strategy["version"] if strategy else None,
                 "detail": guard_detail,
             },
-            idempotency_key=f"price:{listing_id}:{price}",
+            idempotency_key=f"price:{listing_id}:{price}:{episode}",
             object_type="listing",
             object_id=listing_id,
             created_by=actor_id,
+        )
+        # 派发半程（BR-LC-011 两段式）：在途标记随命令同事务落库；
+        # 渠道终态成功 → apply_price_backfill 回填并清；失败 → clear_pending_price 复位
+        await session.execute(
+            text("UPDATE app.listing SET pending_price = :p WHERE id = :id"),
+            {"p": price, "id": listing_id},
         )
     outcome = await outbox.execute_command(
         sessions,
@@ -407,13 +491,24 @@ async def _apply_price_push(  # noqa: PLR0911 归位分支=渠道响应形态（
             session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
         ):
             return {"command_status": "superseded"}
+        await clear_pending_price(session, [listing_id])  # 零发包，无在途
         return {"status": "succeeded", "dry_run": True, "request_snapshot": resp.request_snapshot}
 
     if resp is None or resp.status is None:
         # 结果未知：不回填价格、不重发（BR-GW-005）——等 price_recon 拉渠道实价对账
+        # （pending_price 保留：改价确实在途）
         if not await outbox.complete(session, command_id=cid, fence=fence, status="verify_pending"):
             return {"command_status": "superseded"}
         return {"status": "verify_pending"}
+
+    if resp.status == 429:  # noqa: PLR2004
+        # 渠道限流拒收 = 确定未受理（暂态，非业务拒）——与闸前拒绝同类处置：
+        # 归还 pending 由 beat 在配额恢复后继续推，绝不判终局 failed（评审发现 5）。
+        # 进程内 GCRA 在重启/多 worker 下会丢状态，真实 429 可达。
+        if not await outbox.release_claim(session, command_id=cid, fence=fence):
+            return {"command_status": "superseded"}
+        log.info("pricing.push_429_released", command_id=cid, listing_id=listing_id)
+        return {"status": "pending", "error_code": "HTTP_429"}
 
     if resp.status == 200:  # noqa: PLR2004
         data = resp.data if isinstance(resp.data, dict) else {}
@@ -440,7 +535,7 @@ async def _apply_price_push(  # noqa: PLR0911 归位分支=渠道响应形态（
         )
         return {"status": "succeeded", "current_price": payload["new_price"]}
 
-    # 渠道明确拒（4xx 业务拒等）：命令 failed + 告警，**不回填价格**
+    # 渠道明确拒（4xx 业务拒等）：命令 failed + 告警，**不回填价格**、清在途标记
     error_code, errors = _channel_error_code(resp)
     if not await outbox.complete(
         session,
@@ -451,6 +546,7 @@ async def _apply_price_push(  # noqa: PLR0911 归位分支=渠道响应形态（
         error_code=error_code,
     ):
         return {"command_status": "superseded"}
+    await clear_pending_price(session, [listing_id])
     await notify(
         session,
         team_id=int(cmd["team_id"]),
@@ -465,5 +561,387 @@ async def _apply_price_push(  # noqa: PLR0911 归位分支=渠道响应形态（
     return {"status": "failed", "error_code": error_code, "http_status": resp.status}
 
 
-# outbox 命令 → tx2 归位函数（drain 工具按 action 索取，与 listing.APPLIERS 同构）
+# ── 价格同步管道（R2-06 增量3：feed 聚合通道，D-Q62 路由 >阈值 走 PRICE_AND_PROMOTION）──
+
+
+async def price_feed_header(session: AsyncSession) -> dict[str, Any]:
+    """PRICE_AND_PROMOTION feed header（口径2）：默认常量 + system_config 逐字段覆盖。"""
+    cfg = dict(_PRICE_FEED_HEADER_DEFAULTS)
+    row = (
+        await session.execute(
+            text("SELECT value FROM app.system_config WHERE key = 'pricing.price_feed_header'")
+        )
+    ).scalar_one_or_none()
+    if isinstance(row, dict):
+        cfg.update({k: row[k] for k in _PRICE_FEED_HEADER_DEFAULTS if k in row})
+    return {
+        "businessUnit": cfg["business_unit"],
+        "locale": cfg["locale"],
+        "version": cfg["version"],
+    }
+
+
+def build_price_feed_envelope(
+    header: dict[str, Any], items: list[tuple[str, float]]
+) -> dict[str, Any]:
+    """PRICE_AND_PROMOTION canonical envelope（考古口径2，旧仓 A 版生产验证）。
+
+    ⚠️ 同 build_put_price_body：只产常规价，促销字段（promoId/effectiveDate/
+    expirationDate/processMode 等）硬性禁止出现。
+    """
+    return {
+        "MPItemFeedHeader": header,
+        "MPItem": [
+            {"Promo&Discount": {"sku": str(sku), "price": round(float(price), 2)}}
+            for sku, price in items
+        ],
+    }
+
+
+async def push_price_feed(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    team_id: int,
+    store_id: int,
+    items: list[dict[str, Any]],
+    applier: outbox.Applier,
+    force: bool = False,
+    actor_id: int | None = None,
+    is_super: bool = False,
+) -> dict[str, Any]:
+    """单店批量改价的 feed 聚合通道（D-Q62：条数 > put_route_threshold 时走此路）。
+
+    items: [{listing_id, new_price, reason, strategy, detail}]。三段式同 push_price：
+    tx1 逐条准入校验（与 PUT 路完全同口径）+ 组 feed（feed_kind='price'）+ 落
+    feed_submit 命令 + 写 pending_price 在途标记 → HTTP → tx2 归位
+    （applier=listing._apply_feed_submit，其按 feed_kind 分派回本模块）。
+    渠道 item 级 SUCCESS 才回填（feed_poll price 分支，BR-LC-011 两段式）。
+    """
+    pushed: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        threshold = await confirm_threshold(session, team_id)
+        eligible: list[dict[str, Any]] = []
+        for item in items:
+            lid = int(item["listing_id"])
+            price = round(float(item["new_price"]), 2)
+            try:
+                listing = await _lock_listing_for_push(session, lid, team_id)
+            except BusinessError as exc:
+                failed.append({"listing_id": lid, "code": exc.code})
+                continue
+            if listing["store_id"] != store_id:
+                failed.append({"listing_id": lid, "code": "PRICING_FEED_MIXED_STORE"})
+                continue
+            old_price = (
+                float(listing["current_price"]) if listing["current_price"] is not None else None
+            )
+            if (
+                old_price is not None
+                and engine.exceeds_confirm_threshold(old_price, price, pct=threshold)
+                and not force
+            ):
+                failed.append({"listing_id": lid, "code": "PRICING_CONFIRM_REQUIRED"})
+                continue
+            if not engine.price_changed(old_price, price):
+                skipped.append({"listing_id": lid, "reason": "unchanged"})
+                continue
+            strategy = item.get("strategy")
+            eligible.append(
+                {
+                    "listing_id": lid,
+                    "channel_sku": listing["channel_sku"],
+                    "old_price": old_price,
+                    "new_price": price,
+                    "reason": str(item.get("reason", "strategy")),
+                    "strategy_id": strategy["id"] if strategy else None,
+                    "strategy_version": strategy["version"] if strategy else None,
+                    "detail": dict(item.get("detail") or {}),
+                }
+            )
+        if not eligible:
+            return {"feed_id": None, "pushed": pushed, "skipped": skipped, "failed": failed}
+
+        await gateway.prepare(session, store_id)  # 模式闸预检（拒绝 → tx1 整体回滚）
+        feed_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO app.feed (team_id, store_id, feed_kind, item_count,"
+                    " status, created_by)"
+                    " VALUES (:t, :s, 'price', :n, 'submitting', :u) RETURNING id"
+                ),
+                {"t": team_id, "s": store_id, "n": len(eligible), "u": actor_id},
+            )
+        ).scalar_one()
+        for entry in eligible:
+            await session.execute(
+                text(
+                    "INSERT INTO app.feed_item (feed_id, team_id, listing_id, channel_sku)"
+                    " VALUES (:f, :t, :l, :sku)"
+                ),
+                {"f": feed_id, "t": team_id, "l": entry["listing_id"], "sku": entry["channel_sku"]},
+            )
+        header = await price_feed_header(session)
+        envelope = build_price_feed_envelope(
+            header, [(e["channel_sku"], e["new_price"]) for e in eligible]
+        )
+        enq = await outbox.enqueue(
+            session,
+            team_id=team_id,
+            store_id=store_id,
+            action="feed_submit",
+            payload={
+                "method": "POST",
+                "path": "/v3/feeds",
+                "endpoint_key": f"POST /v3/feeds:{PRICE_FEED_TYPE}",
+                "gate_max_wait": _GATE_MAX_WAIT_S,
+                "params": {"feedType": PRICE_FEED_TYPE},
+                "json_body": envelope,
+                # item 级回填数据（feed_poll price 分支按 sku 取用）
+                "items": {e["channel_sku"]: e for e in eligible},
+            },
+            idempotency_key=f"feed:{feed_id}",
+            object_type="feed",
+            object_id=feed_id,
+            created_by=actor_id,
+        )
+        # 派发半程（BR-LC-011）：feed 内每个 listing 记在途标记
+        for entry in eligible:
+            await session.execute(
+                text("UPDATE app.listing SET pending_price = :p WHERE id = :id"),
+                {"p": entry["new_price"], "id": entry["listing_id"]},
+            )
+        pushed = [e["listing_id"] for e in eligible]
+    outcome = await outbox.execute_command(
+        sessions, enq["command_id"], team_id=team_id, is_super=is_super, applier=applier
+    )
+    return {
+        "feed_id": feed_id,
+        "command_id": enq["command_id"],
+        "pushed": pushed,
+        "skipped": skipped,
+        "failed": failed,
+        **outcome,
+    }
+
+
+async def _feed_listing_ids(session: AsyncSession, feed_id: int) -> list[int]:
+    rows = await session.execute(
+        text("SELECT listing_id FROM app.feed_item WHERE feed_id = :f"), {"f": feed_id}
+    )
+    return [int(r[0]) for r in rows]
+
+
+async def apply_price_feed_submit(  # noqa: PLR0911 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）
+    session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
+) -> dict[str, Any]:
+    """price feed 提交的 tx2 归位（listing._apply_feed_submit 按 feed_kind 分派至此）。
+
+    与 item feed 归位的差异：明确拒不涉及 listing_create 配额/GTIN/状态机——
+    只清 pending_price 复位 + 告警；成功仅记 submitted（回填等 item 级结果）。
+    """
+    feed_id = int(cmd["object_id"])
+    cid, fence = int(cmd["id"]), int(cmd["fence"])
+
+    if resp is not None and resp.dry_run:
+        if not await outbox.complete(
+            session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
+        ):
+            return {"command_status": "superseded"}
+        await session.execute(
+            text(
+                "UPDATE app.feed SET status = 'building',"
+                " headline = cast(:h AS jsonb) WHERE id = :f"
+            ),
+            {"f": feed_id, "h": json.dumps({"dry_run": True}, ensure_ascii=False)},
+        )
+        await clear_pending_price(session, await _feed_listing_ids(session, feed_id))
+        return {
+            "feed_status": "building",
+            "dry_run": True,
+            "request_snapshot": resp.request_snapshot,
+        }
+
+    if resp is None or resp.status is None:
+        # 提交无响应：结果未知 → verify_pending，等 feed verify-back 对账（永不盲重试）
+        if not await outbox.complete(session, command_id=cid, fence=fence, status="verify_pending"):
+            return {"command_status": "superseded"}
+        await session.execute(
+            text(
+                "UPDATE app.feed SET status = 'verify_pending', submitted_at = now() WHERE id = :f"
+            ),
+            {"f": feed_id},
+        )
+        return {"status": "verify_pending", "feed_status": "verify_pending"}
+
+    if resp.status == 429:  # noqa: PLR2004 渠道限流=确定未受理，归还 pending 等 beat（同 PUT 路）
+        if not await outbox.release_claim(session, command_id=cid, fence=fence):
+            return {"command_status": "superseded"}
+        await session.execute(
+            text("UPDATE app.feed SET status = 'building' WHERE id = :f"), {"f": feed_id}
+        )
+        return {"status": "pending", "error_code": "HTTP_429"}
+
+    channel_feed_id = (resp.data or {}).get("feedId")
+    if resp.status == 200 and channel_feed_id:  # noqa: PLR2004
+        if not await outbox.complete(
+            session,
+            command_id=cid,
+            fence=fence,
+            status="succeeded",
+            result={"channel_feed_id": channel_feed_id},
+        ):
+            return {"command_status": "superseded"}
+        await session.execute(
+            text(
+                "UPDATE app.feed SET status = 'submitted', channel_feed_id = :cf,"
+                " submitted_at = now() WHERE id = :f"
+            ),
+            {"cf": channel_feed_id, "f": feed_id},
+        )
+        return {"status": "succeeded", "feed_status": "submitted",
+                "channel_feed_id": channel_feed_id}  # fmt: skip
+
+    # 渠道明确拒：feed error + 命令 failed + 清在途标记 + 告警（价格不回填）
+    error_code, errors = _channel_error_code(resp)
+    if not await outbox.complete(
+        session,
+        command_id=cid,
+        fence=fence,
+        status="failed",
+        result={"http_status": resp.status, "errors": errors},
+        error_code=error_code,
+    ):
+        return {"command_status": "superseded"}
+    await session.execute(
+        text("UPDATE app.feed SET status = 'error', headline = cast(:h AS jsonb) WHERE id = :f"),
+        {"f": feed_id, "h": json.dumps({"status": resp.status}, ensure_ascii=False)},
+    )
+    await clear_pending_price(session, await _feed_listing_ids(session, feed_id))
+    await notify(
+        session,
+        team_id=int(cmd["team_id"]),
+        severity="warn",
+        category="pricing",
+        title=f"价格 Feed #{feed_id} 提交被渠道拒绝",
+        body=f"POST /v3/feeds({PRICE_FEED_TYPE}) HTTP {resp.status}（{error_code}）；"
+        "价格未回填，核对后在定价页重推",
+        object_type="feed",
+        object_id=str(feed_id),
+        dedupe_key=f"price_feed:{feed_id}",
+    )
+    return {"status": "failed", "error_code": error_code, "http_status": resp.status}
+
+
+async def apply_price_feed_results(
+    session: AsyncSession, feed: dict[str, Any], data: dict[str, Any]
+) -> dict[str, Any]:
+    """price feed 的 item 级权威回写（feed_poll 终态分支按 feed_kind 分派至此）。
+
+    SUCCESS → 两段式回填（apply_price_backfill，含清 pending_price）；
+    error → feed_item error + 清 pending_price 复位（价格不回填）。headline 不可信，
+    一律以 item 级为准（总账铁律）。
+    """
+    feed_id = int(feed["id"])
+    payload_items: dict[str, Any] = {}
+    cmd_row = (
+        await session.execute(
+            text(
+                "SELECT payload FROM app.channel_command"
+                " WHERE action = 'feed_submit' AND object_type = 'feed' AND object_id = :f"
+                " ORDER BY id DESC LIMIT 1"
+            ),
+            {"f": feed_id},
+        )
+    ).first()
+    if cmd_row is not None and isinstance(cmd_row[0], dict):
+        payload_items = cmd_row[0].get("items") or {}
+
+    ok = err = 0
+    for item in data.get("itemDetails", {}).get("itemIngestionStatus", []):
+        sku = str(item.get("sku") or "")
+        entry = payload_items.get(sku)
+        if entry is None:
+            continue
+        lid = int(entry["listing_id"])
+        if str(item.get("ingestionStatus")) == "SUCCESS":
+            ok += 1
+            await session.execute(
+                text(
+                    "UPDATE app.feed_item SET status = 'success', raw = cast(:r AS jsonb)"
+                    " WHERE feed_id = :f AND channel_sku = :sku"
+                ),
+                {"f": feed_id, "sku": sku, "r": json.dumps(item, ensure_ascii=False)},
+            )
+            await apply_price_backfill(
+                session,
+                listing_id=lid,
+                team_id=int(feed["team_id"]),
+                payload=entry,
+                detail_extra={"via": "price_feed", "feed_id": feed_id},
+            )
+        else:
+            err += 1
+            errors = item.get("ingestionErrors", {}).get("ingestionError") or [{}]
+            code = str(errors[0].get("code") or "WM_UNKNOWN")
+            await session.execute(
+                text(
+                    "UPDATE app.feed_item SET status = 'error', error_code = :c,"
+                    " error_msg = :m, raw = cast(:r AS jsonb)"
+                    " WHERE feed_id = :f AND channel_sku = :sku"
+                ),
+                {
+                    "c": code,
+                    "m": str(errors[0].get("description") or "")[:500],
+                    "r": json.dumps(item, ensure_ascii=False),
+                    "f": feed_id,
+                    "sku": sku,
+                },
+            )
+            await clear_pending_price(session, [lid])
+    final = "processed" if err == 0 else ("partial" if ok else "error")
+    await session.execute(
+        text("UPDATE app.feed SET status = :s, completed_at = now() WHERE id = :f"),
+        {"s": final, "f": feed_id},
+    )
+    if err:
+        await notify(
+            session,
+            team_id=int(feed["team_id"]),
+            severity="critical" if final == "error" else "warn",
+            category="pricing",
+            title=f"价格 Feed #{feed_id} {'全部失败' if final == 'error' else '部分失败'}",
+            body=f"成功 {ok} / 失败 {err}；失败项价格未回填（feed 明细页可查），核对后重推",
+            object_type="feed",
+            object_id=str(feed_id),
+            dedupe_key=f"price_feed_result:{feed_id}",
+        )
+    return {"feed_id": feed_id, "feed_status": final, "success": ok, "error": err}
+
+
+async def apply_price_feed_lost(session: AsyncSession, feed: dict[str, Any]) -> dict[str, Any]:
+    """price feed 对账判 lost（verify-back 渠道未收到）：清在途标记复位 + 告警。
+
+    与 item feed lost 的差异：不涉及 listing_create 配额与状态机——价格不回填即复位。
+    """
+    feed_id = int(feed["id"])
+    ids = await _feed_listing_ids(session, feed_id)
+    await clear_pending_price(session, ids)
+    await notify(
+        session,
+        team_id=int(feed["team_id"]),
+        severity="warn",
+        category="pricing",
+        title=f"价格 Feed #{feed_id} 渠道未收到（对账 lost）",
+        body="提交未达渠道，价格未回填；核对后在定价页重推",
+        object_type="feed",
+        object_id=str(feed_id),
+        dedupe_key=f"price_feed:{feed_id}",
+    )
+    return {"feed_id": feed_id, "feed_status": "lost", "reset": len(ids)}
+
+
+# outbox 命令 → tx2 归位函数（drain 工具按 action 索取，与 listing.APPLIERS 同构；
+# price feed 走 action='feed_submit'，由 listing._apply_feed_submit 按 feed_kind 分派）
 APPLIERS: dict[str, outbox.Applier] = {"price_push": _apply_price_push}

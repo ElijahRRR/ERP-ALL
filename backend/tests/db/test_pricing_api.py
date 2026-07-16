@@ -1,6 +1,6 @@
 """R2-06 增量1/2：定价策略注册表 CRUD + 重定价预览。
 
-增量1：活跃唯一（team×store×offer_mode）→ 409；min_price 硬底线必填 fail-closed；
+增量1：活跃唯一（team×store×offer_mode）→ 409；min_price 可选（填了须 >0，D-Q62 补充）；
 params 每改 version +1；停用旧策略后可建新活跃策略。
 增量2：/pricing-strategies/preview 只读试算（clamp 版展示 + 严格判定并列；
 store 级策略优先 team 级；无策略 422 PRICING_STRATEGY_NOT_FOUND）。
@@ -112,7 +112,7 @@ class TestStrategyCrud:
         assert r2.status_code == 409
         assert r2.json()["error"]["code"] == "PRICING_STRATEGY_CONFLICT"
 
-        # min_price 缺失 fail-closed
+        # min_price 可选（D-Q62 补充）：缺省可建；填了必须 >0
         r3 = client.post(
             "/api/v1/pricing-strategies",
             headers=auth,
@@ -123,8 +123,23 @@ class TestStrategyCrud:
                 "params": {},
             },
         )
-        assert r3.status_code == 422
-        assert r3.json()["error"]["code"] == "PRICING_MIN_PRICE_REQUIRED"
+        assert r3.status_code == 201, r3.text
+        r3b = client.patch(
+            f"/api/v1/pricing-strategies/{r3.json()['id']}",
+            headers=auth,
+            json={"params": {"min_price": 0}},
+        )
+        assert r3b.status_code == 422
+        assert r3b.json()["error"]["code"] == "PRICING_MIN_PRICE_INVALID"
+        # 用完即停用——防活跃 match 策略污染后续「无策略」预览用例
+        assert (
+            client.patch(
+                f"/api/v1/pricing-strategies/{r3.json()['id']}",
+                headers=auth,
+                json={"status": "disabled"},
+            ).status_code
+            == 200
+        )
 
         # cost_plus 缺 bands
         r4 = client.post(

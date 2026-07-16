@@ -3,7 +3,7 @@
 保真母本：erpAPI/auto_listing/pricing.py（逐函数对照，源行号见各函数 docstring）；
 口径裁定：.agent/evidence/R2-06/archaeology.md——
 - BR-PR-002 成本价 current_price 优先（2026-05-14 校正，buybox 优先为移植失真不带）
-- min_price 硬底线必填 fail-closed（001/06:173，考古口径 8）
+- min_price 底线可选（D-Q62 补充裁定 2026-07-16：填了才生效，缺省不设防）
 - BR-PR-006 价差 < $0.01 跳过；BR-PR-008 30% 变动需 force 确认（考古口径 9 参数化）
 
 本模块只做纯计算：无 IO / 无 DB / 无配置读取。区间倍数、min_price 等业务参数一律由
@@ -30,7 +30,7 @@ class PriceResult:
 
     - ok=True：price 为出价（round 2 位），detail 含 band/multiplier/total/formula；
     - ok=False：不出价，price=None，reason ∈
-      {out_of_band, below_min_price, min_price_required, no_bands}。
+      {out_of_band, below_min_price, no_bands}。
       no_bands 为防御项：该履约类型无任何可解析区间（母本「没有 FBA/FBM 倍数配置」语义）。
     """
 
@@ -159,18 +159,12 @@ def compute_price(total: float, *, fulfillment: str, params: dict[str, Any]) -> 
 
     不出价（fail-closed，ok=False / price=None）：
     - 区间外 → reason='out_of_band'（上架链硬边界，母本 :249-250）；
-    - 算出价 < min_price → reason='below_min_price'（考古口径 8，detail 保留被拒价格）；
-    - params 缺 min_price → reason='min_price_required'（001/06:173 硬底线必填）；
+    - 算出价 < min_price → reason='below_min_price'（仅当策略设了 min_price——
+      D-Q62 补充：可选，缺省不设防）；
     - 该履约类型无可解析区间 → reason='no_bands'（母本「没有倍数配置」语义）。
     """
     ftype = fulfillment.strip().upper()
     min_price = parse_money(params.get("min_price"))
-    if min_price is None:
-        return PriceResult(
-            ok=False,
-            reason="min_price_required",
-            detail={"algo": "cost_plus", "total": total, "fulfillment": ftype},
-        )
     bands = _normalized_bands(params, ftype)
     if not bands:
         return PriceResult(
@@ -184,9 +178,10 @@ def compute_price(total: float, *, fulfillment: str, params: dict[str, Any]) -> 
             detail = _cost_plus_detail(
                 total=total, fulfillment=ftype, low=low, high=high, mul=mul, price=price
             )
-            detail["min_price"] = min_price
-            if price < min_price:
-                return PriceResult(ok=False, reason="below_min_price", detail=detail)
+            if min_price is not None:
+                detail["min_price"] = min_price
+                if price < min_price:
+                    return PriceResult(ok=False, reason="below_min_price", detail=detail)
             return PriceResult(ok=True, price=price, detail=detail)
     band_str = " / ".join(f"{low}-{high}" for low, high, _ in bands)
     return PriceResult(
@@ -285,14 +280,14 @@ def guard_manual_price(price: float, params: dict[str, Any]) -> PriceResult:
     """match/manual 模式守护：人工指定价不经 compute_price，只过 min_price 硬底线。
 
     algo_code='manual'（D-Q23 match 现行 = 人工指定价）：价格由运营给定，引擎不改写
-    数值（仅 round 2 位），但 min_price fail-closed 口径与 cost_plus 完全一致：
-    缺 min_price → 'min_price_required'；price < min_price → 'below_min_price'。
+    数值（仅 round 2 位）；min_price 可选（D-Q62 补充）——设了才守护：
+    price < min_price → 'below_min_price'，缺省直接放行。
     """
     p = round(price, 2)
     detail: dict[str, Any] = {"algo": "manual", "price": p}
     min_price = parse_money(params.get("min_price"))
     if min_price is None:
-        return PriceResult(ok=False, reason="min_price_required", detail=detail)
+        return PriceResult(ok=True, price=p, detail=detail)
     detail["min_price"] = min_price
     if p < min_price:
         return PriceResult(ok=False, reason="below_min_price", detail=detail)

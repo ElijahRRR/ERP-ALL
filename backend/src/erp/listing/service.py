@@ -39,6 +39,10 @@ FEED_TYPE_BY_KIND = {
     "item_build": "MP_ITEM",
     "item_match": "MP_ITEM_MATCH",
     "delete": "RETIRE_ITEM",
+    # price feed 提交用 feedType=PRICE_AND_PROMOTION（pricing.PRICE_FEED_TYPE），
+    # 但渠道 feeds 列表/轮询里显示为 MP_ITEM_PRICE_UPDATE（R2-06 考古口径3）——
+    # 本表供 verify-back 对账匹配，故记显示值
+    "price": "MP_ITEM_PRICE_UPDATE",
 }
 
 
@@ -512,8 +516,17 @@ async def _feed_listings_for_update(session: AsyncSession, feed_id: int) -> list
 async def _apply_feed_submit(  # noqa: PLR0911 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）
     session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
 ) -> dict[str, Any]:
-    """feed_submit 的 tx2 归位（outbox.Applier 契约：complete(fence) 成功才落业务态）。"""
+    """feed_submit 的 tx2 归位（outbox.Applier 契约：complete(fence) 成功才落业务态）。
+
+    price feed（feed_kind='price'，R2-06 增量3 D-Q62 聚合通道）分派到 pricing 模块——
+    其明确拒分支不涉及 listing_create 配额/GTIN/状态机，归位口径不同。
+    """
     feed_id = int(cmd["object_id"])
+    feed_kind = (
+        await session.execute(text("SELECT feed_kind FROM app.feed WHERE id = :f"), {"f": feed_id})
+    ).scalar_one_or_none()
+    if feed_kind == "price":
+        return await pricing_service.apply_price_feed_submit(session, cmd, resp)
     cid, fence = int(cmd["id"]), int(cmd["fence"])
     actor_id = cmd.get("created_by")
 
@@ -618,8 +631,8 @@ async def poll_feed(
             (
                 await session.execute(
                     text(
-                        "SELECT id, team_id, store_id, channel_feed_id, status FROM app.feed"
-                        " WHERE id = :f"
+                        "SELECT id, team_id, store_id, feed_kind, channel_feed_id, status"
+                        " FROM app.feed WHERE id = :f"
                     ),
                     {"f": feed_id},
                 )
@@ -677,6 +690,10 @@ async def _apply_poll_result(
     )
     if str(data.get("feedStatus")) not in ("PROCESSED", "ERROR"):
         return {"feed_id": feed_id, "feed_status": "processing"}
+
+    if feed.get("feed_kind") == "price":
+        # price feed item 级回写走 pricing 模块（SUCCESS → 两段式回填；error → 复位）
+        return await pricing_service.apply_price_feed_results(session, feed, data)
 
     # item 级权威回写（headline 不可信——总账）
     ok = err = 0
@@ -893,6 +910,11 @@ async def _apply_verify_back(
         return {"feed_id": feed_id, "feed_status": "submitted", "channel_feed_id": cf}
     # 对账确认渠道未收到（或无法唯一匹配→保守按 lost，人工核对后重投）
     await session.execute(text("UPDATE app.feed SET status = 'lost' WHERE id = :f"), {"f": feed_id})
+    if feed.get("feed_kind") == "price":
+        # price feed lost：清 pending_price 复位 + 告警（无配额/状态机牵连）
+        result = await pricing_service.apply_price_feed_lost(session, feed)
+        await _resolve_feed_command(session, feed_id, status="failed", error_code="FEED_LOST")
+        return result
     rows = (
         (
             await session.execute(

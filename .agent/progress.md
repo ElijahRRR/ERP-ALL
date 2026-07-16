@@ -453,3 +453,11 @@
   共享池/路由 ≤5 PUT 否则聚合/两段式回填/CAP 计划与拒收无关/区间属 params 数据/min_price 绝对值
   底线/30% 阈值参数化）；保真移植八件；必修缺陷=rate_limiter 价格桶键前缀不齐（限额被架空）；
   增量拆分 4+验收；3 项拟 D-Q 待 Owner（限额路由更新 ledger/默认区间取实表值/min_price 必填）。
+- **R2-06 增量3（价格同步管道）完成**：PUT /v3/price 单品通道 + PRICE_AND_PROMOTION 聚合
+  feed 双通道路由（D-Q62：单店 ≤5 条 PUT、更多聚合 feed，阈值配置中心可覆盖）；outbox
+  price_push 三段式 + 幂等键带轮次（episode，retire 房例）；pending_price 两段式在途标记
+  （0029，兼作改价并发闸；updating 语义=pending_price 非空，不入状态机枚举）；price_recon
+  对账收敛（非 200 亦入 grace 判败通道）+ 0028 种子；限流闸拒绝归还 pending（零字节出门
+  非未知结果）+ 429 同类处置 + drain 按店轮转防跨店饿死；rate_limiter 价格桶键修正
+  （10/hour 官方现行）；dry-run 证据（PUT 快照无促销字段）。经工作流三镜头评审+对抗核实：
+  6 项确认发现（1 critical）全部修复。min_price 可选落码（D-Q62 补充）。402 pytest 全绿。

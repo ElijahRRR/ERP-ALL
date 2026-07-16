@@ -1261,7 +1261,7 @@ components:
               offer_mode: {type: string, enum: [build, match]}
               name: {type: string}
               algo_code: {type: string}
-              params: {type: object, description: 必含 min_price 硬底线}
+              params: {type: object, description: min_price 底线可选（D-Q62 补充；填了须 >0，低于底线不出价）}
               status: {type: string, enum: [active, disabled]}
     PurchaserWrite:
       content:
