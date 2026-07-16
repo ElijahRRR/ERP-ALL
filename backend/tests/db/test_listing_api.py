@@ -502,8 +502,9 @@ class TestPriceUpdate:
         r2 = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 0})
         assert r2.status_code == 422 and r2.json()["error"]["code"] == "LISTING_PRICE_INVALID"
 
+        # 中间态（submitted 等）仍拒；live 已归定价管道（R2-06 增量3，见 test_price_push.py）
         with psycopg.connect(migrated_db, autocommit=True) as conn:
-            conn.execute("UPDATE app.listing SET status = 'live' WHERE id = %s", (lid,))
+            conn.execute("UPDATE app.listing SET status = 'submitted' WHERE id = %s", (lid,))
         r3 = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 25.0})
         assert r3.status_code == 422 and r3.json()["error"]["code"] == "LISTING_STATE_INVALID"
         with psycopg.connect(migrated_db, autocommit=True) as conn:

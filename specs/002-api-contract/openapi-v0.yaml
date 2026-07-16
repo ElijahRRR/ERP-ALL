@@ -835,6 +835,51 @@ paths:
                         reason: {type: [string, 'null'], examples: [out_of_band, below_min_price, no_source_price, manual, not_found]}
                         detail: {type: object}
         '422': {description: 无活跃策略（PRICING_STRATEGY_NOT_FOUND）/入参二选一违规 等业务拒绝, $ref: '#/components/responses/Error'}
+  # R2-06 增量3 契约补充冻结：批量重定价（live listing 按策略算价 → PUT /v3/price 通道同步推渠道）
+  /pricing/reprice:
+    post:
+      tags: [Listing]
+      summary: 批量重定价（cost_plus 策略算价 → price_changed 过滤 → outbox price_push 三段式；manual 策略跳过）
+      description: >-
+        同步逐条执行（≤200 条 PUT）。PUT /v3/price 100/hour 限流器挡超额——被挡命令
+        留 pending 由 beat channel_outbox_drain 兜底继续推（计入 pushed）；结果未知
+        （verify_pending）由 price_recon 对账归位，绝不盲重试。
+      x-permission: pricing.write
+      parameters: [{$ref: '#/components/parameters/idempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [listing_ids]
+              properties:
+                listing_ids: {type: array, items: {type: integer}, maxItems: 200}
+                force: {type: boolean, default: false, description: 变动超确认阈值（默认 30%）时放行（BR-PR-008）}
+      responses:
+        '202':
+          description: 执行结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pushed: {type: integer, description: 已入队推送数（含 succeeded / verify_pending / 限流 pending）}
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        listing_id: {type: integer}
+                        reason: {type: string, examples: [not_found, not_live, locked, no_strategy, manual, unchanged, out_of_band, below_min_price, no_source_price]}
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        listing_id: {type: integer}
+                        code: {type: [string, 'null'], description: 渠道错误码 / HTTP_xxx / PRICING_CONFIRM_REQUIRED 等}
+        '409': {description: 幂等键冲突（同键异载荷/处理中）, $ref: '#/components/responses/Error'}
   /maintenance-tasks:
     get:
       tags: [Listing]

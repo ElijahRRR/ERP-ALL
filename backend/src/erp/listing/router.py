@@ -20,6 +20,7 @@ from erp.core.idempotency import run_idempotent
 from erp.identity.schemas import Page
 from erp.listing import gtin as gtin_service
 from erp.listing import service
+from erp.pricing import service as pricing_service
 
 listing_router = APIRouter(tags=["Listing"])
 
@@ -265,17 +266,40 @@ async def update_listing_price(
     user: Annotated[CurrentUser, Depends(require_permission("listing.submit"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """提交前改价（draft/failed；HF-0716 渠道 CAP 拒 0 价的运营自救入口）。"""
+    """改价入口：draft/failed 直改（HF-0716 运营自救）；live 转定价管道（R2-06 增量3）。
+
+    live 分支在 router 层分流——push_price 需要 sessions 工厂走三段式
+    （tx1 校验+落 outbox 命令 → HTTP → tx2 归位），不能嵌在本请求事务内；
+    守护（min_price）与 30% 阈值在 push_price 的 tx1 内同样先行。
+    """
     if user.team_id is None:
         raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
-    result = await service.update_price(
-        session,
-        team_id=user.team_id,
-        listing_id=listing_id,
-        price=body.price,
-        force=body.force,
-        actor_id=user.id,
-    )
+    status_row = (
+        await session.execute(
+            text("SELECT status FROM app.listing WHERE id = :id AND team_id = :t"),
+            {"id": listing_id, "t": user.team_id},
+        )
+    ).first()
+    if status_row is not None and status_row[0] == "live":
+        result = await pricing_service.push_price(
+            get_session_factory(),
+            team_id=user.team_id,
+            listing_id=listing_id,
+            new_price=body.price,
+            reason="manual",
+            force=body.force,
+            actor_id=user.id,
+            is_super=user.is_super,
+        )
+    else:
+        result = await service.update_price(
+            session,
+            team_id=user.team_id,
+            listing_id=listing_id,
+            price=body.price,
+            force=body.force,
+            actor_id=user.id,
+        )
     await AuditWriter.for_user(session, user, request).log(
         "listing.price_update", "listing", listing_id,
         after={"price": body.price, "force": body.force},

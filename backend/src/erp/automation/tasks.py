@@ -30,6 +30,7 @@ from erp.listing import service as listing_service
 from erp.notify.service import notify
 from erp.order import pull as order_pull_service
 from erp.order import ship as order_ship_service
+from erp.pricing import service as pricing_service
 from erp.scrape import service as scrape_service
 from erp.tools.drain_channel_outbox import drain
 
@@ -451,6 +452,120 @@ async def _recon_one_retire(sessions: Sessions, cmd: Any, *, grace_s: int) -> st
         return "pending"  # 未过 grace：等渠道把 RETIRE feed 处理完
 
 
+async def price_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """price_push verify_pending 渠道对账（R2-06 增量3，镜像 retire_recon）——绝不重发。
+
+    权威 = 渠道商品实价（GET /v3/items/{sku} 的 price.amount）：
+    - 渠道价 == 目标价（±$0.01）→ succeeded + 补两段式回填（current_price + 价史）；
+    - ≠ 且命令滞龄 > grace_s → 判提交未生效：failed + notify（价格不回填，
+      人工核对后重推=价格链再走一次 push_price）；
+    - 渠道查不到/暂态（dry_run 档、非 200、传输失败）→ 留待下轮
+      （该店车道继续背压，有意 fail-closed）。
+    """
+    batch = int(config.get("batch", 10))
+    min_age_s = int(config.get("min_age_s", 300))
+    grace_s = int(config.get("grace_s", 3600))
+    async with system_tx(sessions) as session:
+        cmds = (
+            await session.execute(
+                text(
+                    "SELECT c.id, c.team_id, c.store_id, c.object_id, c.payload, c.created_by,"
+                    "       extract(epoch FROM now() - c.updated_at) AS age_s,"
+                    "       l.channel_sku"
+                    " FROM app.channel_command c JOIN app.listing l ON l.id = c.object_id"
+                    " WHERE c.action = 'price_push' AND c.status = 'verify_pending'"
+                    "   AND c.updated_at < now() - make_interval(secs => :age)"
+                    " ORDER BY c.id LIMIT :n"
+                ),
+                {"age": min_age_s, "n": batch},
+            )
+        ).all()
+    stats = {"scanned": len(cmds), "succeeded": 0, "failed": 0, "pending": 0, "errors": 0}
+    for cmd in cmds:
+        try:
+            outcome = await _recon_one_price(sessions, cmd, grace_s=grace_s)
+        except Exception as exc:
+            stats["errors"] += 1
+            log.warning("beat.price_recon_error", command_id=cmd.id, error=str(exc))
+            continue
+        stats[outcome] += 1
+    return stats
+
+
+def _channel_item_price(data: dict[str, Any]) -> float | None:
+    """GET /v3/items/{sku} 响应 → 渠道现价（ItemResponse[0].price.amount）。"""
+    items = data.get("ItemResponse") or []
+    first = items[0] if isinstance(items, list) and items else {}
+    price_obj = first.get("price") if isinstance(first, dict) else None
+    if not isinstance(price_obj, dict):
+        return None
+    try:
+        return float(price_obj["amount"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+async def _recon_one_price(sessions: Sessions, cmd: Any, *, grace_s: int) -> str:
+    """单命令三段式对账。返回 succeeded / failed / pending。"""
+    # tx1：prepare（读凭证/模式，无行锁跨 HTTP）
+    async with ctx_tx(sessions, team_id=None, is_super=True) as session:
+        ctx, mode = await gateway.prepare(session, int(cmd.store_id))
+    # endpoint_key 同 retire_recon（限流表无 "GET /v3/items/{id}" 键 → 落 _default 120/min）
+    resp = await gateway.request_prepared(
+        ctx, mode, "GET", f"/v3/items/{cmd.channel_sku}", endpoint_key="GET /v3/items/{id}"
+    )
+    if resp.dry_run or resp.status != 200 or not isinstance(resp.data, dict):  # noqa: PLR2004
+        return "pending"  # dry_run 档/传输失败/渠道查不到（404 暂态）：不臆断，下轮再看
+    channel_price = _channel_item_price(resp.data)
+    target = float(cmd.payload["new_price"])
+
+    # tx2：重锁复核归位（resolve_verify 自带 status='verify_pending' 守卫）
+    async with ctx_tx(sessions, team_id=None, is_super=True) as session:
+        if channel_price is not None and abs(channel_price - target) <= 0.01:  # noqa: PLR2004
+            if await outbox.resolve_verify(
+                session,
+                command_id=int(cmd.id),
+                status="succeeded",
+                result={"via": "price_recon", "channel_price": channel_price},
+            ):
+                # 渠道实价确认 → 补两段式回填（与 applier 同一落账口径）
+                await pricing_service.apply_price_backfill(
+                    session,
+                    listing_id=int(cmd.object_id),
+                    team_id=int(cmd.team_id),
+                    payload=cmd.payload,
+                    detail_extra={"via": "price_recon", "channel_price": channel_price},
+                    actor_id=cmd.created_by,
+                )
+                return "succeeded"
+            return "pending"  # 已被人工/并发归位
+        if float(cmd.age_s) > grace_s:
+            if await outbox.resolve_verify(
+                session,
+                command_id=int(cmd.id),
+                status="failed",
+                error_code="PRICE_PUSH_NOT_EFFECTIVE",
+                result={"via": "price_recon", "channel_price": channel_price},
+            ):
+                await notify(
+                    session,
+                    team_id=int(cmd.team_id),
+                    severity="warn",
+                    category="pricing",
+                    title=f"改价结果未确认（listing #{cmd.object_id}）——已判未生效",
+                    body=(
+                        f"渠道现价 {channel_price} ≠ 目标 {target}（超对账宽限）；"
+                        "价格未回填，核对后在定价页重推"
+                    ),
+                    object_type="listing",
+                    object_id=str(cmd.object_id),
+                    dedupe_key=f"price_push:{cmd.object_id}",
+                )
+                return "failed"
+            return "pending"
+        return "pending"  # 未过 grace：等渠道价格生效（渠道侧可能有分钟级延迟）
+
+
 # ── 告警类（单 system_tx：聚合 + notify，不动业务数据）──
 
 
@@ -700,6 +815,7 @@ TASKS: dict[str, TaskFn] = {
     "feed_verify_back": feed_verify_back,
     "channel_outbox_drain": channel_outbox_drain,
     "retire_recon": retire_recon,
+    "price_recon": price_recon,
     "gtin_watermark": gtin_watermark,
     "llm_budget_check": llm_budget_check,
     "order_pull": order_pull,

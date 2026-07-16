@@ -37,7 +37,7 @@ Applier = Callable[
     [AsyncSession, dict[str, Any], GatewayResponse | None], Awaitable[dict[str, Any]]
 ]
 
-ACTIONS = ("feed_submit", "item_retire", "order_ack", "order_ship")
+ACTIONS = ("feed_submit", "item_retire", "order_ack", "order_ship", "price_push")
 
 # 敏感键黑名单（子串匹配，大小写不敏感）——payload 任何层级键名命中即拒
 _FORBIDDEN_KEY_PARTS = ("authorization", "token", "secret", "password", "credential", "proxy")
@@ -214,6 +214,25 @@ async def complete(
     return True
 
 
+async def release_claim(session: AsyncSession, *, command_id: int, fence: int) -> bool:
+    """发包前被闸拒（限流 GATEWAY_RATE_EXCEEDED，零字节出门）：inflight → pending 归还。
+
+    与「永不盲重试」不冲突——请求从未出门，无未知结果；命令留 pending 由
+    beat channel_outbox_drain 在配额恢复后继续推。fence 校验同 complete：
+    迟到 worker 的归还整体拒绝。仅限「确定未发包」场景调用。
+    """
+    row = (
+        await session.execute(
+            text(
+                "UPDATE app.channel_command SET status = 'pending', lease_expires_at = NULL"
+                " WHERE id = :id AND fence = :f AND status = 'inflight' RETURNING id"
+            ),
+            {"id": command_id, "f": fence},
+        )
+    ).first()
+    return row is not None
+
+
 async def resolve_verify(
     session: AsyncSession,
     *,
@@ -336,7 +355,18 @@ async def execute_command(
             endpoint_key=payload.get("endpoint_key"),
             params=payload.get("params"),
             json_body=payload.get("json_body"),
+            gate_max_wait=payload.get("gate_max_wait"),
         )
+    except BusinessError as exc:
+        if exc.code == "GATEWAY_RATE_EXCEEDED":
+            # 限流闸在发包前拒绝（零字节出门，非未知结果）→ 归还 pending，
+            # 由 beat channel_outbox_drain 在配额恢复后继续推（R2-06 reprice 语义）
+            async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as s:
+                released = await release_claim(s, command_id=cmd["id"], fence=cmd["fence"])
+            log.info("outbox.rate_gated_released", command_id=command_id, released=released)
+            return {"command_status": "pending", "error_code": "GATEWAY_RATE_EXCEEDED"}
+        log.warning("outbox.request_unexpected_error", command_id=command_id, error=str(exc))
+        resp = None
     except Exception as exc:
         # 网关已吞传输错误（status=None）；走到这里=意外异常，同样按"结果未知"处理
         log.warning("outbox.request_unexpected_error", command_id=command_id, error=str(exc))

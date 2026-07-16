@@ -1039,7 +1039,8 @@ async def update_price(
     """提交前改价（draft/failed 专用；HF-0716：price_snapshot 无价 → 0 价出门被
     渠道 CAP 拒，本地校验器现已拦截，运营须有改价入口才能自救）。
 
-    在架（live 等）价格调整不走这里——归定价/促销管道（R2 后续），防绕过策略。
+    在架（live）价格调整不走这里——router 层分流到 pricing.push_price 定价管道
+    （R2-06 增量3），防绕过策略；本函数保持纯 draft/failed 直改。
     R2-06 增量2 守护：有 active 策略 → 人工价过 min_price 硬底线（fail-closed）；
     变动幅度超阈（BR-PR-008，配置 pricing.confirm_threshold_pct 默认 30%）需
     force 二次确认。通过后写 price_history(reason='manual')。

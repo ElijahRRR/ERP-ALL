@@ -20,9 +20,10 @@ from erp.channel import outbox
 from erp.core.db import get_session_factory, system_tx
 from erp.listing.service import APPLIERS as LISTING_APPLIERS
 from erp.order.ship import APPLIERS as ORDER_APPLIERS
+from erp.pricing.service import APPLIERS as PRICING_APPLIERS
 
-# 全量 action 归位注册表（feed_submit/item_retire + order_ack/order_ship）
-APPLIERS = {**LISTING_APPLIERS, **ORDER_APPLIERS}
+# 全量 action 归位注册表（feed_submit/item_retire + order_ack/order_ship + price_push）
+APPLIERS = {**LISTING_APPLIERS, **ORDER_APPLIERS, **PRICING_APPLIERS}
 
 log = structlog.get_logger()
 
