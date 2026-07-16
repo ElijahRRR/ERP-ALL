@@ -11,7 +11,8 @@ export type Team = Schemas['Team']
 export type AuditLog = Schemas['AuditLog']
 export type PageOf<T> = { items: T[]; total: number; page: number; size: number }
 
-const ACCESS_KEY = 'erp.access'
+// ACCESS_KEY 导出给 AuthContext 监听跨标签页 token 变更（storage 事件按 key 过滤）
+export const ACCESS_KEY = 'erp.access'
 const REFRESH_KEY = 'erp.refresh'
 
 export class ApiError extends Error {
@@ -65,7 +66,7 @@ async function rawRequest(path: string, init: RequestInit): Promise<Response> {
   return fetch(`/api/v1${path}`, { ...init, headers })
 }
 
-async function tryRefresh(): Promise<boolean> {
+async function doRefresh(): Promise<boolean> {
   const refresh = tokenStore.refresh
   if (!refresh) return false
   const resp = await fetch('/api/v1/auth/refresh', {
@@ -76,6 +77,18 @@ async function tryRefresh(): Promise<boolean> {
   if (!resp.ok) return false
   tokenStore.set((await resp.json()) as TokenPair)
   return true
+}
+
+// 单飞（FE-0716 防御加固）：access 过期瞬间往往多请求并发 401（页面请求 + 通知轮询），
+// 各自发 refresh 会互相竞争写 tokenStore；后端 refresh 若改为单次使用轮换语义，
+// 竞争失败方会误判凭证失效把用户踢回登录页。并发期间共享同一个 refresh Promise。
+let refreshInFlight: Promise<boolean> | null = null
+
+function tryRefresh(): Promise<boolean> {
+  refreshInFlight ??= doRefresh().finally(() => {
+    refreshInFlight = null
+  })
+  return refreshInFlight
 }
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
