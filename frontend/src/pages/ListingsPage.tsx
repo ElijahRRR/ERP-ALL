@@ -75,7 +75,9 @@ const L_COLOR: Record<string, string> = {
   retired: 'default',
 }
 // 改价（HF-0716）与提交同权限点 listing.submit；仅 draft/failed 且未渠道锁定可改
-const REPRICEABLE = ['draft', 'failed']
+// draft/failed=本地直改（HF-0716 运营自救）；live/published=转定价管道三段式
+// （R2-06 验收②缺陷修复：后端 PATCH 早已分流 live，前端门控漏放宽致 live 无改价按钮）
+const REPRICEABLE = ['draft', 'failed', 'live', 'published']
 
 const PRICE_REASON: Record<string, string> = {
   initial: '初始定价',
@@ -413,8 +415,16 @@ function RepriceModal({
   async function submit(price: number, force: boolean) {
     try {
       // PATCH /listings/{id} 为契约新增端点，schema.d.ts 尚未重新生成，先走宽松调用
-      await api.patch(`/listings/${listing.id}`, force ? { price, force: true } : { price })
-      message.success('改价成功')
+      const r = (await api.patch(
+        `/listings/${listing.id}`,
+        force ? { price, force: true } : { price },
+      )) as { status?: string }
+      // live/published 走定价管道三段式：非 succeeded 即在途（渠道确认后才回填价格）
+      if (r?.status && r.status !== 'succeeded') {
+        message.success('改价已提交渠道，确认后自动回填（列表价格暂不变属正常）')
+      } else {
+        message.success('改价成功')
+      }
       onDone()
     } catch (e) {
       // BR-PR-008：变动超确认阈值（默认 30%）→ 422 PRICING_CONFIRM_REQUIRED（detail 带 old/new），

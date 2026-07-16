@@ -482,7 +482,7 @@
     "evidence": [
       ".agent/evidence/R2-06/"
     ],
-    "finding": "**整单收官（2026-07-16 Owner：「已经可以分辨fba和fbm计算价格了，可以收官」）**。验收①真机通过：is_fba 分流正确（部署机实测 FBA 41/FBM 5/无标记 401——无标记拒绝出价属预期 fail-closed）、价史公式明细可见。两轮验收缺陷修复入账（PR#11 读键错位→PR#12 is_fba 真实落点 price_snapshot——worker 适配器 _PRICE_FIELDS 归类）。验收②（listing#46 真机改价两段式）挂账 Owner 择时（同 R2-05 L2 模式）",
+    "finding": "**整单收官（2026-07-16 Owner：「已经可以分辨fba和fbm计算价格了，可以收官」）**。验收①真机通过：is_fba 分流正确（部署机实测 FBA 41/FBM 5/无标记 401——无标记拒绝出价属预期 fail-closed）、价史公式明细可见。两轮验收缺陷修复入账（PR#11 读键错位→PR#12 is_fba 真实落点 price_snapshot——worker 适配器 _PRICE_FIELDS 归类）。验收②（真机改价两段式）进行中（2026-07-16 Owner 启动）：首测发现缺陷③——live listing 无「改价」按钮（后端 PATCH /listings 早已分流 live→push_price 管道，前端门控 REPRICEABLE=['draft','failed'] 漏放宽）；已修（含在途/直改分流提示：live 非 succeeded 提示两段式在途而非谎报成功）",
     "last_checked_at": "2026-07-16",
     "acceptance": "①A152 真机一次改价经价格管道同步成功+影子对拍；②新建 listing 自动带策略价（不再 0 价/手工价）；③CI 全绿"
   },
@@ -502,13 +502,13 @@
     "priority": "P1",
     "dimension": "infra",
     "check": "生产前端停用 dev-profile vite（bind-mount HMR 是 stale 模块反复来源：HF-0716①、FE-0716 两起）——改为 pnpm build 产物 + 静态伺服（nginx/caddy 容器），compose 增 prod profile",
-    "status": "done-pending-verify",
+    "status": "accepted",
     "evidence": [
       "frontend/Dockerfile (多阶段 node:22-alpine build → nginx:1.27-alpine)",
       "frontend/nginx.conf (SPA 回退 + /api、/portal/v1 反代 + assets immutable + index.html no-store)",
       "infra/docker-compose.yml (frontend=生产静态默认启用; 旧 vite→frontend-dev profile dev)"
     ],
-    "finding": "完码（2026-07-16）。方案：frontend 服务改为构建产物 + nginx 静态伺服（默认随 up 启动，端口 5173:80 不变）；缓存策略是根治核心——hashed 资产 immutable 永久缓存、index.html no-store 永不缓存，换版本=换资产指纹，浏览器不可能再跑旧模块；部署=up -d --build frontend（无进程内缓存态）。旧 vite 挪名 frontend-dev 留 profile dev（与生产端口互斥）。活文档同步：Makefile（up 含 frontend、up-full→fe-dev 防双前端端口冲突）、windows.md（步骤2/排障记录）。验证：本地 pnpm build ✓ + compose YAML 解析 ✓ + 本机 nginx 1.24 用同配置真实 E2E 冒烟四项全过（nginx -t / SPA 回退 /orders→200 且 index no-store / hashed 资产 immutable / API 反代 login 422==直连 422）；镜像构建留部署机（沙盒无 docker daemon）。部署机切换实测（2026-07-16）：镜像 erp-all-frontend Up、index no-store ✓；核验 3c 首测 404=runbook 命令路径缺陷（后端健康端点在根 /healthz 不带 /api 前缀；FastAPI 404 报文能从 5173 出来恰证反代链路通）——补 nginx 精确映射 location = /api/healthz → /healthz 使前门全链健康检查可用（本地 nginx+路径回显桩实证：/api/healthz→/healthz 重写 ✓、/api/v1 与 /portal/v1 原样直通 ✓、缓存头回归 ✓）。余项=部署机重建镜像后 3c 复测 + Owner 浏览器验收",
+    "finding": "完码（2026-07-16）。方案：frontend 服务改为构建产物 + nginx 静态伺服（默认随 up 启动，端口 5173:80 不变）；缓存策略是根治核心——hashed 资产 immutable 永久缓存、index.html no-store 永不缓存，换版本=换资产指纹，浏览器不可能再跑旧模块；部署=up -d --build frontend（无进程内缓存态）。旧 vite 挪名 frontend-dev 留 profile dev（与生产端口互斥）。活文档同步：Makefile（up 含 frontend、up-full→fe-dev 防双前端端口冲突）、windows.md（步骤2/排障记录）。验证：本地 pnpm build ✓ + compose YAML 解析 ✓ + 本机 nginx 1.24 用同配置真实 E2E 冒烟四项全过（nginx -t / SPA 回退 /orders→200 且 index no-store / hashed 资产 immutable / API 反代 login 422==直连 422）；镜像构建留部署机（沙盒无 docker daemon）。部署机切换实测（2026-07-16）：镜像 erp-all-frontend Up、index no-store ✓；核验 3c 首测 404=runbook 命令路径缺陷（后端健康端点在根 /healthz 不带 /api 前缀；FastAPI 404 报文能从 5173 出来恰证反代链路通）——补 nginx 精确映射 location = /api/healthz → /healthz 使前门全链健康检查可用（本地 nginx+路径回显桩实证：/api/healthz→/healthz 重写 ✓、/api/v1 与 /portal/v1 原样直通 ✓、缓存头回归 ✓）。✅ 收账（2026-07-16 Owner）：部署机复测 3c 通过（/api/healthz 经反代 200 ok）+ 浏览器验收通过（侧栏齐全/翻页不掉菜单）——两起 stale 模块类事故根治闭环",
     "last_checked_at": "2026-07-16",
     "acceptance": "生产 frontend 容器伺服构建产物；部署=重建镜像；不再出现 stale 模块类症状"
   }
