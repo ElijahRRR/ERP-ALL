@@ -20,6 +20,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from erp.aftersale import pull as return_pull_service
 from erp.channel import outbox
 from erp.channel import service as channel_service
 from erp.channel.gateway import gateway
@@ -708,6 +709,11 @@ async def order_pull(sessions: Sessions, config: dict[str, Any]) -> dict[str, An
     return await order_pull_service.run(sessions, config)
 
 
+async def return_pull(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """渠道退货全量拉取（R2-07：08:00/日；协议与实战语义见 erp.aftersale.pull 模块头注）。"""
+    return await return_pull_service.run(sessions, config)
+
+
 async def ship_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
     """order_ack/order_ship verify_pending 渠道对账（镜像 retire_recon；绝不重发）。
 
@@ -839,4 +845,5 @@ TASKS: dict[str, TaskFn] = {
     "llm_budget_check": llm_budget_check,
     "order_pull": order_pull,
     "ship_recon": ship_recon,
+    "return_pull": return_pull,
 }
