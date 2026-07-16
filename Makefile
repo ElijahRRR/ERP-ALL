@@ -1,11 +1,12 @@
 # 常用入口（详见 specs/003-r1-plan）
 COMPOSE = docker compose -f infra/docker-compose.yml
 
-up:            ## 起全栈（db+redis+migrate+api+beat）
-	$(COMPOSE) up -d --build db redis migrate api beat
+up:            ## 起全栈（db+redis+migrate+api+beat+frontend 生产静态伺服）
+	$(COMPOSE) up -d --build db redis migrate api beat frontend
 
-up-full:       ## 含前端 dev server
-	$(COMPOSE) --profile dev up -d --build
+fe-dev:        ## 本地开发用 vite HMR（与生产 frontend 共用 5173，先停后起）
+	$(COMPOSE) stop frontend
+	$(COMPOSE) --profile dev up -d frontend-dev
 
 down:
 	$(COMPOSE) down
@@ -22,4 +23,4 @@ test:
 fe-build:
 	cd frontend && pnpm install && pnpm build
 
-.PHONY: up up-full down logs lint test fe-build
+.PHONY: up fe-dev down logs lint test fe-build

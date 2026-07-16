@@ -34,14 +34,13 @@ cd /d/项目文件/ERP-ALL
 cp backend/.env.example backend/.env
 # 用记事本打开 backend/.env，把两处 dev-only-change-me 换成强随机串
 # （Git Bash 里生成：openssl rand -hex 32，跑两次各取一个）
-make up          # 没有 make 就执行: docker compose -f infra/docker-compose.yml up -d --build db redis migrate api
+make up          # 没有 make 就执行: docker compose -f infra/docker-compose.yml up -d --build db redis migrate api beat frontend
 curl http://localhost:8000/healthz   # 期望 {"status":"ok",...}
 ```
-前端（dev profile，团队试用期直接跑 dev server 即可）：
-```bash
-docker compose -f infra/docker-compose.yml --profile dev up -d frontend
-```
-团队访问：浏览器打开 `http://<固定内网IP>:5173`（前端随 R1 迭代由部署工作流接管构建）。
+前端已随 `make up` 一起启动（INFRA-0716 起为**构建产物 + nginx 静态伺服**，不再是
+dev vite；升级 = `git pull` 后重跑 `make up`，`--build` 会重建前端镜像换版本）。
+团队访问：浏览器打开 `http://<固定内网IP>:5173`（端口不变）。
+本地开发才需要 vite HMR：`make fe-dev`（与生产 frontend 共用 5173，命令内已先停生产容器）。
 
 ### 第 2.5 步：创建初始超管（首次部署必做）
 
@@ -83,8 +82,12 @@ docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" 
   `git pull` 后无需再手动 `docker update`；migrate 是一次性任务，Exited(0) 属正常。
 - **登录报"请求失败"（登录页正常）**：vite 代理目标曾写死宿主机 `localhost:8000`，
   容器内转发进空端口。已根治：vite.config.ts 读 `VITE_API_PROXY_TARGET`，
-  compose 已注入 `http://api:8000`。处置：`git pull` 后
-  `docker compose --profile dev up -d --force-recreate frontend`。
+  compose 已注入 `http://api:8000`。（此为 dev vite 时代记录；该服务现名
+  `frontend-dev`，生产 frontend 已改 nginx 静态伺服，不再有 vite 代理链路。）
+- **浏览器跑到新旧混杂的旧模块（无订单页/翻页后菜单消失）**：dev vite 时代
+  HMR + bind-mount 的固有病（HF-0716①/FE-0716 两起同源）。INFRA-0716 已根治：
+  生产 frontend 改为构建产物 + nginx（index.html 不缓存、hashed 资产不可变），
+  升级 = `docker compose -f infra/docker-compose.yml up -d --build frontend`。
 
 ## 注意
 

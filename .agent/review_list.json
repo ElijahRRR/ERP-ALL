@@ -502,9 +502,13 @@
     "priority": "P1",
     "dimension": "infra",
     "check": "生产前端停用 dev-profile vite（bind-mount HMR 是 stale 模块反复来源：HF-0716①、FE-0716 两起）——改为 pnpm build 产物 + 静态伺服（nginx/caddy 容器），compose 增 prod profile",
-    "status": "todo",
-    "evidence": [],
-    "finding": "待排期（ar/infra 帽）；当下缓解=每次部署 --force-recreate frontend（已入部署指令惯例）",
+    "status": "done-pending-verify",
+    "evidence": [
+      "frontend/Dockerfile (多阶段 node:22-alpine build → nginx:1.27-alpine)",
+      "frontend/nginx.conf (SPA 回退 + /api、/portal/v1 反代 + assets immutable + index.html no-store)",
+      "infra/docker-compose.yml (frontend=生产静态默认启用; 旧 vite→frontend-dev profile dev)"
+    ],
+    "finding": "完码（2026-07-16）。方案：frontend 服务改为构建产物 + nginx 静态伺服（默认随 up 启动，端口 5173:80 不变）；缓存策略是根治核心——hashed 资产 immutable 永久缓存、index.html no-store 永不缓存，换版本=换资产指纹，浏览器不可能再跑旧模块；部署=up -d --build frontend（无进程内缓存态）。旧 vite 挪名 frontend-dev 留 profile dev（与生产端口互斥）。活文档同步：Makefile（up 含 frontend、up-full→fe-dev 防双前端端口冲突）、windows.md（步骤2/排障记录）。验证：本地 pnpm build ✓ + compose YAML 解析 ✓ + 本机 nginx 1.24 用同配置真实 E2E 冒烟四项全过（nginx -t / SPA 回退 /orders→200 且 index no-store / hashed 资产 immutable / API 反代 login 422==直连 422）；镜像构建留部署机（沙盒无 docker daemon）。余项=部署机切换实测（Owner 验收）",
     "last_checked_at": "2026-07-16",
     "acceptance": "生产 frontend 容器伺服构建产物；部署=重建镜像；不再出现 stale 模块类症状"
   }
