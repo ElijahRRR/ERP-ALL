@@ -8,6 +8,10 @@
   task_run failed（notify critical）——坏 cron 必须可见，但不许拖死循环。
 - 每次执行经 run_tracked 记账（task_run + 失败告警，09-platform「任何静默失败都是缺陷」）。
 - 任务在 tick 内串行执行：现役任务皆短平快（批量上限在各自 config），并行化待有实测需要再上。
+- 任务级硬超时（2026-07-16 生产停摆教训）：串行循环里一个挂起的渠道/DB 调用会顶死全部
+  周期任务，故每个任务经 asyncio.timeout 包裹——schedule.config.task_timeout_seconds >
+  system_config beat.task_timeout_seconds > 默认 900s。超时按失败记账+告警，循环继续。
+- 启动时回收崩溃遗留的 task_run running 行（reclaim_stale_runs）——正常路径由超时护栏收尾。
 """
 
 import asyncio
@@ -22,7 +26,7 @@ from cronsim import CronSim
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from erp.automation.task_runner import run_tracked
+from erp.automation.task_runner import reclaim_stale_runs, run_tracked
 from erp.automation.tasks import TASKS, TaskFn
 from erp.core.config_service import get_config_service, run_invalidation_subscriber
 from erp.core.db import get_session_factory, system_tx
@@ -30,6 +34,7 @@ from erp.core.db import get_session_factory, system_tx
 log = structlog.get_logger()
 
 _DEFAULT_TICK_SECONDS = 30.0
+_DEFAULT_TASK_TIMEOUT_SECONDS = 900.0
 _PARSE_FAIL_BACKOFF = timedelta(hours=1)
 
 
@@ -66,6 +71,18 @@ async def tick(sessions: async_sessionmaker[AsyncSession]) -> dict[str, int]:
                 )
             )
         ).all()
+        default_timeout = _DEFAULT_TASK_TIMEOUT_SECONDS
+        if due:
+            row = (
+                await s.execute(
+                    text(
+                        "SELECT value #>> '{}' FROM app.system_config"
+                        " WHERE key = 'beat.task_timeout_seconds'"
+                    )
+                )
+            ).first()
+            if row and row[0]:
+                default_timeout = float(row[0])
 
     for row in due:
         now = datetime.now(UTC)
@@ -109,8 +126,10 @@ async def tick(sessions: async_sessionmaker[AsyncSession]) -> dict[str, int]:
             )
             stats["failed"] += 1
         else:
+            config = row.config or {}
+            timeout = float(config.get("task_timeout_seconds") or default_timeout)
             ok = await run_tracked(
-                sessions, row.code, _bind(fn, row.config or {}), schedule_id=row.id
+                sessions, row.code, _bind(fn, config), schedule_id=row.id, timeout_s=timeout
             )
             stats["executed" if ok else "failed"] += 1
     return stats
@@ -135,6 +154,8 @@ async def run_forever() -> None:
     # 配置失效订阅（R2-04 pubsub；beat 与 api 对等各持一份进程缓存）
     subscriber = asyncio.create_task(run_invalidation_subscriber(get_config_service()))
     log.info("beat.start")
+    with contextlib.suppress(Exception):  # 回收失败不阻启动（DB 未就绪等下一 tick）
+        await reclaim_stale_runs(sessions, older_than_s=2 * _DEFAULT_TASK_TIMEOUT_SECONDS)
     try:
         while not stop.is_set():
             try:

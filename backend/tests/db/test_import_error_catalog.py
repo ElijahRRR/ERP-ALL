@@ -68,11 +68,11 @@ def _seed_rows() -> list[dict[str, Any]]:
 
 def test_seed_file_imports_and_idempotent() -> None:
     rows = _seed_rows()
-    assert len(rows) == 65
+    assert len(rows) == 66  # HF-0716 +EXT_DATA_ERROR_66685355746773（CAP 零价格）
     r = asyncio.run(_import(rows))
-    assert (r["ok"], r["err"]) == (65, 0)
+    assert (r["ok"], r["err"]) == (66, 0)
     r2 = asyncio.run(_import(rows, name="again"))
-    assert r2["ok"] == 65
+    assert r2["ok"] == 66
     with psycopg.connect(_pg_dsn(MIGRATOR_URL)) as conn:
         row = conn.execute(
             "SELECT category, disposition, max_retries FROM app.listing_error_catalog"

@@ -252,6 +252,30 @@ async def delist(
     return result
 
 
+class ListingPriceIn(BaseModel):
+    price: float
+
+
+@listing_router.patch("/listings/{listing_id}")
+async def update_listing_price(
+    listing_id: int,
+    body: ListingPriceIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("listing.submit"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """提交前改价（draft/failed；HF-0716 渠道 CAP 拒 0 价的运营自救入口）。"""
+    if user.team_id is None:
+        raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
+    result = await service.update_price(
+        session, team_id=user.team_id, listing_id=listing_id, price=body.price
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "listing.price_update", "listing", listing_id, after={"price": body.price}
+    )
+    return result
+
+
 @listing_router.post("/listings/{listing_id}/retry", status_code=202)
 async def retry(
     listing_id: int,

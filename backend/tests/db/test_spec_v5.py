@@ -207,7 +207,8 @@ class TestBuildItem:
         assert o["productIdentifiers"] == {"productIdType": "EAN", "productId": EAN}  # 单对象
         assert isinstance(o["price"], float) and o["price"] == 19.99  # 裸 number
         assert o["inventory"] == [{"quantity": 5, "fulfillmentCenterID": "10001234"}]
-        assert o["endDate"] == "2049-12-31T00:00:00Z"  # D-Q9 + ISO DateTime（BR-LST-006）
+        # D-Q9 + ISO DateTime 带毫秒（BR-LST-006/BR-RET-007：2049 唯一实测成功写法）
+        assert o["endDate"] == "2049-12-31T00:00:00.000Z"
         assert "T" in o["startDate"] and o["startDate"].endswith("Z")
         assert o["specProductType"] == WPT
         assert o["country_of_origin_substantial_transformation"] == "China"

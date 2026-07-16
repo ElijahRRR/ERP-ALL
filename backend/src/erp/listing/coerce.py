@@ -4,11 +4,13 @@
 故逻辑逐函数保真；仅数据载体从 field_summary 摘要换成 refdata.pt_spec.fields
 的原始 schema 节点（wpt_schema.PtSchema，零损）。
 
-链序（源仓 main.py prepare_one_async 保真）：
+链序（源仓 main.py prepare_one_async 保真；fix_date_formats 为 2026-07-16
+「Invalid Date」渠道拒后新增——源仓无对应步骤，属新系统缺口补齐）：
   force_overrides(增量2 已在构建器) → force_amazon_copy → fill_known_walmart_required
   → fill_missing_required → fix_type_mismatches → fix_invalid_enums
-  → strip_unknown_fields → clean_state_restrictions → drop_empty_optional_fields
-  → drop_min_items_violations → enforce_copy_limits → round_decimals_to_2
+  → fix_date_formats → strip_unknown_fields → clean_state_restrictions
+  → drop_empty_optional_fields → drop_min_items_violations
+  → enforce_copy_limits → round_decimals_to_2
 （终校验 validate 在 validator.py，提交边界另有 sanitize_feed_numbers。）
 """
 
@@ -16,6 +18,7 @@
 
 import copy
 import re
+from datetime import date, datetime
 from typing import Any
 
 from erp.listing.wpt_schema import PtSchema
@@ -41,6 +44,7 @@ KNOWN_WALMART_CONDITIONAL_REQUIRED: dict[str, tuple[str, Any]] = {
 
 _EMPTYISH: tuple[Any, ...] = (None, "", [], {})
 _SCRUB_EXEMPT_BRANDS = ("unbranded", "n/a", "unknown", "generic")
+_DATE_FORMATS = ("date", "date-time")
 
 
 def _effective_enum(node: dict[str, Any]) -> list[Any] | None:
@@ -69,6 +73,8 @@ def safe_default_for(node: dict[str, Any]) -> Any:
         items = node.get("items") or {}
         if items.get("format") in ("uri", "url"):
             return None
+    if node.get("format") in _DATE_FORMATS:
+        return None  # 日期不臆造（2026-07-16 Invalid Date 教训）——宁本地拦截不吃渠道拒
 
     enum = _effective_enum(node)
     if isinstance(enum, list) and enum:
@@ -363,6 +369,9 @@ def fill_missing_required(
         if visible.get(name) not in _EMPTYISH:
             continue
         node = props.get(name, {}) if isinstance(props.get(name), dict) else {}
+        if node.get("format") in _DATE_FORMATS:
+            # 必填日期无值不塞 'Not Available'（渠道必拒 Invalid Date）——留空由校验器拦截
+            continue
         default = safe_default_for(node)
         if default is None:
             ft = node.get("type", "string")
@@ -506,6 +515,67 @@ def fix_invalid_enums(
                     fixed.append(f"{name}: 全非法且非必填，删")
 
     return visible, fixed
+
+
+def _normalize_date_value(value: Any, fformat: str) -> str | None:
+    """可解析 → 规范化（date=YYYY-MM-DD；date-time=ISO 含 T，纯日期提升 .000Z）；否则 None。
+
+    毫秒写法采信旧仓 2049 唯一实测成功组合（erp-core spec_builder 2026-05-08 校正：
+    '2049-12-31' 被拒、'2049-12-31T00:00:00.000Z' 被收）。
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    s = value.strip()
+    try:
+        if "T" in s:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return dt.date().isoformat() if fformat == "date" else s
+        d = date.fromisoformat(s)
+    except ValueError:
+        return None
+    return d.isoformat() if fformat == "date" else f"{d.isoformat()}T00:00:00.000Z"
+
+
+def fix_date_formats(
+    visible: dict[str, Any],
+    orderable: dict[str, Any],
+    vis_schema: PtSchema | None,
+    ord_schema: PtSchema | None,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """schema format=date/date-time 字段的 LLM 填充值清洗（2026-07-16 Invalid Date 教训）。
+
+    可解析 → 规范化；不可解析（'N/A'/'March 2024'/'2024' 等）→ 可选字段删除、
+    必填字段保留原值交 validator 报 error（fail-closed：宁本地拒不吃渠道拒）。
+    模板占位符 {START_DATE} 类原样跳过（_instantiate 注入）。
+    """
+    notes: list[str] = []
+
+    def _fix(payload: dict[str, Any], schema: PtSchema | None, prefix: str) -> dict[str, Any]:
+        if schema is None:
+            return payload
+        out = dict(payload)
+        required = set(schema.required)
+        for name, node in schema.properties.items():
+            if not isinstance(node, dict) or node.get("format") not in _DATE_FORMATS:
+                continue
+            val = out.get(name)
+            if val in _EMPTYISH:
+                continue
+            if isinstance(val, str) and val.startswith("{") and val.endswith("}"):
+                continue
+            fixed = _normalize_date_value(val, str(node["format"]))
+            if fixed is None:
+                if name in required:
+                    notes.append(f"{prefix}.{name}: 日期 {val!r} 不可解析（必填，交校验器拦截）")
+                else:
+                    out.pop(name, None)
+                    notes.append(f"{prefix}.{name}: 日期 {val!r} 不可解析——删（可选）")
+            elif fixed != val:
+                out[name] = fixed
+                notes.append(f"{prefix}.{name}: {val!r} → {fixed!r}")
+        return out
+
+    return _fix(visible, vis_schema, "visible"), _fix(orderable, ord_schema, "orderable"), notes
 
 
 def strip_unknown_fields(
@@ -771,6 +841,10 @@ def run_coerce_chain(
         notes.extend(f"fix_type: {x}" for x in type_fixes)
         visible, enum_fixes = fix_invalid_enums(visible, vis_schema)
         notes.extend(f"fix_enum: {x}" for x in enum_fixes)
+        visible, orderable, date_fixes = fix_date_formats(
+            visible, orderable, vis_schema, ord_schema
+        )
+        notes.extend(f"fix_date: {x}" for x in date_fixes)
         visible, orderable, dropped = strip_unknown_fields(
             visible, orderable, vis_schema, ord_schema
         )

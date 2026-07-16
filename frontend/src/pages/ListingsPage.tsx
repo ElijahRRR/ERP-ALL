@@ -1,4 +1,16 @@
-import { Button, Drawer, Space, Table, Tabs, Tag, Timeline, message } from 'antd'
+import {
+  Button,
+  Drawer,
+  Form,
+  InputNumber,
+  Modal,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  Timeline,
+  message,
+} from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
 import { ApiError, api, type PageOf } from '@/api/client'
@@ -13,6 +25,7 @@ interface Listing {
   gtin: string | null
   status: string
   error_code: string | null
+  is_locked: boolean
   wpid: string | null
   current_price: number | null
   current_inventory: number
@@ -50,6 +63,9 @@ const L_COLOR: Record<string, string> = {
   failed: 'red',
   retired: 'default',
 }
+// 改价（HF-0716）与提交同权限点 listing.submit；仅 draft/failed 且未渠道锁定可改
+const REPRICEABLE = ['draft', 'failed']
+
 const F_COLOR: Record<string, string> = {
   building: 'default',
   submitting: 'processing',
@@ -69,6 +85,7 @@ export default function ListingsPage() {
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<number[]>([])
   const [history, setHistory] = useState<{ id: number; items: StateHistory[] } | null>(null)
+  const [reprice, setReprice] = useState<Listing | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -173,7 +190,17 @@ export default function ListingsPage() {
                         </Space>
                       ),
                     },
-                    { title: '价格', dataIndex: 'current_price', width: 90 },
+                    {
+                      title: '价格',
+                      dataIndex: 'current_price',
+                      width: 110,
+                      render: (v: number | null, r) => (
+                        <Space size={4}>
+                          {v}
+                          {!v && REPRICEABLE.includes(r.status) && <Tag color="red">无价</Tag>}
+                        </Space>
+                      ),
+                    },
                     { title: 'WPID', dataIndex: 'wpid', width: 130 },
                     {
                       title: '操作',
@@ -200,6 +227,13 @@ export default function ListingsPage() {
                               重投
                             </Button>
                           )}
+                          {has('listing.submit') &&
+                            REPRICEABLE.includes(r.status) &&
+                            !r.is_locked && (
+                              <Button size="small" onClick={() => setReprice(r)}>
+                                改价
+                              </Button>
+                            )}
                         </Space>
                       ),
                     },
@@ -283,6 +317,60 @@ export default function ListingsPage() {
           }))}
         />
       </Drawer>
+      {reprice && (
+        <RepriceModal
+          listing={reprice}
+          onClose={() => setReprice(null)}
+          onDone={() => {
+            setReprice(null)
+            void load()
+          }}
+        />
+      )}
     </>
+  )
+}
+
+function RepriceModal({
+  listing,
+  onClose,
+  onDone,
+}: {
+  listing: Listing
+  onClose: () => void
+  onDone: () => void
+}) {
+  async function onFinish(values: { price: number }) {
+    try {
+      // PATCH /listings/{id} 为契约新增端点，schema.d.ts 尚未重新生成，先走宽松调用
+      await api.patch(`/listings/${listing.id}`, { price: values.price })
+      message.success('改价成功')
+      onDone()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '改价失败')
+    }
+  }
+
+  return (
+    <Modal
+      title={`改价 - ${listing.channel_sku}`}
+      open
+      onCancel={onClose}
+      footer={null}
+      destroyOnHidden
+    >
+      <Form
+        layout="vertical"
+        onFinish={onFinish}
+        initialValues={{ price: listing.current_price || undefined }}
+      >
+        <Form.Item label="价格" name="price" rules={[{ required: true, message: '请输入价格' }]}>
+          <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
+        </Form.Item>
+        <Button type="primary" htmlType="submit" block>
+          确认改价
+        </Button>
+      </Form>
+    </Modal>
   )
 }

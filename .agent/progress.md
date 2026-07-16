@@ -406,3 +406,22 @@
 - **增量5a**：L1 对账 harness（erp.tools.order_pull_verify，与拉单共用 map_order 口径）；specs 落笔（07 三处/02 actions/09 种子清单）；runbook（部署机 L1 指令+Owner L2 步骤+调参表）。
 - 终态：313 pytest + 迁移 base↔head 演练 + ruff + mypy 全绿。余：增量5b 前端订单页 → 更新 PR #7 → **停在人工验收节点（L1 部署机对账 / L2 A152 测试单）**。
 - **增量5b（fe agent 交付，主线复验 lint/build 绿）**：OrdersPage（过滤/列表/详情抽屉/四检卡片放行重跑/采购执行操作/发货 Modal）+ PurchasersPage（建档/编辑，门户字段不提供）+ 路由与权限菜单。R2-05 全部增量完码，停在人工验收节点（L1/L2）。
+
+## HF-0716 生产三缺陷整改（2026-07-16 插单，完码待部署验证）
+- Owner 报告：无订单页 / 采集器卡住未真抓无审核输入 / 真实 UPC 上架 Invalid Date（feed #36）。
+- 三路考古定因：①部署滞后（R2-05 未部署）+部署指令缺前端项；②beat 单进程串行全链无超时
+  （一个挂起渠道调用顶死全部周期任务）+采集管线无告警无收口（无 worker 静默等、乒乓任务永不终态）；
+  ③管线日期零感知（format 摘要即丢、LLM 坏日期直达渠道、必填兜底塞 'Not Available'）
+  +endDate 2049 无毫秒组合未实测（旧仓 2049 唯一成功写法 .000Z）。
+- 修复九件：beat 任务级超时+启动回收 / scrape 乒乓判死+收口兜底+无worker/零进展双告警
+  / UI 采集节点横幅（fe agent）/ FieldSpec 透出 format+prompt 日期指令 / coerce fix_date_formats
+  / validator 日期真解析+startDate+占位符泄漏报错 / endDate .000Z+远期值入配置（D-Q9 值不变）。
+- 证据：evidence/hotfix-20260716/analysis-and-runbook.md（含部署机取证 SQL：feed_item.error_msg
+  拿 Invalid Date 具体字段、采集/beat 卡点判读、升级部署含前端步骤）。
+- 余项：部署机取证回报 → 确认 Invalid Date 字段归因 → listing #46 重提交；采集卡点按取证收尾。
+- **HF-0716 归因闭环（部署机取证回报）**：①渠道拒收实为 `EXT_DATA_ERROR_66685355746773`
+  field=CAP「Invalid Data」= **0 价出门**（price_snapshot 无 list 价→current_price NULL→
+  构建器兜底 0.0；「Invalid Date」系误读）——补修：validator 拦 0/缺失价、错误码入字典、
+  PATCH /listings/{id} 改价端点 + UI 改价入口/无价红标；②采集卡点=scraper 容器已停
+  （job#9 建单前 4 分钟），beat 健康——双告警+横幅正对症，恢复=起 scraper；③前端=vite
+  内存缓存，需 force-recreate。日期加固与超时护栏保留（真实缺口，预防性根治）。

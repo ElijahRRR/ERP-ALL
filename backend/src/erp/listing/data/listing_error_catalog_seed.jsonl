@@ -63,3 +63,4 @@
 {"error_code": "TEMPORARY_FAILURE", "category": "系统", "title": "暂时性失败", "disposition": "auto_retry", "max_retries": 5}
 {"error_code": "SERVICE_UNAVAILABLE", "category": "系统", "title": "服务不可用", "disposition": "auto_retry", "max_retries": 5}
 {"error_code": "ERP_SPEC_INVALID", "category": "内部", "title": "本地 spec 校验拦截（未出门）", "disposition": "rebuild_spec", "max_retries": 3, "notes": "增量4 本地校验器：官方 schema 层 errors；修数据/规格后重投"}
+{"error_code": "EXT_DATA_ERROR_66685355746773", "category": "定价", "title": "CAP 无效价格（0/缺失价被定价子系统拒）", "disposition": "manual", "max_retries": 3, "notes": "HF-0716 真机实测（feed #36 field=CAP 'Invalid Data.'）：price_snapshot 无 list 价时构建器曾兜底 0.0 出门。本地校验器已拦 0 价；处置=listing 改价后 retry。CAP=Competitive Price Adjustment"}

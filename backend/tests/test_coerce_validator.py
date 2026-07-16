@@ -244,8 +244,30 @@ class TestValidator:
         assert any("fulfillmentCenterID" in w for w in r.warnings)
 
     def test_schema_missing_warns_not_errors(self) -> None:
-        r = validator.validate_build_item({"Visible": {"T": {}}, "Orderable": {}}, "T", None, None)
+        r = validator.validate_build_item(
+            {"Visible": {"T": {}}, "Orderable": {"price": 9.99}}, "T", None, None
+        )
         assert r.ok and len(r.warnings) == 2
+
+    def test_zero_price_blocked(self) -> None:
+        """HF-0716 真机：0/缺失价出门被渠道 CAP 拒（EXT_DATA_ERROR_66685355746773）
+        ——本地必须拦截。"""
+        for bad_price in (0.0, None, -1):
+            r = validator.validate_build_item(
+                {"Visible": {"T": {}}, "Orderable": {"price": bad_price}}, "T", None, None
+            )
+            assert not r.ok and any("CAP" in e for e in r.errors), bad_price
+        bad_match = {
+            "Item": {
+                "sku": "M1",
+                "ShippingWeight": 1.0,
+                "price": 0.0,
+                "condition": "New",
+                "productIdentifiers": {"productIdType": "UPC", "productId": "123456789012"},
+            }
+        }
+        r = validator.validate_match_item(bad_match)
+        assert not r.ok and any("CAP" in e for e in r.errors)
 
     def test_match_validation(self) -> None:
         good = {
@@ -262,3 +284,80 @@ class TestValidator:
         r = validator.validate_match_item(bad)
         assert not r.ok
         assert any("productIdType" in e for e in r.errors)
+
+
+class TestDateFormats:
+    """fix_date_formats + 日期校验（2026-07-16 真机 Invalid Date 拒收教训）。"""
+
+    def _schemas(self) -> tuple[PtSchema, PtSchema]:
+        vis = _schema(
+            {
+                "releaseDate": {"type": "string", "format": "date"},
+                "warrantyStart": {"type": "string", "format": "date-time"},
+                "mandatoryDate": {"type": "string", "format": "date"},
+            },
+            ["mandatoryDate"],
+        )
+        order = _schema({"startDate": {"type": "string", "format": "date-time"}}, [])
+        return vis, order
+
+    def test_parseable_normalized_unparseable_dropped_or_kept(self) -> None:
+        vis, order = self._schemas()
+        v, o, notes = coerce.fix_date_formats(
+            {
+                "releaseDate": "2024-05-03T10:00:00Z",  # datetime → 截断为 date
+                "warrantyStart": "2024-05-03",  # date → 提升 .000Z（2049 实测成功写法）
+                "mandatoryDate": "March 2024",  # 必填不可解析 → 保留交校验器
+            },
+            {"startDate": "{START_DATE}"},  # 模板占位符 → 原样跳过
+            vis,
+            order,
+        )
+        assert v["releaseDate"] == "2024-05-03"
+        assert v["warrantyStart"] == "2024-05-03T00:00:00.000Z"
+        assert v["mandatoryDate"] == "March 2024"
+        assert o["startDate"] == "{START_DATE}"
+        assert any("mandatoryDate" in n for n in notes)
+
+    def test_optional_garbage_dropped(self) -> None:
+        vis, order = self._schemas()
+        v, _o, notes = coerce.fix_date_formats(
+            {"releaseDate": "N/A", "mandatoryDate": "2024-01-01"}, {}, vis, order
+        )
+        assert "releaseDate" not in v
+        assert v["mandatoryDate"] == "2024-01-01"
+        assert any("releaseDate" in n for n in notes)
+
+    def test_no_fabricated_date_defaults(self) -> None:
+        """必填日期缺失：不塞 'Not Available'（渠道必拒），留给校验器报必填缺失。"""
+        assert coerce.safe_default_for({"type": "string", "format": "date"}) is None
+        vis, _ = self._schemas()
+        filled, _notes = coerce.fill_missing_required({}, vis)
+        assert "mandatoryDate" not in filled
+
+    def test_validator_flags_bad_dates_and_placeholder_leak(self) -> None:
+        vis, order = self._schemas()
+        item = {
+            "Visible": {"T": {"mandatoryDate": "March 2024", "warrantyStart": "2024"}},
+            "Orderable": {
+                "sku": "M1",
+                "price": 9.99,
+                "startDate": "{START_DATE}",
+                "endDate": "2049-12-31T00:00:00.000Z",
+            },
+        }
+        r = validator.validate_build_item(item, "T", vis, order)
+        assert not r.ok
+        joined = "\n".join(r.errors)
+        assert "mandatoryDate" in joined and "warrantyStart" in joined  # 非法日期
+        assert "占位符" in joined or "startDate" in joined  # 泄漏必须报出
+        # 合法毫秒写法不误伤
+        assert "endDate" not in joined
+
+    def test_validator_accepts_both_iso_datetime_styles(self) -> None:
+        vis = _schema({}, [])
+        order = _schema({}, [])
+        for good in ("2049-12-31T00:00:00Z", "2049-12-31T00:00:00.000Z"):
+            item = {"Visible": {"T": {}}, "Orderable": {"price": 9.99, "endDate": good}}
+            r = validator.validate_build_item(item, "T", vis, order)
+            assert r.ok, (good, r.errors)

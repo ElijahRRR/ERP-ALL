@@ -1,5 +1,9 @@
 # Task Definition
 - Mode: build（R2 中段——R1 全部 accepted；R2-01/02/03 + RS-03 accepted；R2-04 完码待实测）
+- **插单 HF-0716（2026-07-16 生产三缺陷整改，完码待部署验证）**：①采集/beat 停摆
+  （beat 任务级超时护栏 + scrape 乒乓判死/收口/双告警 + UI 节点横幅）②MP_ITEM
+  Invalid Date（日期清洗/校验全链 + endDate .000Z + 远期值入配置）③无订单页
+  （部署滞后，指令补前端项）。取证与部署指令见 evidence/hotfix-20260716/。
 - Task: 当前单 = **R2-05 订单履约最小闭环【L1→L2】**（订单拉取真实只读起步 →
   四检（限价/钓鱼/黑名单/重复）→ 采购单 → 确认发货（测试单））。
   并入 RS-03b 尾账：ship/refund-execute 幂等接入（run_idempotent 同一助手）。
