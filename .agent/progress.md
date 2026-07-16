@@ -467,3 +467,9 @@
   合并树复验：403 pytest + ruff + mypy + 前端 lint/build 全绿。验收 runbook 就绪
   （evidence/R2-06/runbook.md）——**停在人工验收节点**：①新 listing 自动带策略价
   ②A152 真机改价 listing#46（渠道价变 + 两段式回填闭环）。
+- **R2-06 验收缺陷修复（Owner 真机反馈）**：①履约判定读错键——接线读不存在的
+  attrs.fulfillment 致全部静默落 FBM；修为旧仓保真 attrs.is_fba（Yes/No/N/A，
+  采集器 parser.py 实际写入键），判不出→拒绝 PRICING_FULFILLMENT_UNKNOWN
+  （fail-closed，params.default_fulfillment 显式兜底）；②initial 价史不可见——
+  GET /listings/{id} 未按契约返回 price_history；补端点字段 + 前端「历史」抽屉
+  价格历史小节（公式明细悬浮）。404 pytest + 前端 lint/build 全绿。
