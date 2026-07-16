@@ -499,3 +499,12 @@
   location = /api/healthz → proxy_pass /healthz（前门全链健康检查可用，不动后端 API 面）。
   本地 nginx+路径回显桩实证四项：/api/healthz→/healthz ✓、/api/v1 原样直通 ✓、
   /portal/v1 原样直通 ✓、index no-store 回归 ✓。
+- **INFRA-0716 收账（Owner 2026-07-16）**：部署机切换实测通过（镜像 erp-all-frontend、
+  index no-store、/api/healthz 经反代 200）+ 浏览器验收通过（侧栏齐全/翻页不掉菜单）。
+  跟进单 PR#15（/api/healthz 精确映射）同日合入（a521bd7）。stale 模块类事故根治闭环。
+- **R2-06 验收②缺陷③（Owner 真机启动验收发现）**：live listing 无「改价」按钮——
+  后端 PATCH /listings/{id} 早已按状态分流（draft/failed 直改、live/published 转
+  push_price 管道三段式），前端按钮门控 REPRICEABLE=['draft','failed'] 是 HF-0716
+  直改时代旧值、R2-06 增量3 后端扩容时漏放宽。修复：门控放宽至 live/published +
+  按返回分流提示（live 非 succeeded 提示"已提交渠道确认后回填"而非谎报改价成功）。
+  前端 lint/build 绿。
