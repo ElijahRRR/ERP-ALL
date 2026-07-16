@@ -61,6 +61,10 @@ _GATE_MAX_WAIT_S = 10.0
 REJECT_MESSAGES = {
     "out_of_band": "成本总价不在策略区间内，不出价（BR-PR-004 区间外不上架）",
     "below_min_price": "算出价低于策略 min_price 底线，不出价",
+    "fulfillment_unknown": (
+        "无法判断 FBA/FBM（attrs.is_fba 缺失或 N/A）——不出价；"
+        "可在策略 params.default_fulfillment 显式设兜底"
+    ),
     "no_source_price": "产品无可计价源价（price_snapshot 缺失或无法解析）",
     "no_bands": "策略无该履约类型的可解析区间，不出价",
     "manual_price_required": "manual 策略不自动出价，需人工经改价入口给价",
@@ -164,15 +168,32 @@ async def put_route_threshold(session: AsyncSession, team_id: int) -> int:
     return int(float(raw)) if raw is not None else DEFAULT_PUT_ROUTE_THRESHOLD
 
 
-def _fulfillment(product: Mapping[Any, Any], params: dict[str, Any]) -> str:
-    """履约类型判定：attrs.fulfillment / fulfillment_type 含 'FBA' 判 FBA，
-    否则取策略 params.default_fulfillment（缺省 FBM——自发货为常态）。"""
+_IS_FBA_TRUE = ("yes", "y", "true", "1", "fba")
+_IS_FBA_FALSE = ("no", "n", "false", "0", "fbm")
+
+
+def _fulfillment(product: Mapping[Any, Any], params: dict[str, Any]) -> str | None:
+    """履约类型判定（旧仓 pricing.fulfillment_type 保真，2026-07-16 验收缺陷修复）。
+
+    权威字段 = attrs.is_fba（采集器 parser.py 实际写入的键；此前误读不存在的
+    attrs.fulfillment 致全部落 FBM）：yes/y/true/1/fba → FBA；no/n/false/0/fbm → FBM；
+    其余（N/A/缺失）→ 判不出。判不出时不再静默默认 FBM——旧仓语义是不出价
+    （fail-closed）；策略 params.default_fulfillment 显式设置时才作兜底。
+    attrs.fulfillment / fulfillment_type 保留为次级线索（手工建档产品可用）。"""
     attrs = product.get("attrs") or {}
     if isinstance(attrs, dict):
-        raw = str(attrs.get("fulfillment") or attrs.get("fulfillment_type") or "")
-        if "FBA" in raw.upper():
+        val = str(attrs.get("is_fba", "")).strip().lower()
+        if val in _IS_FBA_TRUE:
             return "FBA"
-    return str(params.get("default_fulfillment", "FBM"))
+        if val in _IS_FBA_FALSE:
+            return "FBM"
+        raw = str(attrs.get("fulfillment") or attrs.get("fulfillment_type") or "").upper()
+        if "FBA" in raw:
+            return "FBA"
+        if "FBM" in raw:
+            return "FBM"
+    default = params.get("default_fulfillment")
+    return str(default) if default else None
 
 
 def price_product(strategy: Mapping[str, Any], product: Mapping[Any, Any]) -> PriceResult:
@@ -188,7 +209,14 @@ def price_product(strategy: Mapping[str, Any], product: Mapping[Any, Any]) -> Pr
     total = engine.source_total(snap) if isinstance(snap, dict) else None
     if total is None:
         return PriceResult(ok=False, reason="no_source_price", detail={"algo": "cost_plus"})
-    return engine.compute_price(total, fulfillment=_fulfillment(product, params), params=params)
+    ftype = _fulfillment(product, params)
+    if ftype is None:
+        return PriceResult(
+            ok=False,
+            reason="fulfillment_unknown",
+            detail={"algo": "cost_plus", "is_fba": (product.get("attrs") or {}).get("is_fba")},
+        )
+    return engine.compute_price(total, fulfillment=ftype, params=params)
 
 
 def preview_product(strategy: Mapping[str, Any], product: Mapping[Any, Any]) -> dict[str, Any]:
@@ -211,6 +239,13 @@ def preview_product(strategy: Mapping[str, Any], product: Mapping[Any, Any]) -> 
             "detail": {"algo": "cost_plus"},
         }
     ftype = _fulfillment(product, params)
+    if ftype is None:
+        return {
+            "ok": False,
+            "reason": "fulfillment_unknown",
+            "new_price": None,
+            "detail": {"algo": "cost_plus"},
+        }
     clamped = engine.compute_price_clamped(total, fulfillment=ftype, params=params)
     strict = engine.compute_price(total, fulfillment=ftype, params=params)
     return {

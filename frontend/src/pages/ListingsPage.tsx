@@ -39,6 +39,17 @@ interface StateHistory {
   occurred_at: string
 }
 
+// R2-06：GET /listings/{id} 新增 price_history（时间倒序，≤50 条）；旧后端无此字段
+interface PriceHistory {
+  old_price: number | null
+  new_price: number
+  reason: 'initial' | 'manual' | 'strategy' | 'watchdog'
+  strategy_id: number | null
+  strategy_version: number | null
+  detail: { formula?: string } | null
+  created_at: string
+}
+
 interface Feed {
   id: number
   store_id: number
@@ -66,6 +77,13 @@ const L_COLOR: Record<string, string> = {
 // 改价（HF-0716）与提交同权限点 listing.submit；仅 draft/failed 且未渠道锁定可改
 const REPRICEABLE = ['draft', 'failed']
 
+const PRICE_REASON: Record<string, string> = {
+  initial: '初始定价',
+  manual: '手动改价',
+  strategy: '策略重定价',
+  watchdog: '盯价',
+}
+
 const F_COLOR: Record<string, string> = {
   building: 'default',
   submitting: 'processing',
@@ -84,7 +102,11 @@ export default function ListingsPage() {
   const [feeds, setFeeds] = useState<PageOf<Feed> | null>(null)
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<number[]>([])
-  const [history, setHistory] = useState<{ id: number; items: StateHistory[] } | null>(null)
+  const [history, setHistory] = useState<{
+    id: number
+    items: StateHistory[]
+    prices: PriceHistory[]
+  } | null>(null)
   const [reprice, setReprice] = useState<Listing | null>(null)
 
   const load = useCallback(async () => {
@@ -128,8 +150,10 @@ export default function ListingsPage() {
 
   async function showHistory(id: number) {
     try {
-      const d = await api.get<{ state_history: StateHistory[] }>(`/listings/${id}`)
-      setHistory({ id, items: d.state_history })
+      const d = await api.get<{ state_history: StateHistory[]; price_history?: PriceHistory[] }>(
+        `/listings/${id}`,
+      )
+      setHistory({ id, items: d.state_history, prices: d.price_history ?? [] })
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '加载失败')
     }
@@ -296,11 +320,57 @@ export default function ListingsPage() {
         ]}
       />
       <Drawer
-        title={`Listing #${history?.id ?? ''} 状态历史`}
+        title={`Listing #${history?.id ?? ''} 历史`}
         open={!!history}
         onClose={() => setHistory(null)}
         width={480}
       >
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>价格历史</div>
+        {history?.prices.length ? (
+          <Table<PriceHistory>
+            rowKey={(_, i) => i ?? 0}
+            size="small"
+            dataSource={history.prices}
+            pagination={false}
+            style={{ marginBottom: 24 }}
+            columns={[
+              {
+                title: '时间',
+                dataIndex: 'created_at',
+                width: 150,
+                render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+              },
+              {
+                title: '价格',
+                key: 'price',
+                width: 110,
+                render: (_, p) => `${p.old_price ?? '—'} → ${p.new_price}`,
+              },
+              {
+                title: '原因',
+                dataIndex: 'reason',
+                width: 90,
+                render: (r: string) => <Tag>{PRICE_REASON[r] ?? r}</Tag>,
+              },
+              {
+                title: '公式',
+                key: 'formula',
+                render: (_, p) =>
+                  p.detail?.formula ? (
+                    <div
+                      title={p.detail.formula}
+                      style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {p.detail.formula}
+                    </div>
+                  ) : null,
+              },
+            ]}
+          />
+        ) : (
+          <div style={{ color: '#999', marginBottom: 24 }}>暂无</div>
+        )}
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>状态历史</div>
         <Timeline
           items={history?.items.map((h) => ({
             children: (

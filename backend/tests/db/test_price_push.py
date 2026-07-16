@@ -132,8 +132,9 @@ def seeded(migrated_db: str) -> dict[str, int]:
         for i in range(1, 7):
             pid = conn.execute(
                 "INSERT INTO app.product (team_id, master_sku, source_channel, source_ref,"
-                " title, price_snapshot, status)"
-                " VALUES (%s, %s, 'amazon', %s, %s, '{\"list\": 19.99}', 'ready') RETURNING id",
+                " title, price_snapshot, status, attrs)"
+                " VALUES (%s, %s, 'amazon', %s, %s, '{\"list\": 19.99}', 'ready',"
+                ' \'{"is_fba": "No"}\') RETURNING id',
                 (team_id, f"MPP26{i:04d}", f"B0PUSH{i:04d}", f"价格同步商品{i}"),
             ).fetchone()[0]
             out[f"lid{i}"] = conn.execute(
@@ -481,8 +482,9 @@ def _mk_listing(
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         pid = conn.execute(
             "INSERT INTO app.product (team_id, master_sku, source_channel, source_ref,"
-            " title, price_snapshot, status)"
-            " VALUES (%s, %s, 'amazon', %s, %s, %s, 'ready') RETURNING id",
+            " title, price_snapshot, status, attrs)"
+            " VALUES (%s, %s, 'amazon', %s, %s, %s, 'ready', '{\"is_fba\": \"No\"}')"
+            " RETURNING id",
             (seeded["team"], f"MPPX{tag}", f"B0PX{tag}", f"评审商品{tag}", price_snapshot),
         ).fetchone()[0]
         return conn.execute(

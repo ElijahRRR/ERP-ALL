@@ -130,7 +130,22 @@ async def get_listing(
             {"id": listing_id},
         )
     ).mappings()
-    return {**dict(row), "state_history": [dict(h) for h in history]}
+    price_history = (
+        await session.execute(
+            text(
+                "SELECT old_price, new_price, reason, strategy_id, strategy_version,"
+                " detail, created_at"
+                " FROM app.price_history WHERE listing_id = :id"
+                " ORDER BY created_at DESC, id DESC LIMIT 50"
+            ),
+            {"id": listing_id},
+        )
+    ).mappings()
+    return {
+        **dict(row),
+        "state_history": [dict(h) for h in history],
+        "price_history": [dict(h) for h in price_history],
+    }
 
 
 # Idempotency-Key（契约 002 必填头，RS-03b/C2 起消费）：同键同载荷重放存储响应，

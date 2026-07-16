@@ -62,14 +62,14 @@ def seeded(migrated_db: str) -> dict[str, int]:
         ).fetchone()[0]
         p_in = conn.execute(
             "INSERT INTO app.product (team_id, source_channel, source_ref, title,"
-            " price_snapshot, status) VALUES (%s, 'amazon', 'B0PVIEW001', '预览在区间',"
-            " '{\"list\": 19.99}', 'ready') RETURNING id",
+            " price_snapshot, status, attrs) VALUES (%s, 'amazon', 'B0PVIEW001', '预览在区间',"
+            " '{\"list\": 19.99}', 'ready', '{\"is_fba\": \"No\"}') RETURNING id",
             (team_id,),
         ).fetchone()[0]
         p_low = conn.execute(
             "INSERT INTO app.product (team_id, source_channel, source_ref, title,"
-            " price_snapshot, status) VALUES (%s, 'amazon', 'B0PVIEW002', '预览区间外',"
-            " '{\"list\": 5.0}', 'ready') RETURNING id",
+            " price_snapshot, status, attrs) VALUES (%s, 'amazon', 'B0PVIEW002', '预览区间外',"
+            " '{\"list\": 5.0}', 'ready', '{\"is_fba\": \"No\"}') RETURNING id",
             (team_id,),
         ).fetchone()[0]
     return {"team": team_id, "store": store_id, "p_in": p_in, "p_low": p_low}

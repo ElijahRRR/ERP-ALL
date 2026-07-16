@@ -92,16 +92,40 @@ def seeded(migrated_db: str) -> dict[str, int]:
             (team_id, json.dumps({"bands": _BANDS, "min_price": 6.99}), uid),
         ).fetchone()[0]
         pids = {}
-        for key, sku, ref, title, snap in (
-            ("p_in", "MW260716A", "B0WIRE0001", "接线在区间 19.99", '{"list": 19.99}'),
-            ("p_oob", "MW260716B", "B0WIRE0002", "接线区间外 5.0", '{"list": 5.0}'),
-            ("p_nosrc", "MW260716C", "B0WIRE0003", "接线无源价", None),
+        for key, sku, ref, title, snap, attrs in (
+            (
+                "p_in",
+                "MW260716A",
+                "B0WIRE0001",
+                "接线在区间 19.99",
+                '{"list": 19.99}',
+                '{"is_fba": "No"}',
+            ),
+            (
+                "p_oob",
+                "MW260716B",
+                "B0WIRE0002",
+                "接线区间外 5.0",
+                '{"list": 5.0}',
+                '{"is_fba": "No"}',
+            ),
+            ("p_nosrc", "MW260716C", "B0WIRE0003", "接线无源价", None, '{"is_fba": "No"}'),
+            (
+                "p_fba",
+                "MW260716D",
+                "B0WIRE0004",
+                "接线FBA 19.99",
+                '{"list": 19.99}',
+                '{"is_fba": "Yes"}',
+            ),
+            ("p_nofb", "MW260716E", "B0WIRE0005", "接线判不出履约", '{"list": 19.99}', None),
         ):
             pids[key] = conn.execute(
                 "INSERT INTO app.product (team_id, master_sku, source_channel, source_ref,"
-                " title, price_snapshot, status)"
-                " VALUES (%s, %s, 'amazon', %s, %s, %s, 'ready') RETURNING id",
-                (team_id, sku, ref, title, snap),
+                " title, price_snapshot, status, attrs)"
+                " VALUES (%s, %s, 'amazon', %s, %s, %s, 'ready', coalesce(%s::jsonb, '{}'))"
+                " RETURNING id",
+                (team_id, sku, ref, title, snap, attrs),
             ).fetchone()[0]
     return {"team": team_id, "user": uid, "store": store_id, "strategy": strategy_id, **pids}
 
@@ -171,6 +195,63 @@ class TestAllocateAutoPricing:
         assert reason == "initial"
         assert sid == seeded["strategy"] and sver == 1
         assert detail["formula"].startswith("FBM")  # 计算明细可追溯（001/06:179）
+
+    def test_fulfillment_semantics(
+        self, client: TestClient, seeded: dict, migrated_db: str
+    ) -> None:
+        """履约判定（2026-07-16 验收缺陷修复）：is_fba=Yes 走 FBA 区间；
+        判不出（attrs 无 is_fba）→ 拒绝 PRICING_FULFILLMENT_UNKNOWN，
+        策略 params.default_fulfillment 显式设置后才兜底。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        r = client.post(
+            "/api/v1/listings/allocate",
+            headers=_idem(auth),
+            json={
+                "product_ids": [seeded["p_fba"], seeded["p_nofb"]],
+                "store_id": seeded["store"],
+                "offer_mode": "build",
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # is_fba=Yes → FBA 区间 [0,30) 倍数 2.75：19.99×2.75=54.97（与 FBM [15,80)
+        # 同倍数——用价史 formula 断言区间归属而非价格值）
+        assert len(body["created"]) == 1
+        fba_created = body["created"][0]
+        assert fba_created["product_id"] == seeded["p_fba"]
+        rej = {x["product_id"]: x["code"] for x in body["rejected"]}
+        assert rej[seeded["p_nofb"]] == "PRICING_FULFILLMENT_UNKNOWN"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            detail = conn.execute(
+                "SELECT detail FROM app.price_history WHERE listing_id = %s AND reason = 'initial'",
+                (fba_created["id"],),
+            ).fetchone()[0]
+            assert detail["formula"].startswith("FBA")
+            # default_fulfillment 兜底：策略 params 显式设 FBM 后，判不出的产品可出价
+            conn.execute(
+                "UPDATE app.pricing_strategy SET params = params ||"
+                ' \'{"default_fulfillment": "FBM"}\'::jsonb WHERE id = %s',
+                (seeded["strategy"],),
+            )
+        try:
+            r2 = client.post(
+                "/api/v1/listings/allocate",
+                headers=_idem(auth),
+                json={
+                    "product_ids": [seeded["p_nofb"]],
+                    "store_id": seeded["store"],
+                    "offer_mode": "build",
+                },
+            )
+            assert r2.status_code == 200, r2.text
+            assert len(r2.json()["created"]) == 1
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute(
+                    "UPDATE app.pricing_strategy SET params = params -"
+                    " 'default_fulfillment' WHERE id = %s",
+                    (seeded["strategy"],),
+                )
 
 
 class TestManualPriceGuard:
