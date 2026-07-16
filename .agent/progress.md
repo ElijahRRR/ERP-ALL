@@ -448,3 +448,8 @@
   测试假 EAN 2000000000xxx 以 2 开头全部不可真实上架）；无成功通知属 R1-12 口径但值得补
   ——两件+PATCH 契约冻结入 SM-0716 小账随本单收。
 - Owner 授权：「收掉 feed#37 后走 R2-06 定价引擎」。考古四路并行启动。
+- **R2-06 考古完成（四路并行汇总 → evidence/R2-06/archaeology.md）**：范围=cost_plus+min_price
+  （005:56）；九条口径裁定（成本价 current 优先/feed 格式收敛 canonical/限额修正 6/day→10/hour
+  共享池/路由 ≤5 PUT 否则聚合/两段式回填/CAP 计划与拒收无关/区间属 params 数据/min_price 绝对值
+  底线/30% 阈值参数化）；保真移植八件；必修缺陷=rate_limiter 价格桶键前缀不齐（限额被架空）；
+  增量拆分 4+验收；3 项拟 D-Q 待 Owner（限额路由更新 ledger/默认区间取实表值/min_price 必填）。
