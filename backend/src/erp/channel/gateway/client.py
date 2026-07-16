@@ -276,8 +276,14 @@ class WalmartGateway:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         max_retries: int = 0,
+        gate_max_wait: float | None = None,
     ) -> GatewayResponse:
-        """已 prepare 上下文的纯网络发包（无 session——RS-03b 三段式 HTTP 段）。"""
+        """已 prepare 上下文的纯网络发包（无 session——RS-03b 三段式 HTTP 段）。
+
+        gate_max_wait：限流闸最长等待秒数（None=端点默认 period×1.1）。同步批量
+        写路径（如 price_push）用小值——配额耗尽时快速拒绝（GATEWAY_RATE_EXCEEDED，
+        零字节出门），而非在请求内长睡等 token。
+        """
         method = method.upper()
         url = f"{get_settings().channel_base_url}{path}"
         ep = endpoint_key or f"{method} {path.split('?', maxsplit=1)[0]}"
@@ -307,7 +313,7 @@ class WalmartGateway:
             )
 
         # 真实发包：限流闸 → token → 请求（401 自愈 / 429 5xx opt-in 退避 / 连接自愈）
-        waited = await registry.gate(ctx.code, ep)
+        waited = await registry.gate(ctx.code, ep, max_wait=gate_max_wait)
         if waited < 0:
             raise BusinessError("GATEWAY_RATE_EXCEEDED", f"限流窗口内无法取得配额：{ep}")
 

@@ -30,7 +30,12 @@ class RateLimit:
 
 WALMART_ENDPOINT_LIMITS: dict[str, RateLimit] = {
     # 高风险（必须严控）
-    "feeds:PRICE_AND_PROMOTION": RateLimit(6, 86400),  # 6/day！价格批量必聚合
+    # R2-06 修正（考古口径3，官方 rate-limiting 页 2026-07-16 在线实抓）：
+    # ① 旧键 "feeds:PRICE_AND_PROMOTION" 缺 "POST /v3/feeds:" 前缀，与网关 endpoint_key
+    #    口径错配——永远匹配不上、一直落 _default，限额被架空；
+    # ② 官方现行限额已从 6/day 放宽为 10/hour（店铺级，与 legacy price feed、
+    #    批量促销 feed 三入口共享池）。本地 TSV:125 为过时记载。
+    "POST /v3/feeds:PRICE_AND_PROMOTION": RateLimit(10, 3600),
     "PUT /v3/price": RateLimit(100, 3600),
     "GET /v3/items?q": RateLimit(60, 60),
     "GET /v3/items": RateLimit(300, 60),

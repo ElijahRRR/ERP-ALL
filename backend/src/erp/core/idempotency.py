@@ -52,11 +52,19 @@ async def run_idempotent(
     payload: Any,
     created_by: int | None = None,
     handler: Callable[[], Awaitable[dict[str, Any]]],
+    stale_minutes: int | None = None,
 ) -> dict[str, Any]:
+    """stale_minutes：占位失效阈值的端点级覆盖——同步长批量端点（如 reprice，
+    最坏时长可超默认 10 分钟）必须显式给出大于最坏执行时长的值，否则首个
+    handler 仍在跑时同键重试会重占占位并发双跑（R2-06 增量3 评审发现 12）。
+    响应回填/错误清理均按本次占位行 id 定位——即便占位被并发重占，先完成者
+    也不会覆写后占者的行。
+    """
     h = _payload_hash(payload)
     params = {"t": team_id, "e": endpoint, "k": idem_key}
     async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as s:
         cfg = await _config(s)
+        stale = int(stale_minutes if stale_minutes is not None else cfg["stale_minutes"])
         # 键内惰性清理：过期行（>TTL）与失效占位（response NULL 超 stale）
         await s.execute(
             text(
@@ -66,7 +74,7 @@ async def run_idempotent(
                 "   OR (response IS NULL"
                 "       AND created_at < now() - make_interval(mins => :stale)))"
             ),
-            {**params, "ttl": int(cfg["ttl_hours"]), "stale": int(cfg["stale_minutes"])},
+            {**params, "ttl": int(cfg["ttl_hours"]), "stale": stale},
         )
         reserved = (
             await s.execute(
@@ -102,19 +110,16 @@ async def run_idempotent(
                     http_status=409,
                 )
             return {**existing.response, "idempotent_replay": True}
+        row_id = int(reserved.id)
 
     try:
         result = await handler()
     except Exception:
-        # 错误响应不缓存：删除占位，客户端可携同键重试
+        # 错误响应不缓存：删除本次占位行（按 id——不误删并发重占者），客户端可携同键重试
         async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as s:
             await s.execute(
-                text(
-                    "DELETE FROM app.api_idempotency"
-                    " WHERE team_id = :t AND endpoint = :e AND idem_key = :k"
-                    " AND response IS NULL"
-                ),
-                params,
+                text("DELETE FROM app.api_idempotency WHERE id = :id AND response IS NULL"),
+                {"id": row_id},
             )
         raise
 
@@ -122,8 +127,8 @@ async def run_idempotent(
         await s.execute(
             text(
                 "UPDATE app.api_idempotency SET response = cast(:r AS jsonb), status_code = 200"
-                " WHERE team_id = :t AND endpoint = :e AND idem_key = :k"
+                " WHERE id = :id AND response IS NULL"
             ),
-            {**params, "r": json.dumps(result, ensure_ascii=False, default=str)},
+            {"id": row_id, "r": json.dumps(result, ensure_ascii=False, default=str)},
         )
     return result

@@ -37,7 +37,7 @@ Applier = Callable[
     [AsyncSession, dict[str, Any], GatewayResponse | None], Awaitable[dict[str, Any]]
 ]
 
-ACTIONS = ("feed_submit", "item_retire", "order_ack", "order_ship")
+ACTIONS = ("feed_submit", "item_retire", "order_ack", "order_ship", "price_push")
 
 # 敏感键黑名单（子串匹配，大小写不敏感）——payload 任何层级键名命中即拒
 _FORBIDDEN_KEY_PARTS = ("authorization", "token", "secret", "password", "credential", "proxy")
@@ -152,7 +152,12 @@ async def enqueue(
 async def claim(
     session: AsyncSession, command_id: int, *, lease_seconds: int
 ) -> dict[str, Any] | None:
-    """短事务领取：fence+1 + lease。只领 pending；同店更早未终局命令挡道（FIFO）。
+    """短事务领取：fence+1 + lease。只领 pending；同店同车道更早未终局命令挡道（FIFO）。
+
+    车道 = (store_id, 是否 price_push)：price_push 是高量低配额 action
+    （reprice 单次可入队数百条，PUT /v3/price 仅 100/hour），与订单回传/feed 提交
+    共享一条车道会把 order_ack/order_ship 背压数小时（R2-06 增量3 评审发现 10）——
+    故 price_push 独占车道，其余 action 维持 RS-03b 原有同店 FIFO 语义。
 
     → 命令行 dict（含本次 fence）；None=不可领（车道被挡/已被领/已终局）。
     """
@@ -166,6 +171,7 @@ async def claim(
                     " WHERE c.id = :id AND c.status = 'pending'"
                     "   AND NOT EXISTS (SELECT 1 FROM app.channel_command b"
                     "     WHERE b.store_id = c.store_id AND b.id < c.id"
+                    "       AND (b.action = 'price_push') = (c.action = 'price_push')"
                     "       AND b.status IN ('pending','inflight','verify_pending'))"
                     " RETURNING c.id, c.team_id, c.store_id, c.action, c.object_type,"
                     "   c.object_id, c.payload, c.fence, c.created_by"
@@ -212,6 +218,25 @@ async def complete(
         log.warning("outbox.stale_worker_rejected", command_id=command_id, fence=fence)
         return False
     return True
+
+
+async def release_claim(session: AsyncSession, *, command_id: int, fence: int) -> bool:
+    """发包前被闸拒（限流 GATEWAY_RATE_EXCEEDED，零字节出门）：inflight → pending 归还。
+
+    与「永不盲重试」不冲突——请求从未出门，无未知结果；命令留 pending 由
+    beat channel_outbox_drain 在配额恢复后继续推。fence 校验同 complete：
+    迟到 worker 的归还整体拒绝。仅限「确定未发包」场景调用。
+    """
+    row = (
+        await session.execute(
+            text(
+                "UPDATE app.channel_command SET status = 'pending', lease_expires_at = NULL"
+                " WHERE id = :id AND fence = :f AND status = 'inflight' RETURNING id"
+            ),
+            {"id": command_id, "f": fence},
+        )
+    ).first()
+    return row is not None
 
 
 async def resolve_verify(
@@ -277,21 +302,31 @@ async def sweep_expired(session: AsyncSession) -> list[dict[str, Any]]:
     return swept
 
 
-async def pick_next(session: AsyncSession) -> int | None:
-    """drain 工具用：下一条可领命令 id（领取本身由 claim 原子判定，选取仅作参考）。"""
+async def pick_next(
+    session: AsyncSession, *, exclude_store_ids: list[int] | None = None
+) -> dict[str, Any] | None:
+    """drain 工具用：下一条可领命令（领取本身由 claim 原子判定，选取仅作参考）。
+
+    exclude_store_ids：本轮已确认闸拒/车道受阻的店铺——跳过其命令继续选其他店，
+    否则单店限流会把全局最低 id 恒定选中、饿死其余店铺（R2-06 增量3 评审发现 3）。
+    车道口径与 claim 一致（price_push 独占车道）。→ {id, store_id} | None。
+    """
     row = (
         await session.execute(
             text(
-                "SELECT c.id FROM app.channel_command c"
+                "SELECT c.id, c.store_id FROM app.channel_command c"
                 " WHERE c.status = 'pending'"
+                "   AND NOT (c.store_id = ANY(:excl))"
                 "   AND NOT EXISTS (SELECT 1 FROM app.channel_command b"
                 "     WHERE b.store_id = c.store_id AND b.id < c.id"
+                "       AND (b.action = 'price_push') = (c.action = 'price_push')"
                 "       AND b.status IN ('pending','inflight','verify_pending'))"
                 " ORDER BY c.id LIMIT 1"
-            )
+            ),
+            {"excl": list(exclude_store_ids or [])},
         )
     ).first()
-    return row[0] if row else None
+    return {"id": row.id, "store_id": row.store_id} if row else None
 
 
 async def execute_command(
@@ -323,7 +358,11 @@ async def execute_command(
             state = await command_state(s, command_id)
         status = (state or {}).get("status", "missing")
         log.info("outbox.claim_unavailable", command_id=command_id, status=status)
-        return {"command_status": status, "result": (state or {}).get("result")}
+        return {
+            "command_status": status,
+            "error_code": (state or {}).get("error_code"),
+            "result": (state or {}).get("result"),
+        }
 
     payload = cmd["payload"]
     resp: GatewayResponse | None
@@ -336,7 +375,18 @@ async def execute_command(
             endpoint_key=payload.get("endpoint_key"),
             params=payload.get("params"),
             json_body=payload.get("json_body"),
+            gate_max_wait=payload.get("gate_max_wait"),
         )
+    except BusinessError as exc:
+        if exc.code == "GATEWAY_RATE_EXCEEDED":
+            # 限流闸在发包前拒绝（零字节出门，非未知结果）→ 归还 pending，
+            # 由 beat channel_outbox_drain 在配额恢复后继续推（R2-06 reprice 语义）
+            async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as s:
+                released = await release_claim(s, command_id=cmd["id"], fence=cmd["fence"])
+            log.info("outbox.rate_gated_released", command_id=command_id, released=released)
+            return {"command_status": "pending", "error_code": "GATEWAY_RATE_EXCEEDED"}
+        log.warning("outbox.request_unexpected_error", command_id=command_id, error=str(exc))
+        resp = None
     except Exception as exc:
         # 网关已吞传输错误（status=None）；走到这里=意外异常，同样按"结果未知"处理
         log.warning("outbox.request_unexpected_error", command_id=command_id, error=str(exc))

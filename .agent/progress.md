@@ -439,3 +439,31 @@
   无产品回连，预期 fail-closed），无错位缺陷；purchaser pass（采购方#1 汇率 6.85）；
   phishing/consistency pass。Owner 已放行限价命中。R2-05 仅余 L2 发货闭环（等真实新单）。
   注：purchaser 表的 kind 列实名 purchaser_kind（诊断 SQL 模板留意）。
+
+## R2-06 定价引擎最小闭环（2026-07-16 立单）
+- **里程碑**：首件真实 UPC 商品全链上架 live（listing #46 M0002418 / feed #37 / WPID
+  4MBVJZD6I1FT，beat 自动轮询收终态）——R2-04 验收①完整闭环、HF-0716 CAP 修复真机实证、
+  R2-03 live 分支真数据首验。HF-0716 → accepted；R2-05 → accepted（L2 发货 Owner 挂账后补）。
+- 真机连带发现：#38 撞 EXT_DATA_ERROR_54514906640101（UPC 首位前缀拒收 BR-UPC-002——
+  测试假 EAN 2000000000xxx 以 2 开头全部不可真实上架）；无成功通知属 R1-12 口径但值得补
+  ——两件+PATCH 契约冻结入 SM-0716 小账随本单收。
+- Owner 授权：「收掉 feed#37 后走 R2-06 定价引擎」。考古四路并行启动。
+- **R2-06 考古完成（四路并行汇总 → evidence/R2-06/archaeology.md）**：范围=cost_plus+min_price
+  （005:56）；九条口径裁定（成本价 current 优先/feed 格式收敛 canonical/限额修正 6/day→10/hour
+  共享池/路由 ≤5 PUT 否则聚合/两段式回填/CAP 计划与拒收无关/区间属 params 数据/min_price 绝对值
+  底线/30% 阈值参数化）；保真移植八件；必修缺陷=rate_limiter 价格桶键前缀不齐（限额被架空）；
+  增量拆分 4+验收；3 项拟 D-Q 待 Owner（限额路由更新 ledger/默认区间取实表值/min_price 必填）。
+- **R2-06 增量3（价格同步管道）完成**：PUT /v3/price 单品通道 + PRICE_AND_PROMOTION 聚合
+  feed 双通道路由（D-Q62：单店 ≤5 条 PUT、更多聚合 feed，阈值配置中心可覆盖）；outbox
+  price_push 三段式 + 幂等键带轮次（episode，retire 房例）；pending_price 两段式在途标记
+  （0029，兼作改价并发闸；updating 语义=pending_price 非空，不入状态机枚举）；price_recon
+  对账收敛（非 200 亦入 grace 判败通道）+ 0028 种子；限流闸拒绝归还 pending（零字节出门
+  非未知结果）+ 429 同类处置 + drain 按店轮转防跨店饿死；rate_limiter 价格桶键修正
+  （10/hour 官方现行）；dry-run 证据（PUT 快照无促销字段）。经工作流三镜头评审+对抗核实：
+  6 项确认发现（1 critical）全部修复。min_price 可选落码（D-Q62 补充）。402 pytest 全绿。
+- **R2-06 增量4 完成（全单完码）**：前端定价页（策略 CRUD/试算/批量重定价/改价 force 确认，
+  区间模板 D-Q62 定值预填、min_price 留空即不设防）+ SM-0716 三件（上架成功 info 通知/
+  GTIN 首位白名单 gtin.safe_prefixes/PATCH listings 契约冻结）+ erpAPI 速查修正（erpAPI PR#2）。
+  合并树复验：403 pytest + ruff + mypy + 前端 lint/build 全绿。验收 runbook 就绪
+  （evidence/R2-06/runbook.md）——**停在人工验收节点**：①新 listing 自动带策略价
+  ②A152 真机改价 listing#46（渠道价变 + 两段式回填闭环）。

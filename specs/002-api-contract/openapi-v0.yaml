@@ -682,6 +682,24 @@ paths:
       x-permission: listing.read
       parameters: [{$ref: '#/components/parameters/listingId'}]
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListingDetail'}}}}}
+    patch:
+      tags: [Listing]
+      summary: 提交前改价（draft/failed 直改；live 归定价管道推渠道）——HF-0716/R2-06
+      x-permission: listing.submit
+      parameters: [{$ref: '#/components/parameters/listingId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [price]
+              properties:
+                price: {type: number}
+                force: {type: boolean, default: false, description: BR-PR-008 变动超阈（默认 30%）需二次确认}
+      responses:
+        '200': {description: OK}
+        '422': {description: 价格非法/状态不可改/超阈未 force, $ref: '#/components/responses/Error'}
   /listings/submit:
     post:
       tags: [Listing]
@@ -758,7 +776,7 @@ paths:
   /gtin-pool/import:
     post:
       tags: [Catalog]
-      summary: GTIN 批量导入（格式+GS1校验位校验；重复逐条报告）
+      summary: GTIN 批量导入（格式+GS1校验位+首位白名单 BR-UPC-002；重复/受限前缀逐条报告）
       x-permission: catalog.import_write
       requestBody:
         required: true
@@ -789,6 +807,97 @@ paths:
       parameters: [{name: strategyId, in: path, required: true, schema: {type: integer}}]
       requestBody: {$ref: '#/components/requestBodies/PricingStrategyWrite'}
       responses: {'200': {description: OK}}
+  # R2-06 增量2 契约补充冻结：重定价预览（只读试算不落库）
+  /pricing-strategies/preview:
+    post:
+      tags: [Listing]
+      summary: 重定价预览（clamp 版展示区间外情况 + compute_price 严格判定并列返回；manual 策略 reason='manual'）
+      x-permission: pricing.read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [store_id, offer_mode]
+              properties:
+                store_id: {type: integer}
+                offer_mode: {type: string, enum: [build, match]}
+                product_ids: {type: array, items: {type: integer}, maxItems: 200, description: 与 listing_ids 二选一}
+                listing_ids: {type: array, items: {type: integer}, maxItems: 200, description: 与 product_ids 二选一（join listing 取 product + current_price 作 old_price）}
+      responses:
+        '200':
+          description: 试算结果（不落库）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  strategy:
+                    type: object
+                    properties:
+                      id: {type: integer}
+                      name: {type: string}
+                      algo_code: {type: string}
+                      version: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id: {type: integer}
+                        listing_id: {type: [integer, 'null']}
+                        old_price: {type: [number, 'null']}
+                        new_price: {type: [number, 'null'], description: clamp 版参考价（区间外 detail.out_of_band=true）}
+                        ok: {type: boolean, description: compute_price 严格判定（区间外/低于底线为 false）}
+                        reason: {type: [string, 'null'], examples: [out_of_band, below_min_price, no_source_price, manual, not_found]}
+                        detail: {type: object}
+        '422': {description: 无活跃策略（PRICING_STRATEGY_NOT_FOUND）/入参二选一违规 等业务拒绝, $ref: '#/components/responses/Error'}
+  # R2-06 增量3 契约补充冻结：批量重定价（live listing 按策略算价 → PUT /v3/price 通道同步推渠道）
+  /pricing/reprice:
+    post:
+      tags: [Listing]
+      summary: 批量重定价（cost_plus 策略算价 → price_changed 过滤 → outbox price_push 三段式；manual 策略跳过）
+      description: >-
+        同步逐条执行（≤200 条 PUT）。PUT /v3/price 100/hour 限流器挡超额——被挡命令
+        留 pending 由 beat channel_outbox_drain 兜底继续推（计入 pushed）；结果未知
+        （verify_pending）由 price_recon 对账归位，绝不盲重试。
+      x-permission: pricing.write
+      parameters: [{$ref: '#/components/parameters/idempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [listing_ids]
+              properties:
+                listing_ids: {type: array, items: {type: integer}, maxItems: 200}
+                force: {type: boolean, default: false, description: 变动超确认阈值（默认 30%）时放行（BR-PR-008）}
+      responses:
+        '202':
+          description: 执行结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pushed: {type: integer, description: 已入队推送数（含 succeeded / verify_pending / 限流 pending）}
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        listing_id: {type: integer}
+                        reason: {type: string, examples: [not_found, not_live, locked, no_strategy, manual, unchanged, out_of_band, below_min_price, no_source_price]}
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        listing_id: {type: integer}
+                        code: {type: [string, 'null'], description: 渠道错误码 / HTTP_xxx / PRICING_CONFIRM_REQUIRED 等}
+        '409': {description: 幂等键冲突（同键异载荷/处理中）, $ref: '#/components/responses/Error'}
   /maintenance-tasks:
     get:
       tags: [Listing]
@@ -1170,7 +1279,7 @@ components:
               offer_mode: {type: string, enum: [build, match]}
               name: {type: string}
               algo_code: {type: string}
-              params: {type: object, description: 必含 min_price 硬底线}
+              params: {type: object, description: min_price 底线可选（D-Q62 补充；填了须 >0，低于底线不出价）}
               status: {type: string, enum: [active, disabled]}
     PurchaserWrite:
       content:

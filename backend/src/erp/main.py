@@ -24,6 +24,7 @@ from erp.identity.router import auth_router, identity_router
 from erp.listing.router import listing_router
 from erp.notify.router import notify_router
 from erp.order.router import order_router
+from erp.pricing.router import pricing_router
 from erp.scrape.router import scrape_router, worker_router
 
 log = structlog.get_logger()
@@ -110,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(audit_router, prefix="/api/v1")
     app.include_router(listing_router, prefix="/api/v1")
     app.include_router(order_router, prefix="/api/v1")
+    app.include_router(pricing_router, prefix="/api/v1")
     app.include_router(catalog_router, prefix="/api/v1")
     app.include_router(compliance_router, prefix="/api/v1")
 

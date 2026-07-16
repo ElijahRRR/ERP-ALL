@@ -13,6 +13,7 @@ tx2 经 fence 校验归位。读路径（poll/verify-back）行锁同样不跨 H
 """
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
@@ -29,6 +30,8 @@ from erp.listing import coerce
 from erp.listing import gtin as gtin_pool
 from erp.listing import spec as spec_builder
 from erp.notify.service import notify
+from erp.pricing import engine as pricing_engine
+from erp.pricing import service as pricing_service
 
 log = structlog.get_logger()
 
@@ -36,6 +39,10 @@ FEED_TYPE_BY_KIND = {
     "item_build": "MP_ITEM",
     "item_match": "MP_ITEM_MATCH",
     "delete": "RETIRE_ITEM",
+    # price feed 提交用 feedType=PRICE_AND_PROMOTION（pricing.PRICE_FEED_TYPE），
+    # 但渠道 feeds 列表/轮询里显示为 MP_ITEM_PRICE_UPDATE（R2-06 考古口径3）——
+    # 本表供 verify-back 对账匹配，故记显示值
+    "price": "MP_ITEM_PRICE_UPDATE",
 }
 
 
@@ -106,6 +113,34 @@ async def _load_listing(session: AsyncSession, listing_id: int) -> dict[str, Any
 # ── allocate：批量建 draft（去重/GTIN 预占/初价）──
 
 
+def _initial_price(
+    strategy: dict[str, Any] | None, product: Mapping[Any, Any]
+) -> tuple[float | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """allocate 初价决策 → (price, 计算明细, 拒绝项)。
+
+    - 有 cost_plus 策略 → 引擎算价；不出价（区间外/低于底线/无源价）→ 拒绝项
+      （fail-closed，BR-PR-004 区间外不上架），明细留作 price_history.detail；
+    - 无策略或 manual 策略 → 维持现状 price_snapshot.list 直取回退
+      （兼容存量；manual 人工价随后经改价端点输入）。
+    """
+    if strategy is not None and strategy["algo_code"] == "cost_plus":
+        result = pricing_service.price_product(strategy, product)
+        if not result.ok:
+            reason = result.reason or "unknown"
+            reject = {
+                "code": "PRICING_" + reason.upper(),
+                "message": pricing_service.REJECT_MESSAGES.get(
+                    reason, f"定价引擎不出价（{reason}）"
+                ),
+            }
+            return None, None, reject
+        return result.price, dict(result.detail), None
+    snap = product.get("price_snapshot") or {}
+    if isinstance(snap, dict) and snap.get("list") is not None:
+        return float(snap["list"]), None, None
+    return None, None, None
+
+
 async def allocate(
     session: AsyncSession,
     *,
@@ -129,6 +164,11 @@ async def allocate(
         raise BusinessError("STORE_NOT_FOUND", "店铺不存在")
     if store["status"] != "active":
         raise BusinessError("STORE_NOT_ACTIVE", f"店铺状态 {store['status']} 不可分配")
+
+    # R2-06 增量2：active 策略解析（store 级 > team 级）——整批同店同模式，只解析一次
+    strategy = await pricing_service.resolve_strategy(
+        session, team_id=team_id, store_id=store_id, offer_mode=offer_mode
+    )
 
     created, rejected = [], []
     for pid in dict.fromkeys(product_ids):
@@ -187,10 +227,10 @@ async def allocate(
                 )
                 continue
 
-        price = None
-        snap = product.get("price_snapshot") or {}
-        if isinstance(snap, dict) and snap.get("list") is not None:
-            price = float(snap["list"])
+        price, price_detail, price_reject = _initial_price(strategy, product)
+        if price_reject is not None:
+            rejected.append({"product_id": pid, **price_reject})
+            continue
         gtin_val: str | None = None
         try:
             # SAVEPOINT：占号失败回滚本品 INSERT，不影响批内其它产品。
@@ -236,6 +276,19 @@ async def allocate(
             ),
             {"l": listing_id, "t": team_id, "u": actor_id},
         )
+        if price_detail is not None and price is not None:
+            # 策略出价成功：initial 价史（同事务——listing 在则价史在）
+            await pricing_service.record_price_history(
+                session,
+                listing_id=listing_id,
+                team_id=team_id,
+                old_price=None,
+                new_price=price,
+                reason="initial",
+                strategy=strategy,
+                detail=price_detail,
+                actor_id=actor_id,
+            )
         created.append(
             {
                 "id": listing_id,
@@ -463,8 +516,17 @@ async def _feed_listings_for_update(session: AsyncSession, feed_id: int) -> list
 async def _apply_feed_submit(  # noqa: PLR0911 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）
     session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
 ) -> dict[str, Any]:
-    """feed_submit 的 tx2 归位（outbox.Applier 契约：complete(fence) 成功才落业务态）。"""
+    """feed_submit 的 tx2 归位（outbox.Applier 契约：complete(fence) 成功才落业务态）。
+
+    price feed（feed_kind='price'，R2-06 增量3 D-Q62 聚合通道）分派到 pricing 模块——
+    其明确拒分支不涉及 listing_create 配额/GTIN/状态机，归位口径不同。
+    """
     feed_id = int(cmd["object_id"])
+    feed_kind = (
+        await session.execute(text("SELECT feed_kind FROM app.feed WHERE id = :f"), {"f": feed_id})
+    ).scalar_one_or_none()
+    if feed_kind == "price":
+        return await pricing_service.apply_price_feed_submit(session, cmd, resp)
     cid, fence = int(cmd["id"]), int(cmd["fence"])
     actor_id = cmd.get("created_by")
 
@@ -569,8 +631,8 @@ async def poll_feed(
             (
                 await session.execute(
                     text(
-                        "SELECT id, team_id, store_id, channel_feed_id, status FROM app.feed"
-                        " WHERE id = :f"
+                        "SELECT id, team_id, store_id, feed_kind, channel_feed_id, status"
+                        " FROM app.feed WHERE id = :f"
                     ),
                     {"f": feed_id},
                 )
@@ -628,6 +690,10 @@ async def _apply_poll_result(
     )
     if str(data.get("feedStatus")) not in ("PROCESSED", "ERROR"):
         return {"feed_id": feed_id, "feed_status": "processing"}
+
+    if feed.get("feed_kind") == "price":
+        # price feed item 级回写走 pricing 模块（SUCCESS → 两段式回填；error → 复位）
+        return await pricing_service.apply_price_feed_results(session, feed, data)
 
     # item 级权威回写（headline 不可信——总账）
     ok = err = 0
@@ -702,6 +768,20 @@ async def _apply_poll_result(
             category="listing_feed",
             title=f"上架 Feed #{feed_id} {'全部失败' if final == 'error' else '部分失败'}",
             body=f"成功 {ok} / 失败 {err}；错误码已入字典待处置（feed 明细页可查）",
+            object_type="feed",
+            object_id=str(feed_id),
+            dedupe_key=f"feed_result:{feed_id}",
+        )
+    elif ok:
+        # 全部成功 → info 结果通知（SM-0716①：此前只报忧不报喜）
+        # dedupe 与失败通知同键——一个 feed 只发一条结果通知
+        await notify(
+            session,
+            team_id=feed["team_id"],
+            severity="info",
+            category="listing_feed",
+            title=f"上架 Feed #{feed_id} 全部成功",
+            body=f"{ok} 个 listing 已 live",
             object_type="feed",
             object_id=str(feed_id),
             dedupe_key=f"feed_result:{feed_id}",
@@ -844,6 +924,11 @@ async def _apply_verify_back(
         return {"feed_id": feed_id, "feed_status": "submitted", "channel_feed_id": cf}
     # 对账确认渠道未收到（或无法唯一匹配→保守按 lost，人工核对后重投）
     await session.execute(text("UPDATE app.feed SET status = 'lost' WHERE id = :f"), {"f": feed_id})
+    if feed.get("feed_kind") == "price":
+        # price feed lost：清 pending_price 复位 + 告警（无配额/状态机牵连）
+        result = await pricing_service.apply_price_feed_lost(session, feed)
+        await _resolve_feed_command(session, feed_id, status="failed", error_code="FEED_LOST")
+        return result
     rows = (
         (
             await session.execute(
@@ -979,12 +1064,22 @@ async def _apply_item_retire(  # noqa: PLR0911 归位分支=渠道响应形态�
 
 
 async def update_price(
-    session: AsyncSession, *, team_id: int, listing_id: int, price: float
+    session: AsyncSession,
+    *,
+    team_id: int,
+    listing_id: int,
+    price: float,
+    force: bool = False,
+    actor_id: int | None = None,
 ) -> dict[str, Any]:
     """提交前改价（draft/failed 专用；HF-0716：price_snapshot 无价 → 0 价出门被
     渠道 CAP 拒，本地校验器现已拦截，运营须有改价入口才能自救）。
 
-    在架（live 等）价格调整不走这里——归定价/促销管道（R2 后续），防绕过策略。
+    在架（live）价格调整不走这里——router 层分流到 pricing.push_price 定价管道
+    （R2-06 增量3），防绕过策略；本函数保持纯 draft/failed 直改。
+    R2-06 增量2 守护：有 active 策略 → 人工价过 min_price 硬底线（fail-closed）；
+    变动幅度超阈（BR-PR-008，配置 pricing.confirm_threshold_pct 默认 30%）需
+    force 二次确认。通过后写 price_history(reason='manual')。
     """
     if price <= 0:
         raise BusinessError("LISTING_PRICE_INVALID", "价格必须大于 0")
@@ -997,9 +1092,46 @@ async def update_price(
         raise BusinessError(
             "LISTING_STATE_INVALID", "仅 draft/failed 可直接改价（在架调价走定价管道）"
         )
+    strategy = await pricing_service.resolve_strategy(
+        session, team_id=team_id, store_id=listing["store_id"], offer_mode=listing["offer_mode"]
+    )
+    guard_detail: dict[str, Any] = {}
+    if strategy is not None:
+        guard = pricing_engine.guard_manual_price(price, strategy["params"] or {})
+        if not guard.ok:
+            raise BusinessError(
+                "PRICING_BELOW_MIN_PRICE",
+                "人工价未过策略 min_price 硬底线（fail-closed 拒绝）",
+                detail=guard.detail,
+            )
+        guard_detail = guard.detail
+    old_price = float(listing["current_price"]) if listing["current_price"] is not None else None
+    threshold = await pricing_service.confirm_threshold(session, team_id)
+    if (
+        old_price is not None
+        and pricing_engine.exceeds_confirm_threshold(old_price, price, pct=threshold)
+        and not force
+    ):
+        raise BusinessError(
+            "PRICING_CONFIRM_REQUIRED",
+            f"价格变动超 {threshold:.0%}，需 force 确认",
+            detail={"old": old_price, "new": price, "threshold_pct": threshold},
+            http_status=422,
+        )
     await session.execute(
         text("UPDATE app.listing SET current_price = :p WHERE id = :id"),
         {"p": price, "id": listing_id},
+    )
+    await pricing_service.record_price_history(
+        session,
+        listing_id=listing_id,
+        team_id=team_id,
+        old_price=old_price,
+        new_price=price,
+        reason="manual",
+        strategy=strategy,
+        detail=guard_detail,
+        actor_id=actor_id,
     )
     return {"listing_id": listing_id, "current_price": price}
 

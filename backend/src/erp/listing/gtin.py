@@ -24,6 +24,33 @@ def _checksum_ok(gtin: str) -> bool:
     return (10 - total % 10) % 10 == check
 
 
+# 首位安全集默认值（BR-UPC-002 回植）：GS1 前缀 2(生鲜变重)/3(NDC 药品)/4(店内卡)/5(优惠券)
+# 为受限号段，Walmart 以 EXT_DATA_ERROR_54514906640101 拒收——入池即拦截（可被配置覆盖）
+_DEFAULT_SAFE_PREFIXES = ("0", "1", "6", "7", "8", "9")
+
+
+def _effective_first_digit(gtin: str) -> str:
+    """有效首位：UPC-A(12 位)取首位；EAN-13 以 '0' 开头实为 UPC-A 补零（取第 2 位），否则取首位。"""
+    if len(gtin) == UPC_A_LEN + 1 and gtin[0] == "0":
+        return gtin[1]
+    return gtin[0]
+
+
+async def _safe_prefixes(session: AsyncSession, team_id: int) -> set[str]:
+    """首位安全集：team_config > system_config > 默认（键 gtin.safe_prefixes，JSON 数组）。"""
+    for sql, params in (
+        (
+            "SELECT value FROM app.team_config WHERE team_id = :t AND key = 'gtin.safe_prefixes'",
+            {"t": team_id},
+        ),
+        ("SELECT value FROM app.system_config WHERE key = 'gtin.safe_prefixes'", {}),
+    ):
+        row = (await session.execute(text(sql), params)).first()
+        if row is not None and isinstance(row[0], list) and row[0]:
+            return {str(p) for p in row[0]}
+    return set(_DEFAULT_SAFE_PREFIXES)
+
+
 async def import_batch(
     session: AsyncSession,
     *,
@@ -32,7 +59,12 @@ async def import_batch(
     source: str = "generator_import",
     created_by: int | None = None,
 ) -> dict[str, Any]:
-    """批量导入（重复/格式/校验位不合格逐条报告，不整批失败）。"""
+    """批量导入（重复/格式/校验位/受限前缀不合格逐条报告，不整批失败）。
+
+    首位白名单 = BR-UPC-002：有效首位不在安全集（默认 0/1/6/7/8/9）的号码拒绝入池——
+    Walmart 对 2/3/4/5 开头以 EXT_DATA_ERROR_54514906640101 拒收，入池即拦截省渠道配额。
+    """
+    safe = await _safe_prefixes(session, team_id)
     imported, rejected = 0, []
     for raw in dict.fromkeys(g.strip() for g in gtins):
         if not _GTIN_RE.match(raw):
@@ -40,6 +72,9 @@ async def import_batch(
             continue
         if not _checksum_ok(raw):
             rejected.append({"gtin": raw, "code": "GTIN_CHECKSUM"})
+            continue
+        if _effective_first_digit(raw) not in safe:
+            rejected.append({"gtin": raw, "code": "GTIN_UNSAFE_PREFIX"})
             continue
         kind = "upc_a" if len(raw) == UPC_A_LEN else "ean_13"
         row = await session.execute(
