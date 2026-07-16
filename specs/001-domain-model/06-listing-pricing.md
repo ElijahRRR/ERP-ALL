@@ -170,13 +170,13 @@ verify-back 归位（adopt/lost）同步终局命令，解开同店 FIFO 车道�
 | offer_mode | TEXT | NOT NULL CHECK IN (build, match) | **双模式各配一套**（D-Q23：跟卖定价不同） |
 | name | TEXT | NOT NULL | |
 | algo_code | TEXT | NOT NULL | 策略算法注册名：`cost_plus`（build 默认）/ `manual`（match 现行：人工指定价）/ 未来 `follow_buybox`… |
-| params | JSONB | NOT NULL DEFAULT '{}' | 系数/上下限/守护值（min_price 硬底线必填） |
+| params | JSONB | NOT NULL DEFAULT '{}' | 系数/上下限/守护值（min_price 底线**可选**——D-Q62 补充裁定 2026-07-16：区间从 $0 起的业务形态下绝对底线价值有限，填了才生效且必须 >0；原「必填」表述废止） |
 | status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, disabled) | |
 | version | INT | NOT NULL DEFAULT 1 | params 每改 +1 |
 | updated_by / updated_at / created_at | | | |
 
 约束：`uq_pricing_strategy (team_id, COALESCE(store_id,0), offer_mode) WHERE status='active'` —— 解析顺序 store 级 > team 级，同键活跃唯一。
-策略引擎契约：输入（成本/竞争价/参数）→ 输出（价格 + 计算明细 JSON），明细进 price_history.detail；改价必过 min_price 守护 + 限价四检口径一致（07 号文档）。
+策略引擎契约：输入（成本/竞争价/参数）→ 输出（价格 + 计算明细 JSON），明细进 price_history.detail；改价过 min_price 守护（策略设了才生效——D-Q62 补充：可选）+ 限价四检口径一致（07 号文档）。
 
 ## price_history 价格变更史（月分区）
 
