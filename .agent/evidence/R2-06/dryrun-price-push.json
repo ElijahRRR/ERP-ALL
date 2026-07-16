@@ -1,0 +1,29 @@
+{
+  "mode": "dry_run",
+  "store": "A152PS",
+  "method": "PUT",
+  "url": "https://marketplace.walmartapis.com/v3/price",
+  "endpoint_key": "PUT /v3/price",
+  "params": null,
+  "json_body": {
+    "sku": "MPP260006",
+    "pricing": [
+      {
+        "currentPrice": {
+          "amount": 61.0,
+          "currency": "USD"
+        },
+        "currentPriceType": "BASE"
+      }
+    ]
+  },
+  "proxy": null,
+  "headers": [
+    "Authorization",
+    "WM_SVC.NAME",
+    "WM_QOS.CORRELATION_ID",
+    "WM_CONSUMER.ID",
+    "WM_SEC.ACCESS_TOKEN",
+    "Accept"
+  ]
+}

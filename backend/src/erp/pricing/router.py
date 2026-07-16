@@ -240,8 +240,8 @@ async def _reprice_run(
         ).mappings()
         by_id = {int(r["listing_id"]): dict(r) for r in rows}
         strategies: dict[tuple[int, str], dict[str, Any] | None] = {}
-        for row in by_id.values():
-            key = (int(row["store_id"]), str(row["offer_mode"]))
+        for item in by_id.values():
+            key = (int(item["store_id"]), str(item["offer_mode"]))
             if key not in strategies:
                 strategies[key] = await service.resolve_strategy(
                     s, team_id=team_id, store_id=key[0], offer_mode=key[1]
@@ -252,31 +252,12 @@ async def _reprice_run(
     failed: list[dict[str, Any]] = []
     for lid in dict.fromkeys(listing_ids):
         row = by_id.get(lid)
-        if row is None:
-            skipped.append({"listing_id": lid, "reason": "not_found"})
+        strategy = strategies.get((int(row["store_id"]), str(row["offer_mode"]))) if row else None
+        skip_reason, result = _reprice_gate(row, strategy)
+        if skip_reason is not None:
+            skipped.append({"listing_id": lid, "reason": skip_reason})
             continue
-        if row["status"] != "live":
-            skipped.append({"listing_id": lid, "reason": "not_live"})
-            continue
-        if row["is_locked"]:
-            skipped.append({"listing_id": lid, "reason": "locked"})
-            continue
-        strategy = strategies.get((int(row["store_id"]), str(row["offer_mode"])))
-        if strategy is None:
-            skipped.append({"listing_id": lid, "reason": "no_strategy"})
-            continue
-        if strategy["algo_code"] == "manual":
-            # D-Q23 match 现行=人工指定价：manual 策略不自动重定价
-            skipped.append({"listing_id": lid, "reason": "manual"})
-            continue
-        result = service.price_product(strategy, row)
-        if not result.ok or result.price is None:
-            skipped.append({"listing_id": lid, "reason": result.reason})
-            continue
-        old = float(row["current_price"]) if row["current_price"] is not None else None
-        if not engine.price_changed(old, result.price):
-            skipped.append({"listing_id": lid, "reason": "unchanged"})  # BR-PR-006 省配额
-            continue
+        assert result is not None and result.price is not None and strategy is not None
         try:
             outcome = await service.push_price(
                 sessions,
@@ -300,6 +281,33 @@ async def _reprice_run(
         else:
             pushed += 1  # succeeded / verify_pending（对账中）/ pending（限流待 beat 推）
     return {"pushed": pushed, "skipped": skipped, "failed": failed}
+
+
+def _reprice_gate(  # noqa: PLR0911 预检分支=跳过原因清单（契约 skipped.reason 枚举）
+    row: dict[str, Any] | None, strategy: dict[str, Any] | None
+) -> tuple[str | None, Any]:
+    """单条预检 → (跳过原因, 出价结果)。原因为 None 表示可推（结果必非空）。
+
+    manual 策略跳过（D-Q23 match 现行=人工指定价，不自动重定价）；
+    unchanged = BR-PR-006 价差 < $0.01 省配额过滤。
+    """
+    if row is None:
+        return "not_found", None
+    if row["status"] != "live":
+        return "not_live", None
+    if row["is_locked"]:
+        return "locked", None
+    if strategy is None:
+        return "no_strategy", None
+    if strategy["algo_code"] == "manual":
+        return "manual", None
+    result = service.price_product(strategy, row)
+    if not result.ok or result.price is None:
+        return result.reason or "rejected", None
+    old = float(row["current_price"]) if row["current_price"] is not None else None
+    if not engine.price_changed(old, result.price):
+        return "unchanged", None
+    return None, result
 
 
 @pricing_router.post("/pricing/reprice", status_code=202)

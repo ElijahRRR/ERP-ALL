@@ -417,7 +417,9 @@ async def _apply_price_push(  # noqa: PLR0911 归位分支=渠道响应形态（
 
     if resp.status == 200:  # noqa: PLR2004
         data = resp.data if isinstance(resp.data, dict) else {}
-        inner = data.get("ItemPriceResponse") if isinstance(data.get("ItemPriceResponse"), dict) else data  # fmt: skip
+        inner = data.get("ItemPriceResponse")
+        if not isinstance(inner, dict):
+            inner = data
         message = str(inner.get("message") or "") or None
         if not await outbox.complete(
             session,
