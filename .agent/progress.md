@@ -419,3 +419,9 @@
 - 证据：evidence/hotfix-20260716/analysis-and-runbook.md（含部署机取证 SQL：feed_item.error_msg
   拿 Invalid Date 具体字段、采集/beat 卡点判读、升级部署含前端步骤）。
 - 余项：部署机取证回报 → 确认 Invalid Date 字段归因 → listing #46 重提交；采集卡点按取证收尾。
+- **HF-0716 归因闭环（部署机取证回报）**：①渠道拒收实为 `EXT_DATA_ERROR_66685355746773`
+  field=CAP「Invalid Data」= **0 价出门**（price_snapshot 无 list 价→current_price NULL→
+  构建器兜底 0.0；「Invalid Date」系误读）——补修：validator 拦 0/缺失价、错误码入字典、
+  PATCH /listings/{id} 改价端点 + UI 改价入口/无价红标；②采集卡点=scraper 容器已停
+  （job#9 建单前 4 分钟），beat 健康——双告警+横幅正对症，恢复=起 scraper；③前端=vite
+  内存缓存，需 force-recreate。日期加固与超时护栏保留（真实缺口，预防性根治）。

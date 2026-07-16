@@ -978,6 +978,32 @@ async def _apply_item_retire(  # noqa: PLR0911 归位分支=渠道响应形态�
     return {"status": "live", "error_code": "ERP_FEED_REJECTED", "http_status": resp.status}
 
 
+async def update_price(
+    session: AsyncSession, *, team_id: int, listing_id: int, price: float
+) -> dict[str, Any]:
+    """提交前改价（draft/failed 专用；HF-0716：price_snapshot 无价 → 0 价出门被
+    渠道 CAP 拒，本地校验器现已拦截，运营须有改价入口才能自救）。
+
+    在架（live 等）价格调整不走这里——归定价/促销管道（R2 后续），防绕过策略。
+    """
+    if price <= 0:
+        raise BusinessError("LISTING_PRICE_INVALID", "价格必须大于 0")
+    listing = await _load_listing(session, listing_id)
+    if listing["team_id"] != team_id:
+        raise BusinessError("LISTING_NOT_FOUND", "listing 不存在")
+    if listing["is_locked"]:
+        raise BusinessError("LISTING_LOCKED", "listing 已锁定")
+    if listing["status"] not in ("draft", "failed"):
+        raise BusinessError(
+            "LISTING_STATE_INVALID", "仅 draft/failed 可直接改价（在架调价走定价管道）"
+        )
+    await session.execute(
+        text("UPDATE app.listing SET current_price = :p WHERE id = :id"),
+        {"p": price, "id": listing_id},
+    )
+    return {"listing_id": listing_id, "current_price": price}
+
+
 async def retry_failed(
     session: AsyncSession, *, team_id: int, listing_id: int, actor_id: int | None = None
 ) -> dict[str, Any]:

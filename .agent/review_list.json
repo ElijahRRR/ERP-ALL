@@ -453,13 +453,13 @@
     "id": "HF-0716",
     "priority": "P0",
     "dimension": "hotfix",
-    "check": "生产三缺陷整改：①采集/beat 停摆（单进程串行无任务超时+采集管线无告警无收口）②MP_ITEM Invalid Date（管线日期零感知+endDate 2049 无毫秒写法未实测）③R2-05 前端未部署致无订单页（部署指令缺前端项）",
+    "check": "生产三缺陷整改：①采集/beat 停摆（scraper 容器停+管线无告警无收口；beat 健康但无超时护栏属真实风险）②上架失败 EXT_DATA_ERROR_66685355746773 field=CAP『Invalid Data』=0 价出门（price_snapshot 无价兜底 0.0）③R2-05 前端未生效（vite 内存缓存，需 force-recreate）",
     "status": "done-pending-verify",
     "evidence": [
       ".agent/evidence/hotfix-20260716/analysis-and-runbook.md"
     ],
-    "finding": "beat 任务级 asyncio 超时+启动回收；scrape reclaim 乒乓判死+收口兜底+无worker/零进展双告警+UI节点横幅；coerce/validator 补日期清洗校验+endDate .000Z+远期值入配置；余项=部署机取证 feed#36 具体拒收字段 + 采集诊断 SQL 回报 + 重新部署验证",
+    "finding": "取证闭环（部署机 2026-07-16）：beat 任务级超时+启动回收；scrape 乒乓判死+收口+双告警+UI节点横幅；validator 拦 0 价+PATCH 改价端点+UI 改价入口+错误码入字典；日期全链加固保留（排查中发现的真实缺口）；endDate .000Z+远期值入配置。余项=合并部署后 listing#46 改价重投 + job#9 随 scraper 恢复推进",
     "last_checked_at": "2026-07-16",
-    "acceptance": "部署机：诊断 SQL 回报确认卡点；新版本部署后采集作业推进或收到明确告警；重新上架一次真实 UPC 商品 feed 过 ingestion（无 Invalid Date）；订单页可见"
+    "acceptance": "部署新版后：订单页可见；scraper 恢复后 job#9 推进或收到停摆告警；listing#46 改价→重试→feed 过 ingestion；beat 超时护栏与采集告警随日常运行自证"
   }
 ]

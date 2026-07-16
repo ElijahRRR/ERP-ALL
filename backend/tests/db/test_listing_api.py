@@ -468,3 +468,44 @@ class TestDryRunEvidence:
                 "UPDATE app.system_config SET value = '\"live_test\"'::jsonb"
                 " WHERE key = 'channel.gateway_mode'"
             )
+
+
+class TestPriceUpdate:
+    """HF-0716：0 价出门被渠道 CAP 拒——PATCH 改价入口（draft/failed 专用）。"""
+
+    def test_patch_price_on_draft_then_invalid_states(
+        self, client: TestClient, seeded: dict, migrated_db: str
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.product (team_id, master_sku, source_channel, source_ref,"
+                " title, status) VALUES (%s, 'M9990716', 'amazon', 'B0PRICE001',"
+                " '改价用例商品', 'ready') RETURNING id",
+                (seeded["team"],),
+            ).fetchone()[0]
+            lid = conn.execute(
+                "INSERT INTO app.listing (team_id, store_id, product_id, offer_mode,"
+                " channel_sku, status) VALUES (%s, %s, %s, 'build', 'M9990716', 'draft')"
+                " RETURNING id",
+                (seeded["team"], seeded["store"], pid),
+            ).fetchone()[0]
+
+        r = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 23.5})
+        assert r.status_code == 200, r.text
+        assert r.json()["current_price"] == 23.5
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT current_price FROM app.listing WHERE id = %s", (lid,)
+            ).fetchone()[0] == pytest.approx(23.5)
+
+        r2 = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 0})
+        assert r2.status_code == 422 and r2.json()["error"]["code"] == "LISTING_PRICE_INVALID"
+
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("UPDATE app.listing SET status = 'live' WHERE id = %s", (lid,))
+        r3 = client.patch(f"/api/v1/listings/{lid}", headers=auth, json={"price": 25.0})
+        assert r3.status_code == 422 and r3.json()["error"]["code"] == "LISTING_STATE_INVALID"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.listing WHERE id = %s", (lid,))
+            conn.execute("DELETE FROM app.product WHERE id = %s", (pid,))

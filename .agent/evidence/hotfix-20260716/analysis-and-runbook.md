@@ -25,7 +25,21 @@ Walmart 后台报「数据错误：Invalid Date」（feed #36 / listing #46 M000
   终态只在 submit_result 产生），永不 dead、job 永不收口；
 - reclaim 只动 task 不结算 job；前端无 worker 节点健康可见性。
 
-### ③ Invalid Date —— 管线对日期格式零感知（最高嫌疑）+ endDate 写法未实测组合
+### ③ 上架失败 —— 【归因落定 2026-07-16 部署机取证】渠道拒的是 CAP 零价格，非日期
+
+**取证结论**（feed_item.raw，feed #36 / M0002418）：
+`EXT_DATA_ERROR_66685355746773`，type=DATA_ERROR，**field="CAP"，description="Invalid Data."**
+——Seller Center 显示的「Invalid Date」实为「Invalid Data」。CAP = Competitive Price
+Adjustment（渠道定价子系统）。提交体 `"price": 0.0`：该产品 price_snapshot 无 list 价
+→ allocate 落 current_price=NULL → 构建器 `price if price is not None else 0.0` 兜底
+0 价出门 → 定价子系统拒。两份 feed_submit 提交体均为 0 价（M0000009 同病）。
+
+**修复**：validator 实践层拦 price ≤ 0/缺失（本地拒，引用真机错误码）；错误码入
+listing_error_catalog（定价/manual）；新增 `PATCH /listings/{id}` 改价端点
+（draft/failed 专用，在架调价仍归定价管道）+ 上架管理页「改价」入口与「无价」红标。
+**listing #46 自救路径**：改价 → 重投（retry）。
+
+### ③-附 日期格式加固（保留——按原始报错方向做的排查发现的真实缺口）
 - schema 的 `format: date/date-time` 在 FieldSpec 摘要即被丢弃：LLM prompt 不知格式、
   coerce 链无日期步骤、必填兜底会把 `"Not Available"` 塞进日期字段、
   validator 仅查 endDate 含 "T"（连 `{END_DATE}` 占位符都能过）。
@@ -51,59 +65,40 @@ Walmart 后台报「数据错误：Invalid Date」（feed #36 / listing #46 M000
 | 8 | validator：format=date/date-time 真解析校验、startDate 纳入、占位符泄漏由跳过改报错 | validator.py |
 | 9 | endDate 输出 `.000Z` 毫秒写法（2049 唯一实测成功组合）；远期默认值入配置 listing.orderable_defaults.end_date_default（默认 2049-12-31，D-Q9 不变） | spec.py |
 
-## 部署机指令（可整段粘贴）
+### ②-附 取证结论（2026-07-16 部署机回报）
+- beat 健康（持续 tick、任务全 done）——本次卡点**不是** beat 停摆；超时护栏留作预防。
+- 卡点 = **scraper 容器已停**（末次日志/心跳约 14.5h 前，job #9 建单前 4 分钟），
+  8 任务 pending 无人领、无告警（本次修复的双告警 + UI 横幅正是对症）。
+- 恢复：`--profile scraper up -d scraper`（enroll token/代理配置已在库，无需变更）。
+- 前端「无订单页」补充确诊：容器磁盘已是新码但 vite 进程内存缓存旧模块
+  （`up -d` 对运行中容器是 no-op）——需 `--force-recreate frontend`。
+
+## 部署机指令·第二轮（升级+恢复，可整段粘贴；取证已完成不再重复）
 
 ```
 【铁律】绝不操作生产库 erp_all 的结构；暂存用一次性容器；用毕清理；不输出密钥。
 
-任务：先取证（步骤 1-3 只读），再升级部署（步骤 4-5），回报全部输出。
+任务：升级到 HF-0716 版本并恢复前端/采集，回报核验结果。
 
-1) feed #36 拒收取证（Invalid Date 具体字段名就在这里）：
-   docker compose -f infra/docker-compose.yml exec db psql -U postgres -d erp_all -c \
-     "SELECT error_code, error_msg, jsonb_pretty(raw) FROM app.feed_item WHERE feed_id = 36;"
-   docker compose -f infra/docker-compose.yml exec db psql -U postgres -d erp_all -c \
-     "SELECT id, jsonb_pretty(payload->'json_body') FROM app.channel_command
-      WHERE action = 'feed_submit' ORDER BY id DESC LIMIT 2;"
-2) 采集卡点取证：
-   docker compose -f infra/docker-compose.yml exec db psql -U postgres -d erp_all -c "
-     SELECT key, value FROM app.system_config WHERE key LIKE 'scrape.%';
-     SELECT id, node_key, status, now()-last_heartbeat_at AS hb_age FROM app.worker_node ORDER BY id;
-     SELECT status, count(*) FROM app.scrape_job GROUP BY status;
-     SELECT id, status, total_tasks, done_tasks, failed_tasks, now()-created_at AS age
-       FROM app.scrape_job WHERE finished_at IS NULL ORDER BY created_at LIMIT 20;
-     SELECT status, count(*), max(attempt) FROM app.scrape_task GROUP BY status;"
-   docker compose -f infra/docker-compose.yml ps
-   docker compose -f infra/docker-compose.yml logs --tail=100 scraper 2>&1 | tail -50
-3) beat 停摆取证：
-   docker compose -f infra/docker-compose.yml exec db psql -U postgres -d erp_all -c "
-     SELECT code, enabled, last_run_at, next_run_at, now()-last_run_at AS since_last
-       FROM app.schedule ORDER BY next_run_at;
-     SELECT id, task_code, status, started_at, now()-started_at AS age, left(error,120)
-       FROM app.task_run WHERE status='running' OR started_at > now()-interval '2 hours'
-       ORDER BY started_at DESC LIMIT 30;"
-   docker compose -f infra/docker-compose.yml logs --tail=60 beat
-   判读：进程 up 但日志无新 beat.tick + 有陈年 running task_run = 挂起任务顶死循环
-   （本次升级已加超时护栏根治）。
-4) 升级部署（含前端；<SHA> 用云端提供的最新 main）：
+1) 升级（<SHA> 用云端提供的合并后 main SHA）：
    git fetch origin main && git checkout <SHA>
    docker compose -f infra/docker-compose.yml up -d --build db redis migrate api beat
-   docker compose -f infra/docker-compose.yml --profile dev up -d frontend
-   若 scraper 此前在跑：docker compose -f infra/docker-compose.yml --profile scraper up -d --build scraper
-5) 核验：
-   - beat 日志出现 beat.start 且每轮 beat.tick 正常；
-   - 若采集配置缺失（步骤 2 第一条查询为空）：不要手工 DDL/INSERT，回报即可，
-     由云端出配置种子方案；
-   - 浏览器强刷（Ctrl+F5）后确认左侧菜单出现「订单管理/采购方」；
-   - ≤1 分钟内 scrape_reclaim 任务 task_run 有新 done 记录；若无在线 worker，
-     通知中心应出现「采集停摆：无在线采集节点」告警（这是新增的预期行为）。
-6) 回报：步骤 1-3 全部输出原文 + 步骤 5 核验结果。
+2) 前端强制重建（vite 内存缓存旧模块，up -d 对运行中容器是 no-op）：
+   docker compose -f infra/docker-compose.yml --profile dev up -d --force-recreate frontend
+3) 恢复采集 worker（配置已在库，无需变更）：
+   docker compose -f infra/docker-compose.yml --profile scraper up -d --build scraper
+4) 核验：
+   - 浏览器 Ctrl+F5 后左侧菜单出现「订单管理/采购方」；采集作业页顶部出现节点健康横幅；
+   - scraper 起后 job #9 的 8 个 pending 任务开始被领取（进度条动起来）；
+   - beat 日志 beat.start + 每轮 beat.tick 正常（新版含任务超时护栏与启动回收）；
+   - 上架管理页 listing #46（M0002418）：价格列有红色「无价」标 →「改价」填真实售价
+     →「重试」重投 → 新 feed 应通过 ingestion（此前 field=CAP 拒收即 0 价所致）。
+5) 回报：4 的各项结果 + 新 feed 的 ingestion 结果；通知中心如出现「采集停摆」类
+   告警属新增预期行为，一并回报内容。
 ```
 
 ## Owner 侧后续
 
-1. 部署机回报 feed #36 的 error_msg/raw 后，云端确认 Invalid Date 具体字段：
-   - 若为 LLM 填充的日期属性 → 本次修复已根治（重建 listing 重提交即可）；
-   - 若为 endDate 本身 → 本次 .000Z 写法大概率已修；仍拒则改配置
-     `listing.orderable_defaults` 的 `end_date_default`（如 2030-12-31）再试，零代码变更。
-2. 失败的 listing #46：错误确认后在上架管理页重提交（spec 会按新构建器重建）。
-3. R2-05 L1/L2 验收流程不变（evidence/R2-05/runbook.md），等新版本部署后进行。
+1. listing #46 归因已闭环（CAP=0 价）：部署后改价重投即可；M0000009 同病同治。
+2. 采集 job #9 会随 scraper 恢复自动推进；若不需要该测试作业可直接取消。
+3. R2-05 L1/L2 验收流程不变（evidence/R2-05/runbook.md），新版本部署后进行。

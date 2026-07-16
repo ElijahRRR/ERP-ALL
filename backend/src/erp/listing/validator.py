@@ -158,7 +158,20 @@ def validate_build_item(
                 f"orderable.{fname}={val!r} 非 ISO DateTime"
                 "（纯日期拒收 EXT_DATA_ERROR_00030257670757）"
             )
+    _check_positive_price(orderable.get("price"), "orderable.price", report)
     return report
+
+
+def _check_positive_price(price: Any, where: str, report: ValidationReport) -> None:
+    """价格必须 > 0——渠道定价子系统（CAP）拒 0/缺失价：feed #36 真机实测
+    EXT_DATA_ERROR_66685355746773 field=CAP「Invalid Data」（2026-07-16）。
+    listing 无价（price_snapshot 缺 list 且未手工改价）时构建器兜底 0.0，
+    必须在本地拦下，不许出门吃渠道拒。"""
+    if isinstance(price, bool) or not isinstance(price, (int, float)) or float(price) <= 0:
+        report.error(
+            f"{where}={price!r} 非法——渠道拒 0/缺失价"
+            "（EXT_DATA_ERROR_66685355746773 field=CAP）；先改价再提交"
+        )
 
 
 def validate_match_item(item: dict[str, Any]) -> ValidationReport:
@@ -168,6 +181,8 @@ def validate_match_item(item: dict[str, Any]) -> ValidationReport:
     for name in _MATCH_REQUIRED:
         if offer.get(name) in _EMPTYISH:
             report.error(f"Item.{name}: 必填缺失/空")
+    if offer.get("price") not in _EMPTYISH:  # 缺失已由 required 检查报
+        _check_positive_price(offer.get("price"), "Item.price", report)
     pid = offer.get("productIdentifiers")
     if isinstance(pid, dict):
         if pid.get("productIdType") not in _MATCH_ID_TYPES:

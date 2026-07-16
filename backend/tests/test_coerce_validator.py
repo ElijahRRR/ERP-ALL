@@ -244,8 +244,30 @@ class TestValidator:
         assert any("fulfillmentCenterID" in w for w in r.warnings)
 
     def test_schema_missing_warns_not_errors(self) -> None:
-        r = validator.validate_build_item({"Visible": {"T": {}}, "Orderable": {}}, "T", None, None)
+        r = validator.validate_build_item(
+            {"Visible": {"T": {}}, "Orderable": {"price": 9.99}}, "T", None, None
+        )
         assert r.ok and len(r.warnings) == 2
+
+    def test_zero_price_blocked(self) -> None:
+        """HF-0716 真机：0/缺失价出门被渠道 CAP 拒（EXT_DATA_ERROR_66685355746773）
+        ——本地必须拦截。"""
+        for bad_price in (0.0, None, -1):
+            r = validator.validate_build_item(
+                {"Visible": {"T": {}}, "Orderable": {"price": bad_price}}, "T", None, None
+            )
+            assert not r.ok and any("CAP" in e for e in r.errors), bad_price
+        bad_match = {
+            "Item": {
+                "sku": "M1",
+                "ShippingWeight": 1.0,
+                "price": 0.0,
+                "condition": "New",
+                "productIdentifiers": {"productIdType": "UPC", "productId": "123456789012"},
+            }
+        }
+        r = validator.validate_match_item(bad_match)
+        assert not r.ok and any("CAP" in e for e in r.errors)
 
     def test_match_validation(self) -> None:
         good = {
@@ -319,6 +341,7 @@ class TestDateFormats:
             "Visible": {"T": {"mandatoryDate": "March 2024", "warrantyStart": "2024"}},
             "Orderable": {
                 "sku": "M1",
+                "price": 9.99,
                 "startDate": "{START_DATE}",
                 "endDate": "2049-12-31T00:00:00.000Z",
             },
@@ -335,6 +358,6 @@ class TestDateFormats:
         vis = _schema({}, [])
         order = _schema({}, [])
         for good in ("2049-12-31T00:00:00Z", "2049-12-31T00:00:00.000Z"):
-            item = {"Visible": {"T": {}}, "Orderable": {"endDate": good}}
+            item = {"Visible": {"T": {}}, "Orderable": {"price": 9.99, "endDate": good}}
             r = validator.validate_build_item(item, "T", vis, order)
             assert r.ok, (good, r.errors)
