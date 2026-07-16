@@ -254,6 +254,7 @@ async def delist(
 
 class ListingPriceIn(BaseModel):
     price: float
+    force: bool = False  # BR-PR-008：变动超阈（默认 30%）需 force 二次确认
 
 
 @listing_router.patch("/listings/{listing_id}")
@@ -268,11 +269,17 @@ async def update_listing_price(
     if user.team_id is None:
         raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
     result = await service.update_price(
-        session, team_id=user.team_id, listing_id=listing_id, price=body.price
+        session,
+        team_id=user.team_id,
+        listing_id=listing_id,
+        price=body.price,
+        force=body.force,
+        actor_id=user.id,
     )
     await AuditWriter.for_user(session, user, request).log(
-        "listing.price_update", "listing", listing_id, after={"price": body.price}
-    )
+        "listing.price_update", "listing", listing_id,
+        after={"price": body.price, "force": body.force},
+    )  # fmt: skip
     return result
 
 

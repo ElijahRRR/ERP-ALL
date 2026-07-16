@@ -1,7 +1,9 @@
-"""R2-06 增量1：定价策略注册表 CRUD（契约 /pricing-strategies 三端点，D-Q23）。
+"""R2-06 增量1/2：定价策略注册表 CRUD + 重定价预览。
 
-活跃唯一（team×store×offer_mode）→ 409；min_price 硬底线必填 fail-closed；
+增量1：活跃唯一（team×store×offer_mode）→ 409；min_price 硬底线必填 fail-closed；
 params 每改 version +1；停用旧策略后可建新活跃策略。
+增量2：/pricing-strategies/preview 只读试算（clamp 版展示 + 严格判定并列；
+store 级策略优先 team 级；无策略 422 PRICING_STRATEGY_NOT_FOUND）。
 """
 
 import psycopg
@@ -26,7 +28,11 @@ def seeded(migrated_db: str) -> dict[str, int]:
             "INSERT INTO app.team (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (TEAM,)
         )
         team_id = conn.execute("SELECT id FROM app.team WHERE name = %s", (TEAM,)).fetchone()[0]
+        # 清场（FK 顺序：价史→策略→产品→店）
+        conn.execute("DELETE FROM app.price_history WHERE team_id = %s", (team_id,))
         conn.execute("DELETE FROM app.pricing_strategy WHERE team_id = %s", (team_id,))
+        conn.execute("DELETE FROM app.product WHERE team_id = %s", (team_id,))
+        conn.execute("DELETE FROM app.store WHERE team_id = %s", (team_id,))
         uid = conn.execute(
             "INSERT INTO app.app_user (team_id, username, password_hash, display_name)"
             " VALUES (%s, %s, %s, '定价管理员') RETURNING id",
@@ -45,7 +51,28 @@ def seeded(migrated_db: str) -> dict[str, int]:
                 (role_id, code),
             )
         conn.execute("INSERT INTO app.user_role (user_id, role_id) VALUES (%s, %s)", (uid, role_id))
-    return {"team": team_id}
+        # 预览用店 + 产品（增量2）：在区间 19.99 / 低于区间下界 5.0
+        channel_id = conn.execute("SELECT id FROM app.channel WHERE code='walmart_us'").fetchone()[
+            0
+        ]
+        store_id = conn.execute(
+            "INSERT INTO app.store (team_id, channel_id, code, name, is_test)"
+            " VALUES (%s, %s, 'A152P', '定价预览店', true) RETURNING id",
+            (team_id, channel_id),
+        ).fetchone()[0]
+        p_in = conn.execute(
+            "INSERT INTO app.product (team_id, source_channel, source_ref, title,"
+            " price_snapshot, status) VALUES (%s, 'amazon', 'B0PVIEW001', '预览在区间',"
+            " '{\"list\": 19.99}', 'ready') RETURNING id",
+            (team_id,),
+        ).fetchone()[0]
+        p_low = conn.execute(
+            "INSERT INTO app.product (team_id, source_channel, source_ref, title,"
+            " price_snapshot, status) VALUES (%s, 'amazon', 'B0PVIEW002', '预览区间外',"
+            " '{\"list\": 5.0}', 'ready') RETURNING id",
+            (team_id,),
+        ).fetchone()[0]
+    return {"team": team_id, "store": store_id, "p_in": p_in, "p_low": p_low}
 
 
 @pytest.fixture(scope="module")
@@ -154,3 +181,76 @@ class TestStrategyCrud:
             },
         )
         assert r.status_code == 422 and r.json()["error"]["code"] == "PRICING_ALGO_INVALID"
+
+
+class TestPreview:
+    """R2-06 增量2：/pricing-strategies/preview 只读试算。"""
+
+    def test_preview_with_clamp_flags(self, client: TestClient, seeded: dict) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        # 店铺级策略——预览应选它而非 team 级（store 级 > team 级）
+        r = client.post(
+            "/api/v1/pricing-strategies",
+            headers=auth,
+            json={
+                "store_id": seeded["store"],
+                "offer_mode": "build",
+                "name": "店铺预览策略",
+                "algo_code": "cost_plus",
+                "params": {"bands": _BANDS, "min_price": 6.99},
+            },
+        )
+        assert r.status_code == 201, r.text
+        sid = r.json()["id"]
+
+        r2 = client.post(
+            "/api/v1/pricing-strategies/preview",
+            headers=auth,
+            json={
+                "store_id": seeded["store"],
+                "offer_mode": "build",
+                "product_ids": [seeded["p_in"], seeded["p_low"], 99999999],
+            },
+        )
+        assert r2.status_code == 200, r2.text
+        body = r2.json()
+        assert body["strategy"]["id"] == sid  # store 级优先
+        assert body["strategy"]["algo_code"] == "cost_plus"
+        items = {it["product_id"]: it for it in body["items"]}
+        # 在区间：FBM 19.99 × 2.75 = 54.97，严格判定 ok
+        ok_item = items[seeded["p_in"]]
+        assert ok_item["ok"] is True and ok_item["new_price"] == 54.97
+        assert ok_item["detail"]["out_of_band"] is False
+        # 区间外（低于 FBM 下界 15）：clamp 低段倍数出参考价 5×2.75=13.75，
+        # 严格判定 out_of_band（上架链不出价）——detail 带 clamp 标记
+        low = items[seeded["p_low"]]
+        assert low["ok"] is False and low["reason"] == "out_of_band"
+        assert low["new_price"] == 13.75
+        assert low["detail"]["out_of_band"] is True and low["detail"]["clamp"] == "low"
+        # 不存在的产品逐条报告
+        assert items[99999999]["reason"] == "not_found"
+
+    def test_preview_no_strategy_422(self, client: TestClient, seeded: dict) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        # 本模块从未成功创建 match 策略 → 无活跃策略
+        r = client.post(
+            "/api/v1/pricing-strategies/preview",
+            headers=auth,
+            json={
+                "store_id": seeded["store"],
+                "offer_mode": "match",
+                "product_ids": [seeded["p_in"]],
+            },
+        )
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "PRICING_STRATEGY_NOT_FOUND"
+
+    def test_preview_input_exclusive(self, client: TestClient, seeded: dict) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        r = client.post(
+            "/api/v1/pricing-strategies/preview",
+            headers=auth,
+            json={"store_id": seeded["store"], "offer_mode": "build"},
+        )
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "PRICING_PREVIEW_INPUT_INVALID"

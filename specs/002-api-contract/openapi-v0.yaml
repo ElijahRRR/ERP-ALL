@@ -789,6 +789,52 @@ paths:
       parameters: [{name: strategyId, in: path, required: true, schema: {type: integer}}]
       requestBody: {$ref: '#/components/requestBodies/PricingStrategyWrite'}
       responses: {'200': {description: OK}}
+  # R2-06 增量2 契约补充冻结：重定价预览（只读试算不落库）
+  /pricing-strategies/preview:
+    post:
+      tags: [Listing]
+      summary: 重定价预览（clamp 版展示区间外情况 + compute_price 严格判定并列返回；manual 策略 reason='manual'）
+      x-permission: pricing.read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [store_id, offer_mode]
+              properties:
+                store_id: {type: integer}
+                offer_mode: {type: string, enum: [build, match]}
+                product_ids: {type: array, items: {type: integer}, maxItems: 200, description: 与 listing_ids 二选一}
+                listing_ids: {type: array, items: {type: integer}, maxItems: 200, description: 与 product_ids 二选一（join listing 取 product + current_price 作 old_price）}
+      responses:
+        '200':
+          description: 试算结果（不落库）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  strategy:
+                    type: object
+                    properties:
+                      id: {type: integer}
+                      name: {type: string}
+                      algo_code: {type: string}
+                      version: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id: {type: integer}
+                        listing_id: {type: [integer, 'null']}
+                        old_price: {type: [number, 'null']}
+                        new_price: {type: [number, 'null'], description: clamp 版参考价（区间外 detail.out_of_band=true）}
+                        ok: {type: boolean, description: compute_price 严格判定（区间外/低于底线为 false）}
+                        reason: {type: [string, 'null'], examples: [out_of_band, below_min_price, no_source_price, manual, not_found]}
+                        detail: {type: object}
+        '422': {description: 无活跃策略（PRICING_STRATEGY_NOT_FOUND）/入参二选一违规 等业务拒绝, $ref: '#/components/responses/Error'}
   /maintenance-tasks:
     get:
       tags: [Listing]

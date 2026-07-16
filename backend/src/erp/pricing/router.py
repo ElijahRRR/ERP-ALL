@@ -11,7 +11,7 @@ import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
 from erp.core.db import get_session
 from erp.core.errors import BusinessError
+from erp.pricing import service
 
 pricing_router = APIRouter(tags=["Listing"])
 
@@ -33,6 +34,13 @@ class PricingStrategyIn(BaseModel):
     algo_code: str | None = None
     params: dict[str, Any] | None = None
     status: str | None = None
+
+
+class PricingPreviewIn(BaseModel):
+    store_id: int
+    offer_mode: str = Field(pattern="^(build|match)$")
+    product_ids: list[int] | None = Field(default=None, max_length=200)
+    listing_ids: list[int] | None = Field(default=None, max_length=200)
 
 
 def _validate_params(algo_code: str, params: dict[str, Any]) -> None:
@@ -195,3 +203,95 @@ async def update_strategy(
         after={k: v for k, v in params.items() if k != "id"},
     )  # fmt: skip
     return {"id": strategy_id, "version": int(version)}
+
+
+@pricing_router.post("/pricing-strategies/preview")
+async def preview_strategy(
+    body: PricingPreviewIn,
+    user: Annotated[CurrentUser, Depends(require_permission("pricing.read"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """重定价预览（R2-06 增量2；只读试算不落库）。
+
+    clamp 版出价展示区间外情况（detail 带 out_of_band/clamp 标记）+ compute_price
+    严格判定 ok/reason 并列返回；manual 策略 → reason='manual' 不试算。
+    """
+    team_id = _require_team(user)
+    if (body.product_ids is None) == (body.listing_ids is None):
+        raise BusinessError(
+            "PRICING_PREVIEW_INPUT_INVALID", "product_ids 与 listing_ids 必须二选一"
+        )
+    store_ok = (
+        await session.execute(
+            text("SELECT 1 FROM app.store WHERE id = :s AND team_id = :t"),
+            {"s": body.store_id, "t": team_id},
+        )
+    ).scalar_one_or_none()
+    if store_ok is None:
+        raise BusinessError("STORE_NOT_FOUND", "店铺不存在")
+    strategy = await service.resolve_strategy(
+        session, team_id=team_id, store_id=body.store_id, offer_mode=body.offer_mode
+    )
+    if strategy is None:
+        raise BusinessError("PRICING_STRATEGY_NOT_FOUND", "该 (店铺×offer_mode) 无活跃定价策略")
+
+    items: list[dict[str, Any]] = []
+    if body.product_ids is not None:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id, attrs, price_snapshot FROM app.product"
+                    " WHERE team_id = :t AND id = ANY(:ids)"
+                ),
+                {"t": team_id, "ids": list(dict.fromkeys(body.product_ids))},
+            )
+        ).mappings()
+        by_id = {int(r["id"]): dict(r) for r in rows}
+        for pid in dict.fromkeys(body.product_ids):
+            product = by_id.get(pid)
+            if product is None:
+                items.append(
+                    {"product_id": pid, "ok": False, "reason": "not_found",
+                     "new_price": None, "detail": {}}
+                )  # fmt: skip
+                continue
+            items.append({"product_id": pid, **service.preview_product(strategy, product)})
+    else:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT l.id AS listing_id, l.product_id, l.current_price,"
+                    " p.attrs, p.price_snapshot"
+                    " FROM app.listing l JOIN app.product p ON p.id = l.product_id"
+                    " WHERE l.team_id = :t AND l.id = ANY(:ids)"
+                ),
+                {"t": team_id, "ids": list(dict.fromkeys(body.listing_ids or []))},
+            )
+        ).mappings()
+        by_lid = {int(r["listing_id"]): dict(r) for r in rows}
+        for lid in dict.fromkeys(body.listing_ids or []):
+            row = by_lid.get(lid)
+            if row is None:
+                items.append(
+                    {"listing_id": lid, "ok": False, "reason": "not_found",
+                     "new_price": None, "detail": {}}
+                )  # fmt: skip
+                continue
+            old = float(row["current_price"]) if row["current_price"] is not None else None
+            items.append(
+                {
+                    "product_id": int(row["product_id"]),
+                    "listing_id": lid,
+                    "old_price": old,
+                    **service.preview_product(strategy, row),
+                }
+            )
+    return {
+        "strategy": {
+            "id": strategy["id"],
+            "name": strategy["name"],
+            "algo_code": strategy["algo_code"],
+            "version": strategy["version"],
+        },
+        "items": items,
+    }
