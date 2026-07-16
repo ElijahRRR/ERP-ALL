@@ -508,3 +508,10 @@
   直改时代旧值、R2-06 增量3 后端扩容时漏放宽。修复：门控放宽至 live/published +
   按返回分流提示（live 非 succeeded 提示"已提交渠道确认后回填"而非谎报改价成功）。
   前端 lint/build 绿。
+- **R2-06 验收②真机闭环（Owner 2026-07-16「可以收账」）**：PR#16（live 补改价按钮）
+  部署后，listing #48 真机改价 27.16→43.98 全链走通——channel_command #9 price_push
+  succeeded（attempts=1，2 秒完成）、渠道官方响应「Thank you. Your price has been
+  updated…」(200)、manual 价史落账、Owner Seller Center 实见价变。取证澄清：PUT 单品
+  通道不产生 feed 属预期（D-Q62 路由：单店 ≤5 条走 PUT /v3/price，Feed 面板只显示
+  批量聚合 PRICE_AND_PROMOTION）。**R2-06 整单关账**（验收①②双过）。挂账清单更新：
+  余 R2-05 L2 发货 / R2-04 验收②断连 / 钓鱼黑名单导入 / erpAPI PR#2 / schema codegen。

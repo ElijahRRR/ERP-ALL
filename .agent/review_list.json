@@ -478,11 +478,11 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "定价引擎最小闭环：策略配置（build 成本加成/match 跟卖分套，D-Q3/23）→ allocate/submit 自动算价（替代 0 价兜底）→ 批量重定价预览 → PRICE_AND_PROMOTION 价格同步管道（6/day 聚合，outbox 三段式）→ 与限价检口径联动 + 前端定价面板",
-    "status": "accepted-verify2-deferred",
+    "status": "accepted",
     "evidence": [
       ".agent/evidence/R2-06/"
     ],
-    "finding": "**整单收官（2026-07-16 Owner：「已经可以分辨fba和fbm计算价格了，可以收官」）**。验收①真机通过：is_fba 分流正确（部署机实测 FBA 41/FBM 5/无标记 401——无标记拒绝出价属预期 fail-closed）、价史公式明细可见。两轮验收缺陷修复入账（PR#11 读键错位→PR#12 is_fba 真实落点 price_snapshot——worker 适配器 _PRICE_FIELDS 归类）。验收②（真机改价两段式）进行中（2026-07-16 Owner 启动）：首测发现缺陷③——live listing 无「改价」按钮（后端 PATCH /listings 早已分流 live→push_price 管道，前端门控 REPRICEABLE=['draft','failed'] 漏放宽）；已修（含在途/直改分流提示：live 非 succeeded 提示两段式在途而非谎报成功）",
+    "finding": "**整单收官（2026-07-16 Owner：「已经可以分辨fba和fbm计算价格了，可以收官」）**。验收①真机通过：is_fba 分流正确（部署机实测 FBA 41/FBM 5/无标记 401——无标记拒绝出价属预期 fail-closed）、价史公式明细可见。两轮验收缺陷修复入账（PR#11 读键错位→PR#12 is_fba 真实落点 price_snapshot——worker 适配器 _PRICE_FIELDS 归类）。✅ 验收②真机闭环（2026-07-16 Owner「可以收账」）：缺陷③（live 无改价按钮=前端门控 REPRICEABLE 漏放宽，PR#16）修复后，listing #48 真机改价 27.16→43.98 全链走通——channel_command #9 price_push succeeded（attempts=1, 2s 完成）、渠道官方响应『Thank you. Your price has been updated…』(200)、manual 价史落账、Owner Seller Center 实见价变。PUT 单品通道不产生 feed 属预期（D-Q62：≤5 条走 PUT，Feed 面板只显示批量聚合）。**R2-06 整单关账**",
     "last_checked_at": "2026-07-16",
     "acceptance": "①A152 真机一次改价经价格管道同步成功+影子对拍；②新建 listing 自动带策略价（不再 0 价/手工价）；③CI 全绿"
   },
