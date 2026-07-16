@@ -27,10 +27,12 @@
 2. **验收①（自动算价）**：产品库选一个有采集价的产品 → 上架管理 allocate 到 A152 →
    新 listing 的价格列应自动 = (源价) × 区间倍数（不再是空/手工价）；「历史」抽屉
    顶部新增「价格历史」小节——initial 价史带公式明细（如 FBA $19.99 × 2.75 = $54.97）。
-   **履约判定（2026-07-16 验收缺陷修复）**：按采集字段 attrs.is_fba 判 FBA/FBM（旧仓
-   语义保真）；is_fba 为 N/A/缺失的产品会被**拒绝出价**（旧仓同款 fail-closed），
-   如需兜底可在策略 params 加 "default_fulfillment": "FBM"。区间外/无源价/判不出
-   履约的拒绝均属预期行为，拒绝原因在 allocate 结果里说明。
+   **履约判定（2026-07-16 两轮验收缺陷修复）**：按采集字段 is_fba 判 FBA/FBM（真实
+   落点在 price_snapshot.is_fba——worker 适配器归类如此；attrs.is_fba 兜底）；
+   is_fba 为 N/A/缺失的产品会被**拒绝出价**（旧仓同款 fail-closed），如需兜底可在
+   策略 params 加 "default_fulfillment": "FBM"。区间外/无源价/判不出履约的拒绝均属
+   预期行为。若产品实际带 Yes/No 仍被拒，用只读 SQL 核对数据形态：
+   SELECT price_snapshot->>'is_fba', attrs->>'is_fba', count(*) FROM app.product GROUP BY 1,2;
 3. **验收②（真机改价同步）**：上架管理页对 **listing #46**（live）点「改价」→ 输入新价
    （如 41.99；超 39.99 的 30% 会弹二次确认）→ 提交。系统经 PUT /v3/price 推渠道：
    - 改价瞬间 ERP 价格**不变**（两段式：在途标记 pending，渠道确认才回填）；
