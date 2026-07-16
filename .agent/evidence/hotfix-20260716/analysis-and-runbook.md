@@ -102,3 +102,11 @@ listing_error_catalog（定价/manual）；新增 `PATCH /listings/{id}` 改价�
 1. listing #46 归因已闭环（CAP=0 价）：部署后改价重投即可；M0000009 同病同治。
 2. 采集 job #9 会随 scraper 恢复自动推进；若不需要该测试作业可直接取消。
 3. R2-05 L1/L2 验收流程不变（evidence/R2-05/runbook.md），新版本部署后进行。
+
+## 部署核验记录（2026-07-16，部署机回报）
+
+HEAD `17f1a6d`：API healthz 200 / migrate 0 / frontend·beat·scraper 运行中；订单页可见；
+采集页「节点在线 1 个」；作业 #9 done 8/8；beat tick 每分钟 failed=0；listing #46 改价
+39.99 → retry → feed #37（提交 14:23:44，自动轮询中，未复现 CAP 拒收）；停摆双告警为
+scraper 恢复前的预期存量。**部署惯例**：scraper 的 PROXY_URL 经进程环境注入（本机密码
+文件），不入库明文；无代理时 PROXY_REQUIRED 崩溃属 fail-closed 预期（店铺关联风险防线）。

@@ -425,3 +425,8 @@
   PATCH /listings/{id} 改价端点 + UI 改价入口/无价红标；②采集卡点=scraper 容器已停
   （job#9 建单前 4 分钟），beat 健康——双告警+横幅正对症，恢复=起 scraper；③前端=vite
   内存缓存，需 force-recreate。日期加固与超时护栏保留（真实缺口，预防性根治）。
+- **HF-0716 部署核验通过（2026-07-16，HEAD 17f1a6d）**：全项绿——订单页可见、节点横幅生效、
+  作业#9 done 8/8、beat 正常、停摆双告警按预期触发（scraper 恢复前的存量状态）；listing#46
+  改价 39.99 重投 feed#37，自动轮询未复现 CAP 拒收，终态等渠道（beat 闭环）。
+  部署惯例：scraper 代理经进程环境注入（本机密码文件），不入库明文——PROXY_REQUIRED
+  fail-closed 属预期。工单 HF-0716 → deployed-verified；余=feed#37 终态 + R2-05 L1/L2 验收。

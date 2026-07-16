@@ -454,11 +454,11 @@
     "priority": "P0",
     "dimension": "hotfix",
     "check": "生产三缺陷整改：①采集/beat 停摆（scraper 容器停+管线无告警无收口；beat 健康但无超时护栏属真实风险）②上架失败 EXT_DATA_ERROR_66685355746773 field=CAP『Invalid Data』=0 价出门（price_snapshot 无价兜底 0.0）③R2-05 前端未生效（vite 内存缓存，需 force-recreate）",
-    "status": "done-pending-verify",
+    "status": "deployed-verified",
     "evidence": [
       ".agent/evidence/hotfix-20260716/analysis-and-runbook.md"
     ],
-    "finding": "取证闭环（部署机 2026-07-16）：beat 任务级超时+启动回收；scrape 乒乓判死+收口+双告警+UI节点横幅；validator 拦 0 价+PATCH 改价端点+UI 改价入口+错误码入字典；日期全链加固保留（排查中发现的真实缺口）；endDate .000Z+远期值入配置。余项=合并部署后 listing#46 改价重投 + job#9 随 scraper 恢复推进",
+    "finding": "2026-07-16 部署机核验通过（HEAD 17f1a6d）：订单页/采购方可见；节点健康横幅生效（在线 1）；作业#9 done 8/8；beat tick 正常 failed=0；停摆双告警按预期出现（scraper 恢复前）；listing#46 改价 39.99→重试→feed#37 已提交，自动轮询中未复现 CAP 拒收。余项=feed#37 渠道终态自然闭环（1-2 天属常态，beat 自动轮询）。部署惯例注记：scraper 代理走进程环境/本机密码文件，不入库明文（PROXY_REQUIRED 属预期 fail-closed）",
     "last_checked_at": "2026-07-16",
     "acceptance": "部署新版后：订单页可见；scraper 恢复后 job#9 推进或收到停摆告警；listing#46 改价→重试→feed 过 ingestion；beat 超时护栏与采集告警随日常运行自证"
   }
