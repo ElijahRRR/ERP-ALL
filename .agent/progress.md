@@ -430,3 +430,8 @@
   改价 39.99 重投 feed#37，自动轮询未复现 CAP 拒收，终态等渠道（beat 闭环）。
   部署惯例：scraper 代理经进程环境注入（本机密码文件），不入库明文——PROXY_REQUIRED
   fail-closed 属预期。工单 HF-0716 → deployed-verified；余=feed#37 终态 + R2-05 L1/L2 验收。
+- **R2-05 L1 验收通过（2026-07-16 部署机）**：A152 store_id=1，渠道 2/DB 2 对账一致✅退出码 0
+  （本轮拉取 orders=0 属正常——窗口内无新单）。L2 前四环真机走通（看单/四检重跑/采购执行
+  分配领单回填）；发货留待真实新单（历史单不得推 ship，Owner 判断正确）。
+  待核对：限价命中证据是否错位显示 no_active_purchaser（代码上该理由仅采购方检可写；
+  限价证据=over/source_missing。只读 SQL 已交，若 DB 行错位则立缺陷单）。

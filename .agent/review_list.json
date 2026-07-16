@@ -248,9 +248,9 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
-    "status": "in_progress",
+    "status": "L1-accepted",
     "evidence": ".agent/evidence/R2-05/",
-    "finding": "增量1-4 完码全绿（313 pytest）：0025/0026 订单域 8 依赖件建表+order_pull 拉单（BR-ORD-001~004 保真）+四检引擎（001/002 口径 phishing/purchaser/price_limit/consistency，BR-ORD-006 粘滞）+采购执行单双入口（D-Q50①②，锁汇率 D-Q32）+ship 回传（幂等+outbox order_ack/order_ship+ship_recon）。增量5 完（L1 对账 harness+前端订单页 OrdersPage/PurchasersPage+runbook+specs 落笔）。余项=部署机 L1 真拉对账 + A152 L2 测试单实测（evidence/R2-05/runbook.md）",
+    "finding": "全增量完码合入 main（PR#7）。**L1 验收通过（2026-07-16 部署机）**：A152(store_id=1) 渠道 2 单/DB 2 单对账一致✅退出码 0。L2 真机走通前四环：看单/四检重跑（新增采购方后 purchaser 转 pass、price_limit 开始真比价）/建执行单→分配→领单→回填（历史订单，发货环节明智留待真实新单——历史单不得推 ship）。余项=L2 收尾：A152 下一张真实待发货订单走 发货→Walmart Shipped 闭环；一处待核对：Owner 报限价命中证据显示 no_active_purchaser（按代码该理由仅采购方检可写，限价命中证据应为 over/source_missing——已给只读 SQL 核对，若 DB 行确有错位则立缺陷单）",
     "last_checked_at": "2026-07-16",
     "note": "验收(L1)：真实订单只读拉取对账一致；(L2)测试单全流程"
   },
