@@ -473,3 +473,6 @@
   （fail-closed，params.default_fulfillment 显式兜底）；②initial 价史不可见——
   GET /listings/{id} 未按契约返回 price_history；补端点字段 + 前端「历史」抽屉
   价格历史小节（公式明细悬浮）。404 pytest + 前端 lint/build 全绿。
+- **R2-06 验收缺陷二次修复**：is_fba 真实落点在 price_snapshot（worker payload 适配器
+  _PRICE_FIELDS 归类），首修只读 attrs 仍全判不出——改为 price_snapshot 优先、attrs 兜底；
+  wiring 用例 FBA 夹具改真实 worker 形态钉死。404 pytest 全绿。

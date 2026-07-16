@@ -175,18 +175,23 @@ _IS_FBA_FALSE = ("no", "n", "false", "0", "fbm")
 def _fulfillment(product: Mapping[Any, Any], params: dict[str, Any]) -> str | None:
     """履约类型判定（旧仓 pricing.fulfillment_type 保真，2026-07-16 验收缺陷修复）。
 
-    权威字段 = attrs.is_fba（采集器 parser.py 实际写入的键；此前误读不存在的
-    attrs.fulfillment 致全部落 FBM）：yes/y/true/1/fba → FBA；no/n/false/0/fbm → FBM；
-    其余（N/A/缺失）→ 判不出。判不出时不再静默默认 FBM——旧仓语义是不出价
-    （fail-closed）；策略 params.default_fulfillment 显式设置时才作兜底。
-    attrs.fulfillment / fulfillment_type 保留为次级线索（手工建档产品可用）。"""
-    attrs = product.get("attrs") or {}
-    if isinstance(attrs, dict):
-        val = str(attrs.get("is_fba", "")).strip().lower()
+    权威字段 = is_fba（旧仓 pricing.fulfillment_type 同源）。worker 的 payload 适配器
+    （workers/payload.py _PRICE_FIELDS）把 is_fba 归进 **price_snapshot**——真实采集
+    产品的落点在 price_snapshot.is_fba（2026-07-16 二次验收缺陷：首修只读 attrs 仍判
+    不出）；attrs.is_fba 兜底（手工建档/其他来源）。yes/y/true/1/fba → FBA；
+    no/n/false/0/fbm → FBM；其余（N/A 已被适配器清洗不落库）→ 判不出 → 不出价
+    （fail-closed，旧仓语义）；策略 params.default_fulfillment 显式设置时才兜底。
+    attrs.fulfillment / fulfillment_type 保留为次级线索。"""
+    for container in (product.get("price_snapshot"), product.get("attrs")):
+        if not isinstance(container, dict):
+            continue
+        val = str(container.get("is_fba", "")).strip().lower()
         if val in _IS_FBA_TRUE:
             return "FBA"
         if val in _IS_FBA_FALSE:
             return "FBM"
+    attrs = product.get("attrs") or {}
+    if isinstance(attrs, dict):
         raw = str(attrs.get("fulfillment") or attrs.get("fulfillment_type") or "").upper()
         if "FBA" in raw:
             return "FBA"
@@ -214,7 +219,11 @@ def price_product(strategy: Mapping[str, Any], product: Mapping[Any, Any]) -> Pr
         return PriceResult(
             ok=False,
             reason="fulfillment_unknown",
-            detail={"algo": "cost_plus", "is_fba": (product.get("attrs") or {}).get("is_fba")},
+            detail={
+                "algo": "cost_plus",
+                "is_fba": (product.get("price_snapshot") or {}).get("is_fba")
+                or (product.get("attrs") or {}).get("is_fba"),
+            },
         )
     return engine.compute_price(total, fulfillment=ftype, params=params)
 
