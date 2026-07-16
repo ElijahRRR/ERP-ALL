@@ -239,8 +239,8 @@
     "check": "worker/beat 底座【L0→L1】（schedule 表驱动：feed轮询/采集回收/缓存LRU/GTIN水位/预算闸；Redis pubsub 配置广播）",
     "status": "in_progress",
     "evidence": ".agent/evidence/R2-04/",
-    "finding": "4 增量完码全绿（289 pytest+迁移演练）：beat 循环+任务10件（feed_poll/feed_verify_back/outbox_drain/retire_recon/scrape_reclaim/partition_maintain/api_idempotency_sweep/llm_cache_lru/gtin_watermark/llm_budget_check）+ pubsub 配置广播 + compose beat 启用。两条验收均已测试化锚定；余项=部署机启 beat 后 A152 实测（evidence/R2-04/runbook.md 步骤4/5）。范围注记：erp.worker 队列消费者无生产者暂不启用；RS-08 事前预算预留不并入（告警版已落）",
-    "last_checked_at": "2026-07-15",
+    "finding": "4 增量完码全绿（289 pytest+迁移演练）：beat 循环+任务10件（feed_poll/feed_verify_back/outbox_drain/retire_recon/scrape_reclaim/partition_maintain/api_idempotency_sweep/llm_cache_lru/gtin_watermark/llm_budget_check）+ pubsub 配置广播 + compose beat 启用。两条验收均已测试化锚定；余项=部署机启 beat 后 A152 实测（evidence/R2-04/runbook.md 步骤4/5）。范围注记：erp.worker 队列消费者无生产者暂不启用；RS-08 事前预算预留不并入（告警版已落）；验收①完整闭环（2026-07-16）：feed #36 failed 终态自动回写+通知、feed #37 processed→listing live 全自动（提交→轮询→published→live 零人工）。余：验收②模拟断连（挂账，不阻收单）",
+    "last_checked_at": "2026-07-16",
     "note": "验收：A152 提交后无人工点查自动轮询回写；模拟断连自动回收"
   },
   {
@@ -248,9 +248,9 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
-    "status": "L1-accepted",
+    "status": "accepted-l2-ship-deferred",
     "evidence": ".agent/evidence/R2-05/",
-    "finding": "全增量完码合入 main（PR#7）。**L1 验收通过（2026-07-16）**：A152(store_id=1) 渠道 2/DB 2 对账一致✅。**四检真机全口径核验闭环**（order_id=1/渠道单 129117756077678）：phishing pass / purchaser pass（采购方#1 自采购test active 汇率 6.85）/ price_limit flagged{over:[],source_missing:[1]}=历史单行无产品回连的预期 fail-closed，Owner 已放行 / consistency pass 含渠道品名缓存——无证据错位缺陷（此前引述系看串）。L2 前四环真机走通（看单/重跑/建单→分配→领单→回填）；余项=L2 发货闭环（等 A152 真实新单，历史单不得推 ship）",
+    "finding": "全增量完码合入 main（PR#7）。**L1 验收通过（2026-07-16）**：A152(store_id=1) 渠道 2/DB 2 对账一致✅。**四检真机全口径核验闭环**（order_id=1/渠道单 129117756077678）：phishing pass / purchaser pass（采购方#1 自采购test active 汇率 6.85）/ price_limit flagged{over:[],source_missing:[1]}=历史单行无产品回连的预期 fail-closed，Owner 已放行 / consistency pass 含渠道品名缓存——无证据错位缺陷（此前引述系看串）。L2 前四环真机走通（看单/重跑/建单→分配→领单→回填）；L2 发货环节 Owner 决定挂账后补（等真实新单）——R2-05 主体验收视为通过",
     "last_checked_at": "2026-07-16",
     "note": "验收(L1)：真实订单只读拉取对账一致；(L2)测试单全流程"
   },
@@ -454,12 +454,36 @@
     "priority": "P0",
     "dimension": "hotfix",
     "check": "生产三缺陷整改：①采集/beat 停摆（scraper 容器停+管线无告警无收口；beat 健康但无超时护栏属真实风险）②上架失败 EXT_DATA_ERROR_66685355746773 field=CAP『Invalid Data』=0 价出门（price_snapshot 无价兜底 0.0）③R2-05 前端未生效（vite 内存缓存，需 force-recreate）",
-    "status": "deployed-verified",
+    "status": "accepted",
     "evidence": [
       ".agent/evidence/hotfix-20260716/analysis-and-runbook.md"
     ],
-    "finding": "2026-07-16 部署机核验通过（HEAD 17f1a6d）：订单页/采购方可见；节点健康横幅生效（在线 1）；作业#9 done 8/8；beat tick 正常 failed=0；停摆双告警按预期出现（scraper 恢复前）；listing#46 改价 39.99→重试→feed#37 已提交，自动轮询中未复现 CAP 拒收。余项=feed#37 渠道终态自然闭环（1-2 天属常态，beat 自动轮询）。部署惯例注记：scraper 代理走进程环境/本机密码文件，不入库明文（PROXY_REQUIRED 属预期 fail-closed）",
+    "finding": "2026-07-16 部署机核验通过（HEAD 17f1a6d）：订单页/采购方可见；节点健康横幅生效（在线 1）；作业#9 done 8/8；beat tick 正常 failed=0；停摆双告警按预期出现（scraper 恢复前）；listing#46 改价 39.99→重试→feed#37 已提交，自动轮询中未复现 CAP 拒收。整单闭环（2026-07-16）：feed #37 processed、listing #46 M0002418 真实 UPC 上架 live（WPID 4MBVJZD6I1FT，beat 自动轮询收终态零人工）——CAP 归因与修复真机实证",
     "last_checked_at": "2026-07-16",
     "acceptance": "部署新版后：订单页可见；scraper 恢复后 job#9 推进或收到停摆告警；listing#46 改价→重试→feed 过 ingestion；beat 超时护栏与采集告警随日常运行自证"
+  },
+  {
+    "id": "SM-0716",
+    "priority": "P2",
+    "dimension": "chore",
+    "check": "小账三件：①feed 全部成功/listing 转 live 的 info 级通知（现只报失败）②GTIN 池导入首位前缀白名单（BR-UPC-002 回植：0/1/6/7/8/9，挡 2000000000xxx 类受限号入池）③PATCH /listings/{id} 补 OpenAPI 契约冻结+前端 schema 重生成",
+    "status": "todo",
+    "evidence": [],
+    "finding": "随 R2-06 增量顺带收（2026-07-16 真机观察产物：Owner 未见成功通知；#38 撞 EXT_DATA_ERROR_54514906640101 前缀拒收；fe agent 契约注记）",
+    "last_checked_at": "2026-07-16",
+    "acceptance": "上架成功出现 info 通知；受限前缀 GTIN 导入被拒且提示；schema.d.ts 含 PATCH listings"
+  },
+  {
+    "id": "R2-06",
+    "priority": "P0",
+    "dimension": "feature",
+    "check": "定价引擎最小闭环：策略配置（build 成本加成/match 跟卖分套，D-Q3/23）→ allocate/submit 自动算价（替代 0 价兜底）→ 批量重定价预览 → PRICE_AND_PROMOTION 价格同步管道（6/day 聚合，outbox 三段式）→ 与限价检口径联动 + 前端定价面板",
+    "status": "in_progress",
+    "evidence": [
+      ".agent/evidence/R2-06/"
+    ],
+    "finding": "2026-07-16 立单开工（Owner 授权：收掉 feed#37 后走 R2-06）。动因：HF-0716 两单缺陷根子皆为价格空档；上架/订单双链已通，定价是运营化最后卡点。考古四路并行中",
+    "last_checked_at": "2026-07-16",
+    "acceptance": "①A152 真机一次改价经价格管道同步成功+影子对拍；②新建 listing 自动带策略价（不再 0 价/手工价）；③CI 全绿"
   }
 ]

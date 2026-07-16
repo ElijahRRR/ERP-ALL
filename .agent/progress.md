@@ -439,3 +439,12 @@
   无产品回连，预期 fail-closed），无错位缺陷；purchaser pass（采购方#1 汇率 6.85）；
   phishing/consistency pass。Owner 已放行限价命中。R2-05 仅余 L2 发货闭环（等真实新单）。
   注：purchaser 表的 kind 列实名 purchaser_kind（诊断 SQL 模板留意）。
+
+## R2-06 定价引擎最小闭环（2026-07-16 立单）
+- **里程碑**：首件真实 UPC 商品全链上架 live（listing #46 M0002418 / feed #37 / WPID
+  4MBVJZD6I1FT，beat 自动轮询收终态）——R2-04 验收①完整闭环、HF-0716 CAP 修复真机实证、
+  R2-03 live 分支真数据首验。HF-0716 → accepted；R2-05 → accepted（L2 发货 Owner 挂账后补）。
+- 真机连带发现：#38 撞 EXT_DATA_ERROR_54514906640101（UPC 首位前缀拒收 BR-UPC-002——
+  测试假 EAN 2000000000xxx 以 2 开头全部不可真实上架）；无成功通知属 R1-12 口径但值得补
+  ——两件+PATCH 契约冻结入 SM-0716 小账随本单收。
+- Owner 授权：「收掉 feed#37 后走 R2-06 定价引擎」。考古四路并行启动。
