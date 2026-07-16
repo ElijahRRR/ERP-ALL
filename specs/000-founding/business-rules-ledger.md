@@ -22,7 +22,7 @@
 | BR-GW-008 | 每次响应读 `x-current-token-count` / `x-next-replenishment-time` 做自适应限流微调 | ✅ | auto_listing/rate_limiter.py、erp-core rate_limiter.py |
 | BR-GW-009 | **feed 提交遇 5xx/超时/429 绝不盲重试**：先反查最近 feed（按 itemsReceived+时间窗匹配）；三态判定 + 30s 二次确认；高置信"Walmart 未收到"→ 回收 UPC + 跳过回写 | ✅ | auto_listing/feed_submit.py（2026-05-04/05-29） |
 | BR-GW-010 | 全局 socket 默认超时 90s，兜底 socks5 代理下 httpx timeout 失效（实测 SSL read 卡 2.5h） | ✅ | walmart_client.py:43 |
-| BR-GW-011 | 速率限制硬表（写脚本前必查）：MP_ITEM feed **10/h**·DELETE_ITEM **10/h**·MP_MAINTENANCE 30/min·PRICE_AND_PROMOTION **6/day**·inventory feed 50/h·PUT /v3/price **100/h**·PUT /v3/inventory 200/min·GET /v3/items 带参 **60/min**(无参300)·catalog search 200/min·items/spec 3/min×20PT·GET /v3/returns **50/min**·Insights 全系 **1/min**·feeds 状态查询 5000/min 共享 | ✅ | docs/walmart_rate_limits.tsv、各模块 README |
+| BR-GW-011 | 速率限制硬表（写脚本前必查）：MP_ITEM feed **10/h**·DELETE_ITEM **10/h**·MP_MAINTENANCE 30/min·PRICE_AND_PROMOTION **10/h 共享池**（2026-07-16 官方现行核实，原 6/day 过时；与 legacy price feed、批量促销 feed 三入口共享）·inventory feed 50/h·PUT /v3/price **100/h**·PUT /v3/inventory 200/min·GET /v3/items 带参 **60/min**(无参300)·catalog search 200/min·items/spec 3/min×20PT·GET /v3/returns **50/min**·Insights 全系 **1/min**·feeds 状态查询 5000/min 共享 | ✅ | docs/walmart_rate_limits.tsv、各模块 README |
 | BR-GW-012 | feed 配额是**店铺级共享通道**：大批量 DELETE 当天避开价格批量同步 | 📖 | 沃尔玛批量下架/README |
 
 ## 2. ST — 店铺与凭证
@@ -90,13 +90,13 @@
 
 | # | 规则 | 状态 | 来源 |
 |---|---|---|---|
-| BR-PR-001 | 售价公式：`Walmart 价 = (Amazon 商品价 + 运费) × 店铺区间倍数`；四区间：FBA $0-30 / FBA $30-80 / FBM $30-100 / FBM $100-300，每店一行四倍数 | ✅ | auto_listing/pricing.py |
+| BR-PR-001 | 售价公式：`Walmart 价 = (Amazon 商品价 + 运费) × 店铺区间倍数`；区间属策略 params 前台可配（D-Q11/23）；建档默认模板按 Owner 2026-07-16 定值：FBA $0-20 / $20-80、FBM $20-80 / $80-1000（D-Q62；原文四区间为旧表述） | ✅ | auto_listing/pricing.py、D-Q62 |
 | BR-PR-002 | Amazon 价取值：`current_price` 优先，缺失才用 `buybox_price`（2026-05-14 用户校正，current 更贴近实际售卖价） | ✅ | pricing.amazon_total_price |
 | BR-PR-003 | 运费解析：Free/免运 → 0；未显示运费视作 0；N/A → 无法计价 | ✅ | pricing._parse_money |
 | BR-PR-004 | 总价不落任何区间 → **不上架**（主链行为）；clamp 变体：区间外用最近区间倍数计算并标 out_of_band（供在线总表 P/Q 建议下架） | ✅ | pricing.compute_walmart_price(_clamped) |
 | BR-PR-005 | 倍数单元格可能是百分比格式（读出 `'275%'` 字符串），解析必须容忍——2026-06-11 事故：float() 失败静默跳过 → 全店误判"无倍数配置"整批淘汰 2355 行 | ✅ | pricing._parse_multiplier |
 | BR-PR-006 | 价格同步：新旧价差 < $0.01 跳过 PUT（省 100/h 配额） | ✅ | config.PRICE_DIFF_THRESHOLD |
-| BR-PR-007 | 价格批量永远走 PUT 单品（100/h）而非 PRICE_AND_PROMOTION feed（6/day 高危）；除非聚合到日级批次 | ✅ | closed_loop.md、CLAUDE.md |
+| BR-PR-007 | 改价路由：单店 ≤5 条走 PUT 单品（100/h），更多聚合 PRICE_AND_PROMOTION feed（10/h 共享池，聚合成批不高频）——D-Q62 按官方现行限额更新原「永远 PUT」规则 | ✅ | D-Q62、erp.pricing（R2-06） |
 | BR-PR-008 | 30% 价格变动阈值：超过需要额外确认（erp-core update_price 设计） | 🧪 | specs/008 F20-F23 |
 
 ## 8. LST — 上架（建品）
