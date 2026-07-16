@@ -435,3 +435,7 @@
   分配领单回填）；发货留待真实新单（历史单不得推 ship，Owner 判断正确）。
   待核对：限价命中证据是否错位显示 no_active_purchaser（代码上该理由仅采购方检可写；
   限价证据=over/source_missing。只读 SQL 已交，若 DB 行错位则立缺陷单）。
+- **四检真机核对闭环（order_id=1）**：price_limit 证据确为 source_missing=["1"]（历史单行
+  无产品回连，预期 fail-closed），无错位缺陷；purchaser pass（采购方#1 汇率 6.85）；
+  phishing/consistency pass。Owner 已放行限价命中。R2-05 仅余 L2 发货闭环（等真实新单）。
+  注：purchaser 表的 kind 列实名 purchaser_kind（诊断 SQL 模板留意）。

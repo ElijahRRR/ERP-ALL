@@ -250,7 +250,7 @@
     "check": "订单履约最小闭环【L1→L2】（真实只读拉取→四检→采购单→测试单发货）",
     "status": "L1-accepted",
     "evidence": ".agent/evidence/R2-05/",
-    "finding": "全增量完码合入 main（PR#7）。**L1 验收通过（2026-07-16 部署机）**：A152(store_id=1) 渠道 2 单/DB 2 单对账一致✅退出码 0。L2 真机走通前四环：看单/四检重跑（新增采购方后 purchaser 转 pass、price_limit 开始真比价）/建执行单→分配→领单→回填（历史订单，发货环节明智留待真实新单——历史单不得推 ship）。余项=L2 收尾：A152 下一张真实待发货订单走 发货→Walmart Shipped 闭环；一处待核对：Owner 报限价命中证据显示 no_active_purchaser（按代码该理由仅采购方检可写，限价命中证据应为 over/source_missing——已给只读 SQL 核对，若 DB 行确有错位则立缺陷单）",
+    "finding": "全增量完码合入 main（PR#7）。**L1 验收通过（2026-07-16）**：A152(store_id=1) 渠道 2/DB 2 对账一致✅。**四检真机全口径核验闭环**（order_id=1/渠道单 129117756077678）：phishing pass / purchaser pass（采购方#1 自采购test active 汇率 6.85）/ price_limit flagged{over:[],source_missing:[1]}=历史单行无产品回连的预期 fail-closed，Owner 已放行 / consistency pass 含渠道品名缓存——无证据错位缺陷（此前引述系看串）。L2 前四环真机走通（看单/重跑/建单→分配→领单→回填）；余项=L2 发货闭环（等 A152 真实新单，历史单不得推 ship）",
     "last_checked_at": "2026-07-16",
     "note": "验收(L1)：真实订单只读拉取对账一致；(L2)测试单全流程"
   },
