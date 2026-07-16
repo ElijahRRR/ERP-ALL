@@ -493,3 +493,9 @@
   （步骤2 改生产启动 + 排障记录补 stale 模块条目）。验证：pnpm build ✓、compose 解析 ✓、
   本机 nginx 1.24 同配置真实 E2E 冒烟四项全过（nginx -t / SPA 回退且 index no-store /
   资产 immutable / API 反代 422==直连 422）；镜像构建留部署机（沙盒无 docker daemon）。
+- **INFRA-0716 部署验证跟进**：部署机切换成功（镜像 erp-all-frontend/index no-store ✓），
+  核验 3c 首测 404——定性=runbook 命令路径缺陷非部署缺陷（后端健康端点在根 /healthz，
+  FastAPI 404 报文经 5173 返回恰证反代链路通）。补 nginx 精确映射
+  location = /api/healthz → proxy_pass /healthz（前门全链健康检查可用，不动后端 API 面）。
+  本地 nginx+路径回显桩实证四项：/api/healthz→/healthz ✓、/api/v1 原样直通 ✓、
+  /portal/v1 原样直通 ✓、index no-store 回归 ✓。
