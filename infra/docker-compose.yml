@@ -95,7 +95,21 @@ services:
       api: {condition: service_started}
     profiles: ["scraper"]
 
+  # 生产前端（INFRA-0716）：构建产物 + nginx 静态伺服，默认随 up 启动。
+  # 部署 = up -d --build frontend（重建镜像即换版本；index.html 不缓存 + hashed
+  # 资产不可变——根治 dev vite 的 stale 模块事故：HF-0716①/FE-0716 两起同源）。
+  # 端口保持 5173，Owner 访问地址不变。
   frontend:
+    build: ../frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      api: {condition: service_started}
+
+  # 开发用 vite（HMR；仅本地开发显式启用，与生产 frontend 端口互斥不可同起）：
+  #   docker compose -f infra/docker-compose.yml --profile dev up -d frontend-dev
+  frontend-dev:
     image: node:22-alpine
     restart: unless-stopped
     working_dir: /app

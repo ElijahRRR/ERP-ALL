@@ -483,3 +483,13 @@
   与 HF-0716①同病），非代码缺陷——四轮对抗矩阵全阴性+HMR 热替换正向复现全部症状。
   顺手加固：refresh 单飞 + 跨标签身份对齐/reload 竞态守卫（E2E 实测）。
   根治提单 INFRA-0716（生产改伺服 build 产物）；当下缓解=部署必 --force-recreate frontend。
+- **INFRA-0716 完码（生产前端改伺服构建产物）**：frontend/Dockerfile 多阶段
+  （node:22-alpine corepack pnpm build → nginx:1.27-alpine）+ nginx.conf（SPA try_files
+  回退；/api、/portal/v1 反代 http://api:8000；hashed 资产 immutable 永久缓存；
+  index.html no-store——换版本=换资产指纹，浏览器不可能再跑旧模块）。compose：frontend=
+  生产静态默认随 up 启动（5173:80 端口不变，restart unless-stopped），旧 vite 挪名
+  frontend-dev 留 profile dev（与生产端口互斥）。活文档同步：Makefile（up 含 frontend；
+  up-full 废除改 fe-dev——旧写法 --profile dev up 会双前端抢 5173）、windows.md
+  （步骤2 改生产启动 + 排障记录补 stale 模块条目）。验证：pnpm build ✓、compose 解析 ✓、
+  本机 nginx 1.24 同配置真实 E2E 冒烟四项全过（nginx -t / SPA 回退且 index no-store /
+  资产 immutable / API 反代 422==直连 422）；镜像构建留部署机（沙盒无 docker daemon）。
