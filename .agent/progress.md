@@ -476,3 +476,6 @@
 - **R2-06 验收缺陷二次修复**：is_fba 真实落点在 price_snapshot（worker payload 适配器
   _PRICE_FIELDS 归类），首修只读 attrs 仍全判不出——改为 price_snapshot 优先、attrs 兜底；
   wiring 用例 FBA 夹具改真实 worker 形态钉死。404 pytest 全绿。
+- **R2-06 整单收官（Owner 2026-07-16）**：验收①真机通过（FBA 41/FBM 5 正确分流+价史公式；
+  无标记 401 个拒绝出价属预期）；验收②真机改价挂账择时。定价引擎全链入 main（1a0c90f）。
+- **插单 FE-0716**：产品库翻页致侧栏新菜单项消失（Owner 报告）——fe agent 本地 E2E 复现排查中。

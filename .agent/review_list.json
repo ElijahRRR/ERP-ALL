@@ -478,12 +478,23 @@
     "priority": "P0",
     "dimension": "feature",
     "check": "定价引擎最小闭环：策略配置（build 成本加成/match 跟卖分套，D-Q3/23）→ allocate/submit 自动算价（替代 0 价兜底）→ 批量重定价预览 → PRICE_AND_PROMOTION 价格同步管道（6/day 聚合，outbox 三段式）→ 与限价检口径联动 + 前端定价面板",
-    "status": "done-pending-verify",
+    "status": "accepted-verify2-deferred",
     "evidence": [
       ".agent/evidence/R2-06/"
     ],
-    "finding": "四增量全部完码（2026-07-16，403 pytest+前端 lint/build 绿）：①0027/0028/0029 迁移+引擎纯函数+策略 CRUD ②allocate 自动算价（fail-closed）+改价守护+30% force+预览 ③价格同步管道（PUT/feed 双通道路由 D-Q62、三段式幂等带轮次、pending_price 两段式、price_recon 收敛、drain 按店轮转、限流桶键修正；经 45-agent 工作流三镜头评审+对抗核实，6 项确认发现全修）④前端定价页+SM-0716 三件+erpAPI 速查修正（erpAPI PR#2）。min_price 可选（D-Q62 补充）。余项=人工验收：①新 listing 自动带策略价 ②A152 真机改价 listing#46 渠道价变+两段式回填（evidence/R2-06/runbook.md）",
+    "finding": "**整单收官（2026-07-16 Owner：「已经可以分辨fba和fbm计算价格了，可以收官」）**。验收①真机通过：is_fba 分流正确（部署机实测 FBA 41/FBM 5/无标记 401——无标记拒绝出价属预期 fail-closed）、价史公式明细可见。两轮验收缺陷修复入账（PR#11 读键错位→PR#12 is_fba 真实落点 price_snapshot——worker 适配器 _PRICE_FIELDS 归类）。验收②（listing#46 真机改价两段式）挂账 Owner 择时（同 R2-05 L2 模式）",
     "last_checked_at": "2026-07-16",
     "acceptance": "①A152 真机一次改价经价格管道同步成功+影子对拍；②新建 listing 自动带策略价（不再 0 价/手工价）；③CI 全绿"
+  },
+  {
+    "id": "FE-0716",
+    "priority": "P1",
+    "dimension": "bugfix",
+    "check": "前端缺陷：产品库页点击第 2/3 页翻页时，左侧菜单「后来加入的订单管理等」消失（Owner 真机观察）",
+    "status": "in_progress",
+    "evidence": [],
+    "finding": "AppLayout MENU 为静态数组+超管 has() 旁路恒真，代码面无消失机制——需本地 E2E 复现定位（fe agent Playwright 排查中）",
+    "last_checked_at": "2026-07-16",
+    "acceptance": "翻页后菜单项不消失；复现根因入档"
   }
 ]
