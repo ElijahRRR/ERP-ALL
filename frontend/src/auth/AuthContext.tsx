@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
-import { api, tokenStore } from '@/api/client'
+import { ACCESS_KEY, api, tokenStore } from '@/api/client'
 
 export interface Me {
   user: {
@@ -30,8 +30,11 @@ const AuthContext = createContext<AuthState>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
+  // 竞态守卫：并发 reload 只允许最新一次落地，防止慢响应回填旧身份
+  const seqRef = useRef(0)
 
   const reload = useCallback(async () => {
+    const seq = ++seqRef.current
     if (!tokenStore.access) {
       setMe(null)
       setLoading(false)
@@ -39,16 +42,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setLoading(true)
     try {
-      setMe(await api.get<Me>('/me'))
+      const next = await api.get<Me>('/me')
+      if (seq === seqRef.current) setMe(next)
     } catch {
-      setMe(null)
+      if (seq === seqRef.current) setMe(null)
     } finally {
-      setLoading(false)
+      if (seq === seqRef.current) setLoading(false)
     }
   }, [])
 
   useEffect(() => {
     void reload()
+    // 跨标签页身份一致性（FE-0716 防御加固）：token 存 localStorage，另一标签
+    // 登录/登出会改写共享凭证；本标签的请求层每次都读最新 token，但 me 状态不会
+    // 自己更新——出现"侧栏按 A 用户渲染、请求实际带 B 用户 token"的撕裂态。
+    // 监听 storage 事件（仅其他标签的写入会触发），立即按新 token 重取 /me 对齐。
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === ACCESS_KEY) void reload()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
   }, [reload])
 
   const has = useCallback(

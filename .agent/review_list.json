@@ -491,10 +491,21 @@
     "priority": "P1",
     "dimension": "bugfix",
     "check": "前端缺陷：产品库页点击第 2/3 页翻页时，左侧菜单「后来加入的订单管理等」消失（Owner 真机观察）",
-    "status": "in_progress",
+    "status": "diagnosed-hardened",
     "evidence": [],
-    "finding": "AppLayout MENU 为静态数组+超管 has() 旁路恒真，代码面无消失机制——需本地 E2E 复现定位（fe agent Playwright 排查中）",
+    "finding": "E2E 复现闭环（本地全栈+Playwright 四轮对抗矩阵）：翻页在当前代码下**不可能**改变侧栏（机械论证+全阴性）；正向复现=浏览器跑的 AppLayout 是旧模块——消失的三项恰为 R2-05/R2-06 新增，vite dev HMR 热替换旧版可当场复现全部症状（与 HF-0716 ①号「无订单页」同病：生产前端是 dev-profile vite bind-mount，stale 模块）。权限/身份链无缺陷。仓内顺手加固两件真实隐患：refresh 单飞（并发 401 防竞态踢人）+ 跨标签身份对齐/reload 竞态守卫。生产处置=--force-recreate frontend；根治=生产改伺服 build 产物（见 INFRA-0716）",
     "last_checked_at": "2026-07-16",
     "acceptance": "翻页后菜单项不消失；复现根因入档"
+  },
+  {
+    "id": "INFRA-0716",
+    "priority": "P1",
+    "dimension": "infra",
+    "check": "生产前端停用 dev-profile vite（bind-mount HMR 是 stale 模块反复来源：HF-0716①、FE-0716 两起）——改为 pnpm build 产物 + 静态伺服（nginx/caddy 容器），compose 增 prod profile",
+    "status": "todo",
+    "evidence": [],
+    "finding": "待排期（ar/infra 帽）；当下缓解=每次部署 --force-recreate frontend（已入部署指令惯例）",
+    "last_checked_at": "2026-07-16",
+    "acceptance": "生产 frontend 容器伺服构建产物；部署=重建镜像；不再出现 stale 模块类症状"
   }
 ]
