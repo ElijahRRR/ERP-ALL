@@ -434,6 +434,10 @@ async def reclaim(
     """心跳超时节点下线 + 死节点/硬超时任务归还（v3 合成一条 SQL 原则）。
 
     阈值经 system_config 可调（scrape.heartbeat_timeout_s / scrape.task_timeout_min）。
+
+    已达重试上限的任务不再归还而是判 dead 并计入 failed_tasks（2026-07-16 卡死教训：
+    worker 反复在回报前死亡时，attempt 只在派发时递增、终态只在 submit_result 产生，
+    任务会在 pending↔dispatched 之间无限乒乓、job 永不收口）；其 job 随即尝试收口。
     """
     if heartbeat_timeout_s is None or task_timeout_min is None:
         cfg = {
@@ -457,20 +461,42 @@ async def reclaim(
         ),
         {"hb": heartbeat_timeout_s},
     )
+    stale = (
+        "status IN ('dispatched','running')"
+        "   AND (dispatched_at < now() - make_interval(mins => :tm)"
+        "        OR worker_id IN (SELECT id FROM app.worker_node WHERE status = 'offline'))"
+    )
     reclaimed = (
         await session.execute(
             text(
                 "UPDATE app.scrape_task SET status = 'pending', worker_id = NULL"
-                " WHERE status IN ('dispatched','running')"
-                "   AND (dispatched_at < now() - make_interval(mins => :tm)"
-                "        OR worker_id IN (SELECT id FROM app.worker_node"
-                "                         WHERE status = 'offline'))"
-                " RETURNING id"
+                f" WHERE attempt < max_attempts AND {stale} RETURNING id"
             ),
             {"tm": task_timeout_min},
         )
     ).all()
-    return len(reclaimed)
+    # 达上限的判死 + 计入 failed_tasks（乒乓终结）
+    dead_jobs = (
+        await session.execute(
+            text(
+                "WITH d AS ("
+                "  UPDATE app.scrape_task SET status = 'dead', finished_at = now(),"
+                "         worker_id = NULL,"
+                "         error = 'RECLAIM_MAX_ATTEMPTS：worker 中途死亡/超时达重试上限'"
+                f"  WHERE attempt >= max_attempts AND {stale}"
+                "  RETURNING id, job_id)"
+                " UPDATE app.scrape_job j"
+                " SET failed_tasks = failed_tasks + agg.n"
+                " FROM (SELECT job_id, count(*) AS n FROM d GROUP BY job_id) agg"
+                " WHERE j.id = agg.job_id"
+                " RETURNING j.id, agg.n"
+            ),
+            {"tm": task_timeout_min},
+        )
+    ).all()
+    for row in dead_jobs:
+        await _finish_job_if_complete(session, row.id)
+    return len(reclaimed) + sum(int(row.n) for row in dead_jobs)
 
 
 # ── product 入库（specs/001 §03 去重协议）──

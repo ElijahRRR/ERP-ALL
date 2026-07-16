@@ -149,6 +149,11 @@ def format_field_block(fields: list[wpt_schema.FieldSpec], max_fields: int | Non
             bits.append(f"标题={f.title}")
         if f.desc:
             bits.append(f"说明={f.desc[:300]}")
+        if f.format in ("date", "date-time"):
+            fmt_hint = (
+                "YYYY-MM-DD" if f.format == "date" else "ISO 8601 含 T（如 2026-01-31T00:00:00Z）"
+            )
+            bits.append(f"日期格式必须 {fmt_hint}；不确定具体日期就省略本字段，禁止 'N/A'/纯年份")
         if f.enum:
             bits.append(f"枚举=[{_enum_str(f.enum)}]")
         if f.item_type:

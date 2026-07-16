@@ -45,6 +45,9 @@ _ORDERABLE_DEFAULTS: dict[str, Any] = {
     "fulfillment_lag_days": 1,
     "must_ship_alone": "No",
     "country_of_origin": "China",
+    # D-Q9 统一远期；渠道对 2049 的唯一实测成功写法带毫秒（BR-RET-007：
+    # '2049-12-31' 被拒、'2049-12-31T00:00:00.000Z' 被收）——若真机再拒可只改配置降级
+    "end_date_default": "2049-12-31",
 }
 _FORCE_BRAND = "Unbranded"  # BR-CAT-005：上架商品强制品牌
 
@@ -396,6 +399,7 @@ async def build_spec(
         item = _instantiate(
             cached.payload, channel_sku, gtin, price, inventory,
             end_date=end_date, partner_id=partner_id,
+            end_date_default=str(odefaults["end_date_default"]),
         )  # fmt: skip
         return {
             "spec_id": cached.id,
@@ -450,6 +454,7 @@ async def build_spec(
     item = _instantiate(
         item_template, channel_sku, gtin, price, inventory,
         end_date=end_date, partner_id=partner_id,
+        end_date_default=str(odefaults["end_date_default"]),
     )  # fmt: skip
     return {
         "spec_id": spec_id,
@@ -471,12 +476,15 @@ def _instantiate(
     *,
     end_date: date | None = None,
     partner_id: str | None = None,
+    end_date_default: str = "2049-12-31",
 ) -> dict[str, Any]:
     """缓存模板 → 具体 listing 提交体（listing/store 级参数注入，不进缓存键）。
 
     实测格式（BR-LST-006/007）：endDate 必须 ISO DateTime（纯日期拒收，
-    EXT_DATA_ERROR_00030257670757）；inventory=[{quantity, fulfillmentCenterID=PartnerID}]
-    ——PartnerID 缺失时省略该键（本地校验器实践规则层负责提示，官方 schema 不含它）。
+    EXT_DATA_ERROR_00030257670757），且带毫秒 .000Z——2049 远期值的唯一实测
+    成功写法（BR-RET-007，2026-05-08 校正）；inventory=[{quantity,
+    fulfillmentCenterID=PartnerID}]——PartnerID 缺失时省略该键（本地校验器
+    实践规则层负责提示，官方 schema 不含它）。
     """
     payload: dict[str, Any] = json.loads(json.dumps(template))
     if "Item" in payload:  # match
@@ -496,8 +504,8 @@ def _instantiate(
         orderable.pop("productIdentifiers", None)
     orderable["price"] = float(price) if price is not None else 0.0
     orderable["startDate"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    end = end_date or date(2049, 12, 31)  # D-Q9 统一远期
-    orderable["endDate"] = f"{end.isoformat()}T00:00:00Z"
+    end = end_date or date.fromisoformat(end_date_default)  # D-Q9 统一远期（配置中心可调）
+    orderable["endDate"] = f"{end.isoformat()}T00:00:00.000Z"
     inv_entry: dict[str, Any] = {"quantity": int(inventory)}
     if partner_id:
         inv_entry["fulfillmentCenterID"] = str(partner_id)

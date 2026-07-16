@@ -8,12 +8,15 @@
   / partition_maintain（动态发现分区父表并预建）。
 """
 
+import asyncio
+
 import psycopg
 import pytest
 from sqlalchemy import text
 
 from erp.automation import tasks
 from erp.automation.beat import tick
+from erp.automation.task_runner import reclaim_stale_runs
 from erp.core.db import get_session_factory, system_tx
 
 TEAM = "beat测试团队"
@@ -301,3 +304,172 @@ class TestMaintenanceTasks:
                 " || to_char(now() + interval '4 months', 'YYYYMM'))"
             ).fetchone()[0]
             assert part is not None
+
+
+class TestTimeoutGuard:
+    """任务级超时护栏（2026-07-16 生产停摆教训）：挂起任务被强制中止且不殃及后续任务。"""
+
+    async def test_hung_task_times_out_and_next_task_still_runs(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        ran: list[str] = []
+
+        async def _hang(sessions: object, config: dict[str, object]) -> dict[str, object]:
+            await asyncio.sleep(30)
+            return {}
+
+        async def _quick(sessions: object, config: dict[str, object]) -> dict[str, object]:
+            ran.append("quick")
+            return {"ok": 1}
+
+        tasks.TASKS["beat_t_hang"] = _hang
+        tasks.TASKS["beat_t_quick"] = _quick
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            # hang 的 id 更小——串行循环里先跑，验证超时后循环继续
+            conn.execute(
+                "INSERT INTO app.schedule (code, description, cron, next_run_at, config) VALUES"
+                " ('beat_t_hang', '超时用例', '0 3 1 * *', now() - interval '1 second',"
+                "  '{\"task_timeout_seconds\": 0.2}'),"
+                " ('beat_t_quick', '后继用例', '0 3 1 * *', now() - interval '1 second', '{}')"
+            )
+        try:
+            stats = await tick(get_session_factory())
+            assert stats["failed"] >= 1 and stats["executed"] >= 1
+            assert ran == ["quick"]
+            with psycopg.connect(migrated_db) as conn:
+                runs = _runs(conn, "beat_t_hang")
+                assert runs[-1][0] == "failed"
+                assert "TASK_TIMEOUT" in (runs[-1][1] or "")
+                assert _runs(conn, "beat_t_quick")[-1][0] == "done"
+        finally:
+            tasks.TASKS.pop("beat_t_hang", None)
+            tasks.TASKS.pop("beat_t_quick", None)
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute("DELETE FROM app.schedule WHERE code LIKE 'beat_t_%'")
+
+    async def test_stale_running_reclaimed_at_startup(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """崩溃遗留的 running 行按龄回收；新鲜 running 行不误杀（多副本安全）。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            stale_id = conn.execute(
+                "INSERT INTO app.task_run (task_code, status, started_at)"
+                " VALUES ('beat_t_stale', 'running', now() - interval '2 hours') RETURNING id"
+            ).fetchone()[0]
+            fresh_id = conn.execute(
+                "INSERT INTO app.task_run (task_code, status)"
+                " VALUES ('beat_t_fresh', 'running') RETURNING id"
+            ).fetchone()[0]
+        n = await reclaim_stale_runs(get_session_factory(), older_than_s=1800)
+        assert n >= 1
+        with psycopg.connect(migrated_db) as conn:
+            st, err = conn.execute(
+                "SELECT status, error FROM app.task_run WHERE id = %s", (stale_id,)
+            ).fetchone()
+            assert st == "failed" and "STALE_RUNNING" in err
+            assert (
+                conn.execute(
+                    "SELECT status FROM app.task_run WHERE id = %s", (fresh_id,)
+                ).fetchone()[0]
+                == "running"
+            )
+
+
+class TestScrapeStallVisibility:
+    """采集停摆可见性（2026-07-16 卡死教训）：乒乓判死、收口兜底、双告警。"""
+
+    async def test_ping_pong_task_escalates_dead_and_job_settles(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """attempt 达上限的滞留任务：reclaim 判死并计 failed_tasks，job 收口。"""
+        team_id = seeded["team"]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            node = conn.execute(
+                "INSERT INTO app.worker_node (node_key, kind, token_hash, status,"
+                " last_heartbeat_at) VALUES ('beatnode-pp', 'scraper_amazon', 'x', 'online',"
+                " now()) RETURNING id"
+            ).fetchone()[0]
+            job_id = conn.execute(
+                "INSERT INTO app.scrape_job (team_id, source, job_kind, input, status,"
+                " total_tasks) VALUES (%s, 'amazon', 'product_detail', '{}', 'running', 1)"
+                " RETURNING id",
+                (team_id,),
+            ).fetchone()[0]
+            task_id = conn.execute(
+                "INSERT INTO app.scrape_task (job_id, team_id, target_ref, status, attempt,"
+                " max_attempts, worker_id, dispatched_at) VALUES"
+                " (%s, %s, 'B0PINGPONG1', 'dispatched', 3, 3, %s, now() - interval '20 minutes')"
+                " RETURNING id",
+                (job_id, team_id, node),
+            ).fetchone()[0]
+        try:
+            stats = await tasks.scrape_reclaim(get_session_factory(), {})
+            assert stats["reclaimed"] >= 1
+            with psycopg.connect(migrated_db) as conn:
+                st, err = conn.execute(
+                    "SELECT status, error FROM app.scrape_task WHERE id = %s", (task_id,)
+                ).fetchone()
+                assert st == "dead" and "RECLAIM_MAX_ATTEMPTS" in err
+                job_st, failed = conn.execute(
+                    "SELECT status, failed_tasks FROM app.scrape_job WHERE id = %s", (job_id,)
+                ).fetchone()
+                assert failed == 1
+                assert job_st == "failed"  # done=0 收口为 failed
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute("DELETE FROM app.scrape_task WHERE team_id = %s", (team_id,))
+                conn.execute("DELETE FROM app.scrape_job WHERE team_id = %s", (team_id,))
+                conn.execute("DELETE FROM app.worker_node WHERE node_key = 'beatnode-pp'")
+
+    async def test_no_worker_and_stalled_job_alerts(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """待执行任务 + 0 在线节点 → critical；零进展老 job → warn（逐单 dedupe）。"""
+        team_id = seeded["team"]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            online_before = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM app.worker_node WHERE status = 'online'"
+                ).fetchall()
+            ]
+            conn.execute("UPDATE app.worker_node SET status = 'offline' WHERE status = 'online'")
+            conn.execute(
+                "DELETE FROM app.notification WHERE dedupe_key LIKE 'scrape_no_worker%'"
+                " OR dedupe_key LIKE 'scrape_stall:%'"
+            )
+            job_id = conn.execute(
+                "INSERT INTO app.scrape_job (team_id, source, job_kind, input, status,"
+                " total_tasks, created_at) VALUES"
+                " (%s, 'amazon', 'product_detail', '{}', 'pending', 1, now() - interval '2 hours')"
+                " RETURNING id",
+                (team_id,),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO app.scrape_task (job_id, team_id, target_ref, status,"
+                " created_at) VALUES (%s, %s, 'B0NOWORKER1', 'pending', now() - interval '1 hour')",
+                (job_id, team_id),
+            )
+        try:
+            stats = await tasks.scrape_reclaim(
+                get_session_factory(), {"no_worker_grace_minutes": 10, "stall_alert_minutes": 60}
+            )
+            assert stats["no_worker_alert"] == 1
+            assert stats["stalled_alerts"] >= 1
+            with psycopg.connect(migrated_db) as conn:
+                assert conn.execute(
+                    "SELECT severity FROM app.notification WHERE dedupe_key = 'scrape_no_worker'"
+                ).fetchone() == ("critical",)
+                assert conn.execute(
+                    "SELECT severity FROM app.notification WHERE dedupe_key = %s",
+                    (f"scrape_stall:{job_id}",),
+                ).fetchone() == ("warn",)
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                if online_before:
+                    conn.execute(
+                        "UPDATE app.worker_node SET status = 'online' WHERE id = ANY(%s)",
+                        (online_before,),
+                    )
+                conn.execute("DELETE FROM app.scrape_task WHERE team_id = %s", (team_id,))
+                conn.execute("DELETE FROM app.scrape_job WHERE team_id = %s", (team_id,))

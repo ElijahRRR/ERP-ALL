@@ -126,14 +126,104 @@ async def llm_cache_lru(sessions: Sessions, config: dict[str, Any]) -> dict[str,
 
 
 async def scrape_reclaim(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
-    """采集断连回收兜底（R2-04 验收：模拟断连自动回收，不依赖任何 worker 存活）。
+    """采集断连回收兜底 + 停摆可见性（R2-04 验收；2026-07-16 卡死教训扩展）。
 
     复用 scrape.service.reclaim（sync/pull 内联版同一实现，幂等 UPDATE 并发安全）；
     阈值仍走 system_config scrape.heartbeat_timeout_s / scrape.task_timeout_min。
+    扩展三件（管线原本无任何采集侧告警，「任何静默失败都是缺陷」）：
+    - 收口结算兜底：submit_result 漏结算/reclaim 判死后的 running job 补收口；
+    - 无 worker 告警：有待执行任务却 0 在线节点超宽限期 → critical（运营在 UI
+      看不到节点健康，通知中心是唯一信号面）；
+    - 零进展告警：开放 job 超时限仍 0 成 0 败 → warn（逐单 dedupe）。
     """
+    no_worker_grace_min = int(config.get("no_worker_grace_minutes", 10))
+    stall_alert_min = int(config.get("stall_alert_minutes", 60))
     async with system_tx(sessions) as session:
         reclaimed = await scrape_service.reclaim(session)
-    return {"reclaimed": reclaimed}
+        settled = (
+            await session.execute(
+                text(
+                    "UPDATE app.scrape_job SET"
+                    " status = CASE WHEN done_tasks = 0 THEN 'failed'"
+                    "               WHEN failed_tasks > 0 THEN 'partial'"
+                    "               ELSE 'done' END,"
+                    " finished_at = now()"
+                    " WHERE status = 'running' AND done_tasks + failed_tasks >= total_tasks"
+                    " RETURNING id"
+                )
+            )
+        ).all()
+        backlog = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT count(*) AS n,"
+                        "  coalesce(min(t.created_at)"
+                        "           < now() - make_interval(mins => :grace), false) AS overdue"
+                        " FROM app.scrape_task t"
+                        " JOIN app.scrape_job j ON j.id = t.job_id"
+                        " WHERE t.status = 'pending' AND j.status IN ('pending','running')"
+                    ),
+                    {"grace": no_worker_grace_min},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        online = (
+            await session.execute(
+                text("SELECT count(*) FROM app.worker_node WHERE status = 'online'")
+            )
+        ).scalar_one()
+        no_worker = bool(backlog["n"] and not online and backlog["overdue"])
+        if no_worker:
+            await notify(
+                session,
+                team_id=None,
+                severity="critical",
+                category="scrape_stall",
+                title="采集停摆：无在线采集节点",
+                body=(
+                    f"{backlog['n']} 个任务待执行但 0 个 worker 在线（最老已等待超过"
+                    f" {no_worker_grace_min} 分钟）。检查 scraper 容器是否启动/崩溃循环"
+                    "（enroll token、代理配置），见 docs 采集 runbook。"
+                ),
+                object_type="worker_node",
+                object_id="none_online",
+                dedupe_key="scrape_no_worker",
+            )
+        stalled = (
+            await session.execute(
+                text(
+                    "SELECT id, team_id FROM app.scrape_job"
+                    " WHERE status IN ('pending','running') AND finished_at IS NULL"
+                    "   AND done_tasks = 0 AND failed_tasks = 0"
+                    "   AND created_at < now() - make_interval(mins => :stall)"
+                ),
+                {"stall": stall_alert_min},
+            )
+        ).all()
+        for job in stalled:
+            await notify(
+                session,
+                team_id=job.team_id,
+                severity="warn",
+                category="scrape_stall",
+                title=f"采集工单 #{job.id} 零进展",
+                body=(
+                    f"建单已超 {stall_alert_min} 分钟仍 0 成 0 败——worker 未在跑"
+                    "或目标全部受阻，需人工介入（详见采集作业页）。"
+                ),
+                object_type="scrape_job",
+                object_id=str(job.id),
+                dedupe_key=f"scrape_stall:{job.id}",
+            )
+    return {
+        "reclaimed": reclaimed,
+        "settled": len(settled),
+        "no_worker_alert": int(no_worker),
+        "stalled_alerts": len(stalled),
+    }
 
 
 # ── 渠道类（三段式，复用 listing/outbox 既有函数）──

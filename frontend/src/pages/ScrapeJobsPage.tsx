@@ -1,8 +1,10 @@
-import { Button, Form, Input, Modal, Progress, Select, Space, Table, Tag, message } from 'antd'
+import { Alert, Button, Form, Input, Modal, Progress, Select, Space, Table, Tag, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, api, type PageOf } from '@/api/client'
+import { ApiError, api, type PageOf, type Schemas } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
+
+type WorkerNode = Schemas['WorkerNode']
 
 interface ScrapeJob {
   id: number
@@ -31,9 +33,13 @@ export default function ScrapeJobsPage() {
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [createOpen, setCreateOpen] = useState(false)
+  // null = 未获取到节点数据（未加载 / 无 scrape.node_admin 权限 / 请求失败）→ 不渲染健康横幅
+  const [nodes, setNodes] = useState<WorkerNode[] | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
+    // 采集节点健康：与列表并行拉取；403 等任何错误静默隐藏横幅，不打扰无权限用户
+    void api.get<WorkerNode[]>('/worker-nodes').then(setNodes, () => setNodes(null))
     try {
       setData(await api.get<PageOf<ScrapeJob>>(`/scrape-jobs?page=${page}&size=20`))
     } catch (e) {
@@ -76,6 +82,10 @@ export default function ScrapeJobsPage() {
     }
   }
 
+  const onlineCount = (nodes ?? []).filter((n) => n.status === 'online').length
+  const hasActiveJobs =
+    data?.items.some((j) => ['pending', 'running'].includes(j.status)) ?? false
+
   return (
     <>
       <Space style={{ marginBottom: 16 }}>
@@ -86,6 +96,20 @@ export default function ScrapeJobsPage() {
         )}
         <Button onClick={() => void load()}>刷新</Button>
       </Space>
+      {nodes != null && (
+        <Alert
+          style={{ marginBottom: 16, padding: '4px 12px' }}
+          showIcon
+          type={onlineCount > 0 ? 'success' : hasActiveJobs ? 'error' : 'warning'}
+          message={
+            onlineCount > 0
+              ? `采集节点在线 ${onlineCount} 个`
+              : hasActiveJobs
+                ? '没有在线采集节点——采集作业不会推进。检查 scraper 容器（enroll token / 代理配置）'
+                : '没有在线采集节点'
+          }
+        />
+      )}
       <Table<ScrapeJob>
         rowKey="id"
         loading={loading}

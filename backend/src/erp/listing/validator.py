@@ -12,12 +12,34 @@
 """
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Any
 
 from erp.listing.coerce import _effective_enum
 from erp.listing.wpt_schema import PtSchema
 
 _EMPTYISH: tuple[Any, ...] = (None, "", [], {})
+_DATE_FORMATS = ("date", "date-time")
+
+
+def _is_iso_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_iso_datetime(value: str) -> bool:
+    """ISO DateTime 且必须含 T（BR-LST-006：纯日期渠道拒收）。"""
+    if "T" not in value:
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
 
 _TYPE_CHECKS: dict[str, type | tuple[type, ...]] = {
     "string": str,
@@ -48,7 +70,7 @@ class ValidationReport:
         self.warnings.append(msg)
 
 
-def _check_section(
+def _check_section(  # noqa: PLR0912  逐类实测拒绝一分支，拆散反降低可对照性
     payload: dict[str, Any], schema: PtSchema, prefix: str, report: ValidationReport
 ) -> None:
     props = schema.properties
@@ -62,7 +84,10 @@ def _check_section(
         if not isinstance(node, dict):
             continue  # schema 外字段由 coerce strip；此处不重复报
         if isinstance(val, str) and val.startswith("{") and val.endswith("}"):
-            continue  # 模板占位符（校验实例化后的 item 时不会出现）
+            # 本校验器只跑在实例化后的 item 上（build_spec._validated）——占位符
+            # 出现即 _instantiate 注入遗漏，必须报出而非放行（渠道会收到字面 {X}）
+            report.error(f"{prefix}.{name}: 模板占位符 {val!r} 未实例化（注入遗漏）")
+            continue
         ftype = node.get("type")
         expected = _TYPE_CHECKS.get(ftype or "")
         if expected is not None and val is not None and not isinstance(val, expected):
@@ -79,6 +104,14 @@ def _check_section(
         max_len = node.get("maxLength")
         if isinstance(max_len, int) and isinstance(val, str) and len(val) > max_len:
             report.error(f"{prefix}.{name}: 长度 {len(val)} > maxLength {max_len}")
+        fformat = node.get("format")
+        if fformat in _DATE_FORMATS and isinstance(val, str) and val:
+            ok_date = _is_iso_date(val) if fformat == "date" else _is_iso_datetime(val)
+            if not ok_date:
+                report.error(
+                    f"{prefix}.{name}: {val!r} 非法日期（format={fformat}；"
+                    "渠道拒收 Invalid Date，2026-07-16 实测）"
+                )
         min_items = node.get("minItems")
         if (
             isinstance(min_items, int)
@@ -118,12 +151,13 @@ def validate_build_item(
                     f"orderable.inventory[{i}].fulfillmentCenterID 缺失"
                     "（=PartnerID，store.profile.partner_id 维护；实测必填 BR-LST-007）"
                 )
-    end_date = orderable.get("endDate")
-    if isinstance(end_date, str) and end_date and "T" not in end_date:
-        report.error(
-            f"orderable.endDate={end_date!r} 非 ISO DateTime"
-            "（纯日期拒收 EXT_DATA_ERROR_00030257670757）"
-        )
+    for fname in ("startDate", "endDate"):
+        val = orderable.get(fname)
+        if isinstance(val, str) and val and not _is_iso_datetime(val):
+            report.error(
+                f"orderable.{fname}={val!r} 非 ISO DateTime"
+                "（纯日期拒收 EXT_DATA_ERROR_00030257670757）"
+            )
     return report
 
 

@@ -26,6 +26,7 @@ class FieldSpec:
     required: bool
     raw: dict[str, Any] = field(repr=False)
     type: str | None = None
+    format: str | None = None  # date/date-time/uri…——日期字段对 LLM/清洗链必须可见
     title: str | None = None
     desc: str | None = None
     enum: list[Any] | None = None
@@ -51,6 +52,7 @@ def summarize_prop(name: str, node: dict[str, Any], required: bool) -> FieldSpec
         required=required,
         raw=node,
         type=node.get("type"),
+        format=node.get("format"),
         title=node.get("title"),
         desc=node.get("description"),
         enum=node.get("enum"),
