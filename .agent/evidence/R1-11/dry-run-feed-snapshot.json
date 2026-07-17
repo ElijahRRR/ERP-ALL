@@ -8,31 +8,35 @@
     "feedType": "MP_ITEM"
   },
   "json_body": {
-    "MPItemFeedHeader": {
-      "sellingChannel": "mpmaintenance",
-      "processMode": "REPLACE",
-      "subset": "EXTERNAL",
-      "locale": "en",
-      "version": "1.5"
-    },
     "MPItem": [
       {
         "Visible": {
           "Drinkware": {
+            "brand": "Unbranded",
             "keyFeatures": [
-              "solid"
+              "solid",
+              "Bamboo Cutting Board Large"
             ],
-            "mainImageUrl": null,
-            "shortDescription": "nice",
-            "productSecondaryImageURL": null
+            "productName": "Bamboo Cutting Board Large",
+            "shortDescription": "Bamboo Cutting Board Large. solid"
           }
         },
         "Orderable": {
-          "sku": "M0000288",
-          "brand": "unbranded",
+          "sku": "M0002338",
+          "brand": "Unbranded",
           "price": 19.99,
+          "endDate": "2049-12-31T00:00:00.000Z",
+          "inventory": [
+            {
+              "quantity": 5
+            }
+          ],
+          "startDate": "2026-07-17T04:10:55Z",
           "productName": "Bamboo Cutting Board Large",
+          "MustShipAlone": "No",
           "ShippingWeight": 1.0,
+          "specProductType": "Drinkware",
+          "fulfillmentLagTime": 1,
           "productIdentifiers": {
             "productId": "6900000000038",
             "productIdType": "EAN"
@@ -41,13 +45,15 @@
           "batteryTechnologyType": "Does Not Contain a Battery",
           "chemicalAerosolPesticide": "No",
           "shipsInOriginalPackaging": "No",
-          "inventory": {
-            "fulfillmentLagTime": 1,
-            "amount": 5
-          }
+          "country_of_origin_substantial_transformation": "China"
         }
       }
-    ]
+    ],
+    "MPItemFeedHeader": {
+      "locale": "en",
+      "version": "5.0.20260304-22_45_32-api",
+      "businessUnit": "WALMART_US"
+    }
   },
   "proxy": null,
   "headers": [
