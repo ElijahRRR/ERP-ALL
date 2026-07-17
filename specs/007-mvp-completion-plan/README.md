@@ -21,7 +21,7 @@
 | 4 定价策略 | ✅ R2-06 | — |
 | 5 跟卖模式 | 🟡 | match spec/定价已有；货源占位链随 R2-11/09 复核 |
 | 6 订单四检+采购门户 | 🟡 | 内部入口已有；**门户对外未建** → R2-10 |
-| 7 售后+封店+邮箱 | ❌ 零实现 | → R2-07 |
+| 7 售后+封店+邮箱 | 🟡（07a 核心已落地，PR #18 待合并） | → R2-07 |
 | 8 财务对账/利润/KPI | ❌ 零实现 | → R2-08 |
 | 9 三档自动化贯通 | ❌（表已建,仅通 order_block 一档） | → R2-09 |
 | （D-Q53）前端设计 | 前端已有 13 页功能件 | 设计打磨 → FE-DESIGN |
@@ -33,9 +33,15 @@
 三片一单（内聚：封店靠邮件识别驱动，D-Q33 原文）：
 
 - **07a returns 只读闭环**：`channel_return` + `refund_request`（001 §07 已有列级图纸）；
-  官方 Returns API 只读拉取+对账。**考古锚点**：旧系统 returns 同步本来就缺
-  （erp-core 调研 R-ERP-006 实证）——本片是**新建不是移植**，以官方
-  `walmart-marketplace-returns` OpenAPI 为准。
+  官方 Returns API 只读拉取+对账。**考古锚点（2026-07-17 修订，开发侧批注核实采纳）**：
+  R-ERP-006"returns 同步缺失"仅实证 erp-core；erpAPI 根目录另有独立生产脚本
+  `售后订单同步/fetch_walmart_returns.py`（cron 全店并发拉 `/v3/returns` 全量翻页
+  → 飞书 27 列台账，台账 §13 售后规则出处）——**旧语义参照以该脚本为准**（开发侧
+  实现语义与 L1 对拍口径同源）；代码结论不变：属**新建**（旧脚本是导表器非域模型），
+  接口结构以官方 `walmart-marketplace-returns` OpenAPI 为准。
+  **进展（2026-07-17）**：07a 核心已由开发侧落地（退货三表 + return_pull 拉取 +
+  查询端点，PR #18 待合并）；收尾项 = `refund_request` 表落地 + A152 真机对账。
+  退款三档**执行**归 R2-09（本单只建申请表，D-Q29）。
 - **07b 封店工作流**：`store_incident`（001 §02 图纸）+ 品牌占用批量释放
   （`brand_assignment.incident_id` 回链已预留，§03）+ 定时提醒（挂 R2-04 beat）。
   **考古锚点**：旧 erp_core `store_incidents` 表（data-survey schema 在档）。
