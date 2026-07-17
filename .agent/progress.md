@@ -544,3 +544,23 @@
   07c 邮箱），我方增量1 = 07a 核心，进展与考古并入其 finding；退款三档执行划归 R2-09。
 - 开发侧批注（记 finding 不改 007 正文）：R-ERP-006 实证的是 erp-core 缺 returns，erpAPI 根
   另有独立生产脚本（台账 §13 出处），已用作实现语义与对拍口径；结论（代码新建）不变。
+
+## 2026-07-17 R2-07 增量2 完码（07a 收尾：refund_request 两档）
+- PR #18 合并（增量1 读闭环入 main）。0031 迁移：refund_request 图纸原样落库 + 权限点
+  refund.request（订单员/团队管理员）/refund.approve（团队管理员）+ sys_dict refund_reason 七码。
+- record/approval 两档本地闭环：POST /refund-requests（Idempotency-Key 幂等 + 档位随建快照
+  manual→record/semi→approval，缺省 manual fail-closed）+ approve/reject + 列表；审计三动作。
+  auto 档 R2-09 flow=refund 接线前拒绝创建（REFUND_AUTO_NOT_WIRED），不做静默降档；
+  approved 为驻留态，渠道执行（outbox return_refund + verify-back）归 R2-09。
+- 契约：openapi-v0 /refund-requests 四端点 + schema；07 文档"已落地（增量2）"注记。
+- 本地 CI：pytest 418 passed（新测 7 项：三档快照/审批流/重复裁决/字典闸/幂等重放/越权隔离）
+  + ruff + mypy strict；permission 基线 45→47。
+
+## 2026-07-17 审计侧三情报入账 + return_pull_verify 对账 harness
+- 情报：①动工顺序 Owner 批 R2-11→R2-07→R2-09→R2-08→R2-10；②§08 财务图纸 immutable event
+  ledger 重写完成（421f83d），R2-08 闸门解除；③进度口径统一 PRD §8 九模块。开发侧批注被
+  核实采纳（11443af，fetch_walmart_returns.py 确认为旧语义源）——批注流转通道首跑成功。
+  核实：两笔提交在 PR #18 合并前已进 main，当前分支与 PR #19 均已包含，无需补拉。
+- 补 erp.tools.return_pull_verify（照 order_pull_verify 模板）：渠道为准全量重拉（只读）
+  对比 DB 头/行（RMA 集合/聚合状态/金额/行数/行级退款状态），--pull-first 免等 08:00 beat。
+  这是 07a 验收① 的一条命令化。CI 全绿（418 passed/ruff/mypy strict）。

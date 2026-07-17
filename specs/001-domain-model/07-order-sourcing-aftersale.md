@@ -207,3 +207,9 @@ beat `return_pull` 08:00/日（BR-SCH-002）；见单量骤降 >50% 告警不重
 
 索引：`(team_id, status)`、`(order_id)`。
 执行纪律：executing→executed 必须拿到渠道确认（verify-back 同款：无响应先查后重试）；渠道写路径灰度期只允许 is_test 店真实执行。
+
+已落地（R2-07 增量2，0031）：本表图纸原样落库；record/approval 两档本地闭环开通
+（POST /refund-requests 幂等创建 + approve/reject，权限点 refund.request / refund.approve，
+reason_code 走 sys_dict(refund_reason) 字典校验）。**auto 档在 R2-09 flow=refund 接线前
+fail-closed 拒绝创建**（REFUND_AUTO_NOT_WIRED，不做静默降档）；approved 为驻留态，
+渠道执行（executing→executed，outbox return_refund + verify-back）随 R2-09。
