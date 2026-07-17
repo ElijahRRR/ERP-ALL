@@ -22,7 +22,7 @@
           }
         },
         "Orderable": {
-          "sku": "M0002338",
+          "sku": "M0002497",
           "brand": "Unbranded",
           "price": 19.99,
           "endDate": "2049-12-31T00:00:00.000Z",
@@ -31,7 +31,7 @@
               "quantity": 5
             }
           ],
-          "startDate": "2026-07-17T04:10:55Z",
+          "startDate": "2026-07-17T04:21:31Z",
           "productName": "Bamboo Cutting Board Large",
           "MustShipAlone": "No",
           "ShippingWeight": 1.0,

@@ -555,3 +555,12 @@
 - 契约：openapi-v0 /refund-requests 四端点 + schema；07 文档"已落地（增量2）"注记。
 - 本地 CI：pytest 418 passed（新测 7 项：三档快照/审批流/重复裁决/字典闸/幂等重放/越权隔离）
   + ruff + mypy strict；permission 基线 45→47。
+
+## 2026-07-17 审计侧三情报入账 + return_pull_verify 对账 harness
+- 情报：①动工顺序 Owner 批 R2-11→R2-07→R2-09→R2-08→R2-10；②§08 财务图纸 immutable event
+  ledger 重写完成（421f83d），R2-08 闸门解除；③进度口径统一 PRD §8 九模块。开发侧批注被
+  核实采纳（11443af，fetch_walmart_returns.py 确认为旧语义源）——批注流转通道首跑成功。
+  核实：两笔提交在 PR #18 合并前已进 main，当前分支与 PR #19 均已包含，无需补拉。
+- 补 erp.tools.return_pull_verify（照 order_pull_verify 模板）：渠道为准全量重拉（只读）
+  对比 DB 头/行（RMA 集合/聚合状态/金额/行数/行级退款状态），--pull-first 免等 08:00 beat。
+  这是 07a 验收① 的一条命令化。CI 全绿（418 passed/ruff/mypy strict）。
