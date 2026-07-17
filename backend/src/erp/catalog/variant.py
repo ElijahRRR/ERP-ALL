@@ -5,7 +5,9 @@
   parent==source_ref 的自指）、variant_attributes（twister "k=v; k=v" 串）——**只信
   twister 来源**（variant_attributes 为空不归组：旧全页正则 variation_asins 是
   「巨型伪组」根因，BR-ASC-003 考古坑账）；
-- 组身份 = (team_id, source_parent_ref)；一品最多属一组（variant_member.product_id UNIQUE）；
+- 组身份 = 家族标识集连通分量（增量2.5 修复：parent ∪ twister 兄弟列表 ∪ 自身 相交即同组，
+  组键存分量 min——真机实证同家族各页 parentAsin 可不一致，单靠 parent 会裂组）；
+  一品最多属一组（variant_member.product_id UNIQUE）；
 - 双向关联同事务维护：variant_member 行 + product.variant_group_id；
 - broken 判定 v1（D-Q63 配套口径，判定随每次归组/成员变更重跑，冲突消除自动回 active）：
   成员数 < 2 / 组内维度键集不一致 / 成员数 > variant.max_group_size
@@ -15,6 +17,7 @@
 """
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -125,33 +128,165 @@ async def _find_or_create_group(
     )
 
 
+def full_set(source_ref: str, parent: str | None, variation_asins: list[str] | None) -> set[str]:
+    """家族标识集 = {自身} ∪ {parent(≠自身时)} ∪ twister 兄弟列表（旧仓 full_set 语义）。
+
+    真机实证（R2-11 增量2.5 修复）：同家族各变体页抓到的 parentAsin 可不一致（旧仓早有
+    记载"parent_asin 不能当组 ID"），单靠 parent 归组会把一家裂成多组；twister 兄弟列表
+    才是家族权威信号。归组按标识集相交做连通分量，组键取分量标识集 min（确定性）。
+    """
+    ids = {source_ref}
+    if parent and parent != source_ref:
+        ids.add(parent)
+    ids.update(a for a in (variation_asins or []) if a)
+    return ids
+
+
+def _components(candidates: Sequence[Any]) -> list[list[Any]]:
+    """按 full_set 相交把候选划成连通分量（批内并查集，标识为节点）。"""
+    parent_of: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent_of.setdefault(x, x) != x:
+            parent_of[x] = parent_of[parent_of[x]]
+            x = parent_of[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent_of[ra] = rb
+
+    sets = []
+    for c in candidates:
+        fam = list(c.family) if isinstance(c.family, list) else []
+        ids = full_set(str(c.source_ref), c.parent, fam)
+        sets.append(ids)
+        anchor_id = next(iter(ids))
+        for i in ids:
+            union(anchor_id, i)
+    by_root: dict[str, list[Any]] = {}
+    for c, ids in zip(candidates, sets, strict=True):
+        by_root.setdefault(find(next(iter(ids))), []).append(c)
+    return list(by_root.values())
+
+
+async def _find_group_by_identifiers(
+    session: AsyncSession, *, team_id: int, identifiers: list[str]
+) -> int | None:
+    """双向找组：组键命中 或 既有成员的 source_ref 命中，任一相交即视为同家族。
+
+    覆盖跨批到达的兄弟：后来者家族列表含先入库成员的 ASIN，即使组键（历史 min）与
+    后来者视角的 min 不同也能归入同组。
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT g.id FROM app.variant_group g"
+                " WHERE g.team_id = :t AND ("
+                "   g.source_parent_ref = ANY(:ids)"
+                "   OR EXISTS (SELECT 1 FROM app.variant_member m"
+                "               JOIN app.product p ON p.id = m.product_id"
+                "               WHERE m.group_id = g.id AND p.source_ref = ANY(:ids))"
+                " ) ORDER BY g.id LIMIT 1"
+            ),
+            {"t": team_id, "ids": identifiers},
+        )
+    ).scalar_one_or_none()
+    return int(row) if row is not None else None
+
+
+async def _dissolve_orphan_singletons(session: AsyncSession, team_id: int) -> int:
+    """解散"错裂"的 broken 单员组：其成员的家族标识集与**其它组**相交（键或成员 ASIN）。
+
+    真孤品单员组（与谁都不相交）保持原样——避免每轮重建换组号、broken 通知随新 id 刷屏。
+    仅动 broken + 单成员 + 未锁 anchor 的组（自动归组产物；有上架历史的组不碰）。
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT g.id AS gid, p.id AS pid, p.source_ref,"
+                " p.attrs ->> 'parent_asin' AS parent, p.attrs -> 'variation_asins' AS family"
+                " FROM app.variant_group g"
+                " JOIN app.variant_member m ON m.group_id = g.id"
+                " JOIN app.product p ON p.id = m.product_id"
+                " WHERE g.team_id = :t AND g.status = 'broken' AND g.anchor_store_id IS NULL"
+                "   AND (SELECT count(*) FROM app.variant_member m2"
+                "         WHERE m2.group_id = g.id) = 1"
+            ),
+            {"t": team_id},
+        )
+    ).all()
+    dissolved = 0
+    for r in rows:
+        fam = list(r.family) if isinstance(r.family, list) else []
+        ids = sorted(full_set(str(r.source_ref), r.parent, fam))
+        intersects = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM app.variant_group g"
+                    " WHERE g.team_id = :t AND g.id <> :g AND ("
+                    "   g.source_parent_ref = ANY(:ids)"
+                    "   OR EXISTS (SELECT 1 FROM app.variant_member m"
+                    "               JOIN app.product p ON p.id = m.product_id"
+                    "               WHERE m.group_id = g.id AND p.source_ref = ANY(:ids))"
+                    " ) LIMIT 1"
+                ),
+                {"t": team_id, "g": int(r.gid), "ids": ids},
+            )
+        ).first()
+        if intersects is None:
+            continue
+        await session.execute(
+            text("DELETE FROM app.variant_member WHERE group_id = :g"), {"g": int(r.gid)}
+        )
+        await session.execute(
+            text("UPDATE app.product SET variant_group_id = NULL WHERE id = :p"),
+            {"p": int(r.pid)},
+        )
+        await session.execute(
+            text("DELETE FROM app.variant_group WHERE id = :g"), {"g": int(r.gid)}
+        )
+        dissolved += 1
+    return dissolved
+
+
 async def sync_team(session: AsyncSession, team_id: int, *, batch: int = 500) -> dict[str, Any]:
-    """单团队自动归组：扫未归组且带可信 twister 素材的 product。"""
+    """单团队自动归组：候选按家族标识集连通分量归组（增量2.5：不再单靠 parent_asin）。"""
     limit = await max_group_size(session, team_id)
+    dissolved = await _dissolve_orphan_singletons(session, team_id)
     candidates = (
         await session.execute(
             text(
                 "SELECT id, source_ref, attrs ->> 'parent_asin' AS parent,"
-                " attrs ->> 'variant_attributes' AS vattrs"
+                " attrs ->> 'variant_attributes' AS vattrs,"
+                " attrs -> 'variation_asins' AS family"
                 " FROM app.product"
                 " WHERE team_id = :t AND variant_group_id IS NULL"
                 "   AND coalesce(attrs ->> 'variant_attributes', '') <> ''"
-                "   AND coalesce(attrs ->> 'parent_asin', '') <> ''"
-                "   AND attrs ->> 'parent_asin' <> source_ref"
+                "   AND (attrs ->> 'parent_asin' <> source_ref"
+                "        OR jsonb_array_length(coalesce(attrs -> 'variation_asins',"
+                "                                       '[]'::jsonb)) > 0)"
                 " ORDER BY id LIMIT :n"
             ),
             {"t": team_id, "n": batch},
         )
     ).all()
-    stats = {"scanned": len(candidates), "grouped": 0, "groups_touched": 0, "broken": 0}
-    by_parent: dict[str, list[Any]] = {}
-    for c in candidates:
-        by_parent.setdefault(str(c.parent), []).append(c)
-    for parent_ref, members in by_parent.items():
-        theme = ",".join(sorted(parse_variant_attrs(members[0].vattrs).keys())) or None
-        group_id = await _find_or_create_group(
-            session, team_id=team_id, parent_ref=parent_ref, theme=theme
+    stats = {"scanned": len(candidates), "dissolved": dissolved, "grouped": 0,
+             "groups_touched": 0, "broken": 0}  # fmt: skip
+    for members in _components(candidates):
+        identifiers: set[str] = set()
+        for c in members:
+            fam = list(c.family) if isinstance(c.family, list) else []
+            identifiers |= full_set(str(c.source_ref), c.parent, fam)
+        group_id = await _find_group_by_identifiers(
+            session, team_id=team_id, identifiers=sorted(identifiers)
         )
+        if group_id is None:
+            theme = ",".join(sorted(parse_variant_attrs(members[0].vattrs).keys())) or None
+            group_id = await _find_or_create_group(
+                session, team_id=team_id, parent_ref=min(identifiers), theme=theme
+            )
         for m in members:
             attrs = parse_variant_attrs(m.vattrs)
             await session.execute(
@@ -294,13 +429,17 @@ async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]
                     "SELECT DISTINCT team_id FROM app.product"
                     " WHERE variant_group_id IS NULL"
                     "   AND coalesce(attrs ->> 'variant_attributes', '') <> ''"
-                    "   AND coalesce(attrs ->> 'parent_asin', '') <> ''"
-                    "   AND attrs ->> 'parent_asin' <> source_ref"
+                    "   AND (attrs ->> 'parent_asin' <> source_ref"
+                    "        OR jsonb_array_length(coalesce(attrs -> 'variation_asins',"
+                    "                                       '[]'::jsonb)) > 0)"
+                    " UNION"  # 键过时的 broken 单员组所在团队也要扫（成员已入组，仅上句扫不到）
+                    " SELECT DISTINCT team_id FROM app.variant_group"
+                    " WHERE status = 'broken' AND anchor_store_id IS NULL"
                 )
             )
         ]
-    totals = {"teams": len(team_ids), "scanned": 0, "grouped": 0, "groups_touched": 0,
-              "broken": 0, "failed": 0}  # fmt: skip
+    totals = {"teams": len(team_ids), "scanned": 0, "dissolved": 0, "grouped": 0,
+              "groups_touched": 0, "broken": 0, "failed": 0}  # fmt: skip
     for tid in team_ids:
         try:
             async with system_tx(sessions) as session:
@@ -309,6 +448,6 @@ async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]
             totals["failed"] += 1
             log.warning("variant_sync.team_failed", team_id=tid, error=str(exc))
             continue
-        for k in ("scanned", "grouped", "groups_touched", "broken"):
+        for k in ("scanned", "dissolved", "grouped", "groups_touched", "broken"):
             totals[k] += int(st.get(k, 0))
     return totals

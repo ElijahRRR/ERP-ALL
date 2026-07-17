@@ -133,7 +133,7 @@ export default function ListingsPage() {
         queued: number
         feed_status?: string
         dry_run?: boolean
-        skipped: { listing_id: number; code: string }[]
+        skipped: { listing_id: number; code: string; message?: string }[]
       }>(`/listings/submit`, { listing_ids: selected })
       if (r.dry_run) {
         message.info(`dry-run 模式：已生成提交快照（${r.queued} 项，未真实发包）`)
@@ -141,7 +141,15 @@ export default function ListingsPage() {
         message.success(`已提交 ${r.queued} 项（feed: ${r.feed_status}）`)
       }
       if (r.skipped.length) {
-        message.warning(`跳过 ${r.skipped.length} 项：${r.skipped.map((s) => s.code).join(', ')}`, 6)
+        // 变体守卫等携带明细原因（如缺席成员清单），首条原样展示——"可见原因"到人眼为止
+        const first = r.skipped[0]
+        message.warning(
+          `跳过 ${r.skipped.length} 项：${first.code} ${first.message ?? ''}` +
+            (r.skipped.length > 1
+              ? `；其余：${r.skipped.slice(1).map((s) => s.code).join(', ')}`
+              : ''),
+          8,
+        )
       }
       setSelected([])
       void load()
