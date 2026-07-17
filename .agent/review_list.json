@@ -522,7 +522,7 @@
    "specs/007-mvp-completion-plan/README.md",
    ".agent/evidence/R2-07/"
   ],
-  "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)。【开发侧进展 2026-07-16】Owner 点名开工（007 落地前已启动，撞号已按 007 口径调和）：五路考古（archaeology.md）+ ✅ 07a 核心增量完码（PR #18）：0030 三表（channel_return 头/channel_return_line 行/channel_return_event 变更留痕，C6 行级 upsert）+ return_pull beat（BR-AS-001 全量翻页 nextCursor parse_qs、BR-AS-007 骤降告警、店间隔离）+ GET /returns 端点+ openapi 契约 + aftersale.read 权限点；本地 CI 全绿（pytest 411/ruff/mypy strict，新测 8 项）。【开发侧批注（不改 007 正文，走回传）】R-ERP-006 实证的是 erp-core 缺 returns；erpAPI 根另有独立生产脚本 售后订单同步/fetch_walmart_returns.py（台账 §13 AS 全部规则的出处），已用作实现语义与 L1 对拍口径——结论不变（代码确属新建），但『无旧语义可考』不成立。✅ 增量2（07a 收尾，PR#19）：0031 refund_request 图纸原样落库 + record/approval 两档本地闭环（幂等创建/审批/拒绝端点，权限点 refund.request/approve，reason_code 字典校验；auto 档 R2-09 接线前 fail-closed 拒绝不静默降档；approved 驻留待执行接线）；本地 CI 全绿（pytest 418/ruff/mypy strict，新测 7 项）。待办：07a A152 真机对账（验收①，等部署）→ 07b 封店 → 07c 邮箱",
+  "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)。【开发侧进展 2026-07-16】Owner 点名开工（007 落地前已启动，撞号已按 007 口径调和）：五路考古（archaeology.md）+ ✅ 07a 核心增量完码（PR #18）：0030 三表（channel_return 头/channel_return_line 行/channel_return_event 变更留痕，C6 行级 upsert）+ return_pull beat（BR-AS-001 全量翻页 nextCursor parse_qs、BR-AS-007 骤降告警、店间隔离）+ GET /returns 端点+ openapi 契约 + aftersale.read 权限点；本地 CI 全绿（pytest 411/ruff/mypy strict，新测 8 项）。【开发侧批注（不改 007 正文，走回传）】R-ERP-006 实证的是 erp-core 缺 returns；erpAPI 根另有独立生产脚本 售后订单同步/fetch_walmart_returns.py（台账 §13 AS 全部规则的出处），已用作实现语义与 L1 对拍口径——结论不变（代码确属新建），但『无旧语义可考』不成立。✅ 增量2（07a 收尾，PR#19）：0031 refund_request 图纸原样落库 + record/approval 两档本地闭环（幂等创建/审批/拒绝端点，权限点 refund.request/approve，reason_code 字典校验；auto 档 R2-09 接线前 fail-closed 拒绝不静默降档；approved 驻留待执行接线）；本地 CI 全绿（pytest 418/ruff/mypy strict，新测 7 项）。✅ 验收①真机通过（2026-07-17，evidence/R2-07/a152-recon-20260717.md）：A152 拉回 36 张真实退货单（36 头 36 行 1 页），return_pull_verify 全口径对账一致（RMA 集合/聚合状态/金额/行数/行级退款状态）；部署机 HEAD=176da4c、alembic 0031、migrate 退出码 0。**07a 整片收账（PR #18/#19 均已合并）**。待办：07b 封店 → 07c 邮箱（按 Owner 批准顺序，先开 R2-11 变体组再回本单）",
   "last_checked_at": "2026-07-17",
   "note": "验收：①A152 真实 returns 拉取对账一致 ②封店演练(incident→品牌 released→提醒送达) ③真实邮件→分类→incident 落库"
  },
@@ -572,12 +572,13 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "变体组【L1→L2】(D-Q2 MVP 项,上架态机欠账)：variant_group/variant_member 建表(001§03 图纸完备,代码零实现已核实)+采集 parent ASIN 归组+spec 构建器变体段(R2-03 扩展)+组完整性守卫(broken 拒构建)",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
-   "specs/007-mvp-completion-plan/README.md"
+   "specs/007-mvp-completion-plan/README.md",
+   ".agent/evidence/R2-11/"
   ],
-  "finding": "PRD §8 模块3 欠账，审计补单(2026-07-16)",
-  "last_checked_at": "2026-07-16",
+  "finding": "PRD §8 模块3欠账，审计补单(2026-07-16)。【开发侧考古 2026-07-17】五路完成（archaeology.md + raw-*.md）。**007 现状论断更正（批注回传）**：0007 迁移已建variant_group/variant_member/product.variant_group_id 全套 DDL（FK/RLS/is_primary 部分唯一），『列亦未建』不成立——范围收窄为 归组服务+契约端点实现+构建器变体段+完整性守卫，无需建表。采集素材已齐（parent_asin/twister variation_asins/variant_attributes 均在 product.attrs）。旧仓有生产级实现+两份设计文档（variant_groups/variant_anchor design），坑账入档。增量拆三：①归组闭环 ②构建器变体段+守卫 ③A152 L2 验收。D-Q63 三项 Owner 拍板（2026-07-17，全按建议）：anchor_store_id 列/渠道中立 VG{组id}/整组拒绝，已入宪法表第十五轮。✅ 增量1（归组闭环）完码：0032（anchor 列+variant_group_sync 调度种子）+ erp.catalog.variant（自动归组：只信 twister、排除自指 parent、组身份 (team,parent_ref)、双向同步、broken 判定 v1 成员<2/键集冲突/超上限 variant.max_group_size 配置中心+warn 通知）+ 契约端点（POST /variant-groups、PUT members 全量含主变体唯一/一品一组闸、GET 列表过滤）+ beat 注册。本地 CI 全绿（pytest 423/ruff/mypy strict，新测 5 项）。待：增量2 构建器变体段+整组守卫+anchor 锁定 → 增量3 A152 L2 验收",
+  "last_checked_at": "2026-07-17",
   "note": "验收：一组真实变体(≥3 成员)A152 上架为 Walmart variant group 并 live；组员缺失构建拒绝且可见原因"
  },
  {

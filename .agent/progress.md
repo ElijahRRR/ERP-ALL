@@ -564,3 +564,27 @@
 - 补 erp.tools.return_pull_verify（照 order_pull_verify 模板）：渠道为准全量重拉（只读）
   对比 DB 头/行（RMA 集合/聚合状态/金额/行数/行级退款状态），--pull-first 免等 08:00 beat。
   这是 07a 验收① 的一条命令化。CI 全绿（418 passed/ruff/mypy strict）。
+
+## 2026-07-17 R2-07 07a 整片收账（验收①真机通过）+ R2-11 考古启动
+- PR #19 合并（refund_request 两档 + 对账 harness 入 main）。部署机升级 HEAD=176da4c、
+  alembic 0031、migrate 退出码 0。
+- 验收①：A152（store_id=1）拉回 36 张真实退货单（36 头 36 行 1 页），return_pull_verify
+  全口径对账一致 ✅（evidence/R2-07/a152-recon-20260717.md）。07a 整片收账。
+- 按 Owner 批准顺序转 R2-11 变体组：五路考古已启动（图纸/采集现状/构建器扩展点/旧仓/渠道规格）。
+
+## 2026-07-17 R2-11 考古完成（五路并行，全绿）
+- 修正 007 论断：0007 迁移已建变体三件套 DDL，范围收窄（无需建表）；采集素材已齐；
+  旧仓有生产级实现与两份设计文档；渠道字段全集三层取证（设计文档/pt_spec/items OpenAPI）。
+- 综合报告 evidence/R2-11/archaeology.md（增量拆三 + P0 拍板三项 + P1 自定清单 + 批注四条）。
+- P0 待 Owner：anchor 落点 / variantGroupId 体系 / 组提交原子性。拍板后开增量1。
+
+## 2026-07-17 R2-11 增量1 完码（归组闭环）+ D-Q63 + R2-12 立单入账
+- D-Q63 三拍板入宪法表（anchor_store_id / VG{组id} / 整组拒绝，Owner 全按建议）。
+- 0032：variant_group.anchor_store_id + variant_group_sync 调度种子（40 * * * *）。
+- erp.catalog.variant：自动归组（只信 twister 素材、排除自指 parent、(team, parent_ref) 组身份、
+  member+product.variant_group_id 双向同步）；broken 判定 v1（成员<2/维度键集冲突/超上限
+  variant.max_group_size 配置中心默认 10）+ warn 通知 + 自动回 active；团队间失败隔离。
+- 契约端点：POST /variant-groups / PUT members（主变体唯一闸/一品一组闸/摘员双向清理）/
+  GET 列表（status/q 过滤，契约增补注记）。beat TASKS 注册 variant_group_sync。
+- 本地 CI：pytest 423 passed（新测 5 项：归组规则/幂等重跑/巨型组护栏/端点闸/列表过滤）
+  + ruff + mypy strict。main 4a57b68（R2-12 立单）已并入，顺序更新入 task.md。

@@ -21,6 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from erp.aftersale import pull as return_pull_service
+from erp.catalog import variant as variant_service
 from erp.channel import outbox
 from erp.channel import service as channel_service
 from erp.channel.gateway import gateway
@@ -714,6 +715,11 @@ async def return_pull(sessions: Sessions, config: dict[str, Any]) -> dict[str, A
     return await return_pull_service.run(sessions, config)
 
 
+async def variant_group_sync(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """变体自动归组（R2-11：twister 素材→组/成员 + broken 判定 v1；D-Q2/D-Q63）。"""
+    return await variant_service.run(sessions, config)
+
+
 async def ship_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
     """order_ack/order_ship verify_pending 渠道对账（镜像 retire_recon；绝不重发）。
 
@@ -846,4 +852,5 @@ TASKS: dict[str, TaskFn] = {
     "order_pull": order_pull,
     "ship_recon": ship_recon,
     "return_pull": return_pull,
+    "variant_group_sync": variant_group_sync,
 }

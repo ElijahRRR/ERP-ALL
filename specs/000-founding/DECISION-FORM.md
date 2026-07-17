@@ -255,3 +255,9 @@
 | # | 决策 | 备注 |
 |---|---|---|
 | D-Q62 | **定价通道限额与默认区间（R2-06）**：①价格批量通道按官方现行限额入账——PRICE_AND_PROMOTION feed = 10/hour 店铺级共享池（原 6/day 记载过时），改价路由 = 单店 ≤5 条走 PUT /v3/price（100/h）、更多聚合 feed（更新 BR-GW-011/BR-PR-007）；②定价策略建档默认区间模板 = FBA $0-20 / $20-80、FBM $20-80 / $80-1000（区间本身属 params 前台按团队可配，此项只定默认模板；BR-PR-001 注记修正）；③params.min_price 底线改为**可选**（Owner 2026-07-16 补充裁定「可选」：区间从 $0 起、便宜商品常态，绝对底线拦不住抓错价、只误伤真便宜货；填了才生效且必须 >0，低于底线不出价；001/06 图纸「必填」表述同步废止） | 2026-07-16 Owner 逐项批复："同意"；"建档默认模板用这个"（FBA 0-20/20-80、FBM 20-80/80-1000）；min_price 作用已向 Owner 说明（防坏源价/错参数下的白送价，最后一道闸） |
+
+## 第十五轮决策（D-Q63，2026-07-17）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q63 | **变体组三项实现口径（R2-11 考古后拍板）**：①anchor 实体落点 = `variant_group.anchor_store_id`（0032 加列；组首次上架时锁定店铺，anchor 店暂停则成员上架拒绝并写明原因、不自动转移——BR-LST-013 语义保真，补齐 D-Q2 点名而 001 §03 缺失的 anchor 落点）；②variantGroupId（渠道侧组标识）= **渠道中立 `VG{variant_group.id}`**（同 D1 master_sku 精神，不依赖 Amazon ASIN；旧仓 min(full_set) 为 ASIN 系不采；source_parent_ref 仍存 parent ASIN 溯源）；③变体组提交原子性 = **整组拒绝**（组内任一成员 spec 构建/校验失败 → 整组不发、GTIN/配额不消耗、原因可见——对齐 007 R2-11 验收判据，不做部分成功） | 2026-07-17 Owner 三项均选推荐项。配套实现口径（P1 开发侧自定随增量落笔）：broken 判定 v1（成员<2/维度键冲突/超上限 `variant.max_group_size` 配置中心默认 10）；variation_theme→Walmart 属性名映射走 system_config；match 模式豁免归组；isPrimaryVariant 不传（渠道自动选主，旧仓策略继承） |
