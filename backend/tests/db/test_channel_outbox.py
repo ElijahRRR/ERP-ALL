@@ -501,3 +501,47 @@ class TestPayloadRedaction:
             for secret in ("outbox-client-01", "outbox-secret-01", "Bearer", "access_token"):
                 assert secret not in txt
             assert outbox.scan_forbidden_keys(json.loads(txt)) is None
+
+
+class TestSuspensionGate:
+    """R2-07 07b 封店门控（§02:185）：非 active 店 listing 类命令冻结不可领，
+    order_ack/order_ship 放行且不被同店被冻结命令挡道；恢复 active 自动续。"""
+
+    def test_suspended_store_freezes_listing_but_not_orders(
+        self, seeded: dict, migrated_db: str
+    ) -> None:
+        key = get_settings().credential_key
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            channel_id = conn.execute(
+                "SELECT id FROM app.channel WHERE code='walmart_us'"
+            ).fetchone()[0]
+            sid = _mk_store(conn, seeded["team"], channel_id, "A152S", key)
+
+        async def _enq(action: str, n: int) -> dict:
+            sessions = get_session_factory()
+            async with system_tx(sessions) as s:
+                return await outbox.enqueue(
+                    s,
+                    team_id=seeded["team"],
+                    store_id=sid,
+                    action=action,
+                    payload=_payload(n),
+                    idempotency_key=f"gate:{action}:{uuid.uuid4()}",
+                )
+
+        f1 = asyncio.run(_enq("feed_submit", 71))  # 先入队：listing 维护类
+        o1 = asyncio.run(_enq("order_ack", 72))  # 后入队：订单类（同车道，id 更大）
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("UPDATE app.store SET status = 'suspended' WHERE id = %s", (sid,))
+        # 冻结：listing 命令不可领
+        assert asyncio.run(_claim(f1["command_id"])) is None
+        # 放行：订单命令可领——被冻结的 f1 在前也不得挡道
+        cmd_o = asyncio.run(_claim(o1["command_id"]))
+        assert cmd_o is not None
+        assert asyncio.run(_complete(cmd_o, "succeeded")) is True
+        # 恢复 active：f1 按原序可领，自动续
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("UPDATE app.store SET status = 'active' WHERE id = %s", (sid,))
+        cmd_f = asyncio.run(_claim(f1["command_id"]))
+        assert cmd_f is not None
+        asyncio.run(_complete(cmd_f, "succeeded"))

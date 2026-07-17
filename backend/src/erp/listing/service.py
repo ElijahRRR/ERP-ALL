@@ -169,6 +169,62 @@ async def _broken_group_reject(
     }
 
 
+async def _occupy_brand(
+    session: AsyncSession,
+    *,
+    team_id: int,
+    store_id: int,
+    brand_norm: str | None,
+    brand_display: str | None,
+) -> None:
+    """build 上架品牌店铺占用（001 §03 :89）。
+
+    无品牌→跳过；本店已 occupied→跳过；异店 occupied→BRAND_OCCUPIED_OTHER_STORE
+    拒绝（异常经 allocate 内 except 归 rejected，回滚本品 savepoint）；无占用→INSERT。
+    brand_norm 复用 product 表生成列（lower(btrim(brand))），品牌身份与产品去重一致。
+    并发：INSERT 撞部分唯一 uq_brand_occupied → ON CONFLICT DO NOTHING + 复查裁决
+    （异店拒/本店过）；复查为空说明撞冲突与复查之间占用行被并发释放（窄窗）——
+    重试一次 INSERT 把空槽占上，避免 listing 建成而品牌槽空置的欠占用泄漏。
+    复查语义依赖 READ COMMITTED 每语句新快照；引擎若改隔离级别需重审此处。
+    """
+    if not brand_norm:
+        return
+    occ = None
+    for _ in range(2):
+        inserted = (
+            await session.execute(
+                text(
+                    "INSERT INTO app.brand_assignment"
+                    " (team_id, brand_norm, brand_display, store_id)"
+                    " VALUES (:t, :bn, :bd, :s)"
+                    " ON CONFLICT (team_id, brand_norm) WHERE status = 'occupied' DO NOTHING"
+                    " RETURNING id"
+                ),
+                {"t": team_id, "bn": brand_norm, "bd": brand_display, "s": store_id},
+            )
+        ).first()
+        if inserted is not None:
+            return  # 新占成功
+        occ = (
+            await session.execute(
+                text(
+                    "SELECT ba.store_id, s.name FROM app.brand_assignment ba"
+                    " JOIN app.store s ON s.id = ba.store_id"
+                    " WHERE ba.team_id = :t AND ba.brand_norm = :bn AND ba.status = 'occupied'"
+                ),
+                {"t": team_id, "bn": brand_norm},
+            )
+        ).first()
+        if occ is not None:
+            break  # 有在场占用行，按其归属裁决
+    if occ is None or occ.store_id == store_id:
+        return  # 本店已占（或重试后槽仍瞬态空置——留待下次分配收敛）→ 过
+    raise BusinessError(
+        "BRAND_OCCUPIED_OTHER_STORE",
+        f"品牌 {brand_display} 已被本团队店铺「{occ.name}」占用（同品牌只可绑定一店）",
+    )
+
+
 async def allocate(
     session: AsyncSession,
     *,
@@ -208,8 +264,8 @@ async def allocate(
             (
                 await session.execute(
                     text(
-                        "SELECT id, team_id, master_sku, title, brand, images, attrs,"
-                        " price_snapshot, status, variant_group_id FROM app.product"
+                        "SELECT id, team_id, master_sku, title, brand, brand_norm, images,"
+                        " attrs, price_snapshot, status, variant_group_id FROM app.product"
                         " WHERE id = :p AND team_id = :t"
                     ),
                     {"p": pid, "t": team_id},
@@ -293,6 +349,15 @@ async def allocate(
                     )
                 ).scalar_one()
                 if offer_mode == "build":
+                    # 品牌占用（001 §03 :89；match 豁免——不携带品牌绑定语义）。
+                    # 异店占用抛 BRAND_OCCUPIED_OTHER_STORE → savepoint 回滚本品、归 rejected。
+                    await _occupy_brand(
+                        session,
+                        team_id=team_id,
+                        store_id=store_id,
+                        brand_norm=product["brand_norm"],
+                        brand_display=product["brand"],
+                    )
                     gtin_val = await gtin_pool.hold_one(
                         session, team_id=team_id, listing_id=listing_id
                     )

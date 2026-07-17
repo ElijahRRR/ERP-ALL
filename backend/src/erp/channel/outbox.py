@@ -159,7 +159,10 @@ async def claim(
     共享一条车道会把 order_ack/order_ship 背压数小时（R2-06 增量3 评审发现 10）——
     故 price_push 独占车道，其余 action 维持 RS-03b 原有同店 FIFO 语义。
 
-    → 命令行 dict（含本次 fence）；None=不可领（车道被挡/已被领/已终局）。
+    → 命令行 dict（含本次 fence）；None=不可领（车道被挡/已被领/已终局/封店冻结）。
+
+    封店门控与 pick_next 同口径（07b §02:185）：非 active 店只放行订单类命令，
+    listing 维护类不可领；阻塞子查询同样忽略被冻结命令。
     """
     row = (
         (
@@ -169,9 +172,15 @@ async def claim(
                     " fence = c.fence + 1, attempts = c.attempts + 1, claimed_at = now(),"
                     " lease_expires_at = now() + make_interval(secs => :lease)"
                     " WHERE c.id = :id AND c.status = 'pending'"
+                    "   AND (c.action IN ('order_ack','order_ship') OR EXISTS"
+                    "     (SELECT 1 FROM app.store s"
+                    "        WHERE s.id = c.store_id AND s.status = 'active'))"
                     "   AND NOT EXISTS (SELECT 1 FROM app.channel_command b"
                     "     WHERE b.store_id = c.store_id AND b.id < c.id"
                     "       AND (b.action = 'price_push') = (c.action = 'price_push')"
+                    "       AND (b.action IN ('order_ack','order_ship') OR EXISTS"
+                    "         (SELECT 1 FROM app.store s"
+                    "            WHERE s.id = b.store_id AND s.status = 'active'))"
                     "       AND b.status IN ('pending','inflight','verify_pending'))"
                     " RETURNING c.id, c.team_id, c.store_id, c.action, c.object_type,"
                     "   c.object_id, c.payload, c.fence, c.created_by"
@@ -310,6 +319,11 @@ async def pick_next(
     exclude_store_ids：本轮已确认闸拒/车道受阻的店铺——跳过其命令继续选其他店，
     否则单店限流会把全局最低 id 恒定选中、饿死其余店铺（R2-06 增量3 评审发现 3）。
     车道口径与 claim 一致（price_push 独占车道）。→ {id, store_id} | None。
+
+    封店门控（07b §02:185）：店铺非 active 时 listing 维护类命令（feed_submit /
+    item_retire / price_push）冻结不选，order_ack/order_ship 放行（已付订单履约
+    不因封店中断）；恢复 active 后按原序自动续。阻塞子查询同口径——被冻结的
+    listing 命令不得反向挡住同店订单命令的车道。
     """
     row = (
         await session.execute(
@@ -317,9 +331,14 @@ async def pick_next(
                 "SELECT c.id, c.store_id FROM app.channel_command c"
                 " WHERE c.status = 'pending'"
                 "   AND NOT (c.store_id = ANY(:excl))"
+                "   AND (c.action IN ('order_ack','order_ship') OR EXISTS"
+                "     (SELECT 1 FROM app.store s WHERE s.id = c.store_id AND s.status = 'active'))"
                 "   AND NOT EXISTS (SELECT 1 FROM app.channel_command b"
                 "     WHERE b.store_id = c.store_id AND b.id < c.id"
                 "       AND (b.action = 'price_push') = (c.action = 'price_push')"
+                "       AND (b.action IN ('order_ack','order_ship') OR EXISTS"
+                "         (SELECT 1 FROM app.store s"
+                "            WHERE s.id = b.store_id AND s.status = 'active'))"
                 "       AND b.status IN ('pending','inflight','verify_pending'))"
                 " ORDER BY c.id LIMIT 1"
             ),

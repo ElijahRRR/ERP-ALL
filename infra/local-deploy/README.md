@@ -56,7 +56,8 @@ bash infra/local-deploy/backup.sh
 ## 变体组运维（R2-11，D-Q63）
 
 - **组哪来**：beat `variant_group_sync`（每小时 :40）从采集素材自动归组（只信 twister）；
-  也可在产品页/接口人工建组、全量设成员。组状态 broken（成员不齐/维度冲突/超上限
+  也可在产品页/接口人工建组、全量设成员。手动单跑：
+  `docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task variant_group_sync`。组状态 broken（成员不齐/维度冲突/超上限
   `variant.max_group_size`，默认 10）时 spec 构建与提交整组拒绝，修复后自动回 active。
 - **整组上架**：组全体成员同店同批提交（缺员会整组拒绝并列出缺席成员；同店已在架/在途
   成员算在场——补投单个失败成员直接重投即可）。首次成功入列即锁定 anchor 店，之后只能
@@ -67,3 +68,65 @@ bash infra/local-deploy/backup.sh
 - **验收演练（R2-11 增量3）**：①A152 采集一组带变体的真实 ASIN（≥3 成员）→ 等归组任务
   （或手动触发）→ 审核通过 → 同批分配+提交 → Walmart 后台确认 variant group live；
   ②故意少分配一个成员提交 → 应见 VARIANT_GROUP_INCOMPLETE 及缺席成员明细。
+
+## 封店工作流演练（R2-07 07b，D-Q33）
+
+验收②：登记封店事件 → 品牌占用批量释放 → 定时提醒送达 → resolved 恢复。测试验收店 = **A152**。
+下述 SQL 全为**只读核对**（SELECT），不含任何改库操作；连库统一走：
+
+```bash
+PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d erp_all -c"
+```
+
+1. **前置：制造品牌占用**（build 模式已分配产品才会占用品牌）。
+   前端「上架管理 → 分配上架」对 **A152** 分配若干 build 模式、带品牌的产品；成功后
+   `app.brand_assignment` 新增 `status='occupied'` 行。只读核对当前占用：
+   ```bash
+   $PSQL "SELECT ba.id, ba.brand_display, ba.status FROM app.brand_assignment ba
+          JOIN app.store s ON s.id = ba.store_id
+          WHERE s.code = 'A152' AND ba.status = 'occupied' ORDER BY ba.id;"
+   ```
+   期望 ≥1 行 occupied；若为空，先回上一步分配产品。
+
+2. **登记封店事件**（前端）。「店铺事件」页 → 「登记事件」→ 店铺选 A152、类型选「封店
+   suspension」、原因随填 → 提交。表单会红字提示"将立即置店铺为
+   suspended 并批量释放品牌占用"。
+   **发生时间请回填 ≥ remind_days（默认 7）天前**——提醒任务按"已封天数 ≥ remind_days"
+   触发，发生时间填现在则当日不会产生提醒（需等满一个周期）。
+
+3. **核对联动结果**（只读）。
+   ```bash
+   # ① 店铺置 suspended（期望 status=suspended、suspended_at 非空）
+   $PSQL "SELECT id, code, name, status, suspended_at FROM app.store WHERE code = 'A152';"
+   # ② 新事件行 + 品牌释放回填（期望最新一行 incident_kind=suspension、brand_released_at 非空）
+   $PSQL "SELECT id, store_id, incident_kind, status, occurred_at, brand_released_at, sku_released_at
+          FROM app.store_incident ORDER BY id DESC LIMIT 3;"
+   # ③ 品牌占用批量释放（期望先前 occupied 行全部 status=released、release_reason=suspension、
+   #    incident_id=新事件 id、released_at 非空）
+   $PSQL "SELECT ba.id, ba.brand_display, ba.status, ba.released_at, ba.release_reason, ba.incident_id
+          FROM app.brand_assignment ba JOIN app.store s ON s.id = ba.store_id
+          WHERE s.code = 'A152' ORDER BY ba.id;"
+   ```
+   前端「店铺事件」页下半「品牌占用」表按 A152 过滤，应同样看到这些行已 released。
+
+4. **触发/等待封店提醒**（beat `suspension_reminder` → notification）。
+   - 自动：beat 调度器按 `app.schedule` 中 `suspension_reminder` 的 `remind_days` 周期自动派发，
+     命中未闭合的 suspension 事件后写 notification（前端右上角通知铃 / 「通知中心」可见）。
+   - 手动一次性（`erp.tools.run_task` 通用单跑工具，config 与 beat 同源读 app.schedule）：
+     ```bash
+     docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task suspension_reminder
+     ```
+   - 只读核对提醒已生成：
+     ```bash
+     $PSQL "SELECT id, category, title, created_at FROM app.notification
+            ORDER BY created_at DESC LIMIT 5;"
+     ```
+     期望出现封店/申诉提醒条目。
+
+5. **resolved 流转恢复**。「店铺事件」页 → 该 suspension 行 → 「推进状态」→ 目标选「已解决
+   resolved」（弹窗提示店铺将恢复 active）→ 确认。只读核对：
+   ```bash
+   $PSQL "SELECT id, code, status FROM app.store WHERE code = 'A152';"
+   ```
+   期望 `status=active`。注意：resolved 只恢复店铺 active（人工确认，§02:187）；已释放的品牌
+   占用不因 resolved 自动回占，需要时在「品牌占用」重新分配。
