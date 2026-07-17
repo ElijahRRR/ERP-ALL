@@ -564,3 +564,10 @@
 - 补 erp.tools.return_pull_verify（照 order_pull_verify 模板）：渠道为准全量重拉（只读）
   对比 DB 头/行（RMA 集合/聚合状态/金额/行数/行级退款状态），--pull-first 免等 08:00 beat。
   这是 07a 验收① 的一条命令化。CI 全绿（418 passed/ruff/mypy strict）。
+
+## 2026-07-17 R2-07 07a 整片收账（验收①真机通过）+ R2-11 考古启动
+- PR #19 合并（refund_request 两档 + 对账 harness 入 main）。部署机升级 HEAD=176da4c、
+  alembic 0031、migrate 退出码 0。
+- 验收①：A152（store_id=1）拉回 36 张真实退货单（36 头 36 行 1 页），return_pull_verify
+  全口径对账一致 ✅（evidence/R2-07/a152-recon-20260717.md）。07a 整片收账。
+- 按 Owner 批准顺序转 R2-11 变体组：五路考古已启动（图纸/采集现状/构建器扩展点/旧仓/渠道规格）。
