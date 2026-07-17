@@ -588,3 +588,14 @@
   GET 列表（status/q 过滤，契约增补注记）。beat TASKS 注册 variant_group_sync。
 - 本地 CI：pytest 423 passed（新测 5 项：归组规则/幂等重跑/巨型组护栏/端点闸/列表过滤）
   + ruff + mypy strict。main 4a57b68（R2-12 立单）已并入，顺序更新入 task.md。
+
+## 2026-07-17 R2-11 增量2 完码（Workflow 编排：Opus 执行 / fable 规划验收）
+- 编排实录：三段串行实现（变体段/守卫/测试）+ 三路并行评审（D-Q63 契合/fail-closed/回归）。
+  故障两起均恢复：段2 结构化输出五连败（Opus 漏传必填空数组）→ 改主控核实常量绕行；
+  实现本体未损失（守卫 281 行已落盘）。
+- 交付：spec.py 变体段（theme_map 配置中心+加性合并、维度值进指纹、VG{组id} 实例化注入、
+  broken/PT 不支持/键不可映射/维度缺失/映射冲突 五重 fail-closed）；service.py 三闸整组守卫
+  + anchor 首上原子锁（RETURNING 判空防并发 TOCTOU）；变体控制字段全链剥离（isPrimaryVariant
+  一律不传，LLM 幻觉防注入）；组不齐"在场"扩展（同店在途/在架算在场）。
+- 评审验收：1 blocker（match 被 broken 组误拦）+3 major 全修，2 minor 修复，2 挂账（anchor
+  解锁通道、组上下文批量化）。本地 CI：pytest 440 passed + ruff + mypy strict 全绿（新测 17 项）。

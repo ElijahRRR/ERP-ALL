@@ -245,6 +245,44 @@ async def set_members(
     return {"group_id": group_id, "members": len(members), "status": status}
 
 
+async def load_build_context(session: AsyncSession, product_id: int) -> dict[str, Any] | None:
+    """spec 构建器变体段只读上下文（增量2；D-Q63）。
+
+    product.variant_group_id 为空 → None（未分组：构建器走非变体路径，指纹/缓存不变）；
+    否则一次查询取组 + 本品成员行 + 组内全体成员 id：
+      {group_id, group_ref="VG{id}"（D-Q63② 渠道中立引用，不撞 ASIN 也不撞渠道既有值）,
+       status, anchor_store_id, variation_theme,
+       member_product_ids: [成员 product_id 升序], variant_attrs: 本品成员行维度值 dict}。
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT g.id AS group_id, g.status AS status,"
+                " g.anchor_store_id AS anchor_store_id, g.variation_theme AS variation_theme,"
+                " m.variant_attrs AS variant_attrs,"
+                " (SELECT array_agg(m2.product_id ORDER BY m2.product_id)"
+                "    FROM app.variant_member m2 WHERE m2.group_id = g.id) AS member_ids"
+                " FROM app.product p"
+                " JOIN app.variant_group g ON g.id = p.variant_group_id"
+                " LEFT JOIN app.variant_member m ON m.group_id = g.id AND m.product_id = p.id"
+                " WHERE p.id = :pid"
+            ),
+            {"pid": product_id},
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return {
+        "group_id": int(row.group_id),
+        "group_ref": f"VG{int(row.group_id)}",
+        "status": str(row.status),
+        "anchor_store_id": int(row.anchor_store_id) if row.anchor_store_id is not None else None,
+        "variation_theme": row.variation_theme,
+        "member_product_ids": [int(x) for x in (row.member_ids or [])],
+        "variant_attrs": dict(row.variant_attrs) if row.variant_attrs else {},
+    }
+
+
 async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]) -> dict[str, Any]:
     """beat 任务本体：逐团队归组（团队间失败隔离）。"""
     batch = int(config.get("batch", 500))
