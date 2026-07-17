@@ -536,3 +536,11 @@
   07 文档注记行级落地。
 - 本地 CI：pytest 411 passed（新增 8 项：分页协议/upsert 幂等/event 留痕/页失败水位/骤降告警/
   map 聚合/API 越权隔离）+ ruff check/format + mypy strict 全绿；permission 基线 44→45。
+
+## 2026-07-16 007 计划落 main 与 R2-07 撞号调和
+- 审计工作区推 007 MVP 补全计划（R2-07~11 + FE-DESIGN 补单；进度口径改 PRD §8 九模块）。
+  main 前进致 PR #18 冲突（review_list 双方各注册了 R2-07）。
+- 调和：review_list 以 main（46 单）为基；R2-07 采 007 三片定义（07a returns 只读/07b 封店/
+  07c 邮箱），我方增量1 = 07a 核心，进展与考古并入其 finding；退款三档执行划归 R2-09。
+- 开发侧批注（记 finding 不改 007 正文）：R-ERP-006 实证的是 erp-core 缺 returns，erpAPI 根
+  另有独立生产脚本（台账 §13 出处），已用作实现语义与对拍口径；结论（代码新建）不变。

@@ -487,19 +487,6 @@
   "acceptance": "①A152 真机一次改价经价格管道同步成功+影子对拍；②新建 listing 自动带策略价（不再 0 价/手工价）；③CI 全绿"
  },
  {
-  "id": "R2-07",
-  "priority": "P0",
-  "dimension": "feature",
-  "check": "售后域（退货/退款）最小闭环：channel_return 头+行落库（BR-AS-001~007 保真：全量拉取 limit=200 nextCursor 翻页、行级展开、upsert by (RMA,line) + 状态变更历史 C6/BR-AS-006）→ return_pull beat 任务（08:00 节律）→ 售后查询端点 → refund_request 三档（D-Q29：record/approval/auto，automation_policy flow=refund/cancel 快照，缺省 record fail-closed）→ 渠道退款执行走 outbox（action=return_refund，POST /v3/returns/{id}/refund 60/min，BR-GW-005 不盲重发 + verify-back，灰度期仅 is_test 店实执行）→ 前端售后页。不进本单：封店/邮箱、订单直退款（无 RMA）、cancel 执行通道、换货消费、WFS 退货",
-  "status": "in_progress",
-  "evidence": [
-   ".agent/evidence/R2-07/"
-  ],
-  "finding": "考古完成（archaeology.md，五路：宪法/契约/旧仓/渠道API/基建）。契约张力已定处置：冻结 channel_return 头表不动 + 新增 channel_return_line 行表（C6 行级 upsert 语义），07 文档已注记。✅ 增量1（读闭环）完码：0030 迁移（退货头/行/变更历史三表 + aftersale.read 权限点补种 + return_pull 调度种子 08:00/日）；erp.aftersale.pull（BR-AS-001 全量翻页 nextCursor parse_qs 协议、行级 upsert by (RMA,line)、状态变更 event 留痕、BR-AS-007 骤降告警、店间失败隔离）；GET /returns 列表/详情端点 + openapi-v0 契约；网关限流表补 GET /v3/returns 50/min。本地 CI 全绿（pytest 411 passed / ruff / mypy strict）；新测试 8 项含协议断言与越权隔离。待：增量2 refund_request 三档、增量3 渠道退款执行、增量4 前端页；L1 真机拉取待部署验证",
-  "last_checked_at": "2026-07-16",
-  "acceptance": "①L1 真机：A152（可扩全店只读）拉回退货单头+行落库，字段对拍旧仓飞书表 27 列口径；②三档流转 db 测试全绿（record 记账终态/approval 审批流/auto 直进执行），渠道退款执行 dry-run 证据（真实退款执行挂账等 A152 真实退货单，同 R2-05 L2 ship 模式）；③CI 全绿"
- },
- {
   "id": "FE-0716",
   "priority": "P1",
   "dimension": "bugfix",
@@ -524,5 +511,85 @@
   "finding": "完码（2026-07-16）。方案：frontend 服务改为构建产物 + nginx 静态伺服（默认随 up 启动，端口 5173:80 不变）；缓存策略是根治核心——hashed 资产 immutable 永久缓存、index.html no-store 永不缓存，换版本=换资产指纹，浏览器不可能再跑旧模块；部署=up -d --build frontend（无进程内缓存态）。旧 vite 挪名 frontend-dev 留 profile dev（与生产端口互斥）。活文档同步：Makefile（up 含 frontend、up-full→fe-dev 防双前端端口冲突）、windows.md（步骤2/排障记录）。验证：本地 pnpm build ✓ + compose YAML 解析 ✓ + 本机 nginx 1.24 用同配置真实 E2E 冒烟四项全过（nginx -t / SPA 回退 /orders→200 且 index no-store / hashed 资产 immutable / API 反代 login 422==直连 422）；镜像构建留部署机（沙盒无 docker daemon）。部署机切换实测（2026-07-16）：镜像 erp-all-frontend Up、index no-store ✓；核验 3c 首测 404=runbook 命令路径缺陷（后端健康端点在根 /healthz 不带 /api 前缀；FastAPI 404 报文能从 5173 出来恰证反代链路通）——补 nginx 精确映射 location = /api/healthz → /healthz 使前门全链健康检查可用（本地 nginx+路径回显桩实证：/api/healthz→/healthz 重写 ✓、/api/v1 与 /portal/v1 原样直通 ✓、缓存头回归 ✓）。✅ 收账（2026-07-16 Owner）：部署机复测 3c 通过（/api/healthz 经反代 200 ok）+ 浏览器验收通过（侧栏齐全/翻页不掉菜单）——两起 stale 模块类事故根治闭环",
   "last_checked_at": "2026-07-16",
   "acceptance": "生产 frontend 容器伺服构建产物；部署=重建镜像；不再出现 stale 模块类症状"
+ },
+ {
+  "id": "R2-07",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "售后与店铺事件域【L1→L2】：07a returns 只读闭环(channel_return+refund_request, 官方 Returns API, 001§07)；07b 封店工作流(store_incident 001§02+品牌占用批量释放+beat 提醒, 考古=旧 erp_core store_incidents)；07c 邮箱域最小闭环(001§09 mail, IMAP 收件+店铺关联+LLM 分类 mail_classify→incident+告警, D-Q22/33；完整客户端=MVP后)",
+  "status": "in_progress",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md",
+   ".agent/evidence/R2-07/"
+  ],
+  "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)。【开发侧进展 2026-07-16】Owner 点名开工（007 落地前已启动，撞号已按 007 口径调和）：五路考古（archaeology.md）+ ✅ 07a 核心增量完码（PR #18）：0030 三表（channel_return 头/channel_return_line 行/channel_return_event 变更留痕，C6 行级 upsert）+ return_pull beat（BR-AS-001 全量翻页 nextCursor parse_qs、BR-AS-007 骤降告警、店间隔离）+ GET /returns 端点+ openapi 契约 + aftersale.read 权限点；本地 CI 全绿（pytest 411/ruff/mypy strict，新测 8 项）。【开发侧批注（不改 007 正文，走回传）】R-ERP-006 实证的是 erp-core 缺 returns；erpAPI 根另有独立生产脚本 售后订单同步/fetch_walmart_returns.py（台账 §13 AS 全部规则的出处），已用作实现语义与 L1 对拍口径——结论不变（代码确属新建），但『无旧语义可考』不成立。待办：07a 收尾（refund_request 表落地+A152 对账）→ 07b 封店 → 07c 邮箱",
+  "last_checked_at": "2026-07-16",
+  "note": "验收：①A152 真实 returns 拉取对账一致 ②封店演练(incident→品牌 released→提醒送达) ③真实邮件→分类→incident 落库"
+ },
+ {
+  "id": "R2-08",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "财务域【L1】：结算拉取(官方 API, 考古=fetch_walmart_settlement.py+walmart_settlement.db@T7)→对账 recon→profit_ledger 三粒度(D-Q32)→日报 KPI(考古=旧 store_kpi_snapshots/payout_accounts)",
+  "status": "todo",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "finding": "PRD §8 模块8，审计补单(2026-07-16)。硬前置：§08 图纸按 immutable event ledger 修订(D-Q56 裁定,审计工作区落笔)——开发等图纸",
+  "last_checked_at": "2026-07-16",
+  "gate": "§08 immutable ledger 图纸修订完成后方可动工",
+  "note": "验收：A152 真实结算单入库；结算↔订单对账差异可解释；利润账三粒度与结算金额闭合(抽 10 单人工核对)"
+ },
+ {
+  "id": "R2-09",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "三档自动化贯通【L1】：automation_policy 表已建(0025)仅通 order_block——补 flow 全集接线(audit_to_listing D-Q13/listing_pricing/refund D-Q29/scrape_to_audit, 以 001§09 flow 清单为准)+三档语义统一+前端策略面板+pubsub 即时生效",
+  "status": "todo",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "finding": "PRD §8 模块9，审计补单(2026-07-16)。是'贯通'不是'建表'(现状已核实)",
+  "last_checked_at": "2026-07-16",
+  "note": "验收：同一商品三档各跑一遍采集→审核→上架→定价全链(全自动零人工/半自动定点停/人工每环节停)；切档 60s 生效"
+ },
+ {
+  "id": "R2-10",
+  "priority": "P1",
+  "dimension": "feature",
+  "check": "采购方门户对外【L2】：portal_account(001§01, R1-03 记录的偏离项)+D-Q50 双入口外侧(内侧 R2-05 已建)+隔离 API 面",
+  "status": "todo",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "finding": "PRD §8 模块6 后半，审计补单(2026-07-16)",
+  "last_checked_at": "2026-07-16",
+  "gate": "硬前置=RS-01+RS-02(评审机器可判定闸门：门户路由启用前必须完成)",
+  "note": "验收：门户账号仅见own采购单(跨账号越权必败)；RS-01 四角色矩阵+RS-02 先行通过"
+ },
+ {
+  "id": "R2-11",
+  "priority": "P0",
+  "dimension": "feature",
+  "check": "变体组【L1→L2】(D-Q2 MVP 项,上架态机欠账)：variant_group/variant_member 建表(001§03 图纸完备,代码零实现已核实)+采集 parent ASIN 归组+spec 构建器变体段(R2-03 扩展)+组完整性守卫(broken 拒构建)",
+  "status": "todo",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "finding": "PRD §8 模块3 欠账，审计补单(2026-07-16)",
+  "last_checked_at": "2026-07-16",
+  "note": "验收：一组真实变体(≥3 成员)A152 上架为 Walmart variant group 并 live；组员缺失构建拒绝且可见原因"
+ },
+ {
+  "id": "FE-DESIGN",
+  "priority": "P2",
+  "dimension": "frontend",
+  "check": "前端设计打磨(D-Q53,Owner 触发制)：按 erpAPI/erp-core/handoff-design/(已核实在档) 移植视觉,数据接现有 API,禁止重写业务逻辑。现状=13 功能页已按域配套",
+  "status": "todo",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "finding": "D-Q53 原文=功能闭环稳定后统一执行；不排默认顺序，Owner 说'启动设计工单'才动",
+  "last_checked_at": "2026-07-16"
  }
 ]
