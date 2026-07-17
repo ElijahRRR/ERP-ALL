@@ -16,7 +16,7 @@
 | PRD §8 模块 | 状态 | 缺口 → 工单 |
 |---|---|---|
 | 1 店铺/代理/配额/GTIN | ✅ | — |
-| 2 合规导入+L4 | ✅（L4 豁免 D-Q58） | — |
+| 2 合规导入+L4 | 🟡（存量导入 ✅；**持续供给未立单**，Owner 2026-07-17 指出） | → R2-12 |
 | 3 上架完整态机 | 🟡 | **变体组零实现** → R2-11 |
 | 4 定价策略 | ✅ R2-06 | — |
 | 5 跟卖模式 | 🟡 | match spec/定价已有；货源占位链随 R2-11/09 复核 |
@@ -103,17 +103,64 @@
 **验收**：一组真实变体（≥3 成员）A152 上架为 Walmart variant group 并 live；
 组员缺失时构建拒绝且可见原因。
 
+### R2-12 合规数据供给持续化【L1】（黑名单多源 + USPTO 自增量 + 合规页面）
+
+**缺口来源（Owner 2026-07-17 指出，审计核实为真）**：存量迁移只解决"库里有数"；
+旧系统的持续供给链全在旧仓单机 cron 上，新系统无工单承接，13 页中亦无合规页。
+001 §04 图纸有落点（source 枚举 tro_sync/trademark_sync、tro_case"按日进"、
+refdata.trademark"同步管道产物"）但无人立单；RS-04A/B/C/D 只覆盖**通道与账本
+机制**，不覆盖**源头采集与常驻调度**。
+
+四条供给链考古（源码逐条核实，2026-07-17）：
+
+1. **USPTO 日度自增量**：`walmart-trademark-sync/daily_update.py`——查
+   `trademarks.MAX(filing_date)` → 从 `data.uspto.gov`（TRTDXFAP/apcYYMMDD.zip）
+   下载缺失日包 → `etl_trademarks.py` iterparse 流式入 5 表（ON CONFLICT 覆盖）
+   → `etl_progress` 断点续传。**新系统接法**：部署机 daily_update（uspto 库）→
+   RS-04A 搬运通道增量 upsert 进 `refdata.trademark`（is_live/nice_classes 派生
+   同基线导入）→ refdata_revision 递增失效审核缓存；挂 beat 调度 + 失败告警。
+2. **TRO 采集**：`tro-scraper-matrix`——5 站点（123tro/61tro/ipsebe/saibeiip/
+   worldtro，httpx+Playwright）→ 各站 SQLite → merge → cleaning_engine（品牌归一/
+   原告/法院提取）。**新系统接法**：产物经 import_job(domain=tro) 按日进
+   `tro_case` + 派生 blacklist_brand 断言（source=tro_sync，RS-04D 账本消费）。
+3. **后台报错回收**：旧 `沃尔玛问题商品清理`——daily_cleanup（日 4 次拉
+   UNPUBLISHED+SYSTEM_PROBLEM 分类处置）+ `brand_collector.py`（C 品牌限制/
+   E 知产 → 品牌黑名单，来源列标注）+ `blacklist_sync.py`（永久禁售类
+   B/C/E/F/G/K 的 ASIN → 选品 ASIN 黑名单）。**新系统接法**：listing 错误处置
+   （listing_error_catalog 0020 已有）命中永久禁售类 → 自动生成黑名单**候选**
+   （brand/ASIN）→ 人工确认落库；§04 source 枚举随本单扩 `error_recycle`
+   （图纸小修由审计侧落笔）。
+4. **邮件与人工渠道**：核实无自动化旧代码（旧链路=人工阅侵权/投诉邮件→填飞书）。
+   近期=合规页人工录入（source=manual）+ 标准导入接口；R2-07c 落地后，Walmart
+   通知/侵权邮件 LLM 分类可生成黑名单候选进人工确认队列（**不自动入名单**）。
+
+**页面（随本单配套）**：合规中心页——四黑名单管理（增删/来源与断言追溯/RS-04D
+裁决视图）+ 商标查询（mark_norm trgm + Nice class）+ TRO 案件查询 + import_job
+上传/进度/错误报告下载。
+
+**依赖**：RS-04A 通道（已建成）；RS-04D 断言账本（blacklist 写路径，**先行或与
+本单同窗执行**）；beat 调度（R2-04 已有）；07c 邮件钩子（后置，不阻塞本单）。
+
+**验收**：① USPTO：连续 3 个日度增量自动入 refdata.trademark，行数与 etl_progress
+对账一致，审核检索可见新商标；② TRO：一次真实采集→tro_case 入库→派生品牌断言
+→L2 命中可复现；③ 报错回收：一个真实永久禁售错误商品自动生成黑名单候选、人工
+确认落库全程可追溯；④ 页面：四黑名单可管理、商标可查询、import_job 全流程走通。
+
 ### FE-DESIGN 前端设计打磨（D-Q53，Owner 触发制）
 
 **现状核实**：前端已有 13 个功能页（AntD 功能件，按域随单配套）；视觉基准
 `erpAPI/erp-core/handoff-design/`（chats+project 完整在档，已核实存在）。
-D-Q53 原文=功能闭环稳定后统一执行。**不排默认顺序，Owner 说"启动设计工单"才动**；
-执行时按 handoff-design 移植视觉、数据接现有 API，禁止重写业务逻辑。
+D-Q53 原文=功能闭环稳定后统一执行。**不排默认顺序，Owner 说"启动设计工单"才动**。
+**执行方式（Owner 指令，2026-07-17 补记）：调用 Claude Design 设计**——
+handoff-design 存档作为风格基线输入，新页面视觉由 Claude Design 产出，数据接
+现有 API，禁止重写业务逻辑。
 
 ## 动工顺序（✅ 已定案，Owner 2026-07-16："动工顺序符合开发推进逻辑即可"）
 
-**R2-11（小，上架欠账）→ R2-07（运营刚需）→ R2-09（贯通）→ R2-08 → R2-10
-（RS-01/02 前置）**；FE-DESIGN 由 Owner 择机触发。R2-04 收尾与 RS 系列
+**R2-11（小，上架欠账）→ R2-07（运营刚需）→ R2-12（数据供给，与 RS-04D 同窗）
+→ R2-09（贯通）→ R2-08 → R2-10（RS-01/02 前置）**；FE-DESIGN 由 Owner 择机触发。
+（2026-07-17 插入 R2-12：黑名单/商标数据新鲜度直接决定审核质量，随时间衰减，
+属运营刚需；其不依赖 07c/09/08，仅依赖已建成的 RS-04A 通道 + RS-04D 账本。）R2-04 收尾与 RS 系列
 （04A 14M 实测/05/06…）由开发侧按既有节奏穿插，不受本序影响。
 **R2-08 前置已解除**（2026-07-16）：§08 财务图纸按 immutable event ledger 修订完成
 （financial_event/ledger_entry 追加式两层 + 显式汇率块 + 过账幂等/冲销协议 +
