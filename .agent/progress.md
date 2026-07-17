@@ -612,3 +612,11 @@
   自动解散重归（仅与其它组相交者，真孤品稳定不换号）；run() 团队发现含 broken 组团队。
 - 批量操作：产品页多选+批量分配上架（含行级禁选非可分配态）；提交跳过原因明细透出。
 - CI：pytest 443 passed + ruff + mypy strict + pnpm lint/build 全绿。
+
+## 2026-07-17 R2-11 验收阻塞排障：变体页形态漂移探针
+- 真机诊断反转：4 ASIN parent 一致（未裂组），但 variant_attributes 空 + variation_asins 缺失
+  ——twister 矩阵在该页面形态下解析全空（连全页正则兜底也空），产品从未成为归组候选
+  （"只信 twister"信任规则正确拦截）；此前 5 个 broken 单员组属别家早采产品，语义正常。
+- 增量2.5 的连通分量归组修复本身无恙（本地测试通过），阻塞点转移到 worker 解析层。
+- 新增 erp_worker.probe 探针：真实抓取栈拉页 + 各 twister 载体标记计数与上下文切片（repr）
+  + parser 三路解析结果 + HTML gzip 落容器 /tmp 备取证。等部署机探针输出定位形态后修 parser。
