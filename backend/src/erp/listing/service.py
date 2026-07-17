@@ -20,6 +20,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from erp.catalog import variant as variant_svc
 from erp.channel import outbox
 from erp.channel import service as channel_service
 from erp.channel.gateway import gateway
@@ -141,6 +142,33 @@ def _initial_price(
     return None, None, None
 
 
+async def _broken_group_reject(
+    session: AsyncSession, product: Mapping[Any, Any], offer_mode: str
+) -> dict[str, Any] | None:
+    """product 属 broken 变体组 → rejected 项（D-Q63③；否则 None）。
+
+    最早拦截不浪费 GTIN 预占；修复后归组任务自动回 active。组同团队（RLS）恒可读。
+    match 豁免（D-Q63 配套）：match 不携带变体段，组状态与其无关——评审 blocker 修复。
+    """
+    gid = product["variant_group_id"]
+    if gid is None or offer_mode != "build":
+        return None
+    g_status = (
+        await session.execute(
+            text("SELECT status FROM app.variant_group WHERE id = :g"), {"g": gid}
+        )
+    ).scalar_one_or_none()
+    if g_status != "broken":
+        return None
+    return {
+        "product_id": product["id"],
+        "code": "VARIANT_GROUP_BROKEN",
+        "message": (
+            f"变体组 #{gid} 处于 broken（成员不齐/主题冲突）不可分配；修复后归组任务自动回 active"
+        ),
+    }
+
+
 async def allocate(
     session: AsyncSession,
     *,
@@ -181,7 +209,7 @@ async def allocate(
                 await session.execute(
                     text(
                         "SELECT id, team_id, master_sku, title, brand, images, attrs,"
-                        " price_snapshot, status FROM app.product"
+                        " price_snapshot, status, variant_group_id FROM app.product"
                         " WHERE id = :p AND team_id = :t"
                     ),
                     {"p": pid, "t": team_id},
@@ -204,6 +232,13 @@ async def allocate(
                     "message": f"产品状态 {product['status']} 不可上架（需审核通过）",
                 }
             )
+            continue
+        # 变体组 broken 准入（D-Q63③；001 §03：broken 组 spec 构建拒绝）——成员不齐/
+        # 主题冲突/超上限时归组服务置 broken，此处最早拦截不浪费 GTIN 预占；
+        # 修复后归组任务自动回 active。_submit_tx1 组级守卫再兜一道（防绕过分配入口）。
+        broken_reject = await _broken_group_reject(session, product, offer_mode)
+        if broken_reject is not None:
+            rejected.append(broken_reject)
             continue
         if not store["dedup_exempt"]:
             dup = (
@@ -390,51 +425,68 @@ async def _submit_tx1(  # noqa: PLR0912, PLR0915 提交链分支=协议分支（
     ).scalar_one_or_none()
     items_payload: list[dict[str, Any]] = []
     feed_listings: list[dict[str, Any]] = []
+    # 变体组切分（仅 build 模式；match 全程豁免变体——D-Q3 参数包差异）：
+    # 逐 granted 载变体上下文，未分组/match 直接逐品 build（行为与改造前一致），
+    # 分组成员按 group_id 归拢后走组级守卫（broken/缺员/anchor 整组判定，D-Q63）。
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    group_ctx: dict[int, dict[str, Any]] = {}
+    member_ctx: dict[int, dict[str, Any]] = {}  # listing_id → 本品变体上下文（build 复用免重查）
     for listing in granted:
-        product = (
-            (
+        vctx = (
+            None
+            if offer_mode == "match"
+            else await variant_svc.load_build_context(session, listing["product_id"])
+        )
+        if vctx is None:  # 未分组/match：逐品 build（改造前路径；skip_variant 免重查）
+            item = await _build_listing_item(
+                session, listing, offer_mode=offer_mode, store_id=store_id,
+                partner_id=partner_id, variant_ctx=None, skip_variant=(offer_mode != "match"),
+                actor_id=actor_id, skipped=skipped,
+            )  # fmt: skip
+            if item is not None:
+                items_payload.append(item)
+                feed_listings.append(listing)
+            continue
+        gid = int(vctx["group_id"])
+        grouped.setdefault(gid, []).append(listing)
+        group_ctx[gid] = vctx
+        member_ctx[listing["id"]] = vctx
+    # 变体组逐组守卫 + 整组构建（D-Q63③ 整组拒绝，不部分成功）
+    for gid, members in grouped.items():
+        built = await _submit_variant_group(
+            session, gid=gid, members=members, ctx=group_ctx[gid], store_id=store_id,
+            offer_mode=offer_mode, partner_id=partner_id, actor_id=actor_id,
+            member_ctx=member_ctx, skipped=skipped,
+        )  # fmt: skip
+        if built:
+            # 全员成功后先原子锁 anchor 再入列（D-Q63①）：谓词放宽到"空或已=本店"，
+            # rowcount==1 才算持锁——并发双店提交时输家命中 0 行，整组撤除不出门
+            # （闸③ 的快照读挡不住 TOCTOU，评审 major 修复）。
+            locked = (
                 await session.execute(
                     text(
-                        "SELECT id, team_id, title, brand, images, attrs, price_snapshot,"
-                        " category_path, amazon_leaf_id"
-                        " FROM app.product WHERE id = :p"
+                        "UPDATE app.variant_group SET anchor_store_id = :s"
+                        " WHERE id = :g AND (anchor_store_id IS NULL OR anchor_store_id = :s)"
+                        " RETURNING id"
                     ),
-                    {"p": listing["product_id"]},
+                    {"s": store_id, "g": gid},
                 )
-            )
-            .mappings()
-            .one()
-        )
-        try:
-            built = await spec_builder.build_spec(
-                session,
-                product=dict(product),
-                offer_mode=offer_mode,
-                gtin=listing["gtin"],
-                channel_sku=listing["channel_sku"],
-                price=listing["current_price"],
-                inventory=listing["current_inventory"],
-                end_date=listing["end_date"],
-                partner_id=partner_id,
-            )
-        except BusinessError as e:
-            await channel_service.release_quota(session, store_id, "listing_create")
-            await transition(session, listing, "failed", reason_code=e.code,
-                             detail={"message": e.message}, actor_id=actor_id)  # fmt: skip
-            skipped.append({"listing_id": listing["id"], "code": e.code})
-            continue
-        # 提交前本地校验（增量 4）：官方 spec 层 errors=不许出门（省 10/hour 配额）
-        validation = built.get("validation") or {"ok": True}
-        if not validation["ok"]:
-            await channel_service.release_quota(session, store_id, "listing_create")
-            await transition(
-                session, listing, "failed", reason_code="ERP_SPEC_INVALID",
-                detail={"errors": validation["errors"][:8]}, actor_id=actor_id,
-            )  # fmt: skip
-            skipped.append({"listing_id": listing["id"], "code": "ERP_SPEC_INVALID"})
-            continue
-        items_payload.append(built["item"])
-        feed_listings.append(listing)
+            ).first()
+            if locked is None:
+                for m_listing, _item in built:
+                    await channel_service.release_quota(session, store_id, "listing_create")
+                    skipped.append(
+                        {
+                            "listing_id": m_listing["id"],
+                            "code": "VARIANT_ANCHOR_MISMATCH",
+                            "message": f"变体组 #{gid} 已被并发提交锚定到其它店铺，"
+                            "整组撤除（anchor 不自动转移，BR-LST-013）",
+                        }
+                    )
+                built = []
+        for m_listing, item in built:
+            items_payload.append(item)
+            feed_listings.append(m_listing)
     if not feed_listings:
         return {"command_id": None, "response": {"queued": 0, "skipped": skipped, "feed_id": None}}
 
@@ -493,6 +545,186 @@ async def _submit_tx1(  # noqa: PLR0912, PLR0915 提交链分支=协议分支（
         "command_id": enq["command_id"],
         "response": {"queued": len(feed_listings), "skipped": skipped, "feed_id": feed_id},
     }
+
+
+async def _build_listing_item(
+    session: AsyncSession,
+    listing: dict[str, Any],
+    *,
+    offer_mode: str,
+    store_id: int,
+    partner_id: str | None,
+    variant_ctx: dict[str, Any] | None,
+    skip_variant: bool,
+    actor_id: int | None,
+    skipped: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """单 listing spec 构建 + 提交前本地校验。
+
+    失败（BusinessError / 官方 spec 层 errors 非空）→ 返还 listing_create 配额 + 迁 failed
+    + 记 skip，返回 None（省 10/hour 配额，不许出门吃渠道拒）；成功返回 MPItem 元素。
+    变体组成员亦复用本助手：已加载的变体上下文经 variant_ctx 传入免重查（未分组 build 路径
+    传 skip_variant=True 表意"确认非变体"，同样免 build_spec 内重查）。
+    """
+    product = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, team_id, title, brand, images, attrs, price_snapshot,"
+                    " category_path, amazon_leaf_id"
+                    " FROM app.product WHERE id = :p"
+                ),
+                {"p": listing["product_id"]},
+            )
+        )
+        .mappings()
+        .one()
+    )
+    try:
+        built = await spec_builder.build_spec(
+            session,
+            product=dict(product),
+            offer_mode=offer_mode,
+            gtin=listing["gtin"],
+            channel_sku=listing["channel_sku"],
+            price=listing["current_price"],
+            inventory=listing["current_inventory"],
+            end_date=listing["end_date"],
+            partner_id=partner_id,
+            variant_ctx=variant_ctx,
+            skip_variant=skip_variant,
+        )
+    except BusinessError as e:
+        await channel_service.release_quota(session, store_id, "listing_create")
+        await transition(session, listing, "failed", reason_code=e.code,
+                         detail={"message": e.message}, actor_id=actor_id)  # fmt: skip
+        skipped.append({"listing_id": listing["id"], "code": e.code})
+        return None
+    validation = built.get("validation") or {"ok": True}
+    if not validation["ok"]:
+        await channel_service.release_quota(session, store_id, "listing_create")
+        await transition(
+            session, listing, "failed", reason_code="ERP_SPEC_INVALID",
+            detail={"errors": validation["errors"][:8]}, actor_id=actor_id,
+        )  # fmt: skip
+        skipped.append({"listing_id": listing["id"], "code": "ERP_SPEC_INVALID"})
+        return None
+    item: dict[str, Any] = built["item"]
+    return item
+
+
+async def _reject_group(
+    session: AsyncSession,
+    members: list[dict[str, Any]],
+    store_id: int,
+    *,
+    code: str,
+    message: str,
+    skipped: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """整组拒绝：逐成员返还 listing_create 配额 + 记 skip（可见原因；状态不动）。→ 空入列表。"""
+    for m in members:
+        await channel_service.release_quota(session, store_id, "listing_create")
+        skipped.append({"listing_id": m["id"], "code": code, "message": message})
+    return []
+
+
+async def _submit_variant_group(
+    session: AsyncSession,
+    *,
+    gid: int,
+    members: list[dict[str, Any]],
+    ctx: dict[str, Any],
+    store_id: int,
+    offer_mode: str,
+    partner_id: str | None,
+    actor_id: int | None,
+    member_ctx: dict[int, dict[str, Any]],
+    skipped: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """变体组守卫 + 整组构建（D-Q63③ 整组拒绝，不部分成功）。
+
+    准入三闸（任一不过→整组 skip + 配额返还，状态不动）：
+      ① broken 组（001 §03）；② anchor 店已锁定且 ≠ 本批店（BR-LST-013 不自动转移）；
+      ③ 组不齐——组全体 member_product_ids 任一成员既不在本批、也不在本店在途/在架
+      （queued/submitted/published/live 视为在场：渠道部分失败后补投与已上架组追加成员
+      不受 D-Q63③ 之外的死锁；可见缺席成员 product_id/master_sku）。
+    通过准入：成员逐个 build（先全 build 再统一入列——失败即整组拒绝，无回撤已入列项）；
+      任一 build/校验失败→整组拒绝：失败成员走 _build_listing_item 内既有 failed+配额返还
+      路径，其余已成功 build 的成员撤除（未入列）+ 配额返还 + 记 VARIANT_GROUP_MEMBER_FAILED
+      skip（状态不动）。全员成功→返回 [(listing, item)]（anchor 锁定由调用方入列后落）。
+    """
+    if str(ctx["status"]) == "broken":  # 闸① broken 组
+        return await _reject_group(
+            session, members, store_id, code="VARIANT_GROUP_BROKEN",
+            message=f"变体组 #{gid} broken（成员不齐/主题冲突），整组拒绝上架；"
+                    "修复后归组任务自动回 active",
+            skipped=skipped,
+        )  # fmt: skip
+    anchor = ctx["anchor_store_id"]
+    if anchor is not None and int(anchor) != store_id:  # 闸② anchor 不匹配（不自动转移）
+        return await _reject_group(
+            session, members, store_id, code="VARIANT_ANCHOR_MISMATCH",
+            message=f"变体组 #{gid} 已锚定店铺 #{anchor}，不可在店铺 #{store_id} 上架"
+                    "（anchor 不自动转移，BR-LST-013）",
+            skipped=skipped,
+        )  # fmt: skip
+    present_pids = {m["product_id"] for m in members}
+    absent = [pid for pid in ctx["member_product_ids"] if pid not in present_pids]
+    if absent:
+        # "在场"扩展（评审 major 修复）：同店已在途/在架成员视为在场——否则渠道侧部分失败
+        # 后补投、或已上架组追加新成员，都会被 D-Q63③ 之外的死锁困住（永远不齐）。
+        on_channel = {
+            int(r.product_id)
+            for r in await session.execute(
+                text(
+                    "SELECT DISTINCT product_id FROM app.listing"
+                    " WHERE store_id = :s AND product_id = ANY(:ids)"
+                    "   AND status IN ('queued','submitted','published','live')"
+                ),
+                {"s": store_id, "ids": absent},
+            )
+        }
+        absent = [pid for pid in absent if pid not in on_channel]
+    if absent:  # 闸③ 组不齐（缺席成员可见——验收"可见原因"）
+        rows = (
+            await session.execute(
+                text("SELECT id, master_sku FROM app.product WHERE id = ANY(:ids)"),
+                {"ids": absent},
+            )
+        ).all()
+        sku_by_pid = {int(r.id): r.master_sku for r in rows}
+        missing = ", ".join(f"{pid}({sku_by_pid.get(pid) or '?'})" for pid in absent)
+        return await _reject_group(
+            session, members, store_id, code="VARIANT_GROUP_INCOMPLETE",
+            message=f"变体组 #{gid} 不齐：缺席成员 product_id(master_sku)=[{missing}]，整组拒绝",
+            skipped=skipped,
+        )  # fmt: skip
+
+    built: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    failed_pids: list[int] = []
+    for m in members:
+        item = await _build_listing_item(
+            session, m, offer_mode=offer_mode, store_id=store_id, partner_id=partner_id,
+            variant_ctx=member_ctx[m["id"]], skip_variant=False, actor_id=actor_id,
+            skipped=skipped,
+        )  # fmt: skip
+        if item is None:  # 失败成员已在 _build_listing_item 内走 failed+配额返还
+            failed_pids.append(m["product_id"])
+        else:
+            built.append((m, item))
+    if failed_pids:  # 整组拒绝：撤除已成功 build 成员（未入列）+ 配额返还 + skip（状态不动）
+        for m, _item in built:
+            await channel_service.release_quota(session, store_id, "listing_create")
+            skipped.append(
+                {
+                    "listing_id": m["id"],
+                    "code": "VARIANT_GROUP_MEMBER_FAILED",
+                    "message": f"变体组 #{gid} 成员 product_id={failed_pids} 构建失败，整组拒绝",
+                }
+            )
+        return []
+    return built
 
 
 async def _feed_listings_for_update(session: AsyncSession, feed_id: int) -> list[dict[str, Any]]:

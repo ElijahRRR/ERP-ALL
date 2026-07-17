@@ -159,7 +159,22 @@ def validate_build_item(
                 "（纯日期拒收 EXT_DATA_ERROR_00030257670757）"
             )
     _check_positive_price(orderable.get("price"), "orderable.price", report)
+    _check_variant_segment(visible, report)
     return report
+
+
+def _check_variant_segment(visible: dict[str, Any], report: ValidationReport) -> None:
+    """变体段（D-Q63）：Visible 含 variantGroupId 时 variantAttributeNames 必须为非空数组,
+    且每个属性名在 Visible 段有对应取值字段（否则渠道变体关联失败——组无法成组）。"""
+    if visible.get("variantGroupId") in _EMPTYISH:
+        return
+    names = visible.get("variantAttributeNames")
+    if not isinstance(names, list) or not names:
+        report.error("visible.variantAttributeNames: 含 variantGroupId 时须为非空数组")
+        return
+    for n in names:
+        if not isinstance(n, str) or visible.get(n) in _EMPTYISH:
+            report.error(f"visible.variantAttributeNames[{n!r}]: Visible 段缺对应取值字段")
 
 
 def _check_positive_price(price: Any, where: str, report: ValidationReport) -> None:
