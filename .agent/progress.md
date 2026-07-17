@@ -599,3 +599,8 @@
   一律不传，LLM 幻觉防注入）；组不齐"在场"扩展（同店在途/在架算在场）。
 - 评审验收：1 blocker（match 被 broken 组误拦）+3 major 全修，2 minor 修复，2 挂账（anchor
   解锁通道、组上下文批量化）。本地 CI：pytest 440 passed + ruff + mypy strict 全绿（新测 17 项）。
+
+## 2026-07-17 R2-11 增量2 合并（PR #21）——开发面收口，停在人工验收点
+- PR #21 合并（6cd35aa）：变体段+三闸守卫+anchor 原子锁+17 测试+specs 注记+运维 runbook。
+- R2-11 余项 = 增量3 L2 人工验收（Owner：真实变体 ASIN 采集 + 部署机升级 + runbook 演练）。
+- 按 Owner 指令（workflow 模式开发到人工验收点），不开新域工单，等验收回报。
