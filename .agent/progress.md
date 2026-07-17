@@ -620,3 +620,12 @@
 - 增量2.5 的连通分量归组修复本身无恙（本地测试通过），阻塞点转移到 worker 解析层。
 - 新增 erp_worker.probe 探针：真实抓取栈拉页 + 各 twister 载体标记计数与上下文切片（repr）
   + parser 三路解析结果 + HTML gzip 落容器 /tmp 备取证。等部署机探针输出定位形态后修 parser。
+
+## 2026-07-17 R2-11 排障定案：代理出口变体降级页 + worker 专项防御
+- 探针实证：直连全页 twister 全解析（parser 无恙）；代理+邮编路径得降级页（无 twister 块）。
+- 考古核对（Owner 指定）：变体组语义考古正确；BR-ASC-003 variant_offset 表述修正（页面偏移
+  侦测而非变体侦测，workers 已有 _page_asin 终态处理，批注回传台账）；变体缺失属新旧系统
+  共同盲区（v3 sanity title-only）。
+- worker 防御：is_variant_degraded（parentAsin≠自身且 twister+兜底全空 → 独立预算换出口重试，
+  耗尽带 attrs.variant_degraded 入库）；VARIANT_DEGRADED_RETRIES 默认 2（env 可调）。
+  workers ruff/mypy/pytest 34 passed。

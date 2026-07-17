@@ -33,6 +33,20 @@ from erp_worker.session import AmazonSession
 
 logger = logging.getLogger(__name__)
 
+
+def is_variant_degraded(result: dict, asin: str) -> bool:
+    """变体降级页判定：parentAsin 有效（≠自身=家族信号在）但 twister 与兜底全空。
+
+    真机实证（R2-11）：部分代理出口对变体商品返回无 twister 数据块的降级页，
+    title/价格正常——旧 v3 sanity（title 在即健康）与"核心字段全缺"降级判定都放行，
+    导致空变体入库。此判定只对确有家族信号的页面触发，非变体商品不受影响。
+    """
+    parent = str(result.get("parent_asin") or "")
+    if not parent or parent.upper() == asin.upper():
+        return False
+    return not result.get("variant_attributes") and not result.get("variation_asins")
+
+
 WORKER_VERSION = "r2-01"
 
 
@@ -518,6 +532,7 @@ class ScrapeEngine:
         last_error_type = "network"
         last_error_detail = ""
         local_attempt = 0
+        variant_retry = 0  # 变体降级页重试独立预算（不吃 max_retries）
 
         while local_attempt < max_retries:
             try:
@@ -629,6 +644,23 @@ class ScrapeEngine:
                     last_error_type, last_error_detail = "parse_error", "核心字段全缺"
                     await self._wait_for_rotation_before_retry(asin, reason="核心字段缺失")
                     continue
+
+                # 变体降级页（R2-11 真机实证）：家族信号在（parentAsin≠自身）但 twister
+                # 全空且兜底也空——部分代理出口对同一商品返回无变体数据块的降级页
+                # （直连/好出口可得全量）。换出口重试；耗尽仍降级则带标记入库
+                # （attrs.variant_degraded，重采成功后 upsert 自然清除），不丢商品本体。
+                if is_variant_degraded(result, asin):
+                    if variant_retry < config.VARIANT_DEGRADED_RETRIES:
+                        variant_retry += 1
+                        self._controller.record_result(req_elapsed, False, False, resp_bytes)
+                        await self._wait_for_rotation_before_retry(asin, reason="变体降级页")
+                        continue
+                    result["variant_degraded"] = "1"
+                    logger.warning(
+                        "ASIN %s 变体降级页重试耗尽（%s 次），带标记入库",
+                        asin,
+                        config.VARIANT_DEGRADED_RETRIES,
+                    )
 
                 # 成功
                 self._controller.record_result(req_elapsed, True, False, resp_bytes)

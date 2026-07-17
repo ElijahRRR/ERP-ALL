@@ -26,6 +26,8 @@ LOW_SPEED_LIMIT_BPS = int(os.environ.get("LOW_SPEED_LIMIT_BPS", "1024"))
 LOW_SPEED_TIME_S = int(os.environ.get("LOW_SPEED_TIME_S", "8"))
 # 连续 N 次传输停滞（跨任务累计，成功即清零）→ 轮换 session（新连接=TPS 新出口 IP）
 STALL_ROTATE_THRESHOLD = int(os.environ.get("STALL_ROTATE_THRESHOLD", "3"))
+# 变体降级页换出口重试预算（R2-11：家族信号在但 twister 全空的代理出口降级页）
+VARIANT_DEGRADED_RETRIES = int(os.environ.get("VARIANT_DEGRADED_RETRIES", "2"))
 
 # ── 令牌桶限流（QPS）──
 TOKEN_BUCKET_RATE = 64.0
