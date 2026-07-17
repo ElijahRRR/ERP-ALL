@@ -93,11 +93,11 @@ class TestAutoGrouping:
         totals = await variant_service.run(get_session_factory(), {})
         assert totals["failed"] == 0 and totals["grouped"] == 5  # p1 p2 p5 p6 p7
         with psycopg.connect(migrated_db) as conn:
-            # 正常组：active + theme=排序维度键串 + 双向关联
+            # 正常组：active + theme=排序维度键串 + 双向关联（组键=分量 min，经成员反查）
             g1 = conn.execute(
-                "SELECT id, variation_theme, status FROM app.variant_group"
-                " WHERE team_id = %s AND source_parent_ref = 'B0PARENT01'",
-                (seeded["team"],),
+                "SELECT g.id, g.variation_theme, g.status FROM app.variant_group g"
+                " JOIN app.product p ON p.variant_group_id = g.id WHERE p.id = %s",
+                (seeded["p1"],),
             ).fetchone()
             assert g1[1] == "color_name,size_name" and g1[2] == "active"
             member = conn.execute(
@@ -122,9 +122,9 @@ class TestAutoGrouping:
                 )
             # 单成员 → broken + warn 通知
             g2 = conn.execute(
-                "SELECT id, status FROM app.variant_group"
-                " WHERE team_id = %s AND source_parent_ref = 'B0PARENT02'",
-                (seeded["team"],),
+                "SELECT g.id, g.status FROM app.variant_group g"
+                " JOIN app.product p ON p.variant_group_id = g.id WHERE p.id = %s",
+                (seeded["p5"],),
             ).fetchone()
             assert g2[1] == "broken"
             assert (
@@ -137,9 +137,9 @@ class TestAutoGrouping:
             # 主题冲突 → broken
             assert (
                 conn.execute(
-                    "SELECT status FROM app.variant_group"
-                    " WHERE team_id = %s AND source_parent_ref = 'B0PARENT03'",
-                    (seeded["team"],),
+                    "SELECT g.status FROM app.variant_group g"
+                    " JOIN app.product p ON p.variant_group_id = g.id WHERE p.id = %s",
+                    (seeded["p6"],),
                 ).fetchone()[0]
                 == "broken"
             )
@@ -173,12 +173,127 @@ class TestAutoGrouping:
         with psycopg.connect(migrated_db) as conn:
             assert (
                 conn.execute(
-                    "SELECT status FROM app.variant_group"
-                    " WHERE team_id = %s AND source_parent_ref = 'B0PARENT04'",
+                    "SELECT g.status FROM app.variant_group g"
+                    " JOIN app.product p ON p.variant_group_id = g.id"
+                    " WHERE p.source_ref = 'B0BIGFAM00' AND p.team_id = %s",
                     (seeded["team"],),
                 ).fetchone()[0]
                 == "broken"
             )
+
+    # ── 增量2.5 回归：家族连通分量归组 + 错裂解散（真机缺陷修复）──
+
+    async def test_split_parents_family_converges_one_group(
+        self, seeded: dict, migrated_db: str
+    ) -> None:
+        """真机缺陷复现：同家族各页 parentAsin 不一致（甚至自指），兄弟列表互指 → 应归一组。"""
+        import json as _json
+
+        asins = [f"B0SPLIT00{i}" for i in range(4)]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            # 复位前一用例设下的巨型组上限（team_config 残留会误伤本用例）
+            conn.execute(
+                "DELETE FROM app.team_config WHERE team_id = %s AND key = 'variant.max_group_size'",
+                (seeded["team"],),
+            )
+            for i, a in enumerate(asins):
+                attrs = {
+                    # 各页 parent 互不一致：两个自指、两个各指不同值（真机观察形态）
+                    "parent_asin": a if i < 2 else f"B0FAKEPAR{i}",
+                    "variant_attributes": f"color_name=C{i}",
+                    "variation_asins": [x for x in asins if x != a],
+                }
+                conn.execute(
+                    "INSERT INTO app.product (team_id, source_ref, title, attrs)"
+                    " VALUES (%s, %s, %s, %s::jsonb)",
+                    (seeded["team"], a, f"裂组复现 {a}", _json.dumps(attrs)),
+                )
+        totals = await variant_service.run(get_session_factory(), {})
+        assert totals["failed"] == 0
+        with psycopg.connect(migrated_db) as conn:
+            rows = conn.execute(
+                "SELECT variant_group_id FROM app.product"
+                " WHERE team_id = %s AND source_ref = ANY(%s)",
+                (seeded["team"], asins),
+            ).fetchall()
+            gids = {r[0] for r in rows}
+            assert len(gids) == 1 and None not in gids  # 一家一组，不裂
+            gid = gids.pop()
+            status, key = conn.execute(
+                "SELECT status, source_parent_ref FROM app.variant_group WHERE id = %s", (gid,)
+            ).fetchone()
+            assert status == "active"
+            assert key == "B0FAKEPAR2"  # 分量 min（含假 parent 标识，确定性）
+
+    async def test_orphan_singletons_dissolved_and_merged(
+        self, seeded: dict, migrated_db: str
+    ) -> None:
+        """老键错裂的 broken 单员组：解散重归为一组 active（A152 真机现场的修复路径）。"""
+        import json as _json
+
+        asins = ["B0ORPH0001", "B0ORPH0002", "B0ORPH0003"]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pids = {}
+            for i, a in enumerate(asins):
+                attrs = {
+                    "parent_asin": f"B0OLDPAR0{i}",  # 各自不同的旧 parent（裂组根因）
+                    "variant_attributes": f"size_name=S{i}",
+                    "variation_asins": [x for x in asins if x != a],
+                }
+                pids[a] = conn.execute(
+                    "INSERT INTO app.product (team_id, source_ref, title, attrs)"
+                    " VALUES (%s, %s, %s, %s::jsonb) RETURNING id",
+                    (seeded["team"], a, f"错裂 {a}", _json.dumps(attrs)),
+                ).fetchone()[0]
+                # 模拟旧逻辑产物：每品一个以旧 parent 为键的 broken 单员组
+                gid = conn.execute(
+                    "INSERT INTO app.variant_group (team_id, source_parent_ref, status)"
+                    " VALUES (%s, %s, 'broken') RETURNING id",
+                    (seeded["team"], f"B0OLDPAR0{i}"),
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO app.variant_member (group_id, product_id, variant_attrs)"
+                    " VALUES (%s, %s, %s::jsonb)",
+                    (gid, pids[a], _json.dumps({"size_name": f"S{i}"})),
+                )
+                conn.execute(
+                    "UPDATE app.product SET variant_group_id = %s WHERE id = %s",
+                    (gid, pids[a]),
+                )
+        totals = await variant_service.run(get_session_factory(), {})
+        assert totals["dissolved"] >= 2  # 错裂组被解散（幸存者收编其余成员）
+        with psycopg.connect(migrated_db) as conn:
+            gids = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT variant_group_id FROM app.product"
+                    " WHERE team_id = %s AND source_ref = ANY(%s)",
+                    (seeded["team"], asins),
+                ).fetchall()
+            }
+            assert len(gids) == 1 and None not in gids
+            assert (
+                conn.execute(
+                    "SELECT status FROM app.variant_group WHERE id = %s", (gids.pop(),)
+                ).fetchone()[0]
+                == "active"
+            )
+
+    async def test_lonely_singleton_stable_across_runs(
+        self, seeded: dict, migrated_db: str
+    ) -> None:
+        """真孤品单员组不解散不换号（防每轮重建 + broken 通知随新组号刷屏）。"""
+        with psycopg.connect(migrated_db) as conn:
+            before = conn.execute(
+                "SELECT variant_group_id FROM app.product WHERE id = %s", (seeded["p5"],)
+            ).fetchone()[0]
+        assert before is not None
+        await variant_service.run(get_session_factory(), {})
+        with psycopg.connect(migrated_db) as conn:
+            after = conn.execute(
+                "SELECT variant_group_id FROM app.product WHERE id = %s", (seeded["p5"],)
+            ).fetchone()[0]
+            assert after == before  # 组号稳定
 
 
 @pytest.fixture(scope="module")
@@ -304,7 +419,14 @@ class TestVariantEndpoints:
         page = client.get("/api/v1/variant-groups?status=active", headers=h).json()
         assert page["total"] >= 1
         assert all(i["status"] == "active" for i in page["items"])
-        hit = client.get("/api/v1/variant-groups?q=B0PARENT01", headers=h).json()
+        # 组键=分量 min（增量2.5）：先取 p1 所在组的键再精确查
+        with psycopg.connect(migrated_db) as conn:
+            g1_key = conn.execute(
+                "SELECT g.source_parent_ref FROM app.variant_group g"
+                " JOIN app.product p ON p.variant_group_id = g.id WHERE p.id = %s",
+                (seeded["p1"],),
+            ).fetchone()[0]
+        hit = client.get(f"/api/v1/variant-groups?q={g1_key}", headers=h).json()
         assert hit["total"] == 1
         members = hit["items"][0]["members"]
         assert {m["product_id"] for m in members} == {seeded["p1"], seeded["p2"]}

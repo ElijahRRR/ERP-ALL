@@ -137,7 +137,8 @@ export default function ProductsPage() {
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<string | undefined>()
   const [auditDetail, setAuditDetail] = useState<AuditRunDetail | null>(null)
-  const [allocateFor, setAllocateFor] = useState<Product | null>(null)
+  const [allocate, setAllocate] = useState<{ ids: number[]; label: string } | null>(null)
+  const [selected, setSelected] = useState<number[]>([])
   const [stores, setStores] = useState<Store[]>([])
   const [detail, setDetail] = useState<ProductDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -192,8 +193,8 @@ export default function ProductsPage() {
     }
   }
 
-  async function openAllocate(p: Product) {
-    setAllocateFor(p)
+  async function openAllocate(ids: number[], label: string) {
+    setAllocate({ ids, label })
     try {
       const r = await api.get<PageOf<Store>>(`/stores?page=1&size=100`)
       setStores(r.items)
@@ -203,18 +204,23 @@ export default function ProductsPage() {
   }
 
   async function onAllocate(values: { store_id: number; offer_mode: string }) {
-    if (!allocateFor) return
+    if (!allocate) return
     try {
       const r = await api.post<{
         created: unknown[]
         rejected: { code: string; message: string }[]
-      }>(`/listings/allocate`, { product_ids: [allocateFor.id], ...values })
+      }>(`/listings/allocate`, { product_ids: allocate.ids, ...values })
       if (r.created.length) {
-        message.success('已分配为上架草稿（前往上架管理提交）')
-      } else {
-        message.warning(`分配被拒：${r.rejected[0]?.code} ${r.rejected[0]?.message ?? ''}`)
+        message.success(`已分配 ${r.created.length} 个为上架草稿（前往上架管理提交）`)
       }
-      setAllocateFor(null)
+      if (r.rejected.length) {
+        message.warning(
+          `${r.rejected.length} 个被拒：${r.rejected[0]?.code} ${r.rejected[0]?.message ?? ''}`,
+        )
+      }
+      setAllocate(null)
+      setSelected([])
+      void load()
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '分配失败')
     }
@@ -232,11 +238,31 @@ export default function ProductsPage() {
           options={Object.keys(STATUS_COLOR).map((s) => ({ value: s, label: s }))}
         />
         <Button onClick={() => void load()}>刷新</Button>
+        {has('listing.allocate') && (
+          <Button
+            type="primary"
+            disabled={!selected.length}
+            onClick={() => void openAllocate(selected, `已选 ${selected.length} 个产品`)}
+          >
+            批量分配上架{selected.length ? `（${selected.length}）` : ''}
+          </Button>
+        )}
       </Space>
       <Table<Product>
         rowKey="id"
         loading={loading}
         dataSource={data?.items}
+        rowSelection={
+          has('listing.allocate')
+            ? {
+                selectedRowKeys: selected,
+                onChange: (keys) => setSelected(keys as number[]),
+                getCheckboxProps: (p) => ({
+                  disabled: !['audit_passed', 'ready'].includes(p.status),
+                }),
+              }
+            : undefined
+        }
         pagination={{ current: page, total: data?.total, pageSize: 20, onChange: setPage }}
         columns={[
           { title: 'SKU', dataIndex: 'master_sku', width: 110 },
@@ -279,7 +305,7 @@ export default function ProductsPage() {
                   </Button>
                 )}
                 {has('listing.allocate') && ['audit_passed', 'ready'].includes(p.status) && (
-                  <Button size="small" onClick={() => void openAllocate(p)}>
+                  <Button size="small" onClick={() => void openAllocate([p.id], p.master_sku)}>
                     分配上架
                   </Button>
                 )}
@@ -432,9 +458,9 @@ export default function ProductsPage() {
         )}
       </Drawer>
       <Modal
-        title={`分配上架：${allocateFor?.master_sku ?? ''}`}
-        open={!!allocateFor}
-        onCancel={() => setAllocateFor(null)}
+        title={`分配上架：${allocate?.label ?? ''}`}
+        open={!!allocate}
+        onCancel={() => setAllocate(null)}
         footer={null}
         destroyOnHidden
       >

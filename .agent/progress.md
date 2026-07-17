@@ -604,3 +604,11 @@
 - PR #21 合并（6cd35aa）：变体段+三闸守卫+anchor 原子锁+17 测试+specs 注记+运维 runbook。
 - R2-11 余项 = 增量3 L2 人工验收（Owner：真实变体 ASIN 采集 + 部署机升级 + runbook 演练）。
 - 按 Owner 指令（workflow 模式开发到人工验收点），不开新域工单，等验收回报。
+
+## 2026-07-17 R2-11 增量2.5：归组键真机缺陷修复 + 批量操作
+- A152 实测：同家族 4 ASIN（B0H2YXQRRX 等）各页 parentAsin 不一致 → 裂成 5 个单员 broken 组。
+- 修复：组身份改家族标识集连通分量（full_set=parent∪variation_asins∪自身；批内并查集；
+  入组走双向找组——组键或既有成员 ASIN 相交即同族，跨批到达兄弟不裂）；错裂 broken 单员组
+  自动解散重归（仅与其它组相交者，真孤品稳定不换号）；run() 团队发现含 broken 组团队。
+- 批量操作：产品页多选+批量分配上架（含行级禁选非可分配态）；提交跳过原因明细透出。
+- CI：pytest 443 passed + ruff + mypy strict + pnpm lint/build 全绿。
