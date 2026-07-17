@@ -572,12 +572,13 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "变体组【L1→L2】(D-Q2 MVP 项,上架态机欠账)：variant_group/variant_member 建表(001§03 图纸完备,代码零实现已核实)+采集 parent ASIN 归组+spec 构建器变体段(R2-03 扩展)+组完整性守卫(broken 拒构建)",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
-   "specs/007-mvp-completion-plan/README.md"
+   "specs/007-mvp-completion-plan/README.md",
+   ".agent/evidence/R2-11/"
   ],
-  "finding": "PRD §8 模块3 欠账，审计补单(2026-07-16)",
-  "last_checked_at": "2026-07-16",
+  "finding": "PRD §8 模块3欠账，审计补单(2026-07-16)。【开发侧考古 2026-07-17】五路完成（archaeology.md + raw-*.md）。**007 现状论断更正（批注回传）**：0007 迁移已建variant_group/variant_member/product.variant_group_id 全套 DDL（FK/RLS/is_primary 部分唯一），『列亦未建』不成立——范围收窄为 归组服务+契约端点实现+构建器变体段+完整性守卫，无需建表。采集素材已齐（parent_asin/twister variation_asins/variant_attributes 均在 product.attrs）。旧仓有生产级实现+两份设计文档（variant_groups/variant_anchor design），坑账入档。增量拆三：①归组闭环 ②构建器变体段+守卫 ③A152 L2 验收。P0 拍板项已呈 Owner：anchor 落点（建议 variant_group.anchor_store_id）、variantGroupId 体系（建议渠道中立 VG{id}）、组提交原子性（建议整组拒绝）",
+  "last_checked_at": "2026-07-17",
   "note": "验收：一组真实变体(≥3 成员)A152 上架为 Walmart variant group 并 live；组员缺失构建拒绝且可见原因"
  },
  {
