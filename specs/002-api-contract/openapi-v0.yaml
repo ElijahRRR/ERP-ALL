@@ -497,7 +497,11 @@ paths:
     get:
       tags: [Catalog]
       x-permission: catalog.product_read
-      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/size'}]
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string, enum: [active, broken]}}
+        - {name: q, in: query, schema: {type: string}, description: source_parent_ref 精确查（R2-11 增补）}
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/VariantGroupPage'}}}}}
     post:
       tags: [Catalog]
@@ -1587,8 +1591,9 @@ components:
       properties:
         id: {type: integer}
         source_parent_ref: {type: [string, 'null']}
-        variation_theme: {type: [string, 'null']}
-        status: {type: string}
+        variation_theme: {type: [string, 'null'], description: 归组时存排序维度键串（如 color_name,size_name）；Walmart variant 属性名由 spec 构建时映射（D-Q63）}
+        status: {type: string, enum: [active, broken], description: broken=成员不齐/主题冲突/超上限（v1 判定，D-Q63 配套），spec 构建拒绝}
+        anchor_store_id: {type: [integer, 'null'], description: 组首次上架锁定店（D-Q63①，BR-LST-013 防漂移；增量2 写入）}
         members:
           type: array
           items:
@@ -1597,6 +1602,9 @@ components:
               product_id: {type: integer}
               variant_attrs: {type: object}
               is_primary: {type: boolean}
+              master_sku: {type: string}
+              title: {type: string}
+              product_status: {type: string}
     VariantGroupPage:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}

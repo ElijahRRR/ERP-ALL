@@ -577,3 +577,14 @@
   旧仓有生产级实现与两份设计文档；渠道字段全集三层取证（设计文档/pt_spec/items OpenAPI）。
 - 综合报告 evidence/R2-11/archaeology.md（增量拆三 + P0 拍板三项 + P1 自定清单 + 批注四条）。
 - P0 待 Owner：anchor 落点 / variantGroupId 体系 / 组提交原子性。拍板后开增量1。
+
+## 2026-07-17 R2-11 增量1 完码（归组闭环）+ D-Q63 + R2-12 立单入账
+- D-Q63 三拍板入宪法表（anchor_store_id / VG{组id} / 整组拒绝，Owner 全按建议）。
+- 0032：variant_group.anchor_store_id + variant_group_sync 调度种子（40 * * * *）。
+- erp.catalog.variant：自动归组（只信 twister 素材、排除自指 parent、(team, parent_ref) 组身份、
+  member+product.variant_group_id 双向同步）；broken 判定 v1（成员<2/维度键集冲突/超上限
+  variant.max_group_size 配置中心默认 10）+ warn 通知 + 自动回 active；团队间失败隔离。
+- 契约端点：POST /variant-groups / PUT members（主变体唯一闸/一品一组闸/摘员双向清理）/
+  GET 列表（status/q 过滤，契约增补注记）。beat TASKS 注册 variant_group_sync。
+- 本地 CI：pytest 423 passed（新测 5 项：归组规则/幂等重跑/巨型组护栏/端点闸/列表过滤）
+  + ruff + mypy strict。main 4a57b68（R2-12 立单）已并入，顺序更新入 task.md。

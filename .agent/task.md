@@ -1,14 +1,14 @@
 # Task Definition
-- Mode: build（R2 后半程——007 计划生效；动工顺序 Owner 已批：
-  **R2-11 → R2-07 → R2-09 → R2-08 → R2-10**，FE-DESIGN Owner 触发制，R2-10 前置 RS-01/02）
-- Task: **R2-07 售后与店铺事件域·07a 收尾**（当前）→ 收尾后**先开 R2-11 变体组**，再回 07b/07c。
-  - 07a 代码面已齐：增量1 读闭环（PR #18 已合并）+ 增量2 refund_request 两档（PR #19 在途）
-    + return_pull_verify 对账 harness（随 PR #19）。
-  - 07a 余项 = A152 真机对账（验收①）：部署机升级后
-    `exec api python -m erp.tools.return_pull_verify --store <A152_id> --pull-first`。
-  - R2-11 变体组【L1→L2】：§03 variant_group/variant_member 图纸完备、代码零实现；
-    建表迁移 + 采集端 parent ASIN 归组（source_parent_ref）+ spec 构建器变体段 + 组完整性守卫
-    （broken 拒构建）。开工前照例先考古。
+- Mode: build（R2 后半程——007 计划生效；动工顺序 2026-07-17 更新：
+  **R2-11 → R2-07 → R2-12（与 RS-04D 同窗）→ R2-09 → R2-08 → R2-10**，
+  FE-DESIGN Owner 触发制，R2-10 前置 RS-01/02；R2-12=合规数据供给持续化（007 4a57b68 立单））
+- Task: **R2-11 变体组·增量1 归组闭环**（当前；07a 已收账 2026-07-17，验收①真机 36 单对账一致）。
+  D-Q63 三拍板已入宪法表：anchor_store_id 列 / 渠道中立 VG{组id} / 整组拒绝。
+  - 增量1（归组闭环）完码：0032 anchor 列 + 归组服务（twister 素材，broken 判定 v1）
+    + 契约端点三件 + beat variant_group_sync + 测试。范围修正：变体三表 0007 已建（007 论断
+    更正批注已被采纳），无需建表。
+  - 待办：增量2 spec 构建器变体段+整组守卫+anchor 锁定（D-Q63）→ 增量3 A152 真组 L2 验收。
+    R2-07 余 07b 封店 / 07c 邮箱，排 R2-11 后。
 - 新情报入账（2026-07-17 审计工作区）：①动工顺序如上；②R2-08 闸门解除——§08 财务图纸已按
   immutable event ledger 重写（421f83d，financial_event/ledger_entry 追加式两层+显式汇率块+
   自然键过账幂等+冲销协议），建财务域以此为唯一图纸；③进度汇报统一 PRD §8 九模块分母

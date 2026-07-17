@@ -577,7 +577,7 @@
    "specs/007-mvp-completion-plan/README.md",
    ".agent/evidence/R2-11/"
   ],
-  "finding": "PRD §8 模块3欠账，审计补单(2026-07-16)。【开发侧考古 2026-07-17】五路完成（archaeology.md + raw-*.md）。**007 现状论断更正（批注回传）**：0007 迁移已建variant_group/variant_member/product.variant_group_id 全套 DDL（FK/RLS/is_primary 部分唯一），『列亦未建』不成立——范围收窄为 归组服务+契约端点实现+构建器变体段+完整性守卫，无需建表。采集素材已齐（parent_asin/twister variation_asins/variant_attributes 均在 product.attrs）。旧仓有生产级实现+两份设计文档（variant_groups/variant_anchor design），坑账入档。增量拆三：①归组闭环 ②构建器变体段+守卫 ③A152 L2 验收。P0 拍板项已呈 Owner：anchor 落点（建议 variant_group.anchor_store_id）、variantGroupId 体系（建议渠道中立 VG{id}）、组提交原子性（建议整组拒绝）",
+  "finding": "PRD §8 模块3欠账，审计补单(2026-07-16)。【开发侧考古 2026-07-17】五路完成（archaeology.md + raw-*.md）。**007 现状论断更正（批注回传）**：0007 迁移已建variant_group/variant_member/product.variant_group_id 全套 DDL（FK/RLS/is_primary 部分唯一），『列亦未建』不成立——范围收窄为 归组服务+契约端点实现+构建器变体段+完整性守卫，无需建表。采集素材已齐（parent_asin/twister variation_asins/variant_attributes 均在 product.attrs）。旧仓有生产级实现+两份设计文档（variant_groups/variant_anchor design），坑账入档。增量拆三：①归组闭环 ②构建器变体段+守卫 ③A152 L2 验收。D-Q63 三项 Owner 拍板（2026-07-17，全按建议）：anchor_store_id 列/渠道中立 VG{组id}/整组拒绝，已入宪法表第十五轮。✅ 增量1（归组闭环）完码：0032（anchor 列+variant_group_sync 调度种子）+ erp.catalog.variant（自动归组：只信 twister、排除自指 parent、组身份 (team,parent_ref)、双向同步、broken 判定 v1 成员<2/键集冲突/超上限 variant.max_group_size 配置中心+warn 通知）+ 契约端点（POST /variant-groups、PUT members 全量含主变体唯一/一品一组闸、GET 列表过滤）+ beat 注册。本地 CI 全绿（pytest 423/ruff/mypy strict，新测 5 项）。待：增量2 构建器变体段+整组守卫+anchor 锁定 → 增量3 A152 L2 验收",
   "last_checked_at": "2026-07-17",
   "note": "验收：一组真实变体(≥3 成员)A152 上架为 Walmart variant group 并 live；组员缺失构建拒绝且可见原因"
  },
