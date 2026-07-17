@@ -262,3 +262,52 @@ class TestProxyPolicy:
             assert config.PROXY_URL == "http://u:p@127.0.0.1:9999"
         finally:
             config.PROXY_URL = old
+
+
+async def test_variant_degraded_retries_then_ingests_with_marker() -> None:
+    """变体降级页（R2-11 真机）：家族信号在但 twister 全空 → 换出口重试，耗尽带标记入库。"""
+    degraded = {
+        **_GOOD,
+        "parent_asin": "B0PARENT01",  # 家族信号在（≠自身）
+        "variant_attributes": "",
+        "variation_asins": "",
+    }
+    client = FakeClient()
+    session = FakeSession()
+    eng = _engine(client, session, FakeParser(degraded))
+    await eng._process_task(dict(_TASK))
+    # 独立预算重试 VARIANT_DEGRADED_RETRIES 次后仍降级 → 入库且带标记
+    assert len(session.fetched) == 1 + config.VARIANT_DEGRADED_RETRIES
+    assert len(client.results) == 1 and client.results[0]["success"] is True
+    attrs = client.results[0]["payload"]["attrs"]
+    assert attrs.get("variant_degraded") == "1"
+    assert attrs.get("parent_asin") == "B0PARENT01"
+
+
+async def test_variant_page_full_data_no_retry() -> None:
+    """twister 数据齐全的变体页：一次成功，无降级标记。"""
+    full = {
+        **_GOOD,
+        "parent_asin": "B0PARENT01",
+        "variant_attributes": "size_name=Queen",
+        "variation_asins": "B0SIB00001,B0SIB00002",
+    }
+    client = FakeClient()
+    session = FakeSession()
+    eng = _engine(client, session, FakeParser(full))
+    await eng._process_task(dict(_TASK))
+    assert len(session.fetched) == 1
+    attrs = client.results[0]["payload"]["attrs"]
+    assert "variant_degraded" not in attrs
+    assert attrs.get("variation_asins") == ["B0SIB00001", "B0SIB00002"]
+
+
+async def test_non_variant_page_not_flagged() -> None:
+    """非变体商品（parent 自指/缺失）：不触发降级判定。"""
+    plain = {**_GOOD, "parent_asin": "B0GOOD0001"}
+    client = FakeClient()
+    session = FakeSession()
+    eng = _engine(client, session, FakeParser(plain))
+    await eng._process_task(dict(_TASK))
+    assert len(session.fetched) == 1
+    assert "variant_degraded" not in client.results[0]["payload"]["attrs"]
