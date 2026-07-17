@@ -536,7 +536,7 @@
   ],
   "finding": "PRD §8 模块8，审计补单(2026-07-16)。硬前置：§08 图纸按 immutable event ledger 修订(D-Q56 裁定,审计工作区落笔)——开发等图纸",
   "last_checked_at": "2026-07-16",
-  "gate": "§08 immutable ledger 图纸修订完成后方可动工",
+  "gate": "✅ 前置已解除(2026-07-16)：§08 图纸 immutable event ledger 修订完成(D-Q56 C4)，见 specs/001-domain-model/08-finance.md——含验收补强四条(可复算/不可变实证/冲销演练/汇率审计)",
   "note": "验收：A152 真实结算单入库；结算↔订单对账差异可解释；利润账三粒度与结算金额闭合(抽 10 单人工核对)"
  },
  {
