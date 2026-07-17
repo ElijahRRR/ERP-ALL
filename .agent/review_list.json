@@ -517,11 +517,12 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "售后与店铺事件域【L1→L2】：07a returns 只读闭环(channel_return+refund_request, 官方 Returns API, 001§07)；07b 封店工作流(store_incident 001§02+品牌占用批量释放+beat 提醒, 考古=旧 erp_core store_incidents)；07c 邮箱域最小闭环(001§09 mail, IMAP 收件+店铺关联+LLM 分类 mail_classify→incident+告警, D-Q22/33；完整客户端=MVP后)",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
-   "specs/007-mvp-completion-plan/README.md"
+   "specs/007-mvp-completion-plan/README.md",
+   ".agent/evidence/R2-07/"
   ],
-  "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)",
+  "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)。【开发侧进展 2026-07-16】Owner 点名开工（007 落地前已启动，撞号已按 007 口径调和）：五路考古（archaeology.md）+ ✅ 07a 核心增量完码（PR #18）：0030 三表（channel_return 头/channel_return_line 行/channel_return_event 变更留痕，C6 行级 upsert）+ return_pull beat（BR-AS-001 全量翻页 nextCursor parse_qs、BR-AS-007 骤降告警、店间隔离）+ GET /returns 端点+ openapi 契约 + aftersale.read 权限点；本地 CI 全绿（pytest 411/ruff/mypy strict，新测 8 项）。【开发侧批注（不改 007 正文，走回传）】R-ERP-006 实证的是 erp-core 缺 returns；erpAPI 根另有独立生产脚本 售后订单同步/fetch_walmart_returns.py（台账 §13 AS 全部规则的出处），已用作实现语义与 L1 对拍口径——结论不变（代码确属新建），但『无旧语义可考』不成立。待办：07a 收尾（refund_request 表落地+A152 对账）→ 07b 封店 → 07c 邮箱",
   "last_checked_at": "2026-07-16",
   "note": "验收：①A152 真实 returns 拉取对账一致 ②封店演练(incident→品牌 released→提醒送达) ③真实邮件→分类→incident 落库"
  },

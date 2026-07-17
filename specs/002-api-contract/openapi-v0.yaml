@@ -1086,6 +1086,28 @@ paths:
       requestBody: {$ref: '#/components/requestBodies/PurchaserWrite'}
       responses: {'200': {description: OK}}
 
+  # ──────────────────────── Aftersale（R2-07）────────────────────────
+  /returns:
+    get:
+      tags: [Aftersale]
+      summary: 退货单列表（RMA 头级；行级状态见详情）
+      x-permission: aftersale.read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: store_id, in: query, schema: {type: integer}}
+        - {name: internal_status, in: query, schema: {type: string, enum: [pulled, reviewed, closed]}}
+        - {name: return_after, in: query, schema: {type: string, format: date-time}}
+        - {name: q, in: query, schema: {type: string}, description: RMA / 客户订单号 精确查}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ReturnPage'}}}}}
+  /returns/{returnId}:
+    get:
+      tags: [Aftersale]
+      summary: 退货单详情（内嵌 lines + 行级状态变更 events）
+      x-permission: aftersale.read
+      parameters: [{$ref: '#/components/parameters/returnId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ReturnDetail'}}}}}
+
   # ──────────────────────── Portal ────────────────────────
   /portal/auth/login:
     post:
@@ -1163,6 +1185,7 @@ components:
     listingId: {name: listingId, in: path, required: true, schema: {type: integer}}
     orderId: {name: orderId, in: path, required: true, schema: {type: integer}}
     poId: {name: poId, in: path, required: true, schema: {type: integer}}
+    returnId: {name: returnId, in: path, required: true, schema: {type: integer}}
 
   responses:
     Error:
@@ -1760,6 +1783,58 @@ components:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
         - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Order'}}}}
+    Return:
+      type: object
+      properties:
+        id: {type: integer}
+        store_id: {type: integer}
+        channel_return_no: {type: string, description: RMA}
+        customer_order_no: {type: [string, 'null']}
+        order_id: {type: [integer, 'null'], description: 回连 channel_order（按行 purchaseOrderId 反查）}
+        return_date: {type: string, format: date-time}
+        return_by_date: {type: [string, 'null'], format: date-time}
+        channel_status: {type: string, description: 行状态聚合（全行一致取其值，分歧=MIXED；行级才是权威 BR-AS-004）}
+        internal_status: {type: string, enum: [pulled, reviewed, closed]}
+        refund_mode: {type: [string, 'null'], description: COURTESY / REFUND_TO_PAYMENT_METHOD / MERCHANT_REFUND}
+        qty: {type: integer}
+        refund_amount: {type: [number, 'null']}
+        currency: {type: string}
+        reason: {type: [string, 'null']}
+    ReturnDetail:
+      allOf:
+        - {$ref: '#/components/schemas/Return'}
+        - type: object
+          properties:
+            customer: {type: object, description: '{name, email}（PII 最小化）'}
+            lines:
+              type: array
+              items:
+                type: object
+                properties:
+                  line_no: {type: string, description: 销售行号（行身份，C6 upsert 键）}
+                  channel_sku: {type: string}
+                  qty: {type: integer}
+                  refunded_qty: {type: integer}
+                  unit_price: {type: [number, 'null']}
+                  line_status: {type: string}
+                  refund_status: {type: [string, 'null']}
+                  delivery_status: {type: [string, 'null']}
+                  return_method: {type: [string, 'null']}
+                  return_reason: {type: [string, 'null']}
+                  tracking_no: {type: [string, 'null']}
+            events:
+              type: array
+              description: 行级状态变更历史（C6 保留快照；最近 50 条）
+              items:
+                type: object
+                properties:
+                  line_no: {type: string}
+                  changes: {type: object, description: '{字段: {old, new}}'}
+                  observed_at: {type: string, format: date-time}
+    ReturnPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Return'}}}}
     ProcurementOrder:
       type: object
       properties:

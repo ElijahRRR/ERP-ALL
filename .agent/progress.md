@@ -515,3 +515,32 @@
   通道不产生 feed 属预期（D-Q62 路由：单店 ≤5 条走 PUT /v3/price，Feed 面板只显示
   批量聚合 PRICE_AND_PROMOTION）。**R2-06 整单关账**（验收①②双过）。挂账清单更新：
   余 R2-05 L2 发货 / R2-04 验收②断连 / 钓鱼黑名单导入 / erpAPI PR#2 / schema codegen。
+
+## 2026-07-16 R2-07 售后域立项 + 考古
+- Owner 点名下一单：售后。五路考古完成（宪法决策/冻结契约/旧仓生产语义/渠道 API/基建模式），
+  落 .agent/evidence/R2-07/archaeology.md。（workflow 并行考古两轮全体 529 过载，改内联完成。）
+- 关键结论：BR-AS-001~008 全保真移植；契约张力（冻结 channel_return 为 RMA 级 vs C6 已决行级
+  upsert）处置 = 头表不动 + 新增 channel_return_line 行表；三档映射 manual→record/semi→approval/
+  auto→auto，缺省 record fail-closed；退款执行走 outbox return_refund + verify-back，灰度仅 is_test 店。
+- 工单注册 review_list（P0 feature，in_progress），增量拆四，先推增量1（读闭环）。
+
+## 2026-07-16 R2-07 增量1 完码（读闭环）
+- 0030 迁移：channel_return（头，07 冻结列+扩展列）/ channel_return_line（行，uq (return_id,line_no)）
+  / channel_return_event（行级状态变更留痕）三表 + aftersale.read 权限点补种（挂 订单员/财务/团队管理员，
+  含既有团队同名角色）+ return_pull 调度种子（0 8 * * *）。
+- erp.aftersale.pull：全量拉取（BR-AS-001 无时间过滤；nextCursor 完整 URL parse_qs 回参——与订单域
+  整串拼路径协议不同，旧仓实战语义）；行级 upsert 同步列刷新 internal_status 不触碰；变更 diff 写
+  event（C6/BR-AS-006）；BR-AS-007 见单量骤降 >50% warn 告警不重跑；店间失败隔离；50/min 由网关
+  GCRA 管（限流表补 GET /v3/returns）。
+- GET /returns 列表（store/状态/时间/RMA 精确查）+ 详情（lines+events）；openapi-v0 补 Aftersale 契约；
+  07 文档注记行级落地。
+- 本地 CI：pytest 411 passed（新增 8 项：分页协议/upsert 幂等/event 留痕/页失败水位/骤降告警/
+  map 聚合/API 越权隔离）+ ruff check/format + mypy strict 全绿；permission 基线 44→45。
+
+## 2026-07-16 007 计划落 main 与 R2-07 撞号调和
+- 审计工作区推 007 MVP 补全计划（R2-07~11 + FE-DESIGN 补单；进度口径改 PRD §8 九模块）。
+  main 前进致 PR #18 冲突（review_list 双方各注册了 R2-07）。
+- 调和：review_list 以 main（46 单）为基；R2-07 采 007 三片定义（07a returns 只读/07b 封店/
+  07c 邮箱），我方增量1 = 07a 核心，进展与考古并入其 finding；退款三档执行划归 R2-09。
+- 开发侧批注（记 finding 不改 007 正文）：R-ERP-006 实证的是 erp-core 缺 returns，erpAPI 根
+  另有独立生产脚本（台账 §13 出处），已用作实现语义与对拍口径；结论（代码新建）不变。

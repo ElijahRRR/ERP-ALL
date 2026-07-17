@@ -174,6 +174,17 @@ WHERE p.assignee_kind = 'external'
 
 约束：`uq_channel_return (store_id, channel_return_no)`。
 
+已落地（R2-07 增量1，0030）：本表冻结列原样落库，另按 C6/BR-AS-003/004/006 行级语义补齐——
+① 扩展列 customer_order_no / return_by_date / refund_mode / customer(jsonb, PII 最小化 name+email)；
+channel_status 存行状态聚合（全行一致取其值，分歧=MIXED，行级才是权威）；order 回连按行
+purchaseOrderId 反查 (store_id, channel_order_no)。
+② 新增 `channel_return_line` 行表（uq (return_id, line_no)，line_no=销售行号；status/refundStatus/
+deliveryStatus 三态行级原样存 + item/qty/refundedQty/单价/退货原因/承运商）。
+③ 新增 `channel_return_event` 变更历史（行级状态字段 diff jsonb + observed_at——旧系统覆盖式
+写入丢历史是 BR-AS-006 已知缺陷，upsert + 留痕是 C6 已决改进）。
+拉取协议：无时间过滤全量 limit=200 翻页（BR-AS-001），nextCursor 完整 URL parse_qs 回参；
+beat `return_pull` 08:00/日（BR-SCH-002）；见单量骤降 >50% 告警不重跑（BR-AS-007）。
+
 ## refund_request 退款/取消申请（三档，D-Q29）
 
 | 列 | 类型 | 约束/默认 | 说明 |
