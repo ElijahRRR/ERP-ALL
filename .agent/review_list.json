@@ -591,5 +591,19 @@
   ],
   "finding": "D-Q53 原文=功能闭环稳定后统一执行；不排默认顺序，Owner 说'启动设计工单'才动",
   "last_checked_at": "2026-07-16"
+ },
+ {
+  "id": "R2-12",
+  "priority": "P1",
+  "dimension": "data",
+  "check": "合规数据供给持续化：USPTO日度增量(daily_update→RS-04A通道→refdata.trademark+revision失效)+TRO采集按日进tro_case并派生品牌断言+后台报错回收自动黑名单候选(source扩error_recycle)+合规中心页(四黑名单/商标查询/TRO/import_job) [Owner 2026-07-17 指出缺口，审计核实四链源码后立单，详见007]",
+  "status": "todo",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "gate": "RS-04D 断言账本先行或同窗（blacklist 写路径）；07c 邮件钩子后置不阻塞",
+  "acceptance": "①连续3个USPTO日度增量自动入库且与etl_progress对账一致、审核检索可见新商标；②真实TRO采集→tro_case→品牌断言→L2命中复现；③真实永久禁售报错→黑名单候选→人工确认落库全程可追溯；④合规页四黑名单管理/商标查询/import_job全流程走通",
+  "finding": "存量迁移只解决库里有数；四条持续供给链(USPTO日增/TRO采集/报错回收/邮件人工)全在旧仓单机cron，无工单承接，13页无合规页",
+  "last_checked_at": "2026-07-17"
  }
 ]
