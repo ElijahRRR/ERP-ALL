@@ -571,7 +571,7 @@
   "id": "R2-11",
   "priority": "P0",
   "dimension": "feature",
-  "check": "变体组【L1→L2】(D-Q2 MVP 项,上架态机欠账)：variant_group/variant_member 建表(001§03 图纸完备,代码零实现已核实)+采集 parent ASIN 归组+spec 构建器变体段(R2-03 扩展)+组完整性守卫(broken 拒构建)",
+  "check": "变体组【L1→L2】(D-Q2 MVP 项,上架态机欠账)：variant_group/variant_member 建表(001§03 图纸完备,代码零实现已核实)+采集 parent ASIN 归组+spec 构建器变体段(R2-03 扩展)+组完整性守卫(broken 拒构建)；随单补欠：catalog路由接AuditWriter操作日志(审计发现2026-07-18：七域已接唯catalog漏)",
   "status": "in_progress",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md",
@@ -579,7 +579,8 @@
   ],
   "finding": "PRD §8 模块3欠账，审计补单(2026-07-16)。【开发侧考古 2026-07-17】五路完成（archaeology.md + raw-*.md）。**007 现状论断更正（批注回传）**：0007 迁移已建variant_group/variant_member/product.variant_group_id 全套 DDL（FK/RLS/is_primary 部分唯一），『列亦未建』不成立——范围收窄为 归组服务+契约端点实现+构建器变体段+完整性守卫，无需建表。采集素材已齐（parent_asin/twister variation_asins/variant_attributes 均在 product.attrs）。旧仓有生产级实现+两份设计文档（variant_groups/variant_anchor design），坑账入档。增量拆三：①归组闭环 ②构建器变体段+守卫 ③A152 L2 验收。D-Q63 三项 Owner 拍板（2026-07-17，全按建议）：anchor_store_id 列/渠道中立 VG{组id}/整组拒绝，已入宪法表第十五轮。✅ 增量1（归组闭环）完码：0032（anchor 列+variant_group_sync 调度种子）+ erp.catalog.variant（自动归组：只信 twister、排除自指 parent、组身份 (team,parent_ref)、双向同步、broken 判定 v1 成员<2/键集冲突/超上限 variant.max_group_size 配置中心+warn 通知）+ 契约端点（POST /variant-groups、PUT members 全量含主变体唯一/一品一组闸、GET 列表过滤）+ beat 注册。本地 CI 全绿（pytest 423/ruff/mypy strict，新测 5 项）。✅ 增量2（构建器变体段+整组守卫+anchor）完码——首个 Workflow 编排增量（Opus 执行/主控规划验收）：spec.py 变体段（维度映射 system_config variant.theme_map+默认表加性合并、维度值进模板与指纹、VG{组id}/variantAttributeNames 走实例化层、三重 fail-closed）+ service.py 三闸守卫（broken/anchor/组不齐，整组拒绝+配额返还+原因可见）+ anchor 首上原子锁。三路评审 1 blocker+3 major 全数修复：match 豁免 allocate 拦截、anchor 锁 RETURNING 判空防 TOCTOU、LLM 幻觉变体控制字段全链剥离（isPrimaryVariant 一律不传收口）、组不齐『在场』扩展（同店在途/在架成员算在场——解补员/追加死锁）+映射冲突 fail-closed+缺维度值根因直报。挂账（增量3/runbook）：anchor 首发即败无解锁通道（暂人工 SQL，D-Q63①锁定时点=提交即锁已注记）、组上下文批量化（minor 性能）、维度值过 coerce enum 改写观察项（A152 实测关注）。本地 CI 全绿（pytest 440/ruff/mypy strict，新测 17 项）。**PR #20/#21 均已合并（2026-07-17），specs 注记+运维 runbook 入库——开发面收口，停在人工验收点**。待 Owner：A152 采集真实变体组（≥3 成员）→ 部署机升级 → runbook 验收演练（真组 live + 缺员拒绝），回报后整单收账。【增量2.5（真机缺陷修复+批量操作）2026-07-17】A152 实测暴露裂组缺陷：同家族 4 ASIN 各页 parentAsin 不一致 → 单靠 parent 归组裂成单员 broken 组（旧仓早有记载 parent 不能当组 ID）。修复：归组键改家族标识集连通分量（parent∪twister 兄弟列表∪自身，批内并查集+双向找组——键或既有成员 ASIN 相交即同组）；错裂 broken 单员组自动解散重归（真孤品组稳定不换号防通知刷屏）。批量操作（Owner 点名）：产品页多选批量分配上架（后端本就批量接口）；提交跳过原因明细透出（listing 页本就批量提交）。CI：pytest 443 passed（新测 3 项：裂组复现收敛/错裂解散重归/孤品稳定）+ ruff + mypy strict + pnpm lint/build 全绿。【排障定案+worker 防御（2026-07-17 探针实证）】parser 与页面形态均无恙：探针直连得全页twister 全解析；走代理+邮编流程得无 twister 降级页——生产采集走代理故空变体入库。考古核对（Owner 指定 v3/auto_listing 复查）：①变体组语义考古正确（full_set/min/anchor 与 auto_listing docs 一致）；②BR-ASC-003 的 variant_offset 我此前表述不准——实为『页面偏移』侦测（请求 A 返回兄弟 B 页/DMIT 错误类型），workers 已有 _page_asin 偏移终态处理，非『变体侦测机制』（批注回传台账）；③变体缺失不在旧 v3 sanity 防御范围（title-only 标准，erp-core parser.py:265）——非移植遗漏，属新旧共同盲区。已落 worker 专项防御：is_variant_degraded（家族信号在但 twister 全空→换出口重试 VARIANT_DEGRADED_RETRIES 次，耗尽带 attrs.variant_degraded 标记入库不丢本体）。workers 34 passed 全绿",
   "last_checked_at": "2026-07-17",
-  "note": "验收：一组真实变体(≥3 成员)A152 上架为 Walmart variant group 并 live；组员缺失构建拒绝且可见原因"
+  "note": "验收：一组真实变体(≥3 成员)A152 上架为 Walmart variant group 并 live；组员缺失构建拒绝且可见原因",
+  "acceptance": "；改一个产品字段→audit_log可见操作人与前后值"
  },
  {
   "id": "FE-DESIGN",
@@ -597,13 +598,13 @@
   "id": "R2-12",
   "priority": "P1",
   "dimension": "data",
-  "check": "合规数据供给持续化：USPTO日度增量(daily_update→RS-04A通道→refdata.trademark+revision失效)+TRO采集按日进tro_case并派生品牌断言+后台报错回收自动黑名单候选(source扩error_recycle)+合规中心页(四黑名单/商标查询/TRO/import_job) [Owner 2026-07-17 指出缺口，审计核实四链源码后立单，详见007]",
+  "check": "合规数据供给持续化：USPTO日度增量(daily_update→RS-04A通道→refdata.trademark+revision失效)+TRO采集按日进tro_case并派生品牌断言+全店后台SKU拉取对账(GET /v3/items翻页↔本地listing集合,错误SKU落处置)+报错回收自动黑名单候选(source扩error_recycle)+合规中心页(四黑名单/商标查询/TRO/import_job) [Owner 2026-07-17 指出缺口，审计核实四链源码后立单，详见007]",
   "status": "todo",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md"
   ],
   "gate": "RS-04D 断言账本先行或同窗（blacklist 写路径）；07c 邮件钩子后置不阻塞",
-  "acceptance": "①连续3个USPTO日度增量自动入库且与etl_progress对账一致、审核检索可见新商标；②真实TRO采集→tro_case→品牌断言→L2命中复现；③真实永久禁售报错→黑名单候选→人工确认落库全程可追溯；④合规页四黑名单管理/商标查询/import_job全流程走通",
+  "acceptance": "①连续3个USPTO日度增量自动入库且与etl_progress对账一致、审核检索可见新商标；②真实TRO采集→tro_case→品牌断言→L2命中复现；③全店拉取对账在A152跑通(后台有本地无/状态漂移/错误SKU三类均可发现);真实永久禁售报错→黑名单候选→人工确认落库全程可追溯；④合规页四黑名单管理/商标查询/import_job全流程走通",
   "finding": "存量迁移只解决库里有数；四条持续供给链(USPTO日增/TRO采集/报错回收/邮件人工)全在旧仓单机cron，无工单承接，13页无合规页",
   "last_checked_at": "2026-07-17"
  }

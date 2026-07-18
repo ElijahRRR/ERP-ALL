@@ -98,7 +98,11 @@
 
 - 建表迁移 + 采集端 parent ASIN 归组（source_parent_ref 图纸已留）；
 - spec 构建器变体段（R2-03 构建器扩展；variation_theme → Walmart variant 属性映射）；
-- 组完整性守卫（status=broken 拒绝构建，图纸原文）。
+- 组完整性守卫（status=broken 拒绝构建，图纸原文）；
+- **随单补欠（审计发现 2026-07-18）**：catalog 路由（产品编辑/状态操作）未接
+  AuditWriter 操作日志——identity/listing/order/aftersale/channel/scrape/pricing
+  七域已接，唯 catalog 漏。本单动 catalog 域时一并接上（验收加一条：改一个产品
+  字段 → audit_log 可见操作人与前后值）。
 
 **验收**：一组真实变体（≥3 成员）A152 上架为 Walmart variant group 并 live；
 组员缺失时构建拒绝且可见原因。
@@ -126,8 +130,13 @@ refdata.trademark"同步管道产物"）但无人立单；RS-04A/B/C/D 只覆盖
 3. **后台报错回收**：旧 `沃尔玛问题商品清理`——daily_cleanup（日 4 次拉
    UNPUBLISHED+SYSTEM_PROBLEM 分类处置）+ `brand_collector.py`（C 品牌限制/
    E 知产 → 品牌黑名单，来源列标注）+ `blacklist_sync.py`（永久禁售类
-   B/C/E/F/G/K 的 ASIN → 选品 ASIN 黑名单）。**新系统接法**：listing 错误处置
-   （listing_error_catalog 0020 已有）命中永久禁售类 → 自动生成黑名单**候选**
+   B/C/E/F/G/K 的 ASIN → 选品 ASIN 黑名单）。**新系统接法（两段，2026-07-18
+   补强：Owner 问询核实"全店后台 SKU 拉取对账"此前无任何工单承接）**：
+   **上游=全店后台 SKU 拉取对账**——GET /v3/items 全量翻页（无 query 300/min）
+   拉渠道侧全部 SKU → 与本地 listing 集合对账：后台有本地无 / 状态漂移 /
+   UNPUBLISHED+SYSTEM_PROBLEM 错误 SKU → 落 listing 错误处置与维护任务，挂
+   beat（旧 daily_cleanup 日 4 次节奏参照）；
+   **下游=报错回收**——错误处置命中永久禁售类 → 自动生成黑名单**候选**
    （brand/ASIN）→ 人工确认落库；§04 source 枚举随本单扩 `error_recycle`
    （图纸小修由审计侧落笔）。
 4. **邮件与人工渠道**：核实无自动化旧代码（旧链路=人工阅侵权/投诉邮件→填飞书）。
