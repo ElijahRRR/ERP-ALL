@@ -69,22 +69,33 @@ git checkout main && git pull && make up   # 部署机切回 main 常驻
 | 磁盘告警 | 先清 `~/erp-backups` 过期文件与 docker 悬空镜像 `docker system prune` |
 | 误删数据 | 立即停写，用最近备份 pg_restore；**不要**在原库上做实验 |
 
-## 变体组运维（R2-11，D-Q63）
+## 变体组运维（R2-11，D-Q63/D-Q64）
 
-- **组哪来**：beat `variant_group_sync`（每小时 :40）从采集素材自动归组（只信 twister）；
-  也可在产品页/接口人工建组、全量设成员。手动单跑：
-  `docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task variant_group_sync`。组状态 broken（成员不齐/维度冲突/超上限
-  `variant.max_group_size`，默认 10）时 spec 构建与提交整组拒绝，修复后自动回 active。
-- **整组上架**：组全体成员同店同批提交（缺员会整组拒绝并列出缺席成员；同店已在架/在途
-  成员算在场——补投单个失败成员直接重投即可）。首次成功入列即锁定 anchor 店，之后只能
-  在 anchor 店上架（不自动转移）。
-- **anchor 处置（检修增补：端点化，不再手工 SQL）**：组首发即被渠道整体驳回、想换店
+- **组哪来**：beat `variant_group_sync`（每小时 :40；D-Q64① 实时归组落地后降兜底）从采集
+  素材自动归组（只信 twister）；也可在产品页/接口人工建组、全量设成员。手动单跑：
+  `docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task variant_group_sync`。组状态 broken 仅剩真错误（维度冲突/维度值缺失，
+  判定 v2 D-Q64③）；成员<2 与超上限不再 broken（超 `variant.max_group_size` 只发
+  oversize warn 观察）。旧 v1 误置 broken 的组每轮归组自动复评回 active（healed 计数）。
+- **成组上架（D-Q64③ 子集即可）**：本批选中的组成员同店同批提交即成组/追加——**不再要求
+  全家齐**；本批任一成员构建失败整批拒绝（批次原子性）；单批上限
+  `variant.max_batch_members`（默认 200）。首个子集成功入列即锁定 anchor 店，之后该组
+  只能在 anchor 店追加（不自动转移）。
+- **散品上架（D-Q64②）**：刊登页提交时切「散品上架」（`variant_mode=standalone`）——
+  整批不带 VG 段、不锁 anchor、不受组守卫限制（broken 组成员也能散着上）。
+- **散转组补挂（D-Q64④）**：已 live 的组成员补挂 VG 段成组：
+  `POST /api/v1/listings/variant-regroup`，body `{"group_id": 组id, "store_id": 店id}`
+  （需 listing.submit + Idempotency-Key 头）。按 SKU 更新 MP_ITEM feed 重投，成员保持
+  live；失败只返还配额、不动 listing 状态、不释放 GTIN。组 broken/anchor 异店/无在架
+  成员/超单批上限 → 422 整批拒绝。
+- **anchor 处置（端点化，不再手工 SQL）**：组首发即被渠道整体驳回、想换店
   重投时，调 `POST /api/v1/variant-groups/{组id}/anchor/release`（需 catalog.product_write，
   审计留痕）。端点自带 fail-closed 核实：锚定店仍有在途/在架成员（queued/submitted/
   published/live）会 409 拒绝，须先撤除/下架整组。
-- **验收演练（R2-11 增量3）**：①A152 采集一组带变体的真实 ASIN（≥3 成员）→ 等归组任务
-  （或手动触发）→ 审核通过 → 同批分配+提交 → Walmart 后台确认 variant group live；
-  ②故意少分配一个成员提交 → 应见 VARIANT_GROUP_INCOMPLETE 及缺席成员明细。
+- **验收演练（D-Q64 版）**：①组 8 现场修复——`variant-regroup` 补挂后等 feed processed，
+  Walmart 后台确认 9 员并成一个 variant group（`SELECT anchor_store_id FROM
+  app.variant_group WHERE id=8;` 应为 1）；②组 6 子集上架——不摘审核不过成员，直接把
+  可上的 3 员同批分配+提交，应正常出门并锁 anchor（不再见 VARIANT_GROUP_INCOMPLETE）；
+  ③散品模式——选组内成员用「散品上架」提交，feed 条目应无 variantGroupId。
 
 ## 封店工作流演练（R2-07 07b，D-Q33）
 

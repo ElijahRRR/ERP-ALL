@@ -4,6 +4,7 @@ import {
   Form,
   InputNumber,
   Modal,
+  Segmented,
   Space,
   Table,
   Tabs,
@@ -110,6 +111,8 @@ export default function ListingsPage() {
     prices: PriceHistory[]
   } | null>(null)
   const [reprice, setReprice] = useState<Listing | null>(null)
+  // D-Q64②：group=分组产品携 VG 段成组上架（默认）；standalone=整批散品上架
+  const [variantMode, setVariantMode] = useState<'group' | 'standalone'>('group')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -134,7 +137,7 @@ export default function ListingsPage() {
         feed_status?: string
         dry_run?: boolean
         skipped: { listing_id: number; code: string; message?: string }[]
-      }>(`/listings/submit`, { listing_ids: selected })
+      }>(`/listings/submit`, { listing_ids: selected, variant_mode: variantMode })
       if (r.dry_run) {
         message.info(`dry-run 模式：已生成提交快照（${r.queued} 项，未真实发包）`)
       } else if (r.queued > 0) {
@@ -190,9 +193,19 @@ export default function ListingsPage() {
               <>
                 <Space style={{ marginBottom: 16 }}>
                   {has('listing.submit') && (
-                    <Button type="primary" disabled={!selected.length} onClick={() => void onSubmit()}>
-                      提交上架（{selected.length}）
-                    </Button>
+                    <>
+                      <Button type="primary" disabled={!selected.length} onClick={() => void onSubmit()}>
+                        提交上架（{selected.length}）
+                      </Button>
+                      <Segmented
+                        options={[
+                          { label: '成组上架', value: 'group' },
+                          { label: '散品上架', value: 'standalone' },
+                        ]}
+                        value={variantMode}
+                        onChange={(v) => setVariantMode(v as 'group' | 'standalone')}
+                      />
+                    </>
                   )}
                   <Button onClick={() => void load()}>刷新</Button>
                 </Space>

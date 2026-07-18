@@ -2304,6 +2304,12 @@ export interface paths {
                 content: {
                     "application/json": {
                         listing_ids: number[];
+                        /**
+                         * @description D-Q64②——group=分组产品携 VG 段成组上架；standalone=整批散品上架（不带 VG 段、不锁 anchor、不受组守卫限制）
+                         * @default group
+                         * @enum {string}
+                         */
+                        variant_mode?: "group" | "standalone";
                     };
                 };
             };
@@ -2323,6 +2329,53 @@ export interface paths {
                 /** @description 幂等键冲突（同键异载荷/处理中） */
                 409: components["responses"]["Error"];
                 /** @description 配额不足等业务拒绝 */
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/listings/variant-regroup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** live 组成员补挂 VG 段重投（D-Q64④ 散品转成组；item_regroup 独立归位——失败不动 listing 状态/不释放 GTIN） */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        group_id: number;
+                        store_id: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description 已入队（{queued, feed_id}） */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description 幂等键冲突 */
+                409: components["responses"]["Error"];
+                /** @description 组 broken / anchor 异店 / 无在架成员 / 超单批上限 / 配额不足（批次原子性整批拒绝） */
                 422: components["responses"]["Error"];
             };
         };
@@ -4228,7 +4281,7 @@ export interface components {
             /** @description 归组时存排序维度键串（如 color_name */
             variation_theme?: string | null;
             /**
-             * @description broken=成员不齐/主题冲突/超上限（v1 判定，D-Q63 配套），spec 构建拒绝
+             * @description broken=维度值缺失/主题冲突（判定 v2，D-Q64③ 仅真错误），成组上架拒绝、散品模式不受限；成员<2 与超上限不再 broken（超上限仅 oversize warn 观察）
              * @enum {string}
              */
             status?: "active" | "broken";

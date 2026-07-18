@@ -58,12 +58,16 @@
 ① variant_group 补列 `anchor_store_id BIGINT NULL REFERENCES store`——D-Q2 点名的 anchor 实体
 落点（Owner 拍板 D-Q63①）：组首次提交入列时原子锁定（WHERE anchor IS NULL OR anchor=本店
 RETURNING 判空，并发输家整组撤除）；anchor 店不匹配整组拒绝不自动转移（BR-LST-013 保真）；
-首发即败无自动解锁（人工 SQL + runbook，随增量3 复审口径）。
-② 自动归组（beat `variant_group_sync`）：只信 twister 素材（variant_attributes 非空）、排除
-parent_asin 自指、组身份 (team_id, source_parent_ref)；variation_theme 存排序维度键串
+首发即败解锁走 `POST /variant-groups/{id}/anchor/release`（R2-11 检修端点化，fail-closed：
+锚定店有在途/在架成员拒绝；替代人工 SQL）。
+② 自动归组（beat `variant_group_sync`；D-Q64① 实时归组落地后 beat 降兜底收敛）：只信
+twister 素材（variant_attributes 非空）、排除 parent_asin 自指、组身份=家族标识集连通分量
+（增量2.5 full_set 语义，键存分量 min）；variation_theme 存排序维度键串
 （如 color_name,size_name），Walmart variant 属性名由 spec 构建时经 system_config
-`variant.theme_map` 映射。broken 判定 v1：成员<2 / 组内维度键集不一致 / 超上限
-`variant.max_group_size`（配置中心，默认 10）——判定随归组/成员变更重跑，自动回 active。
+`variant.theme_map` 映射。broken 判定 v2（D-Q64③ 仅真错误）：维度值缺失 / 组内维度键集
+不一致——判定随归组/成员变更重跑，自动回 active；成员<2 与超上限不再 broken（超上限
+`variant.max_group_size` 仅 oversize warn 观察；单批提交上限另由
+`variant.max_batch_members` 保护，默认 200）。
 ③ 渠道组标识 = 渠道中立 `VG{variant_group.id}`（D-Q63②，同 D1 精神）；isPrimaryVariant
 一律不传（渠道自动选主）——is_primary 仅承载主图/主价语义，不进 feed。
 ④ 勘误注记：uq_variant_member 与 PK 同键冗余（落库按 PK + product_id UNIQUE）；

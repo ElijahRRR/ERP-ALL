@@ -674,3 +674,24 @@
   须 alembic downgrade 归位（迁移 up/down 实测本就是增量门槛）。
 - 落笔：task.md Constraints 增行；infra/local-deploy/README.md 增「增量验证流程」节。
   PR #26 即首个按新流程走的增量（本提交推分支后部署机可直接验）。
+
+## 2026-07-18 D-Q64 拍板 + R2-11 二期 A（守卫重定义/上架模式/live 补挂）完码
+- 真机复盘定性：Owner 提交的组 8 家族（9 员，feed #41）live 不成组——先发后组时序空档
+  （提交时未归组/旧版部署），散品无 VG 段出门；anchor 全空佐证守卫从未介入，非守卫缺陷。
+- D-Q64 四点入宪法（第十六轮）：①实时归组（二期 B）②variant_mode 上架自由度
+  ③守卫③家族完整性→批次原子性 + broken 判定 v2（仅维度冲突/维度值缺失；成员<2 与超上限
+  退场，超上限改 oversize warn；单批上限 variant.max_batch_members 默认 200）
+  ④live 补挂成组（item_regroup 独立归位）。依据=考古在案旧仓「降级优先」+93.6% 部分上线
+  实证 + 渠道无全家齐要求。
+- 二期 A 落码：reassess v2 + broken 复评 heal（v1 误 broken 自动归位）+ 解散条件放宽；
+  allocate 不再拦 broken；submit variant_mode(group/standalone) 贯通（前端刊登页 Segmented）；
+  _submit_variant_group 三闸=broken/anchor/单批上限；POST /listings/variant-regroup
+  （闸→目标收集→配额→原子构建→anchor 锁→item_regroup feed；_apply_feed_submit 拒绝分支
+  与 _apply_poll_result 独立归位：不动 listing 状态/不释放 GTIN——poll 错误路径误伤 live
+  成员的隐患在设计期即封死）；0034 迁移放行 feed_kind item_regroup（up/down 实测）。
+- 契约：submit.variant_mode + /listings/variant-regroup + 状态语义注记；schema.d.ts 重生成；
+  001 §03/§06 注记；runbook 变体组运维段 D-Q64 版（含组 8/组 6/散品三演练）。
+- CI：pytest 464 passed（变体 32：子集成组/散品无 VG/批次上限/补挂三态含 poll 错误安全）
+  + ruff[check+format] + mypy strict + pnpm gen:api/lint/build 全绿。
+- 待办：分支验证（新流程）→ Owner 授权合并 → 验收①改道演练（组 8 补挂/组 6 子集）→
+  二期 B 实时归组。

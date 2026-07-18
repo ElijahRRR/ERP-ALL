@@ -38,6 +38,7 @@ log = structlog.get_logger()
 
 FEED_TYPE_BY_KIND = {
     "item_build": "MP_ITEM",
+    "item_regroup": "MP_ITEM",  # D-Q64④ live 补挂重投：同 MP_ITEM 通道、独立归位路径
     "item_match": "MP_ITEM_MATCH",
     "delete": "RETIRE_ITEM",
     # price feed 提交用 feedType=PRICE_AND_PROMOTION（pricing.PRICE_FEED_TYPE），
@@ -142,31 +143,8 @@ def _initial_price(
     return None, None, None
 
 
-async def _broken_group_reject(
-    session: AsyncSession, product: Mapping[Any, Any], offer_mode: str
-) -> dict[str, Any] | None:
-    """product 属 broken 变体组 → rejected 项（D-Q63③；否则 None）。
-
-    最早拦截不浪费 GTIN 预占；修复后归组任务自动回 active。组同团队（RLS）恒可读。
-    match 豁免（D-Q63 配套）：match 不携带变体段，组状态与其无关——评审 blocker 修复。
-    """
-    gid = product["variant_group_id"]
-    if gid is None or offer_mode != "build":
-        return None
-    g_status = (
-        await session.execute(
-            text("SELECT status FROM app.variant_group WHERE id = :g"), {"g": gid}
-        )
-    ).scalar_one_or_none()
-    if g_status != "broken":
-        return None
-    return {
-        "product_id": product["id"],
-        "code": "VARIANT_GROUP_BROKEN",
-        "message": (
-            f"变体组 #{gid} 处于 broken（成员不齐/主题冲突）不可分配；修复后归组任务自动回 active"
-        ),
-    }
+# D-Q64② 注记：allocate 不再拦 broken 组成员——分配期不知道最终上架模式（散品模式
+# 不受组守卫限制），成组提交时 _submit_variant_group 闸① 仍拒并给可见原因。
 
 
 async def _occupy_brand(
@@ -289,13 +267,6 @@ async def allocate(
                 }
             )
             continue
-        # 变体组 broken 准入（D-Q63③；001 §03：broken 组 spec 构建拒绝）——成员不齐/
-        # 主题冲突/超上限时归组服务置 broken，此处最早拦截不浪费 GTIN 预占；
-        # 修复后归组任务自动回 active。_submit_tx1 组级守卫再兜一道（防绕过分配入口）。
-        broken_reject = await _broken_group_reject(session, product, offer_mode)
-        if broken_reject is not None:
-            rejected.append(broken_reject)
-            continue
         if not store["dedup_exempt"]:
             dup = (
                 await session.execute(
@@ -412,14 +383,19 @@ async def submit(
     listing_ids: list[int],
     actor_id: int | None = None,
     is_super: bool = False,
+    variant_mode: str = "group",
 ) -> dict[str, Any]:
     """批量提交上架。tx1 完成校验/配额/spec/组 feed/落 outbox 命令并 COMMIT；
     进程在此后任一点死，命令行即恢复线索（pending→drain 补发 / inflight 超
-    lease→verify_pending 对账），渠道已收而 DB 失忆的窗口不复存在。"""
+    lease→verify_pending 对账），渠道已收而 DB 失忆的窗口不复存在。
+
+    variant_mode（D-Q64②）：group=分组产品携 VG 段成组上架（默认）；standalone=
+    全批按散品上架（不带 VG 段、不锁 anchor、不受组守卫限制）。"""
     async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
         prep = await _submit_tx1(
-            session, team_id=team_id, listing_ids=listing_ids, actor_id=actor_id
-        )
+            session, team_id=team_id, listing_ids=listing_ids, actor_id=actor_id,
+            variant_mode=variant_mode,
+        )  # fmt: skip
     response: dict[str, Any] = prep["response"]
     if prep.get("command_id") is None:
         return response
@@ -442,6 +418,7 @@ async def _submit_tx1(  # noqa: PLR0912, PLR0915 提交链分支=协议分支（
     team_id: int,
     listing_ids: list[int],
     actor_id: int | None = None,
+    variant_mode: str = "group",
 ) -> dict[str, Any]:
     skipped: list[dict[str, Any]] = []
     ready: list[dict[str, Any]] = []
@@ -491,15 +468,15 @@ async def _submit_tx1(  # noqa: PLR0912, PLR0915 提交链分支=协议分支（
     items_payload: list[dict[str, Any]] = []
     feed_listings: list[dict[str, Any]] = []
     # 变体组切分（仅 build 模式；match 全程豁免变体——D-Q3 参数包差异）：
-    # granted 全批一次查询载变体上下文（检修：挂账「组上下文批量化」清偿），未分组/match
-    # 直接逐品 build（行为与改造前一致），
-    # 分组成员按 group_id 归拢后走组级守卫（broken/缺员/anchor 整组判定，D-Q63）。
+    # granted 全批一次查询载变体上下文，未分组/match/standalone 直接逐品 build，
+    # 分组成员按 group_id 归拢后走组级守卫（broken/anchor/批次原子性，D-Q63/64）。
+    # standalone（D-Q64②）：整批按散品出门——不载上下文即全员走非变体路径。
     grouped: dict[int, list[dict[str, Any]]] = {}
     group_ctx: dict[int, dict[str, Any]] = {}
     member_ctx: dict[int, dict[str, Any]] = {}  # listing_id → 本品变体上下文（build 复用免重查）
     all_vctx = (
         {}
-        if offer_mode == "match"
+        if offer_mode == "match" or variant_mode == "standalone"
         else await variant_svc.load_build_contexts(
             session, [listing["product_id"] for listing in granted]
         )
@@ -711,23 +688,24 @@ async def _submit_variant_group(
     member_ctx: dict[int, dict[str, Any]],
     skipped: list[dict[str, Any]],
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    """变体组守卫 + 整组构建（D-Q63③ 整组拒绝，不部分成功）。
+    """变体组守卫 + 批次原子构建（D-Q64③：家族完整性 → 批次原子性）。
 
-    准入三闸（任一不过→整组 skip + 配额返还，状态不动）：
-      ① broken 组（001 §03）；② anchor 店已锁定且 ≠ 本批店（BR-LST-013 不自动转移）；
-      ③ 组不齐——组全体 member_product_ids 任一成员既不在本批、也不在本店在途/在架
-      （queued/submitted/published/live 视为在场：渠道部分失败后补投与已上架组追加成员
-      不受 D-Q63③ 之外的死锁；可见缺席成员 product_id/master_sku）。
-    通过准入：成员逐个 build（先全 build 再统一入列——失败即整组拒绝，无回撤已入列项）；
-      任一 build/校验失败→整组拒绝：失败成员走 _build_listing_item 内既有 failed+配额返还
-      路径，其余已成功 build 的成员撤除（未入列）+ 配额返还 + 记 VARIANT_GROUP_MEMBER_FAILED
-      skip（状态不动）。全员成功→返回 [(listing, item)]（anchor 锁定由调用方入列后落）。
+    准入三闸（任一不过→本批整组 skip + 配额返还，状态不动）：
+      ① broken 组（真错误：维度冲突/维度值缺失——D-Q64 判定 v2）；
+      ② anchor 店已锁定且 ≠ 本批店（BR-LST-013 不自动转移）；
+      ③ 本批成员数 > variant.max_batch_members（feed 体积保护，配置中心默认 200）。
+    家族其余成员**不要求在场**（D-Q64③）：本批子集即可成组/追加上架——Walmart 按同
+    variantGroupId 陆续归组，渠道无全家齐要求（旧仓 93.6% 部分上线实证）。
+    通过准入：成员逐个 build（先全 build 再统一入列）；任一 build/校验失败→本批整组
+      拒绝：失败成员走 _build_listing_item 内既有 failed+配额返还路径，其余已成功 build
+      的成员撤除（未入列）+ 配额返还 + 记 VARIANT_GROUP_MEMBER_FAILED skip（状态不动）。
+      全员成功→返回 [(listing, item)]（anchor 锁定由调用方入列后落——首个子集即锁店）。
     """
     if str(ctx["status"]) == "broken":  # 闸① broken 组
         return await _reject_group(
             session, members, store_id, code="VARIANT_GROUP_BROKEN",
-            message=f"变体组 #{gid} broken（成员不齐/主题冲突），整组拒绝上架；"
-                    "修复后归组任务自动回 active",
+            message=f"变体组 #{gid} broken（维度冲突/维度值缺失），成组上架拒绝；"
+                    "修复后归组任务自动回 active（散品模式不受限，D-Q64②）",
             skipped=skipped,
         )  # fmt: skip
     anchor = ctx["anchor_store_id"]
@@ -738,35 +716,12 @@ async def _submit_variant_group(
                     "（anchor 不自动转移，BR-LST-013）",
             skipped=skipped,
         )  # fmt: skip
-    present_pids = {m["product_id"] for m in members}
-    absent = [pid for pid in ctx["member_product_ids"] if pid not in present_pids]
-    if absent:
-        # "在场"扩展（评审 major 修复）：同店已在途/在架成员视为在场——否则渠道侧部分失败
-        # 后补投、或已上架组追加新成员，都会被 D-Q63③ 之外的死锁困住（永远不齐）。
-        on_channel = {
-            int(r.product_id)
-            for r in await session.execute(
-                text(
-                    "SELECT DISTINCT product_id FROM app.listing"
-                    " WHERE store_id = :s AND product_id = ANY(:ids)"
-                    "   AND status IN ('queued','submitted','published','live')"
-                ),
-                {"s": store_id, "ids": absent},
-            )
-        }
-        absent = [pid for pid in absent if pid not in on_channel]
-    if absent:  # 闸③ 组不齐（缺席成员可见——验收"可见原因"）
-        rows = (
-            await session.execute(
-                text("SELECT id, master_sku FROM app.product WHERE id = ANY(:ids)"),
-                {"ids": absent},
-            )
-        ).all()
-        sku_by_pid = {int(r.id): r.master_sku for r in rows}
-        missing = ", ".join(f"{pid}({sku_by_pid.get(pid) or '?'})" for pid in absent)
+    cap = await variant_svc.max_batch_members(session, int(members[0]["team_id"]))
+    if len(members) > cap:  # 闸③ 单批上限（D-Q64③：家族完整性检查已废止）
         return await _reject_group(
-            session, members, store_id, code="VARIANT_GROUP_INCOMPLETE",
-            message=f"变体组 #{gid} 不齐：缺席成员 product_id(master_sku)=[{missing}]，整组拒绝",
+            session, members, store_id, code="VARIANT_BATCH_TOO_LARGE",
+            message=f"变体组 #{gid} 本批成员 {len(members)} 超单批上限 {cap}"
+                    "（variant.max_batch_members，feed 体积保护）；请分批提交或调整配置",
             skipped=skipped,
         )  # fmt: skip
 
@@ -796,6 +751,221 @@ async def _submit_variant_group(
     return built
 
 
+# ── regroup：live 组成员补挂 VG 段重投（D-Q64④；item_regroup feed 独立归位）──
+
+
+async def regroup(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    team_id: int,
+    group_id: int,
+    store_id: int,
+    actor_id: int | None = None,
+    is_super: bool = False,
+) -> dict[str, Any]:
+    """live 散品补挂成组：对组内已在架成员重建含 VG 段的 MP_ITEM feed 按 SKU 更新重投。
+
+    三段式同 submit；feed_kind=item_regroup 走独立归位——提交被拒/条目失败不动 listing
+    状态、不释放 GTIN（成员仍 live，失败只意味着"这次没挂上组"），仅返还配额 + 告警。
+    """
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        prep = await _regroup_tx1(
+            session, team_id=team_id, group_id=group_id, store_id=store_id, actor_id=actor_id
+        )
+    outcome = await outbox.execute_command(
+        sessions, prep["command_id"], team_id=team_id, is_super=is_super,
+        applier=_apply_feed_submit,
+    )  # fmt: skip
+    if outcome.get("command_status") == "pending":
+        outcome = {**outcome, "feed_status": "submitting"}
+    return {**prep["response"], **outcome}
+
+
+async def _regroup_tx1(  # noqa: PLR0912 守卫链分支=协议分支（组闸/目标/配额/构建/锚定）,拆散失真
+    session: AsyncSession,
+    *,
+    team_id: int,
+    group_id: int,
+    store_id: int,
+    actor_id: int | None = None,
+) -> dict[str, Any]:
+    """补挂重投 tx1：组守卫 → 目标收集 → 配额 → 整批构建（原子）→ anchor 锁 → feed+命令。
+
+    任何一步不满足→抛 BusinessError 整事务回滚（批次原子性 D-Q64③：配额消耗/feed 均
+    不留痕）。目标 = 组成员在本店的 live/published 未锁 build listing。
+    """
+    group = (
+        await session.execute(
+            text(
+                "SELECT id, team_id, status, anchor_store_id FROM app.variant_group"
+                " WHERE id = :g FOR UPDATE"
+            ),
+            {"g": group_id},
+        )
+    ).one_or_none()
+    if group is None or int(group.team_id) != team_id:
+        raise BusinessError("VARIANT_GROUP_NOT_FOUND", "变体组不存在")
+    if str(group.status) == "broken":
+        raise BusinessError(
+            "VARIANT_GROUP_BROKEN",
+            f"变体组 #{group_id} broken（维度冲突/维度值缺失），修复后再补挂",
+        )
+    if group.anchor_store_id is not None and int(group.anchor_store_id) != store_id:
+        raise BusinessError(
+            "VARIANT_ANCHOR_MISMATCH",
+            f"变体组 #{group_id} 已锚定店铺 #{group.anchor_store_id}，"
+            f"不可在店铺 #{store_id} 补挂（anchor 不自动转移，BR-LST-013）",
+        )
+    targets = [
+        dict(r)
+        for r in (
+            await session.execute(
+                text(
+                    "SELECT l.id, l.team_id, l.store_id, l.product_id, l.offer_mode,"
+                    " l.channel_sku, l.gtin, l.status, l.is_locked,"
+                    " l.current_price, l.current_inventory, l.end_date"
+                    " FROM app.listing l"
+                    " JOIN app.variant_member m ON m.product_id = l.product_id"
+                    " WHERE m.group_id = :g AND l.store_id = :s AND l.offer_mode = 'build'"
+                    "   AND l.status IN ('live','published') AND NOT l.is_locked"
+                    " ORDER BY l.id FOR UPDATE OF l"
+                ),
+                {"g": group_id, "s": store_id},
+            )
+        ).mappings()
+    ]
+    if not targets:
+        raise BusinessError(
+            "ERP_REGROUP_NO_TARGETS",
+            f"变体组 #{group_id} 在店铺 #{store_id} 无在架成员（live/published）可补挂",
+        )
+    cap = await variant_svc.max_batch_members(session, team_id)
+    if len(targets) > cap:
+        raise BusinessError(
+            "VARIANT_BATCH_TOO_LARGE",
+            f"本批成员 {len(targets)} 超单批上限 {cap}（variant.max_batch_members，feed 体积保护）",
+        )
+    for _t in targets:  # 配额整批消耗；任一不足 → 抛错整事务回滚（已消耗随之回滚）
+        if not await channel_service.consume_quota(session, store_id, "listing_create"):
+            raise BusinessError(
+                "ERP_QUOTA_EXHAUSTED",
+                f"listing_create 配额不足（本批需 {len(targets)}），整批不发",
+            )
+    partner_id = (
+        await session.execute(
+            text("SELECT profile ->> 'partner_id' FROM app.store WHERE id = :s"),
+            {"s": store_id},
+        )
+    ).scalar_one_or_none()
+    member_ctx = await variant_svc.load_build_contexts(
+        session, [int(t["product_id"]) for t in targets]
+    )
+    items: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for t in targets:
+        vctx = member_ctx.get(int(t["product_id"]))
+        if vctx is None:  # 双向关联破损（member 行在而 product.variant_group_id 空）防御
+            failures.append({"listing_id": t["id"], "code": "ERP_REGROUP_CTX_MISSING"})
+            continue
+        product = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT id, team_id, title, brand, images, attrs, price_snapshot,"
+                        " category_path, amazon_leaf_id"
+                        " FROM app.product WHERE id = :p"
+                    ),
+                    {"p": t["product_id"]},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        try:
+            built = await spec_builder.build_spec(
+                session, product=dict(product), offer_mode="build", gtin=t["gtin"],
+                channel_sku=t["channel_sku"], price=t["current_price"],
+                inventory=t["current_inventory"], end_date=t["end_date"],
+                partner_id=partner_id, variant_ctx=vctx, skip_variant=False,
+            )  # fmt: skip
+        except BusinessError as e:
+            failures.append({"listing_id": t["id"], "code": e.code, "message": e.message})
+            continue
+        validation = built.get("validation") or {"ok": True}
+        if not validation["ok"]:
+            failures.append({
+                "listing_id": t["id"], "code": "ERP_SPEC_INVALID",
+                "errors": validation["errors"][:4],
+            })  # fmt: skip
+            continue
+        items.append(built["item"])
+    if failures:  # 批次原子性：一员失败整批不发（live 成员状态不动——回滚清痕）
+        raise BusinessError(
+            "VARIANT_GROUP_MEMBER_FAILED",
+            f"变体组 #{group_id} 补挂构建失败 {len(failures)} 员，整批不发",
+            {"failures": failures[:8]},
+        )
+    locked = (  # anchor 首挂锁定（与提交路径同款原子谓词；持组行锁下必成，保防御）
+        await session.execute(
+            text(
+                "UPDATE app.variant_group SET anchor_store_id = :s"
+                " WHERE id = :g AND (anchor_store_id IS NULL OR anchor_store_id = :s)"
+                " RETURNING id"
+            ),
+            {"s": store_id, "g": group_id},
+        )
+    ).first()
+    if locked is None:
+        raise BusinessError("VARIANT_ANCHOR_MISMATCH", "并发锚定冲突，整批不发")
+    envelope = {
+        "MPItemFeedHeader": await spec_builder.feed_header(session, "build"),
+        "MPItem": items,
+    }
+    envelope, _num_fixes = coerce.sanitize_feed_numbers(envelope)
+    await gateway.prepare(session, store_id)  # 模式闸预检（拒绝 → 整事务回滚）
+    feed_id = (
+        await session.execute(
+            text(
+                "INSERT INTO app.feed (team_id, store_id, feed_kind, item_count, created_by)"
+                " VALUES (:t, :s, 'item_regroup', :n, :u) RETURNING id"
+            ),
+            {"t": team_id, "s": store_id, "n": len(targets), "u": actor_id},
+        )
+    ).scalar_one()
+    for t in targets:  # 成员状态不迁移（保持 live/published——item_regroup 独立归位）
+        await session.execute(
+            text(
+                "INSERT INTO app.feed_item (feed_id, team_id, listing_id, channel_sku)"
+                " VALUES (:f, :t, :l, :sku)"
+            ),
+            {"f": feed_id, "t": team_id, "l": t["id"], "sku": t["channel_sku"]},
+        )
+    await session.execute(
+        text("UPDATE app.feed SET status = 'submitting' WHERE id = :f"), {"f": feed_id}
+    )
+    enq = await outbox.enqueue(
+        session,
+        team_id=team_id,
+        store_id=store_id,
+        action="feed_submit",
+        payload={
+            "method": "POST",
+            "path": "/v3/feeds",
+            "endpoint_key": "POST /v3/feeds:MP_ITEM",
+            "params": {"feedType": "MP_ITEM"},
+            "json_body": envelope,
+        },
+        idempotency_key=f"feed:{feed_id}",
+        object_type="feed",
+        object_id=feed_id,
+        created_by=actor_id,
+    )
+    return {
+        "command_id": enq["command_id"],
+        "response": {"queued": len(targets), "skipped": [], "feed_id": feed_id},
+    }
+
+
 async def _feed_listings_for_update(session: AsyncSession, feed_id: int) -> list[dict[str, Any]]:
     rows = (
         (
@@ -814,7 +984,7 @@ async def _feed_listings_for_update(session: AsyncSession, feed_id: int) -> list
     return [dict(r) for r in rows]
 
 
-async def _apply_feed_submit(  # noqa: PLR0911 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）
+async def _apply_feed_submit(  # noqa: PLR0911, PLR0912 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）×feed 类别
     session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
 ) -> dict[str, Any]:
     """feed_submit 的 tx2 归位（outbox.Applier 契约：complete(fence) 成功才落业务态）。
@@ -901,6 +1071,8 @@ async def _apply_feed_submit(  # noqa: PLR0911 归位分支=渠道响应形态�
     )
     for listing in await _feed_listings_for_update(session, feed_id):
         await channel_service.release_quota(session, int(cmd["store_id"]), "listing_create")
+        if feed_kind == "item_regroup":
+            continue  # 补挂重投：成员仍在架——不释放 GTIN、不动状态（D-Q64④ 独立归位）
         await _release_gtin(session, listing["id"])
         if listing["status"] == "queued":
             await transition(session, listing, "failed", reason_code="ERP_FEED_REJECTED",
@@ -996,7 +1168,10 @@ async def _apply_poll_result(
         # price feed item 级回写走 pricing 模块（SUCCESS → 两段式回填；error → 复位）
         return await pricing_service.apply_price_feed_results(session, feed, data)
 
-    # item 级权威回写（headline 不可信——总账）
+    # item 级权威回写（headline 不可信——总账）。item_regroup（D-Q64④）独立归位：
+    # 成员本就 live——SUCCESS 不迁状态/不再 mark_used；ERROR 只返配额+记错，
+    # 不释放 GTIN、不打 failed（失败仅意味着"这次没挂上组"，成员照常在架）。
+    is_regroup = feed.get("feed_kind") == "item_regroup"
     ok = err = 0
     for item in data.get("itemDetails", {}).get("itemIngestionStatus", []):
         sku = item.get("sku")
@@ -1026,6 +1201,8 @@ async def _apply_poll_result(
                 ),
                 {"f": feed_id, "sku": sku, "r": json.dumps(item, ensure_ascii=False)},
             )
+            if is_regroup:
+                continue  # 成员保持 live；VG 段生效与否由渠道详情页/BUYBOX 报告核实
             await session.execute(
                 text("UPDATE app.listing SET wpid = :w WHERE id = :id"),
                 {"w": item.get("wpid"), "id": listing["id"]},
@@ -1053,6 +1230,8 @@ async def _apply_poll_result(
                 },
             )
             await channel_service.release_quota(session, feed["store_id"], "listing_create")
+            if is_regroup:
+                continue  # 成员仍在架：不释放 GTIN、不打 failed（错误已入 feed_item+字典）
             await _release_gtin(session, listing["id"])
             await transition(session, listing, "failed", reason_code=code)
     final = "processed" if err == 0 else ("partial" if ok else "error")

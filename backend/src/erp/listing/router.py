@@ -33,6 +33,13 @@ class AllocateIn(BaseModel):
 
 class SubmitIn(BaseModel):
     listing_ids: list[int] = Field(max_length=500)
+    # D-Q64②：group=分组产品携 VG 段成组上架（默认）；standalone=整批散品上架
+    variant_mode: str = Field(default="group", pattern="^(group|standalone)$")
+
+
+class RegroupIn(BaseModel):
+    group_id: int
+    store_id: int
 
 
 class GtinImportIn(BaseModel):
@@ -217,6 +224,7 @@ async def submit(
             listing_ids=body.listing_ids,
             actor_id=user.id,
             is_super=user.is_super,
+            variant_mode=body.variant_mode,
         )
 
     result = await run_idempotent(
@@ -231,6 +239,52 @@ async def submit(
     )
     await AuditWriter.for_user(session, user, request).log(
         "listing.submit", "feed", result.get("feed_id"), after={"queued": result["queued"]}
+    )
+    return result
+
+
+@listing_router.post("/listings/variant-regroup", status_code=202)
+async def variant_regroup(
+    body: RegroupIn,
+    request: Request,
+    idempotency_key: IdemKey,
+    user: Annotated[CurrentUser, Depends(require_permission("listing.submit"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """live 组成员补挂 VG 段重投（D-Q64④）：按 SKU 更新 MP_ITEM feed，散品转成组。
+
+    独立归位（item_regroup）：失败不动 listing 状态、不释放 GTIN，仅返还配额。
+    组 broken / anchor 异店 / 无在架成员 / 超单批上限 → 422 拒绝（批次原子性）。
+    """
+    if user.team_id is None:
+        raise BusinessError("LISTING_TEAM_REQUIRED", "超管需切换到具体团队")
+    team_id = user.team_id
+
+    async def _handler() -> dict[str, Any]:
+        return await service.regroup(
+            get_session_factory(),
+            team_id=team_id,
+            group_id=body.group_id,
+            store_id=body.store_id,
+            actor_id=user.id,
+            is_super=user.is_super,
+        )
+
+    result = await run_idempotent(
+        get_session_factory(),
+        team_id=team_id,
+        is_super=user.is_super,
+        endpoint="POST /listings/variant-regroup",
+        idem_key=idempotency_key,
+        payload=body.model_dump(),
+        created_by=user.id,
+        handler=_handler,
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "listing.variant_regroup",
+        "variant_group",
+        body.group_id,
+        after={"queued": result.get("queued"), "feed_id": result.get("feed_id")},
     )
     return result
 
