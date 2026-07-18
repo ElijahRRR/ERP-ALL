@@ -1099,7 +1099,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    incidentId: number;
+                    incidentId: components["parameters"]["incidentId"];
                 };
                 cookie?: never;
             };
@@ -1555,6 +1555,9 @@ export interface paths {
                 query?: {
                     page?: components["parameters"]["page"];
                     size?: components["parameters"]["size"];
+                    status?: "active" | "broken";
+                    /** @description source_parent_ref 精确查（R2-11 增补） */
+                    q?: string;
                 };
                 header?: never;
                 path?: never;
@@ -1980,13 +1983,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** 品牌店铺占用列表（封店工作流品牌占用视图，D-Q33） */
         get: {
             parameters: {
                 query?: {
                     page?: components["parameters"]["page"];
                     size?: components["parameters"]["size"];
-                    brand?: string;
+                    store_id?: number;
                     status?: "occupied" | "released";
+                    /** @description 品牌名查询 */
+                    q?: string;
                 };
                 header?: never;
                 path?: never;
@@ -2007,6 +2013,51 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/brand-assignments/{assignmentId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 手工释放品牌占用（occupied→released，release_reason=manual；封店批量释放走 store-incidents） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    assignmentId: components["parameters"]["assignmentId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        notes?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrandAssignment"];
+                    };
+                };
+                409: components["responses"]["Error"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -2151,7 +2202,40 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /** 提交前改价（draft/failed 直改；live 归定价管道推渠道）——HF-0716/R2-06 */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    listingId: components["parameters"]["listingId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        price: number;
+                        /**
+                         * @description BR-PR-008 变动超阈（默认 30%）需二次确认
+                         * @default false
+                         */
+                        force?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description 价格非法/状态不可改/超阈未 force */
+                422: components["responses"]["Error"];
+            };
+        };
         trace?: never;
     };
     "/listings/submit": {
@@ -2485,7 +2569,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** GTIN 批量导入（格式+GS1校验位校验；重复逐条报告） */
+        /** GTIN 批量导入（格式+GS1校验位+首位白名单 BR-UPC-002；重复/受限前缀逐条报告） */
         post: {
             parameters: {
                 query?: never;
@@ -2608,6 +2692,158 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/pricing-strategies/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 重定价预览（clamp 版展示区间外情况 + compute_price 严格判定并列返回；manual 策略 reason='manual'） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        store_id: number;
+                        /** @enum {string} */
+                        offer_mode: "build" | "match";
+                        /** @description 与 listing_ids 二选一 */
+                        product_ids?: number[];
+                        /** @description 与 product_ids 二选一（join listing 取 product + current_price 作 old_price） */
+                        listing_ids?: number[];
+                    };
+                };
+            };
+            responses: {
+                /** @description 试算结果（不落库） */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            strategy?: {
+                                id?: number;
+                                name?: string;
+                                algo_code?: string;
+                                version?: number;
+                            };
+                            items?: {
+                                product_id?: number;
+                                listing_id?: number | null;
+                                old_price?: number | null;
+                                /** @description clamp 版参考价（区间外 detail.out_of_band=true） */
+                                new_price?: number | null;
+                                /** @description compute_price 严格判定（区间外/低于底线为 false） */
+                                ok?: boolean;
+                                /**
+                                 * @example out_of_band
+                                 * @example below_min_price
+                                 * @example no_source_price
+                                 * @example manual
+                                 * @example not_found
+                                 */
+                                reason?: string | null;
+                                detail?: Record<string, never>;
+                            }[];
+                        };
+                    };
+                };
+                /** @description 无活跃策略（PRICING_STRATEGY_NOT_FOUND）/入参二选一违规 等业务拒绝 */
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pricing/reprice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量重定价（cost_plus 策略算价 → price_changed 过滤 → outbox price_push 三段式；manual 策略跳过）
+         * @description 同步逐条执行（≤200 条 PUT）。PUT /v3/price 100/hour 限流器挡超额——被挡命令 留 pending 由 beat channel_outbox_drain 兜底继续推（计入 pushed）；结果未知 （verify_pending）由 price_recon 对账归位，绝不盲重试。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        listing_ids: number[];
+                        /**
+                         * @description 变动超确认阈值（默认 30%）时放行（BR-PR-008）
+                         * @default false
+                         */
+                        force?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description 执行结果 */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @description 已入队推送数（含 succeeded / verify_pending / 限流 pending） */
+                            pushed?: number;
+                            skipped?: {
+                                listing_id?: number;
+                                /**
+                                 * @example not_found
+                                 * @example not_live
+                                 * @example locked
+                                 * @example no_strategy
+                                 * @example manual
+                                 * @example unchanged
+                                 * @example out_of_band
+                                 * @example below_min_price
+                                 * @example no_source_price
+                                 */
+                                reason?: string;
+                            }[];
+                            failed?: {
+                                listing_id?: number;
+                                /** @description 渠道错误码 / HTTP_xxx / PRICING_CONFIRM_REQUIRED 等 */
+                                code?: string | null;
+                            }[];
+                        };
+                    };
+                };
+                /** @description 幂等键冲突（同键异载荷/处理中） */
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/maintenance-tasks": {
@@ -3275,6 +3511,240 @@ export interface paths {
         };
         trace?: never;
     };
+    "/returns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 退货单列表（RMA 头级；行级状态见详情） */
+        get: {
+            parameters: {
+                query?: {
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                    store_id?: number;
+                    internal_status?: "pulled" | "reviewed" | "closed";
+                    return_after?: string;
+                    /** @description RMA / 客户订单号 精确查 */
+                    q?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReturnPage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/returns/{returnId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 退货单详情（内嵌 lines + 行级状态变更 events） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    returnId: components["parameters"]["returnId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReturnDetail"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/refund-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                    status?: "recorded" | "pending_approval" | "approved" | "rejected" | "executing" | "executed" | "failed";
+                    kind?: "cancel" | "refund";
+                    order_id?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RefundRequestPage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** 创建退款/取消申请（档位随建快照 D-Q29；auto 档 R2-09 接线前拒绝） */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        order_id: number;
+                        /** @enum {string} */
+                        kind: "cancel" | "refund";
+                        amount: number;
+                        /** @description sys_dict(refund_reason) */
+                        reason_code: string;
+                        reason_text?: string | null;
+                        lines?: {
+                            line_no: string;
+                            qty: number;
+                            amount: number;
+                        }[];
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RefundRequest"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/refund-requests/{refundRequestId}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 审批通过（approval 档；approved 驻留待 R2-09 执行接线） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    refundRequestId: components["parameters"]["refundRequestId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/refund-requests/{refundRequestId}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 审批拒绝（approval 档） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    refundRequestId: components["parameters"]["refundRequestId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/portal/auth/login": {
         parameters: {
             query?: never;
@@ -3712,12 +4182,22 @@ export interface components {
         VariantGroup: {
             id?: number;
             source_parent_ref?: string | null;
+            /** @description 归组时存排序维度键串（如 color_name */
             variation_theme?: string | null;
-            status?: string;
+            /**
+             * @description broken=成员不齐/主题冲突/超上限（v1 判定，D-Q63 配套），spec 构建拒绝
+             * @enum {string}
+             */
+            status?: "active" | "broken";
+            /** @description 组首次上架锁定店（D-Q63①，BR-LST-013 防漂移；增量2 写入） */
+            anchor_store_id?: number | null;
             members?: {
                 product_id?: number;
                 variant_attrs?: Record<string, never>;
                 is_primary?: boolean;
+                master_sku?: string;
+                title?: string;
+                product_status?: string;
             }[];
         };
         VariantGroupPage: components["schemas"]["PageMeta"] & {
@@ -3780,14 +4260,17 @@ export interface components {
         };
         BrandAssignment: {
             id?: number;
+            brand_norm?: string;
             brand_display?: string;
             store_id?: number;
+            store_name?: string | null;
             status?: string;
             /** Format: date-time */
             assigned_at?: string;
             /** Format: date-time */
             released_at?: string | null;
             release_reason?: string | null;
+            incident_id?: number | null;
         };
         BrandAssignmentPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["BrandAssignment"][];
@@ -3927,6 +4410,91 @@ export interface components {
         OrderPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["Order"][];
         };
+        Return: {
+            id?: number;
+            store_id?: number;
+            /** @description RMA */
+            channel_return_no?: string;
+            customer_order_no?: string | null;
+            /** @description 回连 channel_order（按行 purchaseOrderId 反查） */
+            order_id?: number | null;
+            /** Format: date-time */
+            return_date?: string;
+            /** Format: date-time */
+            return_by_date?: string | null;
+            /** @description 行状态聚合（全行一致取其值，分歧=MIXED；行级才是权威 BR-AS-004） */
+            channel_status?: string;
+            /** @enum {string} */
+            internal_status?: "pulled" | "reviewed" | "closed";
+            /** @description COURTESY / REFUND_TO_PAYMENT_METHOD / MERCHANT_REFUND */
+            refund_mode?: string | null;
+            qty?: number;
+            refund_amount?: number | null;
+            currency?: string;
+            reason?: string | null;
+        };
+        ReturnDetail: components["schemas"]["Return"] & {
+            /** @description {name, email}（PII 最小化） */
+            customer?: Record<string, never>;
+            lines?: {
+                /** @description 销售行号（行身份，C6 upsert 键） */
+                line_no?: string;
+                channel_sku?: string;
+                qty?: number;
+                refunded_qty?: number;
+                unit_price?: number | null;
+                line_status?: string;
+                refund_status?: string | null;
+                delivery_status?: string | null;
+                return_method?: string | null;
+                return_reason?: string | null;
+                tracking_no?: string | null;
+            }[];
+            /** @description 行级状态变更历史（C6 保留快照；最近 50 条） */
+            events?: {
+                line_no?: string;
+                /** @description {字段: {old, new}} */
+                changes?: Record<string, never>;
+                /** Format: date-time */
+                observed_at?: string;
+            }[];
+        };
+        ReturnPage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["Return"][];
+        };
+        RefundRequest: {
+            id?: number;
+            store_id?: number;
+            order_id?: number;
+            /** @enum {string} */
+            kind?: "cancel" | "refund";
+            /** @description 部分退款行 [{line_no, qty, amount}] */
+            lines?: unknown[];
+            amount?: number;
+            currency?: string;
+            reason_code?: string;
+            reason_text?: string | null;
+            /**
+             * @description 创建时从 automation_policy(flow=kind) 快照（manual→record/semi→approval/auto→auto）
+             * @enum {string}
+             */
+            mode_applied?: "record" | "approval" | "auto";
+            /**
+             * @description record 档终态=recorded；approved 驻留待 R2-09 执行接线
+             * @enum {string}
+             */
+            status?: "recorded" | "pending_approval" | "approved" | "rejected" | "executing" | "executed" | "failed";
+            /** @enum {string} */
+            requested_by_kind?: "user" | "system";
+            approved_by?: number | null;
+            /** Format: date-time */
+            decided_at?: string | null;
+            /** Format: date-time */
+            executed_at?: string | null;
+        };
+        RefundRequestPage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["RefundRequest"][];
+        };
         ProcurementOrder: {
             id?: number;
             order_id?: number;
@@ -4043,6 +4611,10 @@ export interface components {
         listingId: number;
         orderId: number;
         poId: number;
+        returnId: number;
+        refundRequestId: number;
+        incidentId: number;
+        assignmentId: number;
     };
     requestBodies: {
         TeamWrite: {
@@ -4163,7 +4735,7 @@ export interface components {
                     offer_mode?: "build" | "match";
                     name?: string;
                     algo_code?: string;
-                    /** @description 必含 min_price 硬底线 */
+                    /** @description min_price 底线可选（D-Q62 补充；填了须 >0，低于底线不出价） */
                     params?: Record<string, never>;
                     /** @enum {string} */
                     status?: "active" | "disabled";

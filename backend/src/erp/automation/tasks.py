@@ -249,6 +249,10 @@ async def feed_poll(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any
                     " WHERE status IN ('submitted','processing')"
                     "   AND (last_polled_at IS NULL"
                     "        OR last_polled_at < now() - make_interval(secs => :iv))"
+                    # 封店/停用店铺停止 listing 维护（§02:185）——非 active 店冻结轮询，
+                    # 恢复 active 后自动续（不重发、不丢在途）；纯内部门控，不碰渠道写路径。
+                    "   AND EXISTS (SELECT 1 FROM app.store s"
+                    "               WHERE s.id = feed.store_id AND s.status = 'active')"
                     " ORDER BY last_polled_at ASC NULLS FIRST, id LIMIT :n"
                 ),
                 {"iv": min_interval_s, "n": batch},
@@ -308,6 +312,9 @@ async def feed_verify_back(sessions: Sessions, config: dict[str, Any]) -> dict[s
                 text(
                     "SELECT id FROM app.feed WHERE status = 'verify_pending'"
                     "   AND updated_at < now() - make_interval(secs => :age)"
+                    # 封店/停用店铺冻结对账（§02:185，同 feed_poll 门控）。
+                    "   AND EXISTS (SELECT 1 FROM app.store s"
+                    "               WHERE s.id = feed.store_id AND s.status = 'active')"
                     " ORDER BY id LIMIT :n"
                 ),
                 {"age": min_age_s, "n": batch},
@@ -375,6 +382,9 @@ async def retire_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, 
                     " FROM app.channel_command c JOIN app.listing l ON l.id = c.object_id"
                     " WHERE c.action = 'item_retire' AND c.status = 'verify_pending'"
                     "   AND c.updated_at < now() - make_interval(secs => :age)"
+                    # 封店/停用店铺冻结 listing 维护对账（§02:185）；恢复 active 后自动续。
+                    "   AND EXISTS (SELECT 1 FROM app.store s"
+                    "               WHERE s.id = c.store_id AND s.status = 'active')"
                     " ORDER BY c.id LIMIT :n"
                 ),
                 {"age": min_age_s, "n": batch},
@@ -479,6 +489,9 @@ async def price_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, A
                     " FROM app.channel_command c JOIN app.listing l ON l.id = c.object_id"
                     " WHERE c.action = 'price_push' AND c.status = 'verify_pending'"
                     "   AND c.updated_at < now() - make_interval(secs => :age)"
+                    # 封店/停用店铺冻结价格同步对账（§02:185）；恢复 active 后自动续。
+                    "   AND EXISTS (SELECT 1 FROM app.store s"
+                    "               WHERE s.id = c.store_id AND s.status = 'active')"
                     " ORDER BY c.id LIMIT :n"
                 ),
                 {"age": min_age_s, "n": batch},
@@ -705,6 +718,62 @@ async def llm_budget_check(sessions: Sessions, config: dict[str, Any]) -> dict[s
     return {"teams_with_budget": len(budgets), "over_budget": over}
 
 
+async def suspension_reminder(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """封店定时提醒（D-Q33/§02:186）：未解封的 suspension 事件按 remind_days 周期
+    提醒观察放款 / 写申诉信 → notification。
+
+    周期号 cycle = 已封天数 // remind_days；同周期只发一条的判据是
+    「该 cycle 键在 notification 历史中已存在」——**无时间窗**（notify 自带的
+    24h dedupe 跨不过多天周期，若只靠它，每日 cron 下会隔天重发、架空 remind_days）；
+    未到首个周期（days < remind_days）零打扰；resolved/closed 已不在提醒集合
+    （status IN open/observing/appealing）。remind_days 读 schedule.config（零硬编码），默认 7。
+    """
+    remind_days = max(1, int(config.get("remind_days", 7)))
+    async with system_tx(sessions) as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT i.id, i.team_id, s.name AS store_name,"
+                    " floor(extract(epoch FROM now() - i.occurred_at) / 86400)::int AS days"
+                    " FROM app.store_incident i JOIN app.store s ON s.id = i.store_id"
+                    " WHERE i.incident_kind = 'suspension'"
+                    "   AND i.status IN ('open','observing','appealing')"
+                )
+            )
+        ).all()
+        reminded = 0
+        for r in rows:
+            if r.days < remind_days:
+                continue  # 未到首个提醒周期，零打扰
+            cycle = r.days // remind_days
+            key = f"suspension_reminder:{r.id}:{cycle}"
+            sent_before = (
+                await session.execute(
+                    text("SELECT 1 FROM app.notification WHERE dedupe_key = :k LIMIT 1"),
+                    {"k": key},
+                )
+            ).first()
+            if sent_before is not None:
+                continue  # 本周期已提醒过（无时间窗判重）
+            sent = await notify(
+                session,
+                team_id=r.team_id,
+                severity="warn",
+                category="store_incident",
+                title=f"封店提醒：店铺「{r.store_name}」已封 {r.days} 天",
+                body=(
+                    f"店铺「{r.store_name}」封店事件 #{r.id} 已封 {r.days} 天仍未解封；"
+                    "请关注观察放款进度，或依 75k 案例库尽快撰写 / 更新申诉信（POA）。"
+                ),
+                object_type="store_incident",
+                object_id=str(r.id),
+                dedupe_key=key,
+            )
+            if sent is not None:
+                reminded += 1
+    return {"scanned": len(rows), "reminded": reminded}
+
+
 async def order_pull(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
     """渠道订单增量拉取（R2-05：15min/店；协议与实战语义见 erp.order.pull 模块头注）。"""
     return await order_pull_service.run(sessions, config)
@@ -849,6 +918,7 @@ TASKS: dict[str, TaskFn] = {
     "price_recon": price_recon,
     "gtin_watermark": gtin_watermark,
     "llm_budget_check": llm_budget_check,
+    "suspension_reminder": suspension_reminder,
     "order_pull": order_pull,
     "ship_recon": ship_recon,
     "return_pull": return_pull,

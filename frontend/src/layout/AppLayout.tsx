@@ -13,6 +13,7 @@ import {
   ShoppingOutlined,
   TeamOutlined,
   UserSwitchOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import { Dropdown, Layout, Menu, Spin } from 'antd'
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -32,6 +33,7 @@ const MENU = [
   { key: '/orders', icon: <ProfileOutlined />, label: '订单管理', permission: 'order.read' },
   { key: '/purchasers', icon: <UserSwitchOutlined />, label: '采购方', permission: 'procurement.read' },
   { key: '/stores', icon: <GlobalOutlined />, label: '店铺管理', permission: 'channel.store_read' },
+  { key: '/incidents', icon: <WarningOutlined />, label: '店铺事件', permission: 'channel.incident_read' },
   { key: '/proxies', icon: <ApiOutlined />, label: '代理管理', permission: 'channel.proxy_read' },
   { key: '/users', icon: <TeamOutlined />, label: '成员管理', permission: 'identity.user_read' },
   { key: '/roles', icon: <SafetyOutlined />, label: '角色权限', permission: 'identity.user_read' },

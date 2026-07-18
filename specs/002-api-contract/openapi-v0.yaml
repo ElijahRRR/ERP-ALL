@@ -362,7 +362,7 @@ paths:
       tags: [Channel]
       summary: 事件状态推进（observing/appealing/resolved/closed）+ 触发释放作业
       x-permission: channel.incident_write
-      parameters: [{name: incidentId, in: path, required: true, schema: {type: integer}}]
+      parameters: [{$ref: '#/components/parameters/incidentId'}]
       requestBody:
         content:
           application/json:
@@ -625,13 +625,31 @@ paths:
   /brand-assignments:
     get:
       tags: [Catalog]
-      x-permission: catalog.product_read
+      summary: 品牌店铺占用列表（封店工作流品牌占用视图，D-Q33）
+      x-permission: catalog.brand_read
       parameters:
         - {$ref: '#/components/parameters/page'}
         - {$ref: '#/components/parameters/size'}
-        - {name: brand, in: query, schema: {type: string}}
+        - {name: store_id, in: query, schema: {type: integer}}
         - {name: status, in: query, schema: {type: string, enum: [occupied, released]}}
+        - {name: q, in: query, schema: {type: string}, description: 品牌名查询}
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BrandAssignmentPage'}}}}}
+  /brand-assignments/{assignmentId}/release:
+    post:
+      tags: [Catalog]
+      summary: 手工释放品牌占用（occupied→released，release_reason=manual；封店批量释放走 store-incidents）
+      x-permission: catalog.brand_release
+      parameters: [{$ref: '#/components/parameters/assignmentId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: {type: string}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BrandAssignment'}}}}
+        '409': {$ref: '#/components/responses/Error'}
 
   # ─────────────────────── Listing ───────────────────────
   /listings:
@@ -1235,6 +1253,8 @@ components:
     poId: {name: poId, in: path, required: true, schema: {type: integer}}
     returnId: {name: returnId, in: path, required: true, schema: {type: integer}}
     refundRequestId: {name: refundRequestId, in: path, required: true, schema: {type: integer}}
+    incidentId: {name: incidentId, in: path, required: true, schema: {type: integer}}
+    assignmentId: {name: assignmentId, in: path, required: true, schema: {type: integer}}
 
   responses:
     Error:
@@ -1673,12 +1693,15 @@ components:
       type: object
       properties:
         id: {type: integer}
+        brand_norm: {type: string}
         brand_display: {type: string}
         store_id: {type: integer}
+        store_name: {type: [string, 'null']}
         status: {type: string}
         assigned_at: {type: string, format: date-time}
         released_at: {type: [string, 'null'], format: date-time}
         release_reason: {type: [string, 'null']}
+        incident_id: {type: [integer, 'null']}
     BrandAssignmentPage:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
@@ -1895,7 +1918,7 @@ components:
         store_id: {type: integer}
         order_id: {type: integer}
         kind: {type: string, enum: [cancel, refund]}
-        lines: {type: array, description: 部分退款行 [{line_no, qty, amount}]}
+        lines: {type: array, description: '部分退款行 [{line_no, qty, amount}]'}
         amount: {type: number}
         currency: {type: string}
         reason_code: {type: string}

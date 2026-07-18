@@ -629,3 +629,15 @@
 - worker 防御：is_variant_degraded（parentAsin≠自身且 twister+兜底全空 → 独立预算换出口重试，
   耗尽带 attrs.variant_degraded 入库）；VARIANT_DEGRADED_RETRIES 默认 2（env 可调）。
   workers ruff/mypy/pytest 34 passed。
+
+## 2026-07-17（R2-07 07b 封店工作流：开发面完成）
+- 考古（Workflow 五路，evidence/R2-07/archaeology-07b.md）：store_incident 表/端点/状态联动
+  0003 早已建成；真缺口=brand_assignment 表整仓不存在。范围据此修正。
+- 实现（Workflow：implA 后端+implB 契约前端并行，Opus）+ 终审修复（fable）：
+  0033 建表/权限/种子；build 分配 upsert 占用；suspension 批量释放+回填+notify；
+  outbox pick_next/claim listing 类封店冻结（评审 major①，order 类放行不受挡）；
+  suspension_reminder 周期判重无时间窗（评审 major②，防隔天刷屏）；manual release
+  审计留痕；前端店铺事件页；erp.tools.run_task；契约+runbook（含 YAML 阻断修复）。
+- CI：backend pytest 457 绿 + ruff/format/mypy 干净；frontend lint/build 绿；0033 迁移
+  up/down/re-up 实测。待 Owner 真机验收②（封店演练，runbook 有完整步骤）。
+- R2-11 状态：验收②（缺员拒绝）真机通过；验收①等 Walmart variant group live 回执。

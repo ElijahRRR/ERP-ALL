@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.catalog import brand
 from erp.channel import service
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
@@ -517,35 +518,40 @@ async def create_incident(
 ) -> dict[str, int]:
     store = await _load_store(session, body.store_id)
     row = (
-        await session.execute(
-            text(
-                "INSERT INTO app.store_incident (team_id, store_id, incident_kind, source,"
-                " occurred_at, reason, created_by)"
-                " SELECT s.team_id, s.id, :k, 'manual', :oa, :r, :by FROM app.store s"
-                " WHERE s.id = :sid RETURNING id"
-            ),
-            {
-                "k": body.incident_kind,
-                "oa": body.occurred_at,
-                "r": body.reason,
-                "by": user.id,
-                "sid": body.store_id,
-            },
+        (
+            await session.execute(
+                text(
+                    "INSERT INTO app.store_incident (team_id, store_id, incident_kind, source,"
+                    " occurred_at, reason, created_by)"
+                    " SELECT s.team_id, s.id, :k, 'manual', :oa, :r, :by FROM app.store s"
+                    " WHERE s.id = :sid RETURNING id, team_id, store_id, brand_released_at"
+                ),
+                {
+                    "k": body.incident_kind,
+                    "oa": body.occurred_at,
+                    "r": body.reason,
+                    "by": user.id,
+                    "sid": body.store_id,
+                },
+            )
         )
-    ).one()
+        .mappings()
+        .one()
+    )
     if body.incident_kind == "suspension":
-        # 封店联动：店铺状态 + 时间戳（SKU/品牌释放作业随 R2#7 catalog 联动接入）
+        # 封店联动（§02 :184-185）：店铺状态回写 → 品牌占用批量释放 + 回填完成时间戳。
         await session.execute(
             text("UPDATE app.store SET status = 'suspended', suspended_at = :oa WHERE id = :sid"),
             {"oa": body.occurred_at, "sid": body.store_id},
         )
+        await brand.release_for_incident(session, row)
     await AuditWriter.for_user(session, user, request).log(
         "channel.incident_create",
         "store_incident",
-        row.id,
+        row["id"],
         after={"store": store.code, "kind": body.incident_kind},
     )
-    return {"id": row.id}
+    return {"id": row["id"]}
 
 
 class IncidentTransitionIn(BaseModel):
