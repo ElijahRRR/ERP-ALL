@@ -44,6 +44,22 @@ bash infra/local-deploy/backup.sh
 - 同办公室/内网：浏览器访问 `http://<这台机器内网IP>:5173`（前端）——R1-05 后可用。
 - 异地成员/外部门户：**暂不开放公网**；R2#6 门户上线前按 D-Q52 检查点评估迁云或穿透方案。
 
+## 增量验证流程（2026-07-18 起：先分支后合并）
+
+增量一律先在 PR 分支上验证，通过后 Owner 授权合并 main，再继续开发（main 恒为
+「CI 绿 + 真机验过」）：
+
+```bash
+git fetch origin <PR分支> && git checkout <PR分支> && git pull
+git log -1 --oneline        # 前置核验：应含该增量标题/短哈希（以指令块为准）
+make up                     # 重建 api+beat+frontend；migrate 退出码应为 0
+# …按该增量的核验指令块执行，回报结果；验证通过、Owner 合并后：
+git checkout main && git pull && make up   # 部署机切回 main 常驻
+```
+
+- 含迁移的增量：分支验证会把库 schema 推前；若增量最终被弃，须先 `alembic downgrade`
+  归位再切回 main（增量门槛本就要求迁移 up/down 实测过）。
+
 ## 故障处置速查
 
 | 症状 | 动作 |

@@ -665,3 +665,12 @@
 - 待 A152（随验收①窗口）：真机跑 variant_group_sync 核对 merged 计数与组收敛；
   验收①（Walmart variant group live 回执）继续等待。观察项不变：维度值 coerce enum
   改写、5.0.20260304 换版窗口 per-PT variantAttributeNames 在线核实。
+
+## 2026-07-18 流程拍板：增量真机验证前移到 PR 分支（Owner）
+- 起因：PR #26 部署机核验块前提「先合并」未满足，前置核验正确拦停。Owner 拍板改流程：
+  以后增量一律先在 PR 分支上由部署机验证，通过后授权合并 main，再重建分支接着开发。
+- 效果：main 恒为「CI 绿 + 真机验过」，与铁律4 对齐且更严；验证不过的增量不进 main。
+- 注意：部署机验完切回 main 常驻；含迁移的增量在分支验证会把库 schema 推前，分支被弃
+  须 alembic downgrade 归位（迁移 up/down 实测本就是增量门槛）。
+- 落笔：task.md Constraints 增行；infra/local-deploy/README.md 增「增量验证流程」节。
+  PR #26 即首个按新流程走的增量（本提交推分支后部署机可直接验）。
