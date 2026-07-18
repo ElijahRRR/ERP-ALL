@@ -50,7 +50,9 @@ bash infra/local-deploy/backup.sh
 「CI 绿 + 真机验过」）：
 
 ```bash
-git fetch origin <PR分支> && git checkout <PR分支> && git pull
+# 注意：开发分支每次合并后会从 main 强制重建（历史重写），pull 无法 fast-forward——
+# 分支对齐一律 fetch + reset --hard（部署机铁律不改码，本地恒无自产提交，重置零丢失）
+git fetch origin <PR分支> && git checkout <PR分支> && git reset --hard origin/<PR分支>
 git log -1 --oneline        # 前置核验：应含该增量标题/短哈希（以指令块为准）
 make up                     # 重建 api+beat+frontend；migrate 退出码应为 0
 # …按该增量的核验指令块执行，回报结果；验证通过、Owner 合并后：
