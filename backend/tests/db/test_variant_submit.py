@@ -152,7 +152,9 @@ def seeded(migrated_db: str) -> dict[str, int]:  # noqa: PLR0915 单块播种（
             "INSERT INTO app.role (team_id, name) VALUES (%s, '变体提交测试角色') RETURNING id",
             (team_id,),
         ).fetchone()[0]
-        for code in ("listing.read", "listing.allocate", "listing.submit"):
+        # catalog.product_write：TestAnchorRelease 走 /variant-groups/{id}/anchor/release
+        for code in ("listing.read", "listing.allocate", "listing.submit",
+                     "catalog.product_write"):  # fmt: skip
             conn.execute(
                 "INSERT INTO app.role_permission (role_id, permission_code) VALUES (%s, %s)",
                 (role_id, code),
@@ -497,3 +499,60 @@ class TestVariantGroupSubmit:
         body = r.json()
         assert body["queued"] == 1  # 组员在架=在场，单成员补投放行
         assert not any(s.get("code") == "VARIANT_GROUP_INCOMPLETE" for s in body.get("skipped", []))
+
+
+class TestAnchorRelease:
+    """R2-11 检修：anchor 首发即败解锁通道（挂账清偿；替代 runbook 手工 SQL）。"""
+
+    def test_release_paths(self, client: TestClient, seeded: dict, migrated_db: str) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            g8 = _mk_group(conn, seeded["team"], "VG_PARENT_8", status="active",
+                           anchor=seeded["sb"])  # fmt: skip
+            p1 = _mk_product(conn, seeded["team"], "VGSUB_80")
+            p2 = _mk_product(conn, seeded["team"], "VGSUB_81")
+            _add_member(conn, g8, p1, {"color_name": "Red", "size_name": "L"})
+            _add_member(conn, g8, p2, {"color_name": "Blue", "size_name": "M"})
+            # 首发即败现场：锚定店一员 failed（不在场）+ 一员在途 queued（在场）
+            conn.execute(
+                "INSERT INTO app.listing (team_id, store_id, product_id, channel_sku,"
+                " offer_mode, status) VALUES (%s, %s, %s, 'VGSUB80SKU', 'build', 'failed')",
+                (seeded["team"], seeded["sb"], p1),
+            )
+            lid = conn.execute(
+                "INSERT INTO app.listing (team_id, store_id, product_id, channel_sku,"
+                " offer_mode, status) VALUES (%s, %s, %s, 'VGSUB81SKU', 'build', 'queued')"
+                " RETURNING id",
+                (seeded["team"], seeded["sb"], p2),
+            ).fetchone()[0]
+        # 在途成员在场 → fail-closed 409
+        r = client.post(f"/api/v1/variant-groups/{g8}/anchor/release", headers=auth)
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "VARIANT_ANCHOR_IN_USE"
+        # 在途成员归位 failed（整组首发即败）→ 解锁放行 + 审计留痕
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("UPDATE app.listing SET status = 'failed' WHERE id = %s", (lid,))
+        r = client.post(f"/api/v1/variant-groups/{g8}/anchor/release", headers=auth)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["released_store_id"] == seeded["sb"]
+        assert body["detail"]["anchor_store_id"] is None
+        with psycopg.connect(migrated_db) as conn:
+            assert (
+                conn.execute(
+                    "SELECT anchor_store_id FROM app.variant_group WHERE id = %s", (g8,)
+                ).fetchone()[0]
+                is None
+            )
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM app.audit_log WHERE action = 'catalog.variant_anchor_release'"
+                    " AND object_type = 'variant_group' AND object_id = %s",
+                    (str(g8),),
+                ).fetchone()
+                is not None
+            )
+        # 未锚定 → 409 VARIANT_ANCHOR_NOT_SET（重复解锁幂等拒绝）
+        r = client.post(f"/api/v1/variant-groups/{g8}/anchor/release", headers=auth)
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "VARIANT_ANCHOR_NOT_SET"

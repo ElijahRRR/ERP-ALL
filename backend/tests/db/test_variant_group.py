@@ -279,6 +279,71 @@ class TestAutoGrouping:
                 == "active"
             )
 
+    async def test_bridging_candidate_merges_split_family_groups(
+        self, seeded: dict, migrated_db: str
+    ) -> None:
+        """检修修复：同族历史分裂两组（各自多成员、标识不相交）→ 桥接成员到达即合并。
+
+        旧版 _find_group_by_identifiers LIMIT 1 只把桥接成员并入最小组，另一组永不收敛
+        ——同族两个 VG 各自出门。现按命中全集合并（未锚定 source 并入目标）。
+        """
+        import json as _json
+
+        def _mk(conn, a: str, parent: str, sibs: list[str], dim: str) -> None:  # type: ignore[no-untyped-def]
+            attrs = {"parent_asin": parent, "variant_attributes": f"color_name={dim}",
+                     "variation_asins": sibs}  # fmt: skip
+            conn.execute(
+                "INSERT INTO app.product (team_id, source_ref, title, attrs)"
+                " VALUES (%s, %s, %s, %s::jsonb)",
+                (seeded["team"], a, f"合并复现 {a}", _json.dumps(attrs)),
+            )
+
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _mk(conn, "B0MERGEA01", "B0MRGPAR01", ["B0MERGEA02"], "CA1")
+            _mk(conn, "B0MERGEA02", "B0MRGPAR01", ["B0MERGEA01"], "CA2")
+        await variant_service.run(get_session_factory(), {})
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _mk(conn, "B0MERGEB01", "B0MRGPAR02", ["B0MERGEB02"], "CB1")
+            _mk(conn, "B0MERGEB02", "B0MRGPAR02", ["B0MERGEB01"], "CB2")
+        await variant_service.run(get_session_factory(), {})
+        with psycopg.connect(migrated_db) as conn:
+            gids = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT variant_group_id FROM app.product"
+                    " WHERE team_id = %s AND source_ref LIKE 'B0MERGE%%'",
+                    (seeded["team"],),
+                ).fetchall()
+            }
+            assert len(gids) == 2 and None not in gids  # 标识不相交，历史分裂在场
+        # 桥接成员：家族列表同时含 A、B 两系 → 触发合并
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _mk(conn, "B0MERGEC01", "B0MRGPAR01", ["B0MERGEA01", "B0MERGEB01"], "CC1")
+        totals = await variant_service.run(get_session_factory(), {})
+        assert totals["failed"] == 0 and totals["merged"] >= 1
+        with psycopg.connect(migrated_db) as conn:
+            rows = conn.execute(
+                "SELECT variant_group_id FROM app.product"
+                " WHERE team_id = %s AND source_ref LIKE 'B0MERGE%%'",
+                (seeded["team"],),
+            ).fetchall()
+            gids = {r[0] for r in rows}
+            assert len(rows) == 5 and len(gids) == 1 and None not in gids  # 五员一组
+            gid = gids.pop()
+            assert (
+                conn.execute(
+                    "SELECT status FROM app.variant_group WHERE id = %s", (gid,)
+                ).fetchone()[0]
+                == "active"
+            )
+            # 成员行随合并搬迁齐全（双向一致）
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM app.variant_member WHERE group_id = %s", (gid,)
+                ).fetchone()[0]
+                == 5
+            )
+
     async def test_lonely_singleton_stable_across_runs(
         self, seeded: dict, migrated_db: str
     ) -> None:
@@ -411,6 +476,32 @@ class TestVariantEndpoints:
                 ).fetchone()[0]
                 is None
             )
+
+    def test_empty_member_attrs_breaks_group(
+        self, client: TestClient, seeded: dict, migrated_db: str, admin_user: str
+    ) -> None:
+        """检修增补：成员维度值为空 dict → 判定期即 broken（原先漂到构建期才 fail-closed）。"""
+        h = _login(client, admin_user, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pa = _seed_product(conn, seeded["team"], "B0EMPTY001", parent=None, vattrs=None)
+            pb = _seed_product(conn, seeded["team"], "B0EMPTY002", parent=None, vattrs=None)
+        g = client.post(
+            "/api/v1/variant-groups",
+            json={"source_parent_ref": "B0EMPTYPAR"},
+            headers=h,
+        )
+        assert g.status_code == 201, g.text
+        gid = g.json()["id"]
+        r = client.put(
+            f"/api/v1/variant-groups/{gid}/members",
+            json=[
+                {"product_id": pa, "variant_attrs": {}},
+                {"product_id": pb, "variant_attrs": {"color_name": "Blue"}},
+            ],
+            headers=h,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "broken"
 
     def test_list_filters(
         self, client: TestClient, seeded: dict, migrated_db: str, admin_user: str

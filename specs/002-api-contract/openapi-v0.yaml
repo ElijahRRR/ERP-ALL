@@ -528,6 +528,15 @@ paths:
                   variant_attrs: {type: object}
                   is_primary: {type: boolean}
       responses: {'200': {description: OK}}
+  /variant-groups/{groupId}/anchor/release:
+    post:
+      tags: [Catalog]
+      summary: 解锁组 anchor（首发即败换店重投场景；R2-11 检修增补，替代 runbook 手工 SQL）
+      x-permission: catalog.product_write
+      parameters: [{name: groupId, in: path, required: true, schema: {type: integer}}]
+      responses:
+        '200': {description: 'OK（{group_id, released_store_id, detail=组详情}）'}
+        '409': {description: 未锚定（VARIANT_ANCHOR_NOT_SET）或锚定店仍有在途/在架成员（VARIANT_ANCHOR_IN_USE，fail-closed）}
   /gtin-pool/stats:
     get:
       tags: [Catalog]

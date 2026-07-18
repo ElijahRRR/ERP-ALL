@@ -44,6 +44,22 @@ bash infra/local-deploy/backup.sh
 - 同办公室/内网：浏览器访问 `http://<这台机器内网IP>:5173`（前端）——R1-05 后可用。
 - 异地成员/外部门户：**暂不开放公网**；R2#6 门户上线前按 D-Q52 检查点评估迁云或穿透方案。
 
+## 增量验证流程（2026-07-18 起：先分支后合并）
+
+增量一律先在 PR 分支上验证，通过后 Owner 授权合并 main，再继续开发（main 恒为
+「CI 绿 + 真机验过」）：
+
+```bash
+git fetch origin <PR分支> && git checkout <PR分支> && git pull
+git log -1 --oneline        # 前置核验：应含该增量标题/短哈希（以指令块为准）
+make up                     # 重建 api+beat+frontend；migrate 退出码应为 0
+# …按该增量的核验指令块执行，回报结果；验证通过、Owner 合并后：
+git checkout main && git pull && make up   # 部署机切回 main 常驻
+```
+
+- 含迁移的增量：分支验证会把库 schema 推前；若增量最终被弃，须先 `alembic downgrade`
+  归位再切回 main（增量门槛本就要求迁移 up/down 实测过）。
+
 ## 故障处置速查
 
 | 症状 | 动作 |
@@ -62,9 +78,10 @@ bash infra/local-deploy/backup.sh
 - **整组上架**：组全体成员同店同批提交（缺员会整组拒绝并列出缺席成员；同店已在架/在途
   成员算在场——补投单个失败成员直接重投即可）。首次成功入列即锁定 anchor 店，之后只能
   在 anchor 店上架（不自动转移）。
-- **anchor 处置（暂人工，增量3 复审口径）**：组首发即被渠道整体驳回、想换店重投时，
-  确认组内无任何 live/在途成员后执行（一次性容器/只读核实先行）：
-  `UPDATE app.variant_group SET anchor_store_id = NULL WHERE id = <组id>;`
+- **anchor 处置（检修增补：端点化，不再手工 SQL）**：组首发即被渠道整体驳回、想换店
+  重投时，调 `POST /api/v1/variant-groups/{组id}/anchor/release`（需 catalog.product_write，
+  审计留痕）。端点自带 fail-closed 核实：锚定店仍有在途/在架成员（queued/submitted/
+  published/live）会 409 拒绝，须先撤除/下架整组。
 - **验收演练（R2-11 增量3）**：①A152 采集一组带变体的真实 ASIN（≥3 成员）→ 等归组任务
   （或手动触发）→ 审核通过 → 同批分配+提交 → Walmart 后台确认 variant group live；
   ②故意少分配一个成员提交 → 应见 VARIANT_GROUP_INCOMPLETE 及缺席成员明细。
