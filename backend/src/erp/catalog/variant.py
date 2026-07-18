@@ -63,7 +63,11 @@ async def max_group_size(session: AsyncSession, team_id: int) -> int:
 
 
 async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) -> str:
-    """broken 判定 v1：成员<2 / 维度键集不一致 / 超上限。返回归位后的状态。"""
+    """broken 判定 v1：成员<2 / 维度值缺失 / 维度键集不一致 / 超上限。返回归位后的状态。
+
+    维度值缺失（检修增补）：成员 variant_attrs 为空 dict（人工 PUT 可造出）在构建期
+    必然 fail-closed（成员维度值缺失）——提前到判定期置 broken，分配入口即拦截。
+    """
     rows = (
         await session.execute(
             text("SELECT variant_attrs FROM app.variant_member WHERE group_id = :g"),
@@ -71,8 +75,11 @@ async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) ->
         )
     ).all()
     key_sets = {frozenset(dict(r.variant_attrs).keys()) for r in rows}
+    empty = sum(1 for r in rows if not dict(r.variant_attrs))
     if len(rows) < 2:  # noqa: PLR2004 图纸语义：单成员不成组
         status, reason = "broken", f"成员不齐（{len(rows)}）"
+    elif empty:
+        status, reason = "broken", f"成员维度值缺失（{empty} 名成员 variant_attrs 为空）"
     elif len(key_sets) > 1:
         status, reason = "broken", "主题冲突（组内维度键集不一致）"
     elif len(rows) > limit:
@@ -171,29 +178,55 @@ def _components(candidates: Sequence[Any]) -> list[list[Any]]:
     return list(by_root.values())
 
 
-async def _find_group_by_identifiers(
+async def _find_groups_by_identifiers(
     session: AsyncSession, *, team_id: int, identifiers: list[str]
-) -> int | None:
-    """双向找组：组键命中 或 既有成员的 source_ref 命中，任一相交即视为同家族。
+) -> list[Any]:
+    """双向找组（复数）：组键命中 或 既有成员的 source_ref 命中的全部组（id 升序）。
 
     覆盖跨批到达的兄弟：后来者家族列表含先入库成员的 ASIN，即使组键（历史 min）与
-    后来者视角的 min 不同也能归入同组。
+    后来者视角的 min 不同也能归入同组。命中多组 = 同族历史分裂（桥接成员首次揭示两个
+    分批建成、彼此标识不相交的组同属一家）——由 sync_team 合并或告警（检修增补；
+    旧版 LIMIT 1 只取最小组，分裂组永不收敛）。
     """
-    row = (
+    return list(
+        (
+            await session.execute(
+                text(
+                    "SELECT g.id, g.anchor_store_id FROM app.variant_group g"
+                    " WHERE g.team_id = :t AND ("
+                    "   g.source_parent_ref = ANY(:ids)"
+                    "   OR EXISTS (SELECT 1 FROM app.variant_member m"
+                    "               JOIN app.product p ON p.id = m.product_id"
+                    "               WHERE m.group_id = g.id AND p.source_ref = ANY(:ids))"
+                    " ) ORDER BY g.id"
+                ),
+                {"t": team_id, "ids": identifiers},
+            )
+        ).all()
+    )
+
+
+async def _merge_groups(session: AsyncSession, *, target_id: int, source_ids: list[int]) -> None:
+    """source 组全体成员并入 target 并删除 source（同族历史分裂合并，检修增补）。
+
+    仅未锚定的 source 可并（调用方过滤，锚定组不可被解散——BR-LST-013）。成员行走
+    UPDATE 搬迁（variant_member.product_id 全表唯一=一品一组 DB 铁闸，先插后删会撞键）；
+    is_primary 不带过去（两组各自主变体并存会撞"每组至多一主"语义；isPrimaryVariant
+    本就不出门，D-Q63）。合并后由调用方 reassess 归位状态。
+    """
+    for sid in source_ids:
         await session.execute(
             text(
-                "SELECT g.id FROM app.variant_group g"
-                " WHERE g.team_id = :t AND ("
-                "   g.source_parent_ref = ANY(:ids)"
-                "   OR EXISTS (SELECT 1 FROM app.variant_member m"
-                "               JOIN app.product p ON p.id = m.product_id"
-                "               WHERE m.group_id = g.id AND p.source_ref = ANY(:ids))"
-                " ) ORDER BY g.id LIMIT 1"
+                "UPDATE app.variant_member SET group_id = :tg, is_primary = false"
+                " WHERE group_id = :src"
             ),
-            {"t": team_id, "ids": identifiers},
+            {"tg": target_id, "src": sid},
         )
-    ).scalar_one_or_none()
-    return int(row) if row is not None else None
+        await session.execute(
+            text("UPDATE app.product SET variant_group_id = :tg WHERE variant_group_id = :src"),
+            {"tg": target_id, "src": sid},
+        )
+        await session.execute(text("DELETE FROM app.variant_group WHERE id = :src"), {"src": sid})
 
 
 async def _dissolve_orphan_singletons(session: AsyncSession, team_id: int) -> int:
@@ -273,20 +306,46 @@ async def sync_team(session: AsyncSession, team_id: int, *, batch: int = 500) ->
         )
     ).all()
     stats = {"scanned": len(candidates), "dissolved": dissolved, "grouped": 0,
-             "groups_touched": 0, "broken": 0}  # fmt: skip
+             "groups_touched": 0, "broken": 0, "merged": 0}  # fmt: skip
     for members in _components(candidates):
         identifiers: set[str] = set()
         for c in members:
             fam = list(c.family) if isinstance(c.family, list) else []
             identifiers |= full_set(str(c.source_ref), c.parent, fam)
-        group_id = await _find_group_by_identifiers(
+        hits = await _find_groups_by_identifiers(
             session, team_id=team_id, identifiers=sorted(identifiers)
         )
-        if group_id is None:
+        anchored = [h for h in hits if h.anchor_store_id is not None]
+        if not hits:
             theme = ",".join(sorted(parse_variant_attrs(members[0].vattrs).keys())) or None
             group_id = await _find_or_create_group(
                 session, team_id=team_id, parent_ref=min(identifiers), theme=theme
             )
+        elif len(anchored) > 1:
+            # 同族分裂于多个已锚定组（桥接成员首次揭示）：anchor 不自动转移（BR-LST-013）
+            # → 不合并；新成员并入最小 id 锚定组（确定性），warn 请人工处置
+            group_id = int(anchored[0].id)
+            others = ",".join(f"#{int(h.id)}" for h in hits if int(h.id) != group_id)
+            await notify(
+                session,
+                team_id=team_id,
+                severity="warn",
+                category="catalog",
+                title=f"同族变体组分裂于多个已锚定组：#{group_id} 与 {others}",
+                body="多组均已锚定店铺，不可自动合并（BR-LST-013 anchor 不自动转移）；"
+                "请先解锁 anchor（POST /variant-groups/{id}/anchor/release，须组在锚定店"
+                "无在途/在架成员）或人工摘员后重归组",
+                object_type="variant_group",
+                object_id=str(group_id),
+                dedupe_key=f"variant_split_anchored:{group_id}",
+            )
+        else:
+            # 至多一个锚定组：目标=锚定组（有则）或最小 id 组；其余（必未锚定）并入
+            group_id = int((anchored or hits)[0].id)
+            sources = [int(h.id) for h in hits if int(h.id) != group_id]
+            if sources:
+                await _merge_groups(session, target_id=group_id, source_ids=sources)
+                stats["merged"] += len(sources)
         for m in members:
             attrs = parse_variant_attrs(m.vattrs)
             await session.execute(
@@ -380,19 +439,77 @@ async def set_members(
     return {"group_id": group_id, "members": len(members), "status": status}
 
 
-async def load_build_context(session: AsyncSession, product_id: int) -> dict[str, Any] | None:
-    """spec 构建器变体段只读上下文（增量2；D-Q63）。
+ON_CHANNEL_STATUSES = ("queued", "submitted", "published", "live")
 
-    product.variant_group_id 为空 → None（未分组：构建器走非变体路径，指纹/缓存不变）；
-    否则一次查询取组 + 本品成员行 + 组内全体成员 id：
+
+async def release_anchor(session: AsyncSession, *, group_id: int, team_id: int) -> dict[str, Any]:
+    """anchor 解锁通道（检修：挂账「首发即败人工解锁口径」清偿，替代 runbook 手工 SQL）。
+
+    仅服务「组首发即被渠道整体驳回、想换店重投」场景；BR-LST-013 锁定语义不破——
+    fail-closed：组在锚定店仍有在途/在架成员 listing（queued/submitted/published/live，
+    与提交守卫「在场」口径同源）→ VARIANT_ANCHOR_IN_USE 拒绝；未锚定 →
+    VARIANT_ANCHOR_NOT_SET。FOR UPDATE 持组行锁：与提交路径的原子锁 UPDATE 串行化，
+    不给"边解锁边入列"留窗。审计留痕由 router 层落。
+    """
+    group = (
+        await session.execute(
+            text(
+                "SELECT id, team_id, anchor_store_id FROM app.variant_group"
+                " WHERE id = :g FOR UPDATE"
+            ),
+            {"g": group_id},
+        )
+    ).one_or_none()
+    if group is None or int(group.team_id) != team_id:
+        raise BusinessError("VARIANT_GROUP_NOT_FOUND", "变体组不存在")
+    if group.anchor_store_id is None:
+        raise BusinessError(
+            "VARIANT_ANCHOR_NOT_SET", "变体组未锚定任何店铺，无需解锁", http_status=409
+        )
+    anchor_store = int(group.anchor_store_id)
+    in_flight = (
+        await session.execute(
+            text(
+                "SELECT l.id, l.status FROM app.listing l"
+                " JOIN app.variant_member m ON m.product_id = l.product_id"
+                " WHERE m.group_id = :g AND l.store_id = :s AND l.status = ANY(:sts)"
+                " ORDER BY l.id LIMIT 5"
+            ),
+            {"g": group_id, "s": anchor_store, "sts": list(ON_CHANNEL_STATUSES)},
+        )
+    ).all()
+    if in_flight:
+        detail = ", ".join(f"listing #{int(r.id)}({r.status})" for r in in_flight)
+        raise BusinessError(
+            "VARIANT_ANCHOR_IN_USE",
+            f"锚定店仍有在途/在架成员（{detail}），不可解锁；请先撤除/下架整组",
+            http_status=409,
+        )
+    await session.execute(
+        text("UPDATE app.variant_group SET anchor_store_id = NULL WHERE id = :g"),
+        {"g": group_id},
+    )
+    return {"group_id": group_id, "released_store_id": anchor_store}
+
+
+async def load_build_contexts(
+    session: AsyncSession, product_ids: Sequence[int]
+) -> dict[int, dict[str, Any]]:
+    """spec 构建器变体段只读上下文——批量版（检修：挂账「组上下文批量化」清偿）。
+
+    一次查询取全部已分组产品的组 + 本品成员行 + 组内全体成员 id，键=product_id：
       {group_id, group_ref="VG{id}"（D-Q63② 渠道中立引用，不撞 ASIN 也不撞渠道既有值）,
        status, anchor_store_id, variation_theme,
        member_product_ids: [成员 product_id 升序], variant_attrs: 本品成员行维度值 dict}。
+    未分组产品不出现在返回键中——调用方 .get(pid) 得 None，语义同单品版
+    （构建器走非变体路径，指纹/缓存不变）。
     """
-    row = (
+    if not product_ids:
+        return {}
+    rows = (
         await session.execute(
             text(
-                "SELECT g.id AS group_id, g.status AS status,"
+                "SELECT p.id AS pid, g.id AS group_id, g.status AS status,"
                 " g.anchor_store_id AS anchor_store_id, g.variation_theme AS variation_theme,"
                 " m.variant_attrs AS variant_attrs,"
                 " (SELECT array_agg(m2.product_id ORDER BY m2.product_id)"
@@ -400,22 +517,28 @@ async def load_build_context(session: AsyncSession, product_id: int) -> dict[str
                 " FROM app.product p"
                 " JOIN app.variant_group g ON g.id = p.variant_group_id"
                 " LEFT JOIN app.variant_member m ON m.group_id = g.id AND m.product_id = p.id"
-                " WHERE p.id = :pid"
+                " WHERE p.id = ANY(:pids)"
             ),
-            {"pid": product_id},
+            {"pids": [int(p) for p in product_ids]},
         )
-    ).one_or_none()
-    if row is None:
-        return None
+    ).all()
     return {
-        "group_id": int(row.group_id),
-        "group_ref": f"VG{int(row.group_id)}",
-        "status": str(row.status),
-        "anchor_store_id": int(row.anchor_store_id) if row.anchor_store_id is not None else None,
-        "variation_theme": row.variation_theme,
-        "member_product_ids": [int(x) for x in (row.member_ids or [])],
-        "variant_attrs": dict(row.variant_attrs) if row.variant_attrs else {},
+        int(r.pid): {
+            "group_id": int(r.group_id),
+            "group_ref": f"VG{int(r.group_id)}",
+            "status": str(r.status),
+            "anchor_store_id": int(r.anchor_store_id) if r.anchor_store_id is not None else None,
+            "variation_theme": r.variation_theme,
+            "member_product_ids": [int(x) for x in (r.member_ids or [])],
+            "variant_attrs": dict(r.variant_attrs) if r.variant_attrs else {},
+        }
+        for r in rows
     }
+
+
+async def load_build_context(session: AsyncSession, product_id: int) -> dict[str, Any] | None:
+    """单品版（增量2；D-Q63）——委托批量版，口径见 load_build_contexts。"""
+    return (await load_build_contexts(session, [product_id])).get(product_id)
 
 
 async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]) -> dict[str, Any]:
@@ -439,7 +562,7 @@ async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]
             )
         ]
     totals = {"teams": len(team_ids), "scanned": 0, "dissolved": 0, "grouped": 0,
-              "groups_touched": 0, "broken": 0, "failed": 0}  # fmt: skip
+              "groups_touched": 0, "broken": 0, "merged": 0, "failed": 0}  # fmt: skip
     for tid in team_ids:
         try:
             async with system_tx(sessions) as session:
@@ -448,6 +571,6 @@ async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]
             totals["failed"] += 1
             log.warning("variant_sync.team_failed", team_id=tid, error=str(exc))
             continue
-        for k in ("scanned", "dissolved", "grouped", "groups_touched", "broken"):
+        for k in ("scanned", "dissolved", "grouped", "groups_touched", "broken", "merged"):
             totals[k] += int(st.get(k, 0))
     return totals

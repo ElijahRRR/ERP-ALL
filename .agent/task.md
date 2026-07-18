@@ -14,9 +14,10 @@
     前端登记 suspension（occurred_at 回填 ≥7 天前）→ 核对店铺 suspended/占用批量
     released → run_task suspension_reminder → 通知中心见提醒 → resolved 恢复。
   - 接续（按批准顺序）：07c 邮箱（需 Owner 提供 IMAP 凭证）→ R2-12（与 RS-04D 同窗）→ …
-- R2-11 挂账（随验收/后续复审）：anchor 首发即败人工解锁口径（runbook 已载 SQL）；
-  组上下文批量化（性能 minor）；维度值过 coerce enum 改写观察项（A152 实测关注）；
-  spec 版本 5.0.20260304 换版窗口在线核实 per-PT variantAttributeNames。
+- R2-11 挂账：anchor 解锁通道、组上下文批量化 已随 2026-07-18 检修增量清偿（解锁端点
+  POST /variant-groups/{id}/anchor/release + 批量 load_build_contexts + 同族历史分裂
+  合并缺口修复 + 空维度 broken 判定增补）。余观察项：维度值过 coerce enum 改写
+  （A152 实测关注）；spec 版本 5.0.20260304 换版窗口在线核实 per-PT variantAttributeNames。
 - 全局挂账：R2-05 L2 发货补验（等 A152 真实来单）；R2-04 验收②模拟断连；钓鱼黑名单导入；
   erpAPI PR #2 待授权；售后前端页（returns/refund 部分随 07c；店铺事件页 07b 已交付）。
   已清偿：前端 schema.d.ts codegen（07b 随契约重生成，含 R2-05/06/07a/11 既往欠账）。

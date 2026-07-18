@@ -641,3 +641,27 @@
 - CI：backend pytest 457 绿 + ruff/format/mypy 干净；frontend lint/build 绿；0033 迁移
   up/down/re-up 实测。待 Owner 真机验收②（封店演练，runbook 有完整步骤）。
 - R2-11 状态：验收②（缺员拒绝）真机通过；验收①等 Walmart variant group live 回执。
+
+## 2026-07-18 R2-11 检修（Owner 指令）：全链体检 + 挂账清偿 + 归组合并缺口修复
+- 体检范围：归组（variant.py）→ 构建器变体段（spec.py）→ 三闸守卫/anchor 原子锁
+  （service.py）→ 契约端点 → beat。三闸/原子锁/五重 fail-closed 链核查本体无恙。
+- 缺陷修复（体检发现）：**同族历史分裂合并缺口**——旧 _find_group_by_identifiers
+  LIMIT 1 只把桥接成员并入最小 id 组，两个各自多成员、标识不相交的分裂组永不收敛
+  （一家两个 VG 各自出门）。改按命中全集处理：未锚定 source 组并入目标（有锚定组则
+  锚定组当目标）；≥2 锚定组冲突不自动合并（BR-LST-013 anchor 不自动转移）改 warn 通知
+  人工处置。成员搬迁走 UPDATE 而非插删（variant_member.product_id 全表唯一=一品一组
+  DB 铁闸，先插后删撞键——测试实证），is_primary 不带过去。
+- 挂账清偿①：**anchor 首发即败解锁通道** POST /variant-groups/{id}/anchor/release
+  （catalog.product_write + 审计留痕 catalog.variant_anchor_release；fail-closed：
+  锚定店在途/在架成员在场 → 409 VARIANT_ANCHOR_IN_USE，未锚定 → 409
+  VARIANT_ANCHOR_NOT_SET；FOR UPDATE 组行锁与提交路径原子锁串行化，无"边解锁边入列"窗）。
+  契约 002 增补；infra/local-deploy/README.md 手工 SQL 段替换为端点指引。
+- 挂账清偿②：**组上下文批量化** load_build_contexts（提交路径 granted 全批一次查询；
+  单品版 load_build_context 委托批量版，口径不变）。
+- 判定增补：成员 variant_attrs 空 dict → broken「成员维度值缺失」（人工 PUT 可造出；
+  原先漂到构建期才 fail-closed，现判定期即拦、分配入口即拒）。
+- CI：pytest 460 passed（+3：分裂合并收敛/空维度 broken/解锁三态）+ ruff[check+format]
+  + mypy strict + pnpm gen:api（新端点入 schema.d.ts）/lint/build 全绿。
+- 待 A152（随验收①窗口）：真机跑 variant_group_sync 核对 merged 计数与组收敛；
+  验收①（Walmart variant group live 回执）继续等待。观察项不变：维度值 coerce enum
+  改写、5.0.20260304 换版窗口 per-PT variantAttributeNames 在线核实。

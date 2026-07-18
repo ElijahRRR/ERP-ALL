@@ -491,17 +491,21 @@ async def _submit_tx1(  # noqa: PLR0912, PLR0915 提交链分支=协议分支（
     items_payload: list[dict[str, Any]] = []
     feed_listings: list[dict[str, Any]] = []
     # 变体组切分（仅 build 模式；match 全程豁免变体——D-Q3 参数包差异）：
-    # 逐 granted 载变体上下文，未分组/match 直接逐品 build（行为与改造前一致），
+    # granted 全批一次查询载变体上下文（检修：挂账「组上下文批量化」清偿），未分组/match
+    # 直接逐品 build（行为与改造前一致），
     # 分组成员按 group_id 归拢后走组级守卫（broken/缺员/anchor 整组判定，D-Q63）。
     grouped: dict[int, list[dict[str, Any]]] = {}
     group_ctx: dict[int, dict[str, Any]] = {}
     member_ctx: dict[int, dict[str, Any]] = {}  # listing_id → 本品变体上下文（build 复用免重查）
-    for listing in granted:
-        vctx = (
-            None
-            if offer_mode == "match"
-            else await variant_svc.load_build_context(session, listing["product_id"])
+    all_vctx = (
+        {}
+        if offer_mode == "match"
+        else await variant_svc.load_build_contexts(
+            session, [listing["product_id"] for listing in granted]
         )
+    )
+    for listing in granted:
+        vctx = all_vctx.get(listing["product_id"])
         if vctx is None:  # 未分组/match：逐品 build（改造前路径；skip_variant 免重查）
             item = await _build_listing_item(
                 session, listing, offer_mode=offer_mode, store_id=store_id,

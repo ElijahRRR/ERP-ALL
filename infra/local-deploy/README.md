@@ -62,9 +62,10 @@ bash infra/local-deploy/backup.sh
 - **整组上架**：组全体成员同店同批提交（缺员会整组拒绝并列出缺席成员；同店已在架/在途
   成员算在场——补投单个失败成员直接重投即可）。首次成功入列即锁定 anchor 店，之后只能
   在 anchor 店上架（不自动转移）。
-- **anchor 处置（暂人工，增量3 复审口径）**：组首发即被渠道整体驳回、想换店重投时，
-  确认组内无任何 live/在途成员后执行（一次性容器/只读核实先行）：
-  `UPDATE app.variant_group SET anchor_store_id = NULL WHERE id = <组id>;`
+- **anchor 处置（检修增补：端点化，不再手工 SQL）**：组首发即被渠道整体驳回、想换店
+  重投时，调 `POST /api/v1/variant-groups/{组id}/anchor/release`（需 catalog.product_write，
+  审计留痕）。端点自带 fail-closed 核实：锚定店仍有在途/在架成员（queued/submitted/
+  published/live）会 409 拒绝，须先撤除/下架整组。
 - **验收演练（R2-11 增量3）**：①A152 采集一组带变体的真实 ASIN（≥3 成员）→ 等归组任务
   （或手动触发）→ 审核通过 → 同批分配+提交 → Walmart 后台确认 variant group live；
   ②故意少分配一个成员提交 → 应见 VARIANT_GROUP_INCOMPLETE 及缺席成员明细。

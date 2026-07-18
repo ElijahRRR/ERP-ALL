@@ -1646,6 +1646,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/variant-groups/{groupId}/anchor/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 解锁组 anchor（首发即败换店重投场景；R2-11 检修增补，替代 runbook 手工 SQL） */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    groupId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK（{group_id, released_store_id, detail=组详情}） */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description 未锚定（VARIANT_ANCHOR_NOT_SET）或锚定店仍有在途/在架成员（VARIANT_ANCHOR_IN_USE，fail-closed） */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/gtin-pool/stats": {
         parameters: {
             query?: never;

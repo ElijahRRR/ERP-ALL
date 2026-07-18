@@ -205,6 +205,31 @@ async def set_variant_members(
     return {**result, **{"detail": await _group_with_members(session, group_id)}}
 
 
+@catalog_router.post("/variant-groups/{group_id}/anchor/release")
+async def release_variant_anchor(
+    group_id: int,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("catalog.product_write"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """解锁组 anchor（R2-11 检修；首发即败换店重投场景，替代 runbook 手工 SQL）。
+
+    fail-closed：锚定店仍有在途/在架成员 → 409 VARIANT_ANCHOR_IN_USE；
+    未锚定 → 409 VARIANT_ANCHOR_NOT_SET。D-Q63① anchor 不自动转移不破——
+    解锁本身即人工操作，审计留痕。
+    """
+    result = await variant_service.release_anchor(
+        session, group_id=group_id, team_id=user.team_id or -1
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "catalog.variant_anchor_release",
+        "variant_group",
+        group_id,
+        after={"released_store_id": result["released_store_id"]},
+    )
+    return {**result, "detail": await _group_with_members(session, group_id)}
+
+
 # ── 品牌占用（R2-07 07b；契约 002 /brand-assignments；001 §03 :72-89）──
 
 
