@@ -695,3 +695,17 @@
   + ruff[check+format] + mypy strict + pnpm gen:api/lint/build 全绿。
 - 待办：分支验证（新流程）→ Owner 授权合并 → 验收①改道演练（组 8 补挂/组 6 子集）→
   二期 B 实时归组。
+
+## 2026-07-19 R2-11 验收①（组 8 补挂）真机通过 + item_shape 映射现场修复
+- 组 8 补挂三跑通过：①401（部署机凭证过期，超管需 X-Act-Team 头——指令块已修正）；
+  ②422 VARIANT_GROUP_MEMBER_FAILED「变体维度键无法映射：item_shape」——批次原子守卫
+  按设计整批拦下（无 feed 出门、anchor 未锁、事务零残留）；③排查定案：Picture Frames
+  spec 有 shape/size 自由字符串属性、VAN 闭表含二者，维度值 "Black N inch" 语义为尺寸
+  → 真机 system_config 写入 variant.theme_map = {"item_shape": "size"}（合并式 upsert，
+  原配置为空）→ 重挂 202 queued=8。
+- 终态：feed #42（item_regroup）processed，8/8 SKU success、error_code 全空；
+  组 8 anchor_store_id=1；Walmart 后台确认 8 员并成一个 variant group（swatch 按
+  "Black X inch" 区分）。**live 散品补挂成组（D-Q64④）真机验收通过。**
+- 备忘：item_shape→size 为全局映射（system_config），异 PT 若无 size 字段仍会
+  fail-closed 报无法映射（不会静默错发）；二期 B 把"维度键无法映射"告警前移到归组期。
+- 组 6 子集上架（D-Q64③ 验收另一半）已提交出门，等渠道终态。
