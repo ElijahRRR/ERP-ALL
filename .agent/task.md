@@ -2,8 +2,14 @@
 - Mode: build（R2 后半程——007 计划生效；动工顺序 2026-07-17 更新：
   **R2-11 → R2-07 → R2-12（与 RS-04D 同窗）→ R2-09 → R2-08 → R2-10**，
   FE-DESIGN Owner 触发制，R2-10 前置 RS-01/02）
-- Task: **R2-07 07b 封店工作流——开发面完成待验收②；R2-11 已整单关账（accepted）**
-  （Owner 指令：workflow 模式持续开发到人工验收为止）。
+- Task: **R2-12 合规数据供给持续化【L1】（与 RS-04D 断言账本同窗）——2026-07-23 立项开工
+  （Owner 指令）**；R2-07 07b 开发面完成待验收②；R2-11 已整单关账（accepted）。
+  - R2-12 范围（007 §R2-12 + review_list R2-12/RS-04D）：①RS-04D 断言账本（blacklist
+    写路径，硬验收=blacklist_brand 真实跑通非空框架）②USPTO 日度自增量（部署机
+    daily_update → RS-04A 通道 → refdata.trademark + revision 失效 + beat/告警）③TRO
+    采集按日进 tro_case + 派生品牌断言 ④全店后台 SKU 拉取对账（GET /v3/items 翻页 ↔
+    本地 listing）+ 报错回收黑名单候选（source 扩 error_recycle）⑤合规中心页。
+    依赖：RS-04A ✅（14M 实测另行）；07c 邮件钩子后置不阻塞。
   - R2-11 ✅ **accepted（2026-07-23，PR #24/26/27/28 全合并）**：D-Q64 四点全落地——
     实时归组（入库即组，真机 B0DGTYRBZQ 实证）/ 自动路由与散品上架双档 / 批次原子性
     守卫 v2 / live 补挂成组（组 8 真机修复 feed#42 8/8）+ 组 6 子集全 live 成组。

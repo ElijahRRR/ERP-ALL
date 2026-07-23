@@ -21,6 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.audit.pipeline import NON_BRAND_PLACEHOLDERS, _norm
+from erp.compliance import assertion as assertion_svc
 from erp.core.errors import BusinessError
 from erp.order.checks import normalize_street, normalize_zip5
 
@@ -346,29 +347,21 @@ async def _apply_row(
     display = _first(row, dom.display_keys) or (raw if dom.display_col else None)
     reason = row.get("reason")
 
-    cols = ["team_id", dom.subject_col, "reason", "source"]
-    vals = [":t", ":subj", ":reason", "'import'"]
-    params: dict[str, Any] = {"t": team_id, "subj": subject, "reason": reason}
-    if dom.display_col:
-        cols.insert(2, dom.display_col)
-        vals.insert(2, ":disp")
-        params["disp"] = display
-    inserted = (
-        await session.execute(
-            text(
-                f"INSERT INTO app.{dom.table} ({', '.join(cols)})"
-                f" VALUES ({', '.join(vals)})"
-                f" ON CONFLICT (COALESCE(team_id, 0), {dom.subject_col})"
-                "  WHERE status = 'active' DO NOTHING"
-                " RETURNING id"
-            ),
-            params,
-        )
-    ).scalar_one_or_none()
-    if inserted is not None:
+    # RS-04D（R2-12 增量1）：不再直写 canonical——记一条 import 源断言，canonical
+    # （blacklist_* active 行）由有效断言投影维护（人工 allow 裁决可压导入源）。
+    res = await assertion_svc.record_assertion(
+        session,
+        team_id=team_id,
+        domain=dom.table.removeprefix("blacklist_"),
+        subject_norm=subject,
+        subject_display=display,
+        source="import",
+        reason=str(reason) if reason is not None else None,
+    )
+    if res["created"]:
         c.ok += 1
     else:
-        c.skip += 1  # 幂等：已在黑名单 → 跳过
+        c.skip += 1  # 幂等：同源断言已在册 → 跳过（canonical 投影仍归位）
 
 
 async def _apply_trademark_row(

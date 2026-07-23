@@ -750,3 +750,17 @@
   散品"开关（Owner 若要再立单）。
 - 队列（007 批准顺序）：R2-07 07b 待 Owner 验收②（封店演练，runbook 有步骤）→ 07c
   邮箱（需 Owner IMAP 凭证）→ R2-12（与 RS-04D 同窗）→ R2-09 → R2-08 → R2-10。
+
+## 2026-07-23 D-Q65 拍板 + R2-12 增量1（RS-04D 断言账本）完码
+- D-Q65 入宪法（第十七轮）：①USPTO 供给链整链迁入部署机（新系统只做导入+新鲜度告警）
+  ②报错回收人工闸（候选断言 pending 人工确认；执行走 maintenance runner 人工/半自动档）。
+- 0035：blacklist_assertion 建表（verdict block/allow、pending/active/revoked append-only、
+  uq 在册断言、RLS 同黑名单四角色语义）+ 存量 active 行按原 source 回填 + 六表 source 扩
+  error_recycle + tro_case 建表（图纸 :30-48，补 DDL 缺失）+ 合规权限点四枚种子；
+  up/down 实测。
+- 断言服务 compliance/assertion.py：record/revoke/decide/project_subject/rebuild_canonical
+  ——canonical=有效断言投影（manual allow 压一切自动源，优先级 D-Q65 P1），L0 失效契约
+  不变（投影写触发 0014 bump）。导入 _apply_row 改记 import 源断言。
+- 测试：test_blacklist_assertion 5 项覆盖 B5① 四条硬验收 + 候选闸 + 导入路径（revision
+  bump 断言）；test_import_job 清场补账本表、test_baseline 权限数 49→53。
+- CI：pytest 472 passed + ruff[check+format] + mypy strict 全绿；0035 up/down 实测。

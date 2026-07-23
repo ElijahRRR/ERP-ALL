@@ -149,3 +149,15 @@
 | updated_at | timestamptz | | |
 
 移植说明：walmart-audit-system 的 L1 混合检索（关键词+向量）依赖表；从源库导出直灌。
+
+---
+
+**已落地注记（R2-12 增量1 / RS-04D，2026-07-23）**：①新增 `app.blacklist_assertion`
+断言账本（0035）——一主体 N 条源断言（verdict block/allow，allow 仅 manual 源；状态机
+pending/active/revoked append-only），六张黑名单表的 active 行降级为 canonical=有效断言
+投影（人工 allow 裁决压一切自动源，优先级 manual>tro_sync>trademark_sync>error_recycle>
+import——D-Q65 P1）；存量 active 行已按原 source 回填断言，canonical 可由账本全量重建
+（评审 B5① 四条硬验收有测试覆盖）。②本页四表 `source` 枚举扩 `error_recycle`
+（D-Q65② 报错回收候选源）。③`tro_case` 表按本页 :30-48 建成（0035，此前 DDL 缺失）。
+④黑名单导入通道改记 import 源断言（不再直写 canonical）。合规权限点
+`compliance.blacklist_read/write、trademark_read、tro_read` 已种。

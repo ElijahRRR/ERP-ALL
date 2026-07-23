@@ -351,13 +351,16 @@
   "priority": "P1",
   "dimension": "data",
   "check": "摄取升级·断言账本（按域启用）：source assertion ledger+canonical=有效断言投影+优先级按域/字段配置+人工裁决可压自动源 [评审 B5①]",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
-   "specs/external-review-round-2.md"
+   "specs/external-review-round-2.md",
+   "backend/alembic/versions/0035_blacklist_assertion.py",
+   "backend/src/erp/compliance/assertion.py",
+   "backend/tests/db/test_blacklist_assertion.py"
   ],
   "acceptance": "在blacklist_brand真实跑通：同品牌manual+TRO+trademark三源断言；撤销一源不误删仍有效证据的品牌；人工裁决覆盖+完整回滚；canonical可由assertion全量重建且一致（评审R2-03硬验收：不得只交付空框架）",
-  "finding": "承接B5分级共识",
-  "last_checked_at": "2026-07-12"
+  "finding": "B5① 四条硬验收（三源并存/撤销一源/人工裁决压自动源可回滚/canonical 全量重建幂等）已在 blacklist_brand 测试跑通（非空框架）；存量回填+导入改造完成。余：真机分支验证 + TRO 源真实数据（随 R2-12 增量2）",
+  "last_checked_at": "2026-07-23"
  },
  {
   "id": "RS-05",
@@ -599,13 +602,13 @@
   "priority": "P1",
   "dimension": "data",
   "check": "合规数据供给持续化：USPTO日度增量(daily_update→RS-04A通道→refdata.trademark+revision失效)+TRO采集按日进tro_case并派生品牌断言+全店后台SKU拉取对账(GET /v3/items翻页↔本地listing集合,错误SKU落处置)+报错回收自动黑名单候选(source扩error_recycle)+合规中心页(四黑名单/商标查询/TRO/import_job) [Owner 2026-07-17 指出缺口，审计核实四链源码后立单，详见007]",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md"
   ],
   "gate": "RS-04D 断言账本先行或同窗（blacklist 写路径）；07c 邮件钩子后置不阻塞",
   "acceptance": "①连续3个USPTO日度增量自动入库且与etl_progress对账一致、审核检索可见新商标；②真实TRO采集→tro_case→品牌断言→L2命中复现；③全店拉取对账在A152跑通(后台有本地无/状态漂移/错误SKU三类均可发现);真实永久禁售报错→黑名单候选→人工确认落库全程可追溯；④合规页四黑名单管理/商标查询/import_job全流程走通",
-  "finding": "存量迁移只解决库里有数；四条持续供给链(USPTO日增/TRO采集/报错回收/邮件人工)全在旧仓单机cron，无工单承接，13页无合规页",
-  "last_checked_at": "2026-07-17"
+  "finding": "存量迁移只解决库里有数；四条持续供给链(USPTO日增/TRO采集/报错回收/邮件人工)全在旧仓单机cron，无工单承接，13页无合规页；2026-07-23 立项开工（Owner 指令），RS-04D 同窗",
+  "last_checked_at": "2026-07-23"
  }
 ]
