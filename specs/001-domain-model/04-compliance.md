@@ -161,3 +161,13 @@ import——D-Q65 P1）；存量 active 行已按原 source 回填断言，canon
 （D-Q65② 报错回收候选源）。③`tro_case` 表按本页 :30-48 建成（0035，此前 DDL 缺失）。
 ④黑名单导入通道改记 import 源断言（不再直写 canonical）。合规权限点
 `compliance.blacklist_read/write、trademark_read、tro_read` 已种。
+
+**已落地注记（R2-12 增量2 / TRO 链，2026-07-23）**：`tro` 导入域上线
+（import_service `_apply_tro_row`，CLI `--domain tro` 同步可用）——tro_case 幂等
+upsert（键 `(case_no, COALESCE(plaintiff,''))`，brand_terms 原文无损存 jsonb，
+import_job_id 留痕）；active 案的 brand_terms 逐词派生**全局**（team_id NULL）
+`tro_sync` 品牌断言（source_ref=case_no，归一走 _norm 与 L0/L2 一致，占位符词跳过）；
+dismissed/settled 案撤销该案全部在册 tro_sync 断言并重投影（余源在册不误删——B5①
+验收②语义，`assertion.revoke_by_source_ref`）。L2 命中复现有测试
+（test_tro_import：scan_blacklist 自动机命中派生词）。上游采集（tro-scraper-matrix）
+按 D-Q65① 整链驻部署机，向本域喂 jsonl/csv。

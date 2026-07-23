@@ -179,6 +179,54 @@ async def decide_assertion(
     return {"assertion_id": assertion_id, "approved": approve, "canonical": canonical}
 
 
+async def revoke_by_source_ref(
+    session: AsyncSession,
+    *,
+    team_id: int | None,
+    domain: str,
+    source: str,
+    source_ref: str,
+    actor_id: int | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """按 来源×source_ref 批量撤销在册断言并逐主体重投影。
+
+    TRO 链（D-Q65①）：案件 dismissed/settled 时撤销其派生的全部 tro_sync 断言，
+    主体是否仍拉黑由余源决定（B5① 验收②语义）。无在册断言 → revoked=0（幂等）。
+    """
+    _table(domain)
+    if source not in SOURCES:
+        raise BusinessError("BLACKLIST_SOURCE_INVALID", f"未知断言来源：{source}")
+    subjects = (
+        (
+            await session.execute(
+                text(
+                    "UPDATE app.blacklist_assertion"
+                    " SET status = 'revoked', revoked_by = :by, revoked_at = now(),"
+                    "     revoke_reason = :reason"
+                    " WHERE domain = :d AND source = :src AND source_ref = :ref"
+                    "   AND status IN ('pending','active')"
+                    "   AND team_id IS NOT DISTINCT FROM :t"
+                    " RETURNING subject_norm"
+                ),
+                {
+                    "d": domain,
+                    "src": source,
+                    "ref": source_ref,
+                    "by": actor_id,
+                    "reason": reason,
+                    "t": team_id,
+                },
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for subj in subjects:
+        await project_subject(session, team_id=team_id, domain=domain, subject_norm=str(subj))
+    return {"revoked": len(subjects)}
+
+
 async def project_subject(
     session: AsyncSession, *, team_id: int | None, domain: str, subject_norm: str
 ) -> str:

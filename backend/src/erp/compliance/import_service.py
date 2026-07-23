@@ -6,13 +6,15 @@
 已实现域：黑名单四域（brand/seller/asin/category）+ 商标（trademark → refdata.trademark）
 + 政策（policy → refdata.prohibited_policy，喂 L3 静态 37 政策 prompt）
 + 类目映射（category_map → refdata.category_map，L1 候选召回）
-+ PT 元数据（pt_meta → refdata.pt_meta，L1 候选 INNER JOIN 过滤废弃 PT 的主表）。
++ PT 元数据（pt_meta → refdata.pt_meta，L1 候选 INNER JOIN 过滤废弃 PT 的主表）
++ TRO 案件（tro → app.tro_case + brand_terms 派生全局 tro_sync 品牌断言，R2-12 增量2）。
 黑名单归一化与审核 L0 查表严格一致（全部走 audit.pipeline._norm）；商标 mark_norm 与
 审核 L2-R5 反查严格一致（同样 _norm），否则导入的词审核时查不到——这是必须锁死的不变量。
-其余域（gtin/tro…）表结构与 job 通道已就位，导入器随各自工单补。
+其余域（gtin…）表结构与 job 通道已就位，导入器随各自工单补。
 """
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -91,6 +93,7 @@ CATEGORY_MAP_DOMAIN = "category_map"
 PT_META_DOMAIN = "pt_meta"
 PT_SPEC_DOMAIN = "pt_spec"
 LISTING_ERROR_CATALOG_DOMAIN = "listing_error_catalog"
+TRO_DOMAIN = "tro"
 SUPPORTED_DOMAINS = (
     *_DOMAINS,
     TRADEMARK_DOMAIN,
@@ -99,6 +102,7 @@ SUPPORTED_DOMAINS = (
     PT_META_DOMAIN,
     PT_SPEC_DOMAIN,
     LISTING_ERROR_CATALOG_DOMAIN,
+    TRO_DOMAIN,
 )
 
 # 商标行列名兼容（源仓 USPTO ETL 惯用名：serial_number/mark_identification/filing_date…）
@@ -257,6 +261,8 @@ async def import_rows(
             await _apply_pt_spec_row(s, row, line, c)
         elif domain == LISTING_ERROR_CATALOG_DOMAIN:
             await _apply_listing_error_row(s, row, line, c)
+        elif domain == TRO_DOMAIN:
+            await _apply_tro_row(s, row, line, c, job_id=job_id)
         else:  # create_job 已闸，理论不达
             raise BusinessError("IMPORT_DOMAIN_UNSUPPORTED", f"域 {domain} 无处理器")
 
@@ -755,6 +761,131 @@ async def _apply_listing_error_row(
             "enabled": enabled,
         },
     )
+    c.ok += 1
+
+
+# TRO 案件行列名兼容（源仓 tro-scraper-matrix 导出惯用名）
+_TRO_CASE_KEYS = ("case_no", "case_number", "case")
+_TRO_PLAINTIFF_KEYS = ("plaintiff", "plaintiff_name")
+_TRO_COURT_KEYS = ("court",)
+_TRO_FILED_KEYS = ("filed_date", "filing_date", "date_filed")
+_TRO_FIRM_KEYS = ("law_firm", "firm")
+_TRO_SOURCE_KEYS = ("source",)
+_TRO_RAW_KEYS = ("raw_ref", "url", "link")
+_TRO_STATUS_KEYS = ("status", "case_status")
+_TRO_BRANDS_KEYS = ("brand_terms", "brands", "brand")
+_TRO_STATUSES = ("active", "dismissed", "settled")
+
+
+def _parse_brand_terms(row: dict[str, Any]) -> list[str]:
+    """brand_terms 列 → 词表：原生 list（jsonl）/ JSON 数组串 / 分号分隔串。
+
+    分隔符仅分号（; / ；）——品牌词内可含逗号（"Nike, Inc."），逗号不拆。
+    """
+    for k in _TRO_BRANDS_KEYS:
+        v = row.get(k)
+        if v is None:
+            continue
+        items: list[Any]
+        if isinstance(v, list | tuple):
+            items = list(v)
+        else:
+            s = str(v).strip()
+            if not s:
+                continue
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    items = parsed if isinstance(parsed, list) else [s]
+                except ValueError:
+                    items = re.split(r"[;；]", s)
+            else:
+                items = re.split(r"[;；]", s)
+        return [str(t).strip() for t in items if str(t).strip()]
+    return []
+
+
+async def _apply_tro_row(
+    session: AsyncSession, row: dict[str, Any], line: int, c: _Counters, *, job_id: int
+) -> None:
+    """幂等 upsert 一行到 app.tro_case（键 (case_no, COALESCE(plaintiff,''))）并派生断言。
+
+    err 仅两种：case_no 缺失 / status 非法（active|dismissed|settled）。无 skip——
+    ON CONFLICT 恒更新，重导即 ok（同商标域）。断言派生（D-Q65① / RS-04D）：
+    - active 案：brand_terms 每词（占位符除外）记一条**全局**（team_id NULL）tro_sync
+      block 断言，source_ref=case_no，归一走 _norm 与 L0/L2 严格一致；已在册 → 幂等。
+    - dismissed/settled 案：撤销该案（source_ref=case_no）全部在册 tro_sync 断言并
+      重投影——主体是否仍拉黑由余源决定，不误删（B5① 验收②语义）。
+    """
+    case_no = _first(row, _TRO_CASE_KEYS)
+    if not case_no:
+        c.err += 1
+        c.errors.append({"line": line, "reason": "case_no 缺失", "row": row})
+        return
+    case_no = case_no.strip()
+    status = (_first(row, _TRO_STATUS_KEYS) or "active").strip().lower()
+    if status not in _TRO_STATUSES:
+        c.err += 1
+        c.errors.append({"line": line, "reason": f"status 非法：{status}", "row": case_no})
+        return
+    plaintiff = _first(row, _TRO_PLAINTIFF_KEYS)
+    terms = _parse_brand_terms(row)
+    await session.execute(
+        text(
+            "INSERT INTO app.tro_case"
+            " (case_no, court, filed_date, plaintiff, law_firm, brand_terms,"
+            "  source, raw_ref, status, import_job_id)"
+            " VALUES (:cn, :court, cast(:filed AS date), :pl, :firm,"
+            "  cast(:bt AS jsonb), COALESCE(:src, 'tro-scraper-matrix'), :raw, :st, :job)"
+            " ON CONFLICT (case_no, COALESCE(plaintiff, '')) DO UPDATE SET"
+            "  court = COALESCE(EXCLUDED.court, tro_case.court),"
+            "  filed_date = COALESCE(EXCLUDED.filed_date, tro_case.filed_date),"
+            "  law_firm = COALESCE(EXCLUDED.law_firm, tro_case.law_firm),"
+            "  brand_terms = EXCLUDED.brand_terms,"
+            "  source = EXCLUDED.source,"
+            "  raw_ref = COALESCE(EXCLUDED.raw_ref, tro_case.raw_ref),"
+            "  status = EXCLUDED.status,"
+            "  import_job_id = EXCLUDED.import_job_id,"
+            "  imported_at = now()"
+        ),
+        {
+            "cn": case_no,
+            "court": _first(row, _TRO_COURT_KEYS),
+            "filed": _first(row, _TRO_FILED_KEYS),
+            "pl": plaintiff,
+            "firm": _first(row, _TRO_FIRM_KEYS),
+            "bt": json.dumps(terms, ensure_ascii=False),
+            "src": _first(row, _TRO_SOURCE_KEYS),
+            "raw": _first(row, _TRO_RAW_KEYS),
+            "st": status,
+            "job": job_id,
+        },
+    )
+    if status == "active":
+        reason = f"TRO 案 {case_no}" + (f"（{plaintiff}）" if plaintiff else "")
+        for term in terms:
+            norm = _norm(term)
+            if not norm or norm in NON_BRAND_PLACEHOLDERS:
+                continue  # 占位符品牌（unbranded/generic…）不入黑名单，与品牌域同款守卫
+            await assertion_svc.record_assertion(
+                session,
+                team_id=None,  # TRO 拉黑恒为全局（全团队生效），不随 job.team_id
+                domain="brand",
+                subject_norm=norm,
+                subject_display=term,
+                source="tro_sync",
+                source_ref=case_no,
+                reason=reason,
+            )
+    else:
+        await assertion_svc.revoke_by_source_ref(
+            session,
+            team_id=None,
+            domain="brand",
+            source="tro_sync",
+            source_ref=case_no,
+            reason=f"TRO 案 {case_no} {status}",
+        )
     c.ok += 1
 
 

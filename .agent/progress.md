@@ -764,3 +764,17 @@
 - 测试：test_blacklist_assertion 5 项覆盖 B5① 四条硬验收 + 候选闸 + 导入路径（revision
   bump 断言）；test_import_job 清场补账本表、test_baseline 权限数 49→53。
 - CI：pytest 472 passed + ruff[check+format] + mypy strict 全绿；0035 up/down 实测。
+
+## 2026-07-23 PR #30 合并（增量1 入 main）+ R2-12 增量2（TRO 链）完码
+- PR #30 squash 合入 main d4d9724（Owner 授权）；分支重建；部署机待切 main（0035）。
+- 增量2（D-Q65① 下游）：`tro` 导入域——tro_case 幂等 upsert（键 case_no+plaintiff，
+  brand_terms 原文 jsonb + import_job_id 留痕）；active 案 brand_terms 逐词派生全局
+  tro_sync 品牌断言（source_ref=case_no，_norm 归一与 L0/L2 一致，占位符跳过）；
+  dismissed/settled 案批撤该案断言并重投影（新增 assertion.revoke_by_source_ref，
+  余源在册不误删）。CLI --domain tro 随 SUPPORTED_DOMAINS 自动可用（--team 对本域无效，
+  TRO 恒全局）。
+- 测试 test_tro_import 5 项：全链（案入库+断言+canonical+L2 scan_blacklist 自动机命中）/
+  dismissed 撤销→复活重挂（append-only）/余源不误删（主导源切 manual）/重导幂等/守卫
+  （case_no 缺失+status 非法 err、unbranded 不派生）。
+- CI：pytest 全绿（新增 5）+ ruff[check+format] + mypy strict 全绿；无迁移、无契约变更。
+- 待：分支验证（部署机造样例 jsonl 走 CLI 导入 + 审核命中抽查）→ Owner 授权合并。
