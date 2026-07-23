@@ -2,13 +2,13 @@
 - Mode: build（R2 后半程——007 计划生效；动工顺序 2026-07-17 更新：
   **R2-11 → R2-07 → R2-12（与 RS-04D 同窗）→ R2-09 → R2-08 → R2-10**，
   FE-DESIGN Owner 触发制，R2-10 前置 RS-01/02）
-- Task: **R2-07 07b 封店工作流——开发面完成待验收②；R2-11 验收②已过、①等 Walmart 回执**
+- Task: **R2-07 07b 封店工作流——开发面完成待验收②；R2-11 已整单关账（accepted）**
   （Owner 指令：workflow 模式持续开发到人工验收为止）。
-  - R2-11：增量1/2/2.5 + 排障 + 检修（PR #26）+ 二期 A（PR #27，D-Q64②③④）均已合并；
-    **验收①两路真机通过**（组 8 补挂：feed#42 8/8 success + Walmart 成组，含 item_shape→size
-    映射现场修复；组 6 子集：全部 live 成组）。**二期 B（D-Q64① 实时归组）完码待分支验证**
-    （入库钩子 sync_product + _place_component 重构 + theme_map 迁居 + 维度键预警前移）；
-    合并后 R2-11 整单关账。
+  - R2-11 ✅ **accepted（2026-07-23，PR #24/26/27/28 全合并）**：D-Q64 四点全落地——
+    实时归组（入库即组，真机 B0DGTYRBZQ 实证）/ 自动路由与散品上架双档 / 批次原子性
+    守卫 v2 / live 补挂成组（组 8 真机修复 feed#42 8/8）+ 组 6 子集全 live 成组。
+    观察项遗留见 progress 2026-07-23 节（coerce enum 改写、spec 换版核实、
+    自动降散品开关待 Owner 立单）。
   - 07b（本轮，PR 待开）：0033 brand_assignment 建表+占用/释放闭环+outbox 封店门控+
     suspension_reminder beat+店铺事件前端页+run_task 单跑工具+契约/runbook。评审 2 major
     全修（outbox drain 无门控、提醒 24h 窗架空 remind_days）。CI 全绿（457）。
