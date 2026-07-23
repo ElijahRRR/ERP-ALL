@@ -75,6 +75,40 @@ async def max_batch_members(session: AsyncSession, team_id: int) -> int:
     return await _config_int(session, team_id, MAX_BATCH_MEMBERS_KEY, DEFAULT_MAX_BATCH_MEMBERS)
 
 
+THEME_MAP_KEY = "variant.theme_map"
+# 维度键 → Walmart Visible 属性名默认表（旧仓 remap 语义子集，只保直映射档）
+DEFAULT_THEME_MAP: dict[str, str] = {
+    "color_name": "color",
+    "size_name": "size",
+    "style_name": "style",
+    "pattern_name": "pattern",
+    "material_type": "material",
+}
+
+
+async def theme_map(session: AsyncSession) -> dict[str, str]:
+    """维度键→Walmart 属性名映射：默认表并入 system_config variant.theme_map（铁律5）。
+
+    config 键覆盖/新增，缺省键保留默认兜底——即便配置误删 color 映射，默认仍在
+    （fail-closed 底线）。构建器（spec._theme_map 委托至此）与归组期预警共用本表，
+    表迁居 catalog 域避免 spec↔variant 反向依赖（二期 B 重构）。
+    """
+    cfg = dict(DEFAULT_THEME_MAP)
+    row = (
+        await session.execute(
+            text("SELECT value FROM app.system_config WHERE key = :k"), {"k": THEME_MAP_KEY}
+        )
+    ).scalar_one_or_none()
+    if isinstance(row, str):
+        try:
+            row = json.loads(row)
+        except ValueError:
+            row = None
+    if isinstance(row, dict):
+        cfg.update({str(k): str(v) for k, v in row.items()})
+    return cfg
+
+
 async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) -> str:
     """broken 判定 v2（D-Q64③）：仅真错误置 broken——维度值缺失 / 维度键集不一致。
 
@@ -116,7 +150,8 @@ async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) ->
             object_id=str(group_id),
             dedupe_key=f"variant_broken:{group_id}",
         )
-    elif len(rows) > limit:  # oversize 观察标记（D-Q64③：不阻断，仅提示复核）
+        return status
+    if len(rows) > limit:  # oversize 观察标记（D-Q64③：不阻断，仅提示复核）
         await notify(
             session,
             team_id=int(row.team_id),
@@ -128,6 +163,23 @@ async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) ->
             object_type="variant_group",
             object_id=str(group_id),
             dedupe_key=f"variant_oversize:{group_id}",
+        )
+    # 维度键映射预警（D-Q64① 前移：原先构建/补挂期 fail-closed 才发现——组 8 item_shape
+    # 真机先例；现归组/判定期即提示，不阻断）
+    tm = await theme_map(session)
+    unknown = sorted({k for r in rows for k in dict(r.variant_attrs) if k not in tm})
+    if unknown:
+        await notify(
+            session,
+            team_id=int(row.team_id),
+            severity="warn",
+            category="catalog",
+            title=f"变体组 #{group_id} 维度键未入映射表：{', '.join(unknown)}",
+            body="构建时将以键名直查目标 PT 字段集，无同名字段会 fail-closed 拒绝；"
+            "如需映射请更新 system_config variant.theme_map（item_shape→size 为真机先例）",
+            object_type="variant_group",
+            object_id=str(group_id),
+            dedupe_key=f"variant_dimkey:{group_id}",
         )
     return status
 
@@ -310,6 +362,111 @@ async def _dissolve_orphan_singletons(session: AsyncSession, team_id: int) -> in
     return dissolved
 
 
+async def _place_component(
+    session: AsyncSession,
+    *,
+    team_id: int,
+    members: Sequence[Any],
+    limit: int,
+    stats: dict[str, Any],
+) -> str:
+    """把一个连通分量安置进组：双向找组 → 历史分裂合并/锚定冲突告警 → 挂员 → 判定。
+
+    sync_team（beat 兜底）与 sync_product（入库实时钩子，D-Q64①）共用本体。
+    返回安置后组状态。members 行需含 id/source_ref/parent/vattrs/family 列。
+    """
+    identifiers: set[str] = set()
+    for c in members:
+        fam = list(c.family) if isinstance(c.family, list) else []
+        identifiers |= full_set(str(c.source_ref), c.parent, fam)
+    hits = await _find_groups_by_identifiers(
+        session, team_id=team_id, identifiers=sorted(identifiers)
+    )
+    anchored = [h for h in hits if h.anchor_store_id is not None]
+    if not hits:
+        theme = ",".join(sorted(parse_variant_attrs(members[0].vattrs).keys())) or None
+        group_id = await _find_or_create_group(
+            session, team_id=team_id, parent_ref=min(identifiers), theme=theme
+        )
+    elif len(anchored) > 1:
+        # 同族分裂于多个已锚定组（桥接成员首次揭示）：anchor 不自动转移（BR-LST-013）
+        # → 不合并；新成员并入最小 id 锚定组（确定性），warn 请人工处置
+        group_id = int(anchored[0].id)
+        others = ",".join(f"#{int(h.id)}" for h in hits if int(h.id) != group_id)
+        await notify(
+            session,
+            team_id=team_id,
+            severity="warn",
+            category="catalog",
+            title=f"同族变体组分裂于多个已锚定组：#{group_id} 与 {others}",
+            body="多组均已锚定店铺，不可自动合并（BR-LST-013 anchor 不自动转移）；"
+            "请先解锁 anchor（POST /variant-groups/{id}/anchor/release，须组在锚定店"
+            "无在途/在架成员）或人工摘员后重归组",
+            object_type="variant_group",
+            object_id=str(group_id),
+            dedupe_key=f"variant_split_anchored:{group_id}",
+        )
+    else:
+        # 至多一个锚定组：目标=锚定组（有则）或最小 id 组；其余（必未锚定）并入
+        group_id = int((anchored or hits)[0].id)
+        sources = [int(h.id) for h in hits if int(h.id) != group_id]
+        if sources:
+            await _merge_groups(session, target_id=group_id, source_ids=sources)
+            stats["merged"] += len(sources)
+    for m in members:
+        attrs = parse_variant_attrs(m.vattrs)
+        await session.execute(
+            text(
+                "INSERT INTO app.variant_member (group_id, product_id, variant_attrs)"
+                " VALUES (:g, :p, cast(:va AS jsonb))"
+                " ON CONFLICT (group_id, product_id) DO UPDATE SET"
+                "   variant_attrs = excluded.variant_attrs"
+            ),
+            {"g": group_id, "p": int(m.id), "va": json.dumps(attrs, ensure_ascii=False)},
+        )
+        await session.execute(
+            text("UPDATE app.product SET variant_group_id = :g WHERE id = :p"),
+            {"g": group_id, "p": int(m.id)},
+        )
+        stats["grouped"] += 1
+    stats["groups_touched"] += 1
+    status = await reassess_group(session, group_id, limit=limit)
+    if status == "broken":
+        stats["broken"] += 1
+    return status
+
+
+async def sync_product(session: AsyncSession, team_id: int, product_id: int) -> str | None:
+    """单品实时归组（D-Q64①）：采集入库钩子同事务调用，素材落地即归组。
+
+    仅动 未分组 + twister 素材齐备（variant_attributes 非空且非自指/有兄弟列表）的
+    产品——与 sync_team 候选口径完全一致；安置语义（双向找组/历史分裂合并/锚定冲突
+    告警/判定 v2）经 _place_component 与 beat 共享。无归组动作返回 None。
+    beat variant_group_sync 降为兜底收敛（跨批解散重归/broken 复评/漏网扫描）。
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT id, source_ref, attrs ->> 'parent_asin' AS parent,"
+                " attrs ->> 'variant_attributes' AS vattrs,"
+                " attrs -> 'variation_asins' AS family"
+                " FROM app.product"
+                " WHERE id = :p AND team_id = :t AND variant_group_id IS NULL"
+                "   AND coalesce(attrs ->> 'variant_attributes', '') <> ''"
+                "   AND (attrs ->> 'parent_asin' <> source_ref"
+                "        OR jsonb_array_length(coalesce(attrs -> 'variation_asins',"
+                "                                       '[]'::jsonb)) > 0)"
+            ),
+            {"p": product_id, "t": team_id},
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    limit = await max_group_size(session, team_id)
+    stats: dict[str, Any] = {"grouped": 0, "groups_touched": 0, "broken": 0, "merged": 0}
+    return await _place_component(session, team_id=team_id, members=[row], limit=limit, stats=stats)
+
+
 async def sync_team(session: AsyncSession, team_id: int, *, batch: int = 500) -> dict[str, Any]:
     """单团队自动归组：候选按家族标识集连通分量归组（增量2.5：不再单靠 parent_asin）。"""
     limit = await max_group_size(session, team_id)
@@ -334,63 +491,8 @@ async def sync_team(session: AsyncSession, team_id: int, *, batch: int = 500) ->
     stats = {"scanned": len(candidates), "dissolved": dissolved, "grouped": 0,
              "groups_touched": 0, "broken": 0, "merged": 0, "healed": 0}  # fmt: skip
     for members in _components(candidates):
-        identifiers: set[str] = set()
-        for c in members:
-            fam = list(c.family) if isinstance(c.family, list) else []
-            identifiers |= full_set(str(c.source_ref), c.parent, fam)
-        hits = await _find_groups_by_identifiers(
-            session, team_id=team_id, identifiers=sorted(identifiers)
-        )
-        anchored = [h for h in hits if h.anchor_store_id is not None]
-        if not hits:
-            theme = ",".join(sorted(parse_variant_attrs(members[0].vattrs).keys())) or None
-            group_id = await _find_or_create_group(
-                session, team_id=team_id, parent_ref=min(identifiers), theme=theme
-            )
-        elif len(anchored) > 1:
-            # 同族分裂于多个已锚定组（桥接成员首次揭示）：anchor 不自动转移（BR-LST-013）
-            # → 不合并；新成员并入最小 id 锚定组（确定性），warn 请人工处置
-            group_id = int(anchored[0].id)
-            others = ",".join(f"#{int(h.id)}" for h in hits if int(h.id) != group_id)
-            await notify(
-                session,
-                team_id=team_id,
-                severity="warn",
-                category="catalog",
-                title=f"同族变体组分裂于多个已锚定组：#{group_id} 与 {others}",
-                body="多组均已锚定店铺，不可自动合并（BR-LST-013 anchor 不自动转移）；"
-                "请先解锁 anchor（POST /variant-groups/{id}/anchor/release，须组在锚定店"
-                "无在途/在架成员）或人工摘员后重归组",
-                object_type="variant_group",
-                object_id=str(group_id),
-                dedupe_key=f"variant_split_anchored:{group_id}",
-            )
-        else:
-            # 至多一个锚定组：目标=锚定组（有则）或最小 id 组；其余（必未锚定）并入
-            group_id = int((anchored or hits)[0].id)
-            sources = [int(h.id) for h in hits if int(h.id) != group_id]
-            if sources:
-                await _merge_groups(session, target_id=group_id, source_ids=sources)
-                stats["merged"] += len(sources)
-        for m in members:
-            attrs = parse_variant_attrs(m.vattrs)
-            await session.execute(
-                text(
-                    "INSERT INTO app.variant_member (group_id, product_id, variant_attrs)"
-                    " VALUES (:g, :p, cast(:va AS jsonb))"
-                    " ON CONFLICT (group_id, product_id) DO UPDATE SET"
-                    "   variant_attrs = excluded.variant_attrs"
-                ),
-                {"g": group_id, "p": int(m.id), "va": json.dumps(attrs, ensure_ascii=False)},
-            )
-            await session.execute(
-                text("UPDATE app.product SET variant_group_id = :g WHERE id = :p"),
-                {"g": group_id, "p": int(m.id)},
-            )
-            stats["grouped"] += 1
-        stats["groups_touched"] += 1
-        if await reassess_group(session, group_id, limit=limit) == "broken":
-            stats["broken"] += 1
+        await _place_component(session, team_id=team_id, members=members, limit=limit,
+                               stats=stats)  # fmt: skip
     # broken 复评（D-Q64 兜底收敛）：v1 时代误置 broken 的组（成员<2/超上限）自动归位
     # active；真错误组维持 broken（通知 dedupe 不刷屏）。本轮已触组重评一次无害（幂等）。
     broken_ids = [

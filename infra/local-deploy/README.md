@@ -73,8 +73,10 @@ git checkout main && git pull && make up   # 部署机切回 main 常驻
 
 ## 变体组运维（R2-11，D-Q63/D-Q64）
 
-- **组哪来**：beat `variant_group_sync`（每小时 :40；D-Q64① 实时归组落地后降兜底）从采集
-  素材自动归组（只信 twister）；也可在产品页/接口人工建组、全量设成员。手动单跑：
+- **组哪来（D-Q64① 实时归组已落地）**：采集入库即时归组（product_upsert 同事务，只信
+  twister；维度键不在映射表会当场发 warn 预警）；beat `variant_group_sync`（每小时 :40）
+  降为兜底收敛（跨批解散重归/broken 复评/漏网扫描）；也可在产品页/接口人工建组、
+  全量设成员。手动单跑：
   `docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task variant_group_sync`。组状态 broken 仅剩真错误（维度冲突/维度值缺失，
   判定 v2 D-Q64③）；成员<2 与超上限不再 broken（超 `variant.max_group_size` 只发
   oversize warn 观察）。旧 v1 误置 broken 的组每轮归组自动复评回 active（healed 计数）。

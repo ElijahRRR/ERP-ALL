@@ -22,10 +22,14 @@ import secrets
 from datetime import datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.catalog import variant as variant_svc
 from erp.core.errors import BusinessError
+
+log = structlog.get_logger()
 
 R1_SUPPORTED_KINDS = ("product_detail",)
 
@@ -542,6 +546,13 @@ async def product_upsert(
             },
         )
     ).one()
+    # 实时归组钩子（D-Q64①）：素材落地即归组，SAVEPOINT 隔离——归组任何异常不反噬
+    # 采集入库（beat variant_group_sync 兜底收敛）。无 twister 素材/已分组则内部跳过。
+    try:
+        async with session.begin_nested():
+            await variant_svc.sync_product(session, team_id, int(row.id))
+    except Exception as exc:  # 隔离面：入库是关键路径，归组失败只记警不反噬
+        log.warning("scrape.variant_sync_failed", product_id=int(row.id), error=str(exc))
     return {"product_id": row.id, "master_sku": row.master_sku, "status": row.status}
 
 

@@ -60,7 +60,10 @@
 RETURNING 判空，并发输家整组撤除）；anchor 店不匹配整组拒绝不自动转移（BR-LST-013 保真）；
 首发即败解锁走 `POST /variant-groups/{id}/anchor/release`（R2-11 检修端点化，fail-closed：
 锚定店有在途/在架成员拒绝；替代人工 SQL）。
-② 自动归组（beat `variant_group_sync`；D-Q64① 实时归组落地后 beat 降兜底收敛）：只信
+② 自动归组（**D-Q64① 实时归组已落地**：采集入库 `product_upsert` 同事务 SAVEPOINT 内
+`variant.sync_product` 单品即归、异常只记警不反噬入库；beat `variant_group_sync` 降为
+兜底收敛——跨批解散重归/broken 复评/漏网扫描。维度键不在 `variant.theme_map` 时归组期
+即发 warn 预警）：只信
 twister 素材（variant_attributes 非空）、排除 parent_asin 自指、组身份=家族标识集连通分量
 （增量2.5 full_set 语义，键存分量 min）；variation_theme 存排序维度键串
 （如 color_name,size_name），Walmart variant 属性名由 spec 构建时经 system_config
