@@ -2305,7 +2305,7 @@ export interface paths {
                     "application/json": {
                         listing_ids: number[];
                         /**
-                         * @description D-Q64②——group=分组产品携 VG 段成组上架；standalone=整批散品上架（不带 VG 段、不锁 anchor、不受组守卫限制）
+                         * @description D-Q64②——group=自动路由（默认：分组产品携 VG 段成组、未分组自动散品，混批一 feed，前端文案「自动路由」）；standalone=覆盖开关，整批强制散品（不带 VG 段、不锁 anchor、不受组守卫限制）
                          * @default group
                          * @enum {string}
                          */

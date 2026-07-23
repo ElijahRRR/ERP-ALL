@@ -80,12 +80,13 @@ git checkout main && git pull && make up   # 部署机切回 main 常驻
   `docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task variant_group_sync`。组状态 broken 仅剩真错误（维度冲突/维度值缺失，
   判定 v2 D-Q64③）；成员<2 与超上限不再 broken（超 `variant.max_group_size` 只发
   oversize warn 观察）。旧 v1 误置 broken 的组每轮归组自动复评回 active（healed 计数）。
-- **成组上架（D-Q64③ 子集即可）**：本批选中的组成员同店同批提交即成组/追加——**不再要求
-  全家齐**；本批任一成员构建失败整批拒绝（批次原子性）；单批上限
-  `variant.max_batch_members`（默认 200）。首个子集成功入列即锁定 anchor 店，之后该组
-  只能在 anchor 店追加（不自动转移）。
-- **散品上架（D-Q64②）**：刊登页提交时切「散品上架」（`variant_mode=standalone`）——
-  整批不带 VG 段、不锁 anchor、不受组守卫限制（broken 组成员也能散着上）。
+- **自动路由上架（默认档，D-Q64②③）**：刊登页默认「自动路由」（`variant_mode=group`）——
+  混批一 feed：已归组成员自动携 VG 段成组/追加（**子集即可，不要求全家齐**；首个子集
+  成功入列即锁定 anchor 店，之后该组只能在 anchor 店追加不自动转移），未归组产品自动
+  散品路径，与旧系统混上语义一致。本批同组任一成员构建失败该组整批拒绝（批次原子性，
+  可见原因）；单批上限 `variant.max_batch_members`（默认 200）。
+- **散品上架（覆盖开关，D-Q64②）**：切「散品上架」（`variant_mode=standalone`）——
+  整批强制散品：不带 VG 段、不锁 anchor、不受组守卫限制（broken 组成员也能散着上）。
 - **散转组补挂（D-Q64④）**：已 live 的组成员补挂 VG 段成组：
   `POST /api/v1/listings/variant-regroup`，body `{"group_id": 组id, "store_id": 店id}`
   （需 listing.submit + Idempotency-Key 头）。按 SKU 更新 MP_ITEM feed 重投，成员保持

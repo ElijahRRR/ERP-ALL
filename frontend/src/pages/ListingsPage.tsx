@@ -111,7 +111,8 @@ export default function ListingsPage() {
     prices: PriceHistory[]
   } | null>(null)
   const [reprice, setReprice] = useState<Listing | null>(null)
-  // D-Q64②：group=分组产品携 VG 段成组上架（默认）；standalone=整批散品上架
+  // D-Q64②：group=自动路由（默认——分组产品携 VG 段成组、未分组自动散品，混批即旧系统
+  // 语义）；standalone=覆盖开关，整批强制散品（不带 VG 段、不锁 anchor）
   const [variantMode, setVariantMode] = useState<'group' | 'standalone'>('group')
 
   const load = useCallback(async () => {
@@ -199,7 +200,7 @@ export default function ListingsPage() {
                       </Button>
                       <Segmented
                         options={[
-                          { label: '成组上架', value: 'group' },
+                          { label: '自动路由', value: 'group' },
                           { label: '散品上架', value: 'standalone' },
                         ]}
                         value={variantMode}
