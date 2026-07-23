@@ -745,7 +745,7 @@ paths:
               required: [listing_ids]
               properties:
                 listing_ids: {type: array, items: {type: integer}, maxItems: 500}
-                variant_mode: {type: string, enum: [group, standalone], default: group, description: D-Q64②——group=分组产品携 VG 段成组上架；standalone=整批散品上架（不带 VG 段、不锁 anchor、不受组守卫限制）}
+                variant_mode: {type: string, enum: [group, standalone], default: group, description: D-Q64②——group=自动路由（默认：分组产品携 VG 段成组、未分组自动散品，混批一 feed，前端文案「自动路由」）；standalone=覆盖开关，整批强制散品（不带 VG 段、不锁 anchor、不受组守卫限制）}
       responses:
         '202': {description: 已入队, content: {application/json: {schema: {type: object, properties: {queued: {type: integer}, skipped: {type: array, items: {type: object}}}}}}}
         '409': {description: 幂等键冲突（同键异载荷/处理中）, $ref: '#/components/responses/Error'}

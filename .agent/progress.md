@@ -709,3 +709,28 @@
 - 备忘：item_shape→size 为全局映射（system_config），异 PT 若无 size 字段仍会
   fail-closed 报无法映射（不会静默错发）；二期 B 把"维度键无法映射"告警前移到归组期。
 - 组 6 子集上架（D-Q64③ 验收另一半）已提交出门，等渠道终态。
+
+## 2026-07-19 R2-11 验收①另一半（组 6 子集）通过 + 二期 A 合并 + 二期 B 完码
+- 组 6 子集上架真机通过：可上成员（审核不过成员不摘不拦）同批成组提交，全部 live 且
+  Walmart 成组——D-Q64③ 子集即成组语义验收落地。至此验收①两路（散转组补挂/子集直上）
+  齐活，R2-11 主体（增量1/2/2.5/检修/二期A）收账。
+- PR #27 squash 合入 main dd045dc（Owner 授权）；分支重建。
+- 二期 B（D-Q64① 实时归组）完码：
+  ① scrape.product_upsert 同事务 SAVEPOINT 内调 variant.sync_product——素材落地即归组，
+    归组异常只记警不反噬采集入库（隔离面）；候选口径与 beat 完全一致；
+  ② 安置逻辑重构 _place_component（sync_team/sync_product 共用：双向找组/历史分裂合并/
+    锚定冲突告警/判定 v2）；beat 降兜底收敛（cron 不变）；
+  ③ theme_map 迁居 catalog/variant（spec 委托读取，消除反向依赖）；
+  ④ 维度键映射预警前移：reassess 对不在映射表的维度键发 warn（dedupe
+    variant_dimkey:{gid}）——组 8 item_shape 真机先例从构建期提前到归组期可见。
+- CI：pytest 467 passed（+3：入库即组/无 twister 跳过/奇键预警）+ ruff[check+format]
+  + mypy strict 全绿；无迁移、无契约变更（前端零改动）。
+- 待：分支验证（部署机先切 main 部署二期 A 正式版，再验二期 B 分支）→ Owner 授权合并
+  → R2-11 整单关账。
+
+## 2026-07-23 二期 B 分支真机验证通过 + 默认档改名「自动路由」（Owner 指令）
+- 真机：B0846PR3XJ（非变体）入库不归组 ✅（只信 twister 正确拦截）；B0DGTYRBZQ（多变体）
+  入库即归组 9 ✅——实时归组钩子验证通过，未等 beat。
+- Owner 指令：默认档「成组上架」改名「自动路由」（其真实语义：分组成员携 VG 段成组、
+  未分组自动散品、混批一 feed 与旧系统混上一致）；前端 Segmented 文案 + 契约描述 +
+  runbook 措辞同步，enum 值 group/standalone 不变（API 稳定）。

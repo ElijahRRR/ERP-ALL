@@ -374,6 +374,108 @@ class TestAutoGrouping:
             assert after == before  # 组号稳定
 
 
+class TestRealtimeGrouping:
+    """二期 B（D-Q64①）：采集入库钩子同事务实时归组 + 维度键映射预警前移。"""
+
+    async def test_ingest_hook_groups_immediately(self, seeded: dict, migrated_db: str) -> None:
+        """product_upsert 两兄弟落地即同组 active——不跑 beat。"""
+        from erp.core.db import system_tx
+        from erp.scrape import service as scrape_service
+
+        asins = ["B0RT000001", "B0RT000002"]
+        async with system_tx(get_session_factory()) as session:
+            for i, a in enumerate(asins):
+                await scrape_service.product_upsert(
+                    session,
+                    team_id=seeded["team"],
+                    source="amazon",
+                    source_ref=a,
+                    payload={
+                        "title": f"实时归组 {a}",
+                        "attrs": {
+                            "parent_asin": "B0RTPAR001",
+                            "variant_attributes": f"color_name=RT{i}",
+                            "variation_asins": [x for x in asins if x != a],
+                        },
+                    },
+                )
+        with psycopg.connect(migrated_db) as conn:
+            gids = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT variant_group_id FROM app.product"
+                    " WHERE team_id = %s AND source_ref = ANY(%s)",
+                    (seeded["team"], asins),
+                ).fetchall()
+            }
+            assert len(gids) == 1 and None not in gids
+            assert (
+                conn.execute(
+                    "SELECT status FROM app.variant_group WHERE id = %s", (gids.pop(),)
+                ).fetchone()[0]
+                == "active"
+            )
+
+    async def test_ingest_hook_skips_non_twister(self, seeded: dict, migrated_db: str) -> None:
+        """无 twister 素材不归组（只信 twister 信任规则在钩子同样生效）。"""
+        from erp.core.db import system_tx
+        from erp.scrape import service as scrape_service
+
+        async with system_tx(get_session_factory()) as session:
+            await scrape_service.product_upsert(
+                session,
+                team_id=seeded["team"],
+                source="amazon",
+                source_ref="B0RTNOTW01",
+                payload={"title": "无 twister", "attrs": {"parent_asin": "B0RTPAR009"}},
+            )
+        with psycopg.connect(migrated_db) as conn:
+            assert (
+                conn.execute(
+                    "SELECT variant_group_id FROM app.product"
+                    " WHERE team_id = %s AND source_ref = 'B0RTNOTW01'",
+                    (seeded["team"],),
+                ).fetchone()[0]
+                is None
+            )
+
+    async def test_unmapped_dim_key_warns(self, seeded: dict, migrated_db: str) -> None:
+        """维度键不在映射表 → 归组期 warn 预警（组 8 item_shape 真机先例前移）。"""
+        from erp.core.db import system_tx
+        from erp.scrape import service as scrape_service
+
+        asins = ["B0RTDIM001", "B0RTDIM002"]
+        async with system_tx(get_session_factory()) as session:
+            for i, a in enumerate(asins):
+                await scrape_service.product_upsert(
+                    session,
+                    team_id=seeded["team"],
+                    source="amazon",
+                    source_ref=a,
+                    payload={
+                        "title": f"奇键 {a}",
+                        "attrs": {
+                            "parent_asin": "B0RTPAR002",
+                            "variant_attributes": f"weird_dim=W{i}",
+                            "variation_asins": [x for x in asins if x != a],
+                        },
+                    },
+                )
+        with psycopg.connect(migrated_db) as conn:
+            gid = conn.execute(
+                "SELECT variant_group_id FROM app.product WHERE team_id = %s AND source_ref = %s",
+                (seeded["team"], asins[0]),
+            ).fetchone()[0]
+            assert gid is not None
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM app.notification WHERE dedupe_key = %s",
+                    (f"variant_dimkey:{gid}",),
+                ).fetchone()
+                is not None
+            )
+
+
 @pytest.fixture(scope="module")
 def client(seeded: dict[str, int]) -> TestClient:
     import os

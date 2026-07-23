@@ -110,16 +110,8 @@ SPEC_VERSION_MATCH = "4.2"
 _UPC_LEN = 12
 _EAN_LEN = 13
 
-# 变体维度键 → Walmart Visible 属性名（D-Q63 配套；旧仓 remap 语义子集，只保直映射档）。
-# 运行时被 system_config 键 variant.theme_map（JSON 对象）并入覆盖（铁律5 配置中心）。
-_DEFAULT_THEME_MAP: dict[str, str] = {
-    "color_name": "color",
-    "size_name": "size",
-    "style_name": "style",
-    "pattern_name": "pattern",
-    "material_type": "material",
-}
-_THEME_MAP_KEY = "variant.theme_map"
+# 变体维度键 → Walmart 属性名映射：表迁居 catalog/variant（二期 B——归组期预警共用），
+# 本模块经 variant_svc.theme_map 读取（默认表 + system_config variant.theme_map 并入）。
 
 
 async def _cfg(session: AsyncSession, key: str, defaults: dict[str, Any]) -> dict[str, Any]:
@@ -137,28 +129,6 @@ async def _cfg(session: AsyncSession, key: str, defaults: dict[str, Any]) -> dic
             row = None
     if isinstance(row, dict):
         cfg.update({k: row[k] for k in defaults if k in row})
-    return cfg
-
-
-async def _theme_map(session: AsyncSession) -> dict[str, str]:
-    """维度键→Walmart 属性名映射：默认表并入 system_config variant.theme_map（铁律5）。
-
-    读法照 _cfg（jsonb 直取 dict / JSON 字符串兜底解析）；config 键覆盖/新增，缺省键
-    保留默认兜底——即便配置误删 color 映射，默认仍在（fail-closed 底线）。
-    """
-    cfg = dict(_DEFAULT_THEME_MAP)
-    row = (
-        await session.execute(
-            text("SELECT value FROM app.system_config WHERE key = :k"), {"k": _THEME_MAP_KEY}
-        )
-    ).scalar_one_or_none()
-    if isinstance(row, str):
-        try:
-            row = json.loads(row)
-        except ValueError:
-            row = None
-    if isinstance(row, dict):
-        cfg.update({str(k): str(v) for k, v in row.items()})
     return cfg
 
 
@@ -446,7 +416,7 @@ async def _resolve_variant(
             f"变体组 #{vctx['group_id']} 成员维度值缺失（product 无 variant_member 维度）",
             {"group_id": vctx["group_id"]},
         )
-    theme_map = await _theme_map(session)
+    theme_map = await variant_svc.theme_map(session)
     mapped = _map_variant_attrs(vctx["variant_attrs"], theme_map, vis_props)
     attr_names = sorted(mapped)
     variant_fp = {"mapped_attrs": mapped, "attr_names": attr_names}
