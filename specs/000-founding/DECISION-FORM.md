@@ -261,3 +261,9 @@
 | # | 决策 | 备注 |
 |---|---|---|
 | D-Q63 | **变体组三项实现口径（R2-11 考古后拍板）**：①anchor 实体落点 = `variant_group.anchor_store_id`（0032 加列；组首次上架时锁定店铺，anchor 店暂停则成员上架拒绝并写明原因、不自动转移——BR-LST-013 语义保真，补齐 D-Q2 点名而 001 §03 缺失的 anchor 落点）；②variantGroupId（渠道侧组标识）= **渠道中立 `VG{variant_group.id}`**（同 D1 master_sku 精神，不依赖 Amazon ASIN；旧仓 min(full_set) 为 ASIN 系不采；source_parent_ref 仍存 parent ASIN 溯源）；③变体组提交原子性 = **整组拒绝**（组内任一成员 spec 构建/校验失败 → 整组不发、GTIN/配额不消耗、原因可见——对齐 007 R2-11 验收判据，不做部分成功） | 2026-07-17 Owner 三项均选推荐项。配套实现口径（P1 开发侧自定随增量落笔）：broken 判定 v1（成员<2/维度键冲突/超上限 `variant.max_group_size` 配置中心默认 10）；variation_theme→Walmart 属性名映射走 system_config；match 模式豁免归组；isPrimaryVariant 不传（渠道自动选主，旧仓策略继承） |
+
+## 第十六轮决策（D-Q64，2026-07-18）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q64 | **变体组口径修订四点（R2-11 真机检修后拍板，修订 D-Q63③ 配套口径）**：①**实时归组**——产品采集入库/twister 素材更新即同步归组，beat `variant_group_sync` 降为兜底收敛（跨批合并/broken 复评/漏网扫描）；②**上架自由度**——分配/提交增加变体模式 `variant_mode ∈ {group, standalone}`：成组上架（携 VG 段）或散品上架（不带 VG 段、不锁 anchor、不受组守卫限制），操作员选择；③**守卫③重定义：家族完整性 → 批次原子性**——成组上架只要求本批选中成员要么全成要么全不成（D-Q63③ 原子性保留在批次层），家族其余成员随时同店追加（anchor 闸/BR-LST-013 不变）；broken 判定收缩为真错误（维度键冲突/维度值缺失），**成员<2 与超上限不再 broken**——超上限改 oversize warn 观察标记，上限语义改单批提交成员数上限 `variant.max_batch_members`（feed 体积保护，配置中心默认 200）；④**live 散品补挂成组**——组级重投通道（`item_regroup` feed，按 SKU 更新补 VG 段，独立归位路径：失败不动 listing 状态/不释放 GTIN），既修组 8 现场也是"散转组"通用能力 | 2026-07-18 Owner 拍板"按 D-Q64 四点执行"。依据：考古在案的旧仓「降级优先」语义（五条件任一不满足降单 SKU 上架，不整组失败）与真实生产数据（22,596 在线变体组 93.6% 部分上线）；Walmart 渠道无全家齐要求（同 variantGroupId 陆续追加即成组）；巨型组 ≥10 置 broken 属旧仓伪组 hack 遗留，伪组根因已被「只信 twister」根治。①随二期 B 落地，②③④随二期 A 落地 |

@@ -743,11 +743,32 @@ paths:
             schema:
               type: object
               required: [listing_ids]
-              properties: {listing_ids: {type: array, items: {type: integer}, maxItems: 500}}
+              properties:
+                listing_ids: {type: array, items: {type: integer}, maxItems: 500}
+                variant_mode: {type: string, enum: [group, standalone], default: group, description: D-Q64②——group=分组产品携 VG 段成组上架；standalone=整批散品上架（不带 VG 段、不锁 anchor、不受组守卫限制）}
       responses:
         '202': {description: 已入队, content: {application/json: {schema: {type: object, properties: {queued: {type: integer}, skipped: {type: array, items: {type: object}}}}}}}
         '409': {description: 幂等键冲突（同键异载荷/处理中）, $ref: '#/components/responses/Error'}
         '422': {description: 配额不足等业务拒绝, $ref: '#/components/responses/Error'}
+  /listings/variant-regroup:
+    post:
+      tags: [Listing]
+      summary: live 组成员补挂 VG 段重投（D-Q64④ 散品转成组；item_regroup 独立归位——失败不动 listing 状态/不释放 GTIN）
+      x-permission: listing.submit
+      parameters: [{$ref: '#/components/parameters/idempotencyKey'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group_id, store_id]
+              properties:
+                group_id: {type: integer}
+                store_id: {type: integer}
+      responses:
+        '202': {description: '已入队（{queued, feed_id}）'}
+        '409': {description: 幂等键冲突, $ref: '#/components/responses/Error'}
+        '422': {description: 组 broken / anchor 异店 / 无在架成员 / 超单批上限 / 配额不足（批次原子性整批拒绝）, $ref: '#/components/responses/Error'}
   /listings/{listingId}/delist:
     post:
       tags: [Listing]
@@ -1621,7 +1642,7 @@ components:
         id: {type: integer}
         source_parent_ref: {type: [string, 'null']}
         variation_theme: {type: [string, 'null'], description: 归组时存排序维度键串（如 color_name,size_name）；Walmart variant 属性名由 spec 构建时映射（D-Q63）}
-        status: {type: string, enum: [active, broken], description: broken=成员不齐/主题冲突/超上限（v1 判定，D-Q63 配套），spec 构建拒绝}
+        status: {type: string, enum: [active, broken], description: broken=维度值缺失/主题冲突（判定 v2，D-Q64③ 仅真错误），成组上架拒绝、散品模式不受限；成员<2 与超上限不再 broken（超上限仅 oversize warn 观察）}
         anchor_store_id: {type: [integer, 'null'], description: 组首次上架锁定店（D-Q63①，BR-LST-013 防漂移；增量2 写入）}
         members:
           type: array

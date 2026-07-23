@@ -2,13 +2,15 @@
 
 照 test_listing_api 的 _FakeChannel + MockTransport 渠道替身；播种照 test_variant_group
 的组/成员种子写法。经 allocate → submit API 驱动 service._submit_tx1 组级守卫：
-- 整组齐 → 一个 feed，每个 MPItem 含 VG 段（variantGroupId=VG{组id}），anchor 首上锁定本批店；
-- broken 组（submit 兜底，防绕过分配入口）→ 整组 skip（VARIANT_GROUP_BROKEN）；
-- 组不齐 → 整组 skip、消息含缺席成员、成员状态不动（VARIANT_GROUP_INCOMPLETE）；
+- 整组/子集 → 一个 feed，每个 MPItem 含 VG 段（variantGroupId=VG{组id}），anchor 首上锁定
+  本批店（D-Q64③：家族完整性检查废止，子集即可成组/追加）；
+- broken 组（submit 兜底）→ 成组模式整组 skip（VARIANT_GROUP_BROKEN）；散品模式放行无 VG 段
+  （D-Q64②，variant_mode=standalone）；allocate 不再拦 broken 组成员；
+- 单批超上限 variant.max_batch_members → 整批 skip（VARIANT_BATCH_TOO_LARGE）；
 - anchor 已锁 A 店、向 B 店提交 → 整组 skip（VARIANT_ANCHOR_MISMATCH）；
 - 组内一员构建失败（坏价触发 ERP_SPEC_INVALID）→ 失败者 failed、其余撤出 feed 且状态不动
-  （VARIANT_GROUP_MEMBER_FAILED）、feed 内不含该组任何 item；
-- allocate 对 broken 组成员拒绝（VARIANT_GROUP_BROKEN，最早拦截）。
+  （VARIANT_GROUP_MEMBER_FAILED）、feed 内不含该组任何 item（批次原子性）；
+- regroup（D-Q64④）：live 成员补挂 VG 段重投，item_regroup 独立归位（失败不动状态/不清 GTIN）。
 """
 
 import json
@@ -362,28 +364,34 @@ class TestVariantGroupSubmit:
         for lid in listing_ids:
             assert _status(migrated_db, lid) == "draft"
 
-    def test_incomplete_group_skip_with_absent_member(
+    def test_subset_submit_forms_group(
         self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
     ) -> None:
+        """D-Q64③：家族完整性检查废止——本批子集（2/3）即可成组上架并锁 anchor。"""
         auth = _login(client, ADMIN, PASSWORD)
         pids = [seeded["g3_0"], seeded["g3_1"], seeded["g3_2"]]
         created = _allocate(client, auth, seeded["sb"], pids)["created"]
         by_pid = _by_pid(created)
         present = [by_pid[seeded["g3_0"]], by_pid[seeded["g3_1"]]]  # 只带 2/3
-        absent_pid = seeded["g3_2"]
+        fake.script = [httpx.Response(200, json={"feedId": "F-VG-3"})]
         r = client.post(
             "/api/v1/listings/submit", headers=_idem(auth), json={"listing_ids": present}
         )
+        assert r.status_code == 202, r.text
         body = r.json()
-        assert body["queued"] == 0
-        assert body["feed_id"] is None
-        codes = {s["code"] for s in body["skipped"]}
-        assert codes == {"VARIANT_GROUP_INCOMPLETE"}
-        # 缺席成员 product_id 在消息里可见
-        assert all(str(absent_pid) in s["message"] for s in body["skipped"])
-        # 在批成员状态不动
-        for lid in present:
-            assert _status(migrated_db, lid) == "draft"
+        assert body["queued"] == 2
+        assert not any(s.get("code") == "VARIANT_GROUP_INCOMPLETE" for s in body.get("skipped", []))
+        sent = json.loads(fake.requests[-1].content)
+        assert len(sent["MPItem"]) == 2
+        for it in sent["MPItem"]:
+            assert it["Visible"][WPT]["variantGroupId"] == f"VG{seeded['g3']}"
+        with psycopg.connect(migrated_db) as conn:
+            anchor = conn.execute(
+                "SELECT anchor_store_id FROM app.variant_group WHERE id = %s", (seeded["g3"],)
+            ).fetchone()[0]
+        assert anchor == seeded["sb"]  # 首个子集即锁店
+        # 未在批的第三员不受影响（draft 可后续同店追加）
+        assert _status(migrated_db, by_pid[seeded["g3_2"]]) == "draft"
 
     def test_anchor_mismatch_whole_skip(
         self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
@@ -442,13 +450,84 @@ class TestVariantGroupSubmit:
             ).fetchone()[0]
         assert anchor is None
 
-    def test_allocate_rejects_broken_group_member(
-        self, client: TestClient, seeded: dict, migrated_db: str
+    def test_broken_member_allocate_ok_group_gated_standalone_passes(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
     ) -> None:
+        """D-Q64②：allocate 不再拦 broken 组成员；成组提交闸①仍拒；散品模式放行无 VG 段。"""
         auth = _login(client, ADMIN, PASSWORD)
-        resp = _allocate(client, auth, seeded["sb"], [seeded["g6_0"]])
-        assert resp["created"] == []
-        assert resp["rejected"][0]["code"] == "VARIANT_GROUP_BROKEN"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            g6_1 = _mk_product(conn, seeded["team"], "VGSUB_61")
+            _add_member(conn, seeded["g6"], g6_1, {"color_name": "Blue"})
+        resp = _allocate(client, auth, seeded["sb"], [g6_1])
+        assert len(resp["created"]) == 1  # 分配放行（分配期不知道上架模式）
+        lid = resp["created"][0]["id"]
+        # 成组提交 → 闸① broken 拒，状态不动
+        r = client.post(
+            "/api/v1/listings/submit",
+            headers=_idem(auth),
+            json={"listing_ids": [lid], "variant_mode": "group"},
+        )
+        body = r.json()
+        assert body["queued"] == 0
+        assert {s["code"] for s in body["skipped"]} == {"VARIANT_GROUP_BROKEN"}
+        assert _status(migrated_db, lid) == "draft"
+        # 散品提交 → 放行，feed 条目无 VG 段，anchor 不锁
+        fake.script = [httpx.Response(200, json={"feedId": "F-VG-6S"})]
+        r = client.post(
+            "/api/v1/listings/submit",
+            headers=_idem(auth),
+            json={"listing_ids": [lid], "variant_mode": "standalone"},
+        )
+        assert r.status_code == 202, r.text
+        assert r.json()["queued"] == 1
+        sent = json.loads(fake.requests[-1].content)
+        assert "variantGroupId" not in sent["MPItem"][0]["Visible"][WPT]
+        with psycopg.connect(migrated_db) as conn:
+            anchor = conn.execute(
+                "SELECT anchor_store_id FROM app.variant_group WHERE id = %s", (seeded["g6"],)
+            ).fetchone()[0]
+        assert anchor is None
+
+    def test_batch_cap_rejects_oversize_batch(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        """闸③新语义（D-Q64③）：单批成员数超 variant.max_batch_members → 整批拒绝。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            g10 = _mk_group(conn, seeded["team"], "VG_PARENT_10", status="active")
+            pids = []
+            for n, at in enumerate(
+                [{"color_name": "Red", "size_name": "L"}, {"color_name": "Blue", "size_name": "M"}]
+            ):
+                pid = _mk_product(conn, seeded["team"], f"VGSUB_A{n}")
+                _add_member(conn, g10, pid, at)
+                pids.append(pid)
+            conn.execute(
+                "INSERT INTO app.team_config (team_id, key, value)"
+                " VALUES (%s, 'variant.max_batch_members', '1'::jsonb)"
+                " ON CONFLICT (team_id, key) DO UPDATE SET value = excluded.value",
+                (seeded["team"],),
+            )
+        try:
+            created = _allocate(client, auth, seeded["sb"], pids)["created"]
+            assert len(created) == 2
+            r = client.post(
+                "/api/v1/listings/submit",
+                headers=_idem(auth),
+                json={"listing_ids": [c["id"] for c in created]},
+            )
+            body = r.json()
+            assert body["queued"] == 0
+            assert {s["code"] for s in body["skipped"]} == {"VARIANT_BATCH_TOO_LARGE"}
+            for c in created:
+                assert _status(migrated_db, c["id"]) == "draft"
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute(
+                    "DELETE FROM app.team_config"
+                    " WHERE team_id = %s AND key = 'variant.max_batch_members'",
+                    (seeded["team"],),
+                )
 
     # ── 评审修复回归（fable 终审后落码）──
 
@@ -556,3 +635,142 @@ class TestAnchorRelease:
         r = client.post(f"/api/v1/variant-groups/{g8}/anchor/release", headers=auth)
         assert r.status_code == 409
         assert r.json()["error"]["code"] == "VARIANT_ANCHOR_NOT_SET"
+
+
+class TestRegroup:
+    """D-Q64④ live 散品补挂成组：item_regroup feed 独立归位（组 8 现场修复的通用能力）。"""
+
+    def test_regroup_happy_path_locks_anchor_keeps_live(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            g11 = _mk_group(conn, seeded["team"], "VG_PARENT_11", status="active")
+            lids = []
+            for n, at in enumerate(
+                [{"color_name": "Red", "size_name": "L"}, {"color_name": "Blue", "size_name": "M"}]
+            ):
+                pid = _mk_product(conn, seeded["team"], f"VGSUB_B{n}")
+                _add_member(conn, g11, pid, at)
+                lids.append(
+                    conn.execute(
+                        "INSERT INTO app.listing (team_id, store_id, product_id, channel_sku,"
+                        " offer_mode, status, gtin, current_price, current_inventory)"
+                        " VALUES (%s, %s, %s, %s, 'build', 'live', %s, 19.99, 5) RETURNING id",
+                        (seeded["team"], seeded["sb"], pid, f"VGSUBB{n}SKU", f"7899{n:09d}"),
+                    ).fetchone()[0]
+                )
+        seeded["g11"], seeded["g11_lids"] = g11, lids
+        fake.script = [httpx.Response(200, json={"feedId": "F-RG-1"})]
+        r = client.post(
+            "/api/v1/listings/variant-regroup",
+            headers=_idem(auth),
+            json={"group_id": g11, "store_id": seeded["sb"]},
+        )
+        assert r.status_code == 202, r.text
+        body = r.json()
+        assert body["queued"] == 2 and body["feed_status"] == "submitted"
+        # feed 条目带 VG 段（散品转成组的关键差异）
+        sent = json.loads(fake.requests[-1].content)
+        assert len(sent["MPItem"]) == 2
+        for it in sent["MPItem"]:
+            assert it["Visible"][WPT]["variantGroupId"] == f"VG{g11}"
+        with psycopg.connect(migrated_db) as conn:
+            kind, anchor = conn.execute(
+                "SELECT f.feed_kind, g.anchor_store_id FROM app.feed f, app.variant_group g"
+                " WHERE f.id = %s AND g.id = %s",
+                (body["feed_id"], g11),
+            ).fetchone()
+            assert kind == "item_regroup"
+            assert anchor == seeded["sb"]  # 补挂即锁 anchor
+            for lid in lids:  # 成员保持 live（不迁 queued）
+                assert (
+                    conn.execute("SELECT status FROM app.listing WHERE id = %s", (lid,)).fetchone()[
+                        0
+                    ]
+                    == "live"
+                )
+
+    def test_regroup_guards(
+        self, client: TestClient, seeded: dict, migrated_db: str, fake: _FakeChannel
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        # anchor 已锁 SB → 向 SA 补挂拒绝（不自动转移）
+        r = client.post(
+            "/api/v1/listings/variant-regroup",
+            headers=_idem(auth),
+            json={"group_id": seeded["g11"], "store_id": seeded["sa"]},
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["error"]["code"] == "VARIANT_ANCHOR_MISMATCH"
+        # 组无在架成员（G5 成员 draft/failed）→ 拒绝
+        r = client.post(
+            "/api/v1/listings/variant-regroup",
+            headers=_idem(auth),
+            json={"group_id": seeded["g5"], "store_id": seeded["sb"]},
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["error"]["code"] == "ERP_REGROUP_NO_TARGETS"
+
+    async def test_regroup_poll_error_keeps_members_live(
+        self, seeded: dict, migrated_db: str
+    ) -> None:
+        """独立归位的安全底线：条目失败不打 failed、不释放 GTIN（成员照常在架）。"""
+        from erp.core.db import get_session_factory, system_tx
+        from erp.listing import service as listing_service
+
+        with psycopg.connect(migrated_db) as conn:
+            feed = conn.execute(
+                "SELECT id, team_id, store_id FROM app.feed"
+                " WHERE feed_kind = 'item_regroup' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT fi.channel_sku, fi.listing_id, l.gtin FROM app.feed_item fi"
+                " JOIN app.listing l ON l.id = fi.listing_id"
+                " WHERE fi.feed_id = %s ORDER BY fi.listing_id",
+                (feed[0],),
+            ).fetchall()
+        assert len(rows) == 2
+        data = {
+            "feedStatus": "PROCESSED",
+            "itemDetails": {
+                "itemIngestionStatus": [
+                    {"sku": rows[0][0], "ingestionStatus": "SUCCESS", "wpid": "W-RG-1"},
+                    {
+                        "sku": rows[1][0],
+                        "ingestionStatus": "DATA_ERROR",
+                        "ingestionErrors": {
+                            "ingestionError": [{"code": "WM_VG_TEST", "description": "boom"}]
+                        },
+                    },
+                ]
+            },
+        }
+        feed_dict = {
+            "id": feed[0], "team_id": feed[1], "store_id": feed[2],
+            "feed_kind": "item_regroup",
+        }  # fmt: skip
+        async with system_tx(get_session_factory()) as session:
+            await listing_service._apply_poll_result(session, feed_dict, data)
+        with psycopg.connect(migrated_db) as conn:
+            for _sku, lid, _g in rows:  # 成败两员都保持 live
+                assert (
+                    conn.execute("SELECT status FROM app.listing WHERE id = %s", (lid,)).fetchone()[
+                        0
+                    ]
+                    == "live"
+                )
+            gtin_now = conn.execute(
+                "SELECT gtin FROM app.listing WHERE id = %s", (rows[1][1],)
+            ).fetchone()[0]
+            assert gtin_now == rows[1][2] and gtin_now is not None  # GTIN 未清
+            assert (
+                conn.execute("SELECT status FROM app.feed WHERE id = %s", (feed[0],)).fetchone()[0]
+                == "partial"
+            )
+            item_err = conn.execute(
+                "SELECT status, error_code FROM app.feed_item"
+                " WHERE feed_id = %s AND channel_sku = %s",
+                (feed[0], rows[1][0]),
+            ).fetchone()
+            assert item_err[0] == "error" and item_err[1] == "WM_VG_TEST"

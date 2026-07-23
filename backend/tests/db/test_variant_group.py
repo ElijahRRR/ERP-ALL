@@ -2,8 +2,9 @@
 
 - 自动归组：只信 twister（variant_attributes 非空）；排除 parent_asin 自指；
   组身份 (team_id, source_parent_ref)；双向同步 product.variant_group_id；幂等重跑不增组。
-- broken 判定 v1：成员<2 / 组内维度键集不一致 / 超上限（variant.max_group_size 配置中心）；
-  broken 置位出 warn 通知；修复后自动回 active。
+- broken 判定 v2（D-Q64③）：仅真错误（维度值缺失/组内维度键集不一致）；单员组正常 active；
+  超上限（variant.max_group_size 配置中心）仅 oversize warn 观察；broken 置位出 warn 通知；
+  修复后自动回 active。
 - 端点：人工建组 + PUT 全量设成员（主变体唯一闸/一品一组闸/摘除双向清理）+ 列表过滤。
 """
 
@@ -120,28 +121,33 @@ class TestAutoGrouping:
                     ).fetchone()[0]
                     is None
                 )
-            # 单成员 → broken + warn 通知
+            # 单成员组 = 正常在场状态（D-Q64③ 判定 v2：不再 broken，无告警）
             g2 = conn.execute(
                 "SELECT g.id, g.status FROM app.variant_group g"
                 " JOIN app.product p ON p.variant_group_id = g.id WHERE p.id = %s",
                 (seeded["p5"],),
             ).fetchone()
-            assert g2[1] == "broken"
+            assert g2[1] == "active"
             assert (
                 conn.execute(
                     "SELECT 1 FROM app.notification WHERE dedupe_key = %s",
                     (f"variant_broken:{g2[0]}",),
                 ).fetchone()
-                is not None
+                is None
             )
-            # 主题冲突 → broken
+            # 主题冲突（真错误）→ broken + warn 通知
+            g_confl = conn.execute(
+                "SELECT g.id, g.status FROM app.variant_group g"
+                " JOIN app.product p ON p.variant_group_id = g.id WHERE p.id = %s",
+                (seeded["p6"],),
+            ).fetchone()
+            assert g_confl[1] == "broken"
             assert (
                 conn.execute(
-                    "SELECT g.status FROM app.variant_group g"
-                    " JOIN app.product p ON p.variant_group_id = g.id WHERE p.id = %s",
-                    (seeded["p6"],),
-                ).fetchone()[0]
-                == "broken"
+                    "SELECT 1 FROM app.notification WHERE dedupe_key = %s",
+                    (f"variant_broken:{g_confl[0]}",),
+                ).fetchone()
+                is not None
             )
 
     async def test_rerun_idempotent(self, seeded: dict, migrated_db: str) -> None:
@@ -157,8 +163,10 @@ class TestAutoGrouping:
             ).fetchone()[0]
             assert after == before
 
-    async def test_max_group_size_guard(self, seeded: dict, migrated_db: str) -> None:
-        """超上限 → broken（巨型伪组护栏，配置中心生效）。"""
+    async def test_max_group_size_oversize_warn_not_broken(
+        self, seeded: dict, migrated_db: str
+    ) -> None:
+        """超上限 → 仅 oversize warn 观察标记，状态仍 active（D-Q64③：大家族合法）。"""
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             conn.execute(
                 "INSERT INTO app.team_config (team_id, key, value)"
@@ -171,14 +179,19 @@ class TestAutoGrouping:
                               parent="B0PARENT04", vattrs=f"color_name=C{i}")  # fmt: skip
         await variant_service.run(get_session_factory(), {})
         with psycopg.connect(migrated_db) as conn:
+            gid, status = conn.execute(
+                "SELECT g.id, g.status FROM app.variant_group g"
+                " JOIN app.product p ON p.variant_group_id = g.id"
+                " WHERE p.source_ref = 'B0BIGFAM00' AND p.team_id = %s",
+                (seeded["team"],),
+            ).fetchone()
+            assert status == "active"
             assert (
                 conn.execute(
-                    "SELECT g.status FROM app.variant_group g"
-                    " JOIN app.product p ON p.variant_group_id = g.id"
-                    " WHERE p.source_ref = 'B0BIGFAM00' AND p.team_id = %s",
-                    (seeded["team"],),
-                ).fetchone()[0]
-                == "broken"
+                    "SELECT 1 FROM app.notification WHERE dedupe_key = %s",
+                    (f"variant_oversize:{gid}",),
+                ).fetchone()
+                is not None
             )
 
     # ── 增量2.5 回归：家族连通分量归组 + 错裂解散（真机缺陷修复）──
@@ -462,13 +475,13 @@ class TestVariantEndpoints:
         )
         assert taken.status_code == 422
         assert taken.json()["error"]["code"] == "VARIANT_MEMBER_TAKEN"
-        # 摘员：全量 PUT 单成员 → 另一成员双向清理 + 组置 broken（成员<2）
+        # 摘员：全量 PUT 单成员 → 另一成员双向清理；单员组不再 broken（D-Q64③ 判定 v2）
         shrink = client.put(
             f"/api/v1/variant-groups/{gid}/members",
             json=[{"product_id": pa, "variant_attrs": {"color_name": "Red"}}],
             headers=h,
         )
-        assert shrink.status_code == 200 and shrink.json()["status"] == "broken"
+        assert shrink.status_code == 200 and shrink.json()["status"] == "active"
         with psycopg.connect(migrated_db) as conn:
             assert (
                 conn.execute(

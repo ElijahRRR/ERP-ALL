@@ -4,9 +4,12 @@
   FE-DESIGN Owner 触发制，R2-10 前置 RS-01/02）
 - Task: **R2-07 07b 封店工作流——开发面完成待验收②；R2-11 验收②已过、①等 Walmart 回执**
   （Owner 指令：workflow 模式持续开发到人工验收为止）。
-  - R2-11：增量1/2/2.5 + 排障（worker 变体降级页防御，PR #24）均已合并；真机四 ASIN 收敛
-    1 active 组（group 6）、缺员拒绝演练通过（验收②✅）；**验收① = 整组提交后等 Walmart
-    variant group live 确认**，回执后整单收账。
+  - R2-11：增量1/2/2.5 + 排障 + 检修（PR #26）均已合并。**D-Q64 拍板（2026-07-18）**：
+    实时归组/上架模式可选/批次原子性/live 补挂——真机复盘定性：feed #41（组 8 家族 9 员）
+    先发后组散品出门致 live 不成组，属时序空档非守卫缺陷。**二期 A 完码待分支验证**
+    （守卫 v2 + variant_mode + item_regroup 补挂 + 0034 迁移）；**验收①改道**：组 8 补挂
+    重投 + 组 6 子集上架（3 员，不摘审核不过成员）+ Walmart 成组确认。二期 B（实时归组
+    入库钩子，D-Q64①）随后。
   - 07b（本轮，PR 待开）：0033 brand_assignment 建表+占用/释放闭环+outbox 封店门控+
     suspension_reminder beat+店铺事件前端页+run_task 单跑工具+契约/runbook。评审 2 major
     全修（outbox drain 无门控、提醒 24h 窗架空 remind_days）。CI 全绿（457）。

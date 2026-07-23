@@ -9,9 +9,10 @@
   组键存分量 min——真机实证同家族各页 parentAsin 可不一致，单靠 parent 会裂组）；
   一品最多属一组（variant_member.product_id UNIQUE）；
 - 双向关联同事务维护：variant_member 行 + product.variant_group_id；
-- broken 判定 v1（D-Q63 配套口径，判定随每次归组/成员变更重跑，冲突消除自动回 active）：
-  成员数 < 2 / 组内维度键集不一致 / 成员数 > variant.max_group_size
-  （team_config > system_config > 默认 10——旧仓巨型组阈值经验值）；
+- broken 判定 v2（D-Q64③，判定随每次归组/成员变更重跑，冲突消除自动回 active）：
+  仅真错误置 broken——维度值缺失 / 组内维度键集不一致；成员数 > variant.max_group_size
+  （team_config > system_config > 默认 10）只发 oversize warn 观察标记不阻断；
+  单员组为正常在场状态（尚未凑齐的家族）；
 - anchor_store_id 本服务不写：首次上架时由 listing 管道锁定（增量2，BR-LST-013）；
 - match 模式豁免归组属上架期语义（增量2 spec 段处理），归组本身渠道无关。
 """
@@ -32,6 +33,8 @@ log = structlog.get_logger()
 
 MAX_GROUP_SIZE_KEY = "variant.max_group_size"
 DEFAULT_MAX_GROUP_SIZE = 10
+MAX_BATCH_MEMBERS_KEY = "variant.max_batch_members"
+DEFAULT_MAX_BATCH_MEMBERS = 200
 
 
 def parse_variant_attrs(raw: str | None) -> dict[str, str]:
@@ -44,8 +47,8 @@ def parse_variant_attrs(raw: str | None) -> dict[str, str]:
     return out
 
 
-async def max_group_size(session: AsyncSession, team_id: int) -> int:
-    """巨型组护栏（D-Q63 配套）：team_config > system_config > 默认 10。"""
+async def _config_int(session: AsyncSession, team_id: int, key: str, default: int) -> int:
+    """整数配置读取：team_config > system_config > 代码默认（铁律5 配置中心）。"""
     raw = (
         await session.execute(
             text(
@@ -56,17 +59,30 @@ async def max_group_size(session: AsyncSession, team_id: int) -> int:
                 "  SELECT value, 1 AS pri FROM app.system_config WHERE key = :k"
                 ") c ORDER BY pri LIMIT 1"
             ),
-            {"t": team_id, "k": MAX_GROUP_SIZE_KEY},
+            {"t": team_id, "k": key},
         )
     ).scalar_one_or_none()
-    return int(raw) if raw is not None else DEFAULT_MAX_GROUP_SIZE
+    return int(raw) if raw is not None else default
+
+
+async def max_group_size(session: AsyncSession, team_id: int) -> int:
+    """oversize 观察阈值（D-Q64③：超限仅 warn 不阻断）：team>system>默认 10。"""
+    return await _config_int(session, team_id, MAX_GROUP_SIZE_KEY, DEFAULT_MAX_GROUP_SIZE)
+
+
+async def max_batch_members(session: AsyncSession, team_id: int) -> int:
+    """单批提交成员数上限（D-Q64③ feed 体积保护）：team>system>默认 200。"""
+    return await _config_int(session, team_id, MAX_BATCH_MEMBERS_KEY, DEFAULT_MAX_BATCH_MEMBERS)
 
 
 async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) -> str:
-    """broken 判定 v1：成员<2 / 维度值缺失 / 维度键集不一致 / 超上限。返回归位后的状态。
+    """broken 判定 v2（D-Q64③）：仅真错误置 broken——维度值缺失 / 维度键集不一致。
 
-    维度值缺失（检修增补）：成员 variant_attrs 为空 dict（人工 PUT 可造出）在构建期
-    必然 fail-closed（成员维度值缺失）——提前到判定期置 broken，分配入口即拦截。
+    v1 的「成员<2」与「超上限」退场：单员组是尚未凑齐的正常家族（可散品上架或等
+    兄弟入库）；巨型组 ≥limit 是旧仓伪组 hack 遗留（伪组根因已被「只信 twister」根治，
+    真实大家族几十~几千员合法）——超上限只发 oversize warn 观察标记，状态仍 active。
+    维度值缺失：成员 variant_attrs 为空 dict（人工 PUT 可造出）在构建期必然 fail-closed
+    ——提前到判定期置 broken。返回归位后的状态。
     """
     rows = (
         await session.execute(
@@ -76,14 +92,10 @@ async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) ->
     ).all()
     key_sets = {frozenset(dict(r.variant_attrs).keys()) for r in rows}
     empty = sum(1 for r in rows if not dict(r.variant_attrs))
-    if len(rows) < 2:  # noqa: PLR2004 图纸语义：单成员不成组
-        status, reason = "broken", f"成员不齐（{len(rows)}）"
-    elif empty:
+    if rows and empty:
         status, reason = "broken", f"成员维度值缺失（{empty} 名成员 variant_attrs 为空）"
     elif len(key_sets) > 1:
         status, reason = "broken", "主题冲突（组内维度键集不一致）"
-    elif len(rows) > limit:
-        status, reason = "broken", f"成员数 {len(rows)} 超上限 {limit}（巨型伪组护栏）"
     else:
         status, reason = "active", ""
     row = (
@@ -99,10 +111,23 @@ async def reassess_group(session: AsyncSession, group_id: int, *, limit: int) ->
             severity="warn",
             category="catalog",
             title=f"变体组 #{group_id} 置 broken：{reason}",
-            body="broken 组 spec 构建拒绝（001 §03）；修复成员/维度后归组任务自动回 active",
+            body="broken 组成组上架拒绝（D-Q64；散品模式不受限）；修复维度后归组任务自动回 active",
             object_type="variant_group",
             object_id=str(group_id),
             dedupe_key=f"variant_broken:{group_id}",
+        )
+    elif len(rows) > limit:  # oversize 观察标记（D-Q64③：不阻断，仅提示复核）
+        await notify(
+            session,
+            team_id=int(row.team_id),
+            severity="warn",
+            category="catalog",
+            title=f"变体组 #{group_id} 成员数 {len(rows)} 超观察阈值 {limit}（oversize）",
+            body="D-Q64：大家族合法、不置 broken；建议抽查维度值确认非伪组。"
+            "单批提交上限由 variant.max_batch_members 另行保护",
+            object_type="variant_group",
+            object_id=str(group_id),
+            dedupe_key=f"variant_oversize:{group_id}",
         )
     return status
 
@@ -230,10 +255,11 @@ async def _merge_groups(session: AsyncSession, *, target_id: int, source_ids: li
 
 
 async def _dissolve_orphan_singletons(session: AsyncSession, team_id: int) -> int:
-    """解散"错裂"的 broken 单员组：其成员的家族标识集与**其它组**相交（键或成员 ASIN）。
+    """解散"错裂"的单员组：其成员的家族标识集与**其它组**相交（键或成员 ASIN）。
 
-    真孤品单员组（与谁都不相交）保持原样——避免每轮重建换组号、broken 通知随新 id 刷屏。
-    仅动 broken + 单成员 + 未锁 anchor 的组（自动归组产物；有上架历史的组不碰）。
+    真孤品单员组（与谁都不相交）保持原样——避免每轮重建换组号、通知随新 id 刷屏。
+    仅动 单成员 + 未锁 anchor 的组（自动归组产物；有上架历史的组不碰）。
+    D-Q64 后单员组不再 broken（正常在场状态），故不看 status，只看成员数与 anchor。
     """
     rows = (
         await session.execute(
@@ -243,7 +269,7 @@ async def _dissolve_orphan_singletons(session: AsyncSession, team_id: int) -> in
                 " FROM app.variant_group g"
                 " JOIN app.variant_member m ON m.group_id = g.id"
                 " JOIN app.product p ON p.id = m.product_id"
-                " WHERE g.team_id = :t AND g.status = 'broken' AND g.anchor_store_id IS NULL"
+                " WHERE g.team_id = :t AND g.anchor_store_id IS NULL"
                 "   AND (SELECT count(*) FROM app.variant_member m2"
                 "         WHERE m2.group_id = g.id) = 1"
             ),
@@ -306,7 +332,7 @@ async def sync_team(session: AsyncSession, team_id: int, *, batch: int = 500) ->
         )
     ).all()
     stats = {"scanned": len(candidates), "dissolved": dissolved, "grouped": 0,
-             "groups_touched": 0, "broken": 0, "merged": 0}  # fmt: skip
+             "groups_touched": 0, "broken": 0, "merged": 0, "healed": 0}  # fmt: skip
     for members in _components(candidates):
         identifiers: set[str] = set()
         for c in members:
@@ -365,6 +391,18 @@ async def sync_team(session: AsyncSession, team_id: int, *, batch: int = 500) ->
         stats["groups_touched"] += 1
         if await reassess_group(session, group_id, limit=limit) == "broken":
             stats["broken"] += 1
+    # broken 复评（D-Q64 兜底收敛）：v1 时代误置 broken 的组（成员<2/超上限）自动归位
+    # active；真错误组维持 broken（通知 dedupe 不刷屏）。本轮已触组重评一次无害（幂等）。
+    broken_ids = [
+        int(r.id)
+        for r in await session.execute(
+            text("SELECT id FROM app.variant_group WHERE team_id = :t AND status = 'broken'"),
+            {"t": team_id},
+        )
+    ]
+    for gid in broken_ids:
+        if await reassess_group(session, gid, limit=limit) == "active":
+            stats["healed"] += 1
     return stats
 
 
@@ -555,14 +593,18 @@ async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]
                     "   AND (attrs ->> 'parent_asin' <> source_ref"
                     "        OR jsonb_array_length(coalesce(attrs -> 'variation_asins',"
                     "                                       '[]'::jsonb)) > 0)"
-                    " UNION"  # 键过时的 broken 单员组所在团队也要扫（成员已入组，仅上句扫不到）
-                    " SELECT DISTINCT team_id FROM app.variant_group"
-                    " WHERE status = 'broken' AND anchor_store_id IS NULL"
+                    " UNION"  # broken 复评 + 未锚定单员组解散重归 也要扫到（仅上句扫不到）
+                    " SELECT DISTINCT g.team_id FROM app.variant_group g"
+                    " WHERE g.status = 'broken'"
+                    "    OR (g.anchor_store_id IS NULL AND"
+                    "        (SELECT count(*) FROM app.variant_member m"
+                    "          WHERE m.group_id = g.id) = 1)"
                 )
             )
         ]
     totals = {"teams": len(team_ids), "scanned": 0, "dissolved": 0, "grouped": 0,
-              "groups_touched": 0, "broken": 0, "merged": 0, "failed": 0}  # fmt: skip
+              "groups_touched": 0, "broken": 0, "merged": 0, "healed": 0,
+              "failed": 0}  # fmt: skip
     for tid in team_ids:
         try:
             async with system_tx(sessions) as session:
@@ -571,6 +613,7 @@ async def run(sessions: async_sessionmaker[AsyncSession], config: dict[str, Any]
             totals["failed"] += 1
             log.warning("variant_sync.team_failed", team_id=tid, error=str(exc))
             continue
-        for k in ("scanned", "dissolved", "grouped", "groups_touched", "broken", "merged"):
+        for k in ("scanned", "dissolved", "grouped", "groups_touched", "broken", "merged",
+                  "healed"):  # fmt: skip
             totals[k] += int(st.get(k, 0))
     return totals
