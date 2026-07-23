@@ -734,3 +734,19 @@
 - Owner 指令：默认档「成组上架」改名「自动路由」（其真实语义：分组成员携 VG 段成组、
   未分组自动散品、混批一 feed 与旧系统混上一致）；前端 Segmented 文案 + 契约描述 +
   runbook 措辞同步，enum 值 group/standalone 不变（API 稳定）。
+
+## 2026-07-23 R2-11 整单关账（PR #28 合并，D-Q64 四点全落地）
+- PR #28 squash 合入 main e1dead8（Owner 授权）；分支重建。
+- R2-11 全史：增量1（归组闭环）→ 增量2（构建器变体段+守卫，Workflow 编排）→ 增量2.5
+  （full_set 连通分量归组+批量操作）→ 排障（worker 降级页防御，PR #24）→ 检修
+  （分裂合并缺口+anchor 解锁通道+批量化，PR #26）→ 二期 A（D-Q64②③④：批次原子性/
+  上架模式/live 补挂+0034，PR #27）→ 二期 B（D-Q64①：实时归组+维度键预警+自动路由
+  改名，PR #28）。
+- 真机验收全record：验收②缺员拒绝（D-Q63 时代）；验收①两路——组 8 补挂（feed#42 8/8
+  success + Walmart 成组，item_shape→size 映射现场修复）+ 组 6 子集（全 live 成组）；
+  二期 B 实时归组（B0DGTYRBZQ 入库即组 9）。**R2-11 accepted。**
+- 观察项遗留（不阻关账）：维度值过 coerce enum 改写（A152 持续关注）；spec 版本
+  5.0.20260304 换版窗口在线核实 per-PT variantAttributeNames；旧仓式"构建失败自动降
+  散品"开关（Owner 若要再立单）。
+- 队列（007 批准顺序）：R2-07 07b 待 Owner 验收②（封店演练，runbook 有步骤）→ 07c
+  邮箱（需 Owner IMAP 凭证）→ R2-12（与 RS-04D 同窗）→ R2-09 → R2-08 → R2-10。
