@@ -38,6 +38,11 @@ def _clean(migrated_db: str):  # type: ignore[no-untyped-def]
                 ("blacklist_category", "category_ref"),
             ):
                 conn.execute(f"DELETE FROM app.{t} WHERE {col} LIKE %s", (f"{PREFIX}%",))
+            # RS-04D（0035）：canonical 由断言投影维护——账本行也要清，否则重跑撞幂等键
+            conn.execute(
+                "DELETE FROM app.blacklist_assertion WHERE subject_norm LIKE %s",
+                (f"{PREFIX}%",),
+            )
             conn.execute("DELETE FROM app.import_job WHERE source_name LIKE %s", (f"{PREFIX}%",))
 
     _wipe()

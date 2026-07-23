@@ -353,10 +353,13 @@
   "check": "摄取升级·断言账本（按域启用）：source assertion ledger+canonical=有效断言投影+优先级按域/字段配置+人工裁决可压自动源 [评审 B5①]",
   "status": "in_progress",
   "evidence": [
-   "specs/external-review-round-2.md"
+   "specs/external-review-round-2.md",
+   "backend/alembic/versions/0035_blacklist_assertion.py",
+   "backend/src/erp/compliance/assertion.py",
+   "backend/tests/db/test_blacklist_assertion.py"
   ],
   "acceptance": "在blacklist_brand真实跑通：同品牌manual+TRO+trademark三源断言；撤销一源不误删仍有效证据的品牌；人工裁决覆盖+完整回滚；canonical可由assertion全量重建且一致（评审R2-03硬验收：不得只交付空框架）",
-  "finding": "承接B5分级共识；2026-07-23 随 R2-12 同窗开工（闸门要求）",
+  "finding": "B5① 四条硬验收（三源并存/撤销一源/人工裁决压自动源可回滚/canonical 全量重建幂等）已在 blacklist_brand 测试跑通（非空框架）；存量回填+导入改造完成。余：真机分支验证 + TRO 源真实数据（随 R2-12 增量2）",
   "last_checked_at": "2026-07-23"
  },
  {

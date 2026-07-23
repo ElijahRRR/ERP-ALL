@@ -267,3 +267,9 @@
 | # | 决策 | 备注 |
 |---|---|---|
 | D-Q64 | **变体组口径修订四点（R2-11 真机检修后拍板，修订 D-Q63③ 配套口径）**：①**实时归组**——产品采集入库/twister 素材更新即同步归组，beat `variant_group_sync` 降为兜底收敛（跨批合并/broken 复评/漏网扫描）；②**上架自由度**——分配/提交增加变体模式 `variant_mode ∈ {group, standalone}`：成组上架（携 VG 段）或散品上架（不带 VG 段、不锁 anchor、不受组守卫限制），操作员选择；③**守卫③重定义：家族完整性 → 批次原子性**——成组上架只要求本批选中成员要么全成要么全不成（D-Q63③ 原子性保留在批次层），家族其余成员随时同店追加（anchor 闸/BR-LST-013 不变）；broken 判定收缩为真错误（维度键冲突/维度值缺失），**成员<2 与超上限不再 broken**——超上限改 oversize warn 观察标记，上限语义改单批提交成员数上限 `variant.max_batch_members`（feed 体积保护，配置中心默认 200）；④**live 散品补挂成组**——组级重投通道（`item_regroup` feed，按 SKU 更新补 VG 段，独立归位路径：失败不动 listing 状态/不释放 GTIN），既修组 8 现场也是"散转组"通用能力 | 2026-07-18 Owner 拍板"按 D-Q64 四点执行"。依据：考古在案的旧仓「降级优先」语义（五条件任一不满足降单 SKU 上架，不整组失败）与真实生产数据（22,596 在线变体组 93.6% 部分上线）；Walmart 渠道无全家齐要求（同 variantGroupId 陆续追加即成组）；巨型组 ≥10 置 broken 属旧仓伪组 hack 遗留，伪组根因已被「只信 twister」根治。①随二期 B 落地，②③④随二期 A 落地 |
+
+## 第十七轮决策（D-Q65，2026-07-23）
+
+| # | 决策 | 备注 |
+|---|---|---|
+| D-Q65 | **R2-12 两项执行口径（考古后拍板）**：①**USPTO 供给链整链迁入部署机**——旧 walmart-trademark-sync 全链（daily_update 下载 data.uspto.gov 日包 → ETL → 导出增量 csv → `bulk_import_trademark` 导入 erp_all）在部署机日调度运行；新系统侧仅承担导入工具（RS-04A 已建成）+ beat 商标新鲜度告警（max(filing_date) 滞后阈值走配置中心），不移植下载/解析代码；②**报错回收档位 = 人工闸**（修订旧系统全自动 DELETE+入黑名单行为，对齐 D-Q13/29 三档纪律）——全店对账任务只发现+分类+生成维护任务与黑名单**候选断言**（pending，人工确认落库）；DELETE/republish 执行走 maintenance_task runner 人工/半自动档 | 2026-07-23 Owner 拍板（P0-1 原文"整链迁入部署机"；P0-2"按建议"）。配套 P1（开发侧自定）：canonical 投影优先级 manual>tro_sync>trademark_sync>error_recycle>import，人工 allow 裁决压一切自动源；候选断言态=pending；blacklist source 枚举扩 error_recycle |
