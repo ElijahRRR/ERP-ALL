@@ -15,3 +15,9 @@
 - listing 单管道双模式 offer_mode ∈ {build, match}；定价策略按模式分套（D-Q3/23）
 - 采购执行双入口：内部权限点 + 外部隔离门户（D-Q50）
 - 自动化三档：人工/半自动/全自动，流程级开关（D-Q13/29）
+
+## 前端规范（008）
+
+前端改动（新页面/新组件/契约变更）先读 `specs/008-frontend-conventions/README.md`：
+数据层纪律（统一 client + codegen 类型，禁手写响应 interface）、新增功能上车
+六项清单、对账可见性底线。审计侧按该清单查前端 PR，违例记 FE-DEBT 台账。
