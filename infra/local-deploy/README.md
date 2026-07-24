@@ -166,24 +166,67 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
 
 ## USPTO 商标供给链（R2-12 增量3，D-Q65①）
 
-> 定位：抓取/解析/日度增量**整链驻部署机**（旧仓 walmart-trademark-sync 的
-> `daily_update` 保持本机定时跑）；新系统只做两件事——**导入**（`bulk_import_trademark`）
-> 与**新鲜度守卫**（beat `trademark_freshness` 告警）。新系统永不直连 USPTO。
+> 定位（D-Q65① 方案 A，2026-07-24 拍板）：抓取/解析/日度增量**整链驻部署机**
+> （`ElijahRRR/walmart-trademark-sync` 仓的 `daily_update.py`，原驻 Owner Mac，迁入本机）；
+> 新系统只做两件事——**导入**（`bulk_import_trademark`）与**新鲜度守卫**
+> （beat `trademark_freshness` 告警）。新系统永不直连 USPTO。
 
-### 日常链路（部署机每日）
+### 一次性迁入（方案 A 初始化，做一遍）
 
-1. 旧仓 `daily_update` 定时产出日增量文件（csv/jsonl，列含 serial_number /
-   mark_identification / status_code / filing_date …，列名兼容旧仓导出）。
-2. 拷入 api 容器并导入（幂等，重导安全）：
+1. **常驻 uspto 库容器**（历史基线已在本机 `D:\erp-staging-backup` 的 dump 里，
+   PG17.9 + pgvector 依赖——沿用当年暂存容器同款镜像，这次**常驻**）：
    ```bash
-   docker compose -f infra/docker-compose.yml cp /path/to/daily-YYYYMMDD.csv api:/tmp/
+   docker run -d --name uspto-db --restart unless-stopped \
+     -e POSTGRES_PASSWORD=<本机自设，存本地文件> -e POSTGRES_DB=uspto \
+     -p 127.0.0.1:5433:5432 -v uspto_pgdata:/var/lib/postgresql/data \
+     pgvector/pgvector:pg17
+   # 选择性还原 7 张关系表（跳过 20G+ 向量 embedding 表；--no-owner -x 挡旧角色错）：
+   for t in trademarks trademark_classes trademark_owners trademark_statements \
+            trademark_design_codes etl_progress status_code_mapping; do
+     pg_restore --no-owner -x -d "postgresql://postgres:<pw>@127.0.0.1:5433/uspto" \
+       -t $t D:\\erp-staging-backup\\<dump文件>
+   done
+   # 核验：SELECT count(*), max(filing_date) FROM trademarks; —— 应为 14.19M 级 / 2026-07 上旬
+   #       SELECT count(*) FROM etl_progress WHERE data_type='trademark'; —— 有历史文件记录
+   ```
+   ⚠ 铁律不变：绝不 pg_restore 进 erp_all；uspto 库只被本链读写。
+2. **同步链代码**：`git clone https://github.com/ElijahRRR/walmart-trademark-sync D:\walmart-trademark-sync`
+   → `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`。
+3. **连接配置**：环境变量 `DB_CONN="dbname=uspto user=postgres password=<pw> host=127.0.0.1 port=5433"`
+   （空格分隔 kv 格式，密码只落本机，不入仓不进对话）。
+4. **挂定时**：Windows 任务计划每日一次（建议 18:00 本地）跑
+   `D:\walmart-trademark-sync\.venv\Scripts\python.exe D:\walmart-trademark-sync\daily_update.py`
+   ＋随后执行下方「日常链路」第 2-4 步（可合入同一 .bat）。
+
+### 日常链路（部署机每日自动）
+
+1. `daily_update.py`：下载缺失的 USPTO 日增量 zip（`apc{yymmdd}.zip`，404=当日无数据）
+   → ETL 进 uspto 库（etl_progress 断点，重跑幂等）→ 完整性校验（孤儿/错误数/pg_trgm）。
+2. **delta 导出**（对本轮 etl_progress 新转 completed 的每个 `apcYYMMDD.zip`）：
+   ```bash
+   psql "$DB_CONN_URI" -c "\copy (SELECT t.serial_number, t.mark_identification, \
+     t.status_code, m.live_dead, \
+     (SELECT string_agg(DISTINCT c.international_code, ' ') FROM trademark_classes c \
+        WHERE c.serial_number = t.serial_number) AS nice_classes, \
+     (SELECT o.party_name FROM trademark_owners o WHERE o.serial_number = t.serial_number \
+        ORDER BY o.id LIMIT 1) AS owner_name, \
+     t.filing_date, t.registration_date \
+     FROM trademarks t LEFT JOIN status_code_mapping m ON m.status_code = t.status_code \
+     WHERE t.source_file = 'apcYYMMDD.zip' AND t.mark_identification IS NOT NULL) \
+     TO 'D:/walmart-trademark-sync/out/delta-YYMMDD.csv' WITH CSV HEADER"
+   ```
+   列名与导入器别名严格对应（serial_number/mark_identification/live_dead/filing_date…），
+   **不筛 live**——DEAD 状态变化也要同步到 erp_all（is_live 翻转），R5 只查 LIVE 不受涨行影响。
+3. 拷入 api 容器并导入（幂等，重导安全）：
+   ```bash
+   docker compose -f infra/docker-compose.yml cp D:/walmart-trademark-sync/out/delta-YYMMDD.csv api:/tmp/
    docker compose -f infra/docker-compose.yml exec api \
-     python -m erp.tools.bulk_import_trademark --file /tmp/daily-YYYYMMDD.csv
+     python -m erp.tools.bulk_import_trademark --file /tmp/delta-YYMMDD.csv
    # 中断续跑（同文件同 batch_size）：追加 --resume；错误行看同目录 *.errors.jsonl
    ```
-3. 对账口径（每次导入后）：
-   - 工具输出 `total/merged/err` 与旧仓 daily_update 报告的行数一致（err 行逐条看
-     errors.jsonl，常见为 serial/mark 缺失）；
+4. 对账口径（每次导入后）：
+   - 工具输出 `total/merged/err` ↔ delta csv 行数一致，且 ≈ etl_progress 该文件的
+     records_inserted（差值=无 mark 文本行）；err 行逐条看 errors.jsonl；
    - 只读 SQL 复核总量与最新申请日、revision 递增（审核 R5 反查即时生效，无缓存）：
      ```bash
      $PSQL "SELECT count(*) AS total, max(filed_date) AS newest FROM refdata.trademark;"

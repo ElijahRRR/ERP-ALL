@@ -796,3 +796,16 @@
 - CI：pytest 全绿（新增 5）+ ruff[check+format] + mypy strict 全绿；0036 up/down 实测。
 - 待：分支验证（部署机 0036 迁移 + run_task 单跑看告警链 + daily 增量文件导入实测）
   → Owner 授权合并。
+
+## 2026-07-24 D-Q65① 方案 A 拍板 + USPTO 链迁入方案落地（runbook 升级）
+- Owner 拍板方案 A（整链迁入部署机）；三旧仓挂入会话考古：walmart-trademark-sync
+  （daily_update.py + etl_trademarks.py + schema.sql，与 trademark-data 仓 daily_update
+  逐字节一致）、tro-scraper-matrix（TRO 链下一步同款迁法）。
+- 考古结论：daily_update.py 纯 requests+psycopg2 可移植（USPTO TRTDXFAP apc{yymmdd}.zip
+  → ETL upsert（serial_number 键，source_file 列标记来源文件）→ etl_progress 断点 +
+  完整性校验）；DB_CONN 环境变量注入；delta 提取天然可按 source_file 切片。
+- runbook「USPTO 商标供给链」升级为方案 A 全流程：一次性迁入（常驻 pgvector/pg17
+  uspto-db 容器 + D:\erp-staging-backup dump 选择性还原 7 关系表 + clone 仓 + venv +
+  Task Scheduler）+ 日常四步（daily_update → source_file 切片 delta 导出 csv（不筛
+  live，DEAD 翻转要同步）→ bulk_import_trademark → 对账）。
+- 待：部署机执行一次性迁入 + 首轮日增实测 → 验收① 三日连测起算。
