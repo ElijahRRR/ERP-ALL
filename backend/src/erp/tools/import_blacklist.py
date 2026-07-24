@@ -11,6 +11,12 @@
   blacklist_category → category[, reason]
   blacklist_address  → street/address/地址[, reason]（R2-05 钓鱼检；BR-ORD-005 口径归一化）
   blacklist_zip      → zip/zipcode/邮编[, reason]（取前 5 位）
+  tro                → case_no[, plaintiff, court, filed_date, law_firm, brand_terms,
+                       status, raw_ref]（R2-12 增量2）
+                       brand_terms 为 JSON 数组或分号分隔串（词内逗号不拆）；
+                       status ∈ active/dismissed/settled（缺省 active）；
+                       active 案派生全局 tro_sync 品牌断言，dismissed/settled 撤销该案断言；
+                       TRO 拉黑恒为全局，--team 对本域无效。
   注意：lark 钓鱼地址表表头在第 5 行（data-survey SYNTHESIS:44），导出 csv 前先删表头前噪声行。
 
 全局黑名单（team_id=NULL）默认导入；--team <id> 可限定团队。归一化与审核 L0
