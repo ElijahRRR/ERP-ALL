@@ -93,8 +93,11 @@
 
 ### R2-11 变体组【L1→L2】（上架态机欠账，D-Q2 MVP 项）
 
-**现状核实**：§03 `variant_group`/`variant_member` 列级图纸完备，代码零实现
-（含 `product.variant_group_id` 列亦未建）。
+**现状核实（2026-07-24 修订，开发侧批注核实采纳）**：§03 图纸完备；0007 迁移
+实已建 `variant_group`/`variant_member`/`product.variant_group_id` 全套 DDL——
+原文"代码零实现（列亦未建）"中 DDL 半句不成立，缺的是**服务与端点层**（归组
+服务/契约端点/构建器变体段/守卫）。范围按此收窄执行，实现口径经 D-Q63/D-Q64
+两轮 Owner 拍板细化（实时归组/批次原子性/variant_mode 双模式/live 补挂）。
 
 - 建表迁移 + 采集端 parent ASIN 归组（source_parent_ref 图纸已留）；
 - spec 构建器变体段（R2-03 构建器扩展；variation_theme → Walmart variant 属性映射）；

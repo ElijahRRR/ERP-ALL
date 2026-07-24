@@ -13,7 +13,7 @@
 | team_id | BIGINT | NULL | **NULL=全局黑名单**（超管维护）；非空=团队私有 |
 | *主体列* | | 见下表 | |
 | reason | TEXT | NULL | |
-| source | TEXT | NOT NULL CHECK IN (import, manual, tro_sync, trademark_sync) | |
+| source | TEXT | NOT NULL CHECK IN (import, manual, tro_sync, trademark_sync, error_recycle) | error_recycle=报错回收候选（D-Q65②，0035 已落地） |
 | status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, removed) | 移除不删行 |
 | added_by / added_at / removed_at | | | +公共列变体（created_by=added_by） |
 
