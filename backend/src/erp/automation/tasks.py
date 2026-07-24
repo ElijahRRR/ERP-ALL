@@ -718,6 +718,73 @@ async def llm_budget_check(sessions: Sessions, config: dict[str, Any]) -> dict[s
     return {"teams_with_budget": len(budgets), "over_budget": over}
 
 
+async def trademark_freshness(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """商标库新鲜度守卫（R2-12 增量3，D-Q65①）：max(filed_date) 滞后超阈值告警。
+
+    USPTO 供给整链驻部署机（旧仓 daily_update → csv → bulk_import_trademark），新系统
+    不感知抓取是否还活着——本任务以**数据内容**为准：库内最新申请日距今超 warn_days
+    告警 / 超 critical_days 升级；库空恒 critical（审核 R5 反查失明）。只告警不动数据，
+    修复动作永远在部署机（runbook「USPTO 商标供给链」节）。阈值 system_config
+    trademark.freshness_warn_days / freshness_critical_days > schedule.config > 默认 7/14；
+    商标库全局无 team 维度，通知 team_id=NULL，dedupe 24h=每日至多一条。
+    """
+    warn_days = int(config.get("warn_days", 7))
+    critical_days = int(config.get("critical_days", 14))
+    async with system_tx(sessions) as session:
+        over: dict[str, int] = {
+            r.key.removeprefix("trademark.freshness_"): int(r.value)
+            for r in await session.execute(
+                text(
+                    "SELECT key, value FROM app.system_config WHERE key IN"
+                    " ('trademark.freshness_warn_days', 'trademark.freshness_critical_days')"
+                )
+            )
+        }
+        warn_days = over.get("warn_days", warn_days)
+        critical_days = over.get("critical_days", critical_days)
+        row = (
+            await session.execute(
+                text(
+                    "SELECT count(*) AS total, max(filed_date) AS newest,"
+                    " current_date - max(filed_date) AS lag FROM refdata.trademark"
+                )
+            )
+        ).one()
+        severity: Any = "ok"
+        title: str | None = None
+        body: str | None = None
+        if not row.total:
+            severity = "critical"
+            title = "商标库为空：USPTO 供给链未初始化或数据丢失"
+            body = "审核 L2-R5 商标反查已失明；按 runbook「USPTO 商标供给链」节全量导入"
+        elif row.lag is not None and int(row.lag) > warn_days:
+            severity = "critical" if int(row.lag) > critical_days else "warn"
+            title = f"商标库滞后 {int(row.lag)} 天（最新申请日 {row.newest}）"
+            body = (
+                f"阈值 warn>{warn_days} / critical>{critical_days} 天；检查部署机"
+                " daily_update 定时与 bulk_import_trademark 导入是否中断（runbook"
+                "「USPTO 商标供给链」节）"
+            )
+        if severity != "ok":
+            await notify(
+                session,
+                team_id=None,
+                severity=severity,
+                category="trademark_freshness",
+                title=str(title),
+                body=body,
+                object_type="refdata",
+                object_id="trademark",
+                dedupe_key="trademark_freshness",
+            )
+    return {
+        "total": int(row.total),
+        "newest_filed": str(row.newest) if row.newest else None,
+        "lag_days": int(row.lag) if row.lag is not None else None,
+        "severity": severity,
+    }
+
+
 async def suspension_reminder(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
     """封店定时提醒（D-Q33/§02:186）：未解封的 suspension 事件按 remind_days 周期
     提醒观察放款 / 写申诉信 → notification。
@@ -918,6 +985,7 @@ TASKS: dict[str, TaskFn] = {
     "price_recon": price_recon,
     "gtin_watermark": gtin_watermark,
     "llm_budget_check": llm_budget_check,
+    "trademark_freshness": trademark_freshness,
     "suspension_reminder": suspension_reminder,
     "order_pull": order_pull,
     "ship_recon": ship_recon,

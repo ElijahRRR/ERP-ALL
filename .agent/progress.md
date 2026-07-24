@@ -778,3 +778,34 @@
   （case_no 缺失+status 非法 err、unbranded 不派生）。
 - CI：pytest 全绿（新增 5）+ ruff[check+format] + mypy strict 全绿；无迁移、无契约变更。
 - 待：分支验证（部署机造样例 jsonl 走 CLI 导入 + 审核命中抽查）→ Owner 授权合并。
+
+## 2026-07-24 PR #31 合并（增量2 入 main）+ R2-12 增量3（USPTO 链）完码
+- PR #31 squash 合入 main 375f4c3（Owner 授权；合并前真机分支验证全项通过：tro 导入
+  job16 新增2 → 3 条全局 tro_sync 断言 → canonical 投影 → 撤销链 9001 dismissed 全撤/
+  9002 零波及 → ztest 清场干净）；分支重建。
+- 增量3（D-Q65①）：USPTO 供给整链驻部署机——新系统只做导入+守卫。
+  ①beat 任务 trademark_freshness：max(filed_date) 滞后 >warn_days 告警 / >critical_days
+  升级 / 库空恒 critical（R5 反查失明）；阈值 system_config trademark.freshness_* >
+  schedule.config > 默认 7/14，零硬编码；通知全局 team_id NULL，dedupe 24h。
+  ②0036 调度种子（每日 10:00 UTC，up/down 实测）。
+  ③runbook 新章「USPTO 商标供给链」：日常链路（daily_update→cp→bulk_import_trademark
+  幂等导入+--resume 断点）+ 对账口径（total/merged/err 对旧仓行数 + count/max(filed_date)
+  + revision 递增）+ 告警处置 + 手动单跑（run_task）。
+- 测试 test_trademark_freshness 5 项：新鲜不告警 / 滞后 warn→critical 分档 / 库空
+  critical / system_config 覆盖阈值 / 0036 种子在册。
+- CI：pytest 全绿（新增 5）+ ruff[check+format] + mypy strict 全绿；0036 up/down 实测。
+- 待：分支验证（部署机 0036 迁移 + run_task 单跑看告警链 + daily 增量文件导入实测）
+  → Owner 授权合并。
+
+## 2026-07-24 D-Q65① 方案 A 拍板 + USPTO 链迁入方案落地（runbook 升级）
+- Owner 拍板方案 A（整链迁入部署机）；三旧仓挂入会话考古：walmart-trademark-sync
+  （daily_update.py + etl_trademarks.py + schema.sql，与 trademark-data 仓 daily_update
+  逐字节一致）、tro-scraper-matrix（TRO 链下一步同款迁法）。
+- 考古结论：daily_update.py 纯 requests+psycopg2 可移植（USPTO TRTDXFAP apc{yymmdd}.zip
+  → ETL upsert（serial_number 键，source_file 列标记来源文件）→ etl_progress 断点 +
+  完整性校验）；DB_CONN 环境变量注入；delta 提取天然可按 source_file 切片。
+- runbook「USPTO 商标供给链」升级为方案 A 全流程：一次性迁入（常驻 pgvector/pg17
+  uspto-db 容器 + D:\erp-staging-backup dump 选择性还原 7 关系表 + clone 仓 + venv +
+  Task Scheduler）+ 日常四步（daily_update → source_file 切片 delta 导出 csv（不筛
+  live，DEAD 翻转要同步）→ bulk_import_trademark → 对账）。
+- 待：部署机执行一次性迁入 + 首轮日增实测 → 验收① 三日连测起算。
