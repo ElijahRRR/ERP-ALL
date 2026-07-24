@@ -163,3 +163,45 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
    ```
    期望 `status=active`。注意：resolved 只恢复店铺 active（人工确认，§02:187）；已释放的品牌
    占用不因 resolved 自动回占，需要时在「品牌占用」重新分配。
+
+## USPTO 商标供给链（R2-12 增量3，D-Q65①）
+
+> 定位：抓取/解析/日度增量**整链驻部署机**（旧仓 walmart-trademark-sync 的
+> `daily_update` 保持本机定时跑）；新系统只做两件事——**导入**（`bulk_import_trademark`）
+> 与**新鲜度守卫**（beat `trademark_freshness` 告警）。新系统永不直连 USPTO。
+
+### 日常链路（部署机每日）
+
+1. 旧仓 `daily_update` 定时产出日增量文件（csv/jsonl，列含 serial_number /
+   mark_identification / status_code / filing_date …，列名兼容旧仓导出）。
+2. 拷入 api 容器并导入（幂等，重导安全）：
+   ```bash
+   docker compose -f infra/docker-compose.yml cp /path/to/daily-YYYYMMDD.csv api:/tmp/
+   docker compose -f infra/docker-compose.yml exec api \
+     python -m erp.tools.bulk_import_trademark --file /tmp/daily-YYYYMMDD.csv
+   # 中断续跑（同文件同 batch_size）：追加 --resume；错误行看同目录 *.errors.jsonl
+   ```
+3. 对账口径（每次导入后）：
+   - 工具输出 `total/merged/err` 与旧仓 daily_update 报告的行数一致（err 行逐条看
+     errors.jsonl，常见为 serial/mark 缺失）；
+   - 只读 SQL 复核总量与最新申请日、revision 递增（审核 R5 反查即时生效，无缓存）：
+     ```bash
+     $PSQL "SELECT count(*) AS total, max(filed_date) AS newest FROM refdata.trademark;"
+     $PSQL "SELECT revision FROM refdata.dataset_revision WHERE dataset = 'trademark';"
+     ```
+
+### 新鲜度守卫（新系统侧自动）
+
+- beat `trademark_freshness`（默认每日 10:00 UTC，`app.schedule` 可改）检查
+  `max(filed_date)` 距今滞后：> 7 天 warn / > 14 天 critical / 库空恒 critical
+  → 通知中心告警（每日至多一条）。
+- **告警出现 = 部署机链路断了**：依次检查本机 daily_update 定时是否在跑、
+  导出文件是否生成、第 2 步导入是否执行成功。
+- 阈值运营可改（零硬编码）：`app.schedule.config`（warn_days/critical_days）或
+  `app.system_config`（`trademark.freshness_warn_days` / `trademark.freshness_critical_days`，
+  后者优先）。
+- 手动单跑核验：
+  ```bash
+  docker compose -f infra/docker-compose.yml exec api \
+    python -m erp.tools.run_task trademark_freshness
+  ```

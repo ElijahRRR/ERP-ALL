@@ -778,3 +778,21 @@
   （case_no 缺失+status 非法 err、unbranded 不派生）。
 - CI：pytest 全绿（新增 5）+ ruff[check+format] + mypy strict 全绿；无迁移、无契约变更。
 - 待：分支验证（部署机造样例 jsonl 走 CLI 导入 + 审核命中抽查）→ Owner 授权合并。
+
+## 2026-07-24 PR #31 合并（增量2 入 main）+ R2-12 增量3（USPTO 链）完码
+- PR #31 squash 合入 main 375f4c3（Owner 授权；合并前真机分支验证全项通过：tro 导入
+  job16 新增2 → 3 条全局 tro_sync 断言 → canonical 投影 → 撤销链 9001 dismissed 全撤/
+  9002 零波及 → ztest 清场干净）；分支重建。
+- 增量3（D-Q65①）：USPTO 供给整链驻部署机——新系统只做导入+守卫。
+  ①beat 任务 trademark_freshness：max(filed_date) 滞后 >warn_days 告警 / >critical_days
+  升级 / 库空恒 critical（R5 反查失明）；阈值 system_config trademark.freshness_* >
+  schedule.config > 默认 7/14，零硬编码；通知全局 team_id NULL，dedupe 24h。
+  ②0036 调度种子（每日 10:00 UTC，up/down 实测）。
+  ③runbook 新章「USPTO 商标供给链」：日常链路（daily_update→cp→bulk_import_trademark
+  幂等导入+--resume 断点）+ 对账口径（total/merged/err 对旧仓行数 + count/max(filed_date)
+  + revision 递增）+ 告警处置 + 手动单跑（run_task）。
+- 测试 test_trademark_freshness 5 项：新鲜不告警 / 滞后 warn→critical 分档 / 库空
+  critical / system_config 覆盖阈值 / 0036 种子在册。
+- CI：pytest 全绿（新增 5）+ ruff[check+format] + mypy strict 全绿；0036 up/down 实测。
+- 待：分支验证（部署机 0036 迁移 + run_task 单跑看告警链 + daily 增量文件导入实测）
+  → Owner 授权合并。
