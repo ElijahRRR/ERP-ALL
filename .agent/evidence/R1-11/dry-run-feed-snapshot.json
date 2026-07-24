@@ -22,7 +22,7 @@
           }
         },
         "Orderable": {
-          "sku": "M0006914",
+          "sku": "M0007507",
           "brand": "Unbranded",
           "price": 19.99,
           "endDate": "2049-12-31T00:00:00.000Z",
@@ -31,14 +31,14 @@
               "quantity": 5
             }
           ],
-          "startDate": "2026-07-24T01:30:45Z",
+          "startDate": "2026-07-24T08:39:54Z",
           "productName": "Bamboo Cutting Board Large",
           "MustShipAlone": "No",
           "ShippingWeight": 1.0,
           "specProductType": "Drinkware",
           "fulfillmentLagTime": 1,
           "productIdentifiers": {
-            "productId": "6900000000038",
+            "productId": "6900000000021",
             "productIdType": "EAN"
           },
           "electronicsIndicator": "No",

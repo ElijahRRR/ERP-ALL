@@ -610,11 +610,14 @@
    "backend/tests/db/test_tro_import.py",
    "backend/src/erp/automation/tasks.py",
    "backend/alembic/versions/0036_trademark_freshness_schedule.py",
-   "infra/local-deploy/README.md"
+   "infra/local-deploy/README.md",
+   "backend/src/erp/listing/item_pull.py",
+   "backend/src/erp/listing/maintenance.py",
+   "backend/tests/db/test_item_pull.py"
   ],
   "gate": "RS-04D 断言账本先行或同窗（blacklist 写路径）；07c 邮件钩子后置不阻塞",
   "acceptance": "①连续3个USPTO日度增量自动入库且与etl_progress对账一致、审核检索可见新商标；②真实TRO采集→tro_case→品牌断言→L2命中复现；③全店拉取对账在A152跑通(后台有本地无/状态漂移/错误SKU三类均可发现);真实永久禁售报错→黑名单候选→人工确认落库全程可追溯；④合规页四黑名单管理/商标查询/import_job全流程走通",
-  "finding": "四条持续供给链落地进行中：增量1（断言账本）已并 main 真机验证；增量2（TRO 链）已并 main 真机验证（tro 导入+撤销链全项通过）；增量3（USPTO 链 D-Q65①）完码待分支验证——整链驻部署机 runbook + trademark_freshness 新鲜度告警 beat（0036 种子，阈值 system_config/schedule.config 双层可改）。余：真机 daily 增量导入实测（验收① 连续3日对账）/增量4 全店对账+报错回收/增量5 合规中心页",
+  "finding": "增量1（断言账本）/增量2（TRO 链）已并 main 真机验证；增量3（USPTO 链）已并 main——方案 A 整链迁入部署机完成（uspto-db 常驻+daily_update 修两跳/熔断+计划任务 18:00，验收① 三日连测自 07-25 起算）。增量4a（全店对账+报错回收）完码待分支验证：item_pull 三类差异发现+13类归类保真+error_recycle pending 候选+maintenance runner 人工/半自动档（默认人工，delist 通道接通）。余：增量4b end_date_renewal feed 通道/增量5 合规中心页",
   "last_checked_at": "2026-07-24"
  }
 ]

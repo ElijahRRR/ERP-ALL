@@ -248,3 +248,20 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
   docker compose -f infra/docker-compose.yml exec api \
     python -m erp.tools.run_task trademark_freshness
   ```
+
+## 全店对账与报错回收（R2-12 增量4a，D-Q65②）
+
+- **item_pull**（beat 每日 09:00 UTC）：全店 GET /v3/items 逐态扫描，三类差异**只发现
+  不执行**：①后台有本地无→通知+`sync_state.stats` 样例；②状态漂移→listing 转
+  degraded（error_code=ITEM_PULL_{类}）+ 维护任务生成；③永久禁售类报错→
+  `blacklist_assertion` **pending** 候选（人工确认前不拉黑）。
+- 查看差异：通知中心 `item_recon` 条目；明细
+  `SELECT stats FROM app.sync_state WHERE scope='item_pull' AND ref_id=<store_id>;`
+- 候选断言人工闸（合规页上线前用 SQL 审）：
+  `SELECT id, domain, subject_norm, reason FROM app.blacklist_assertion WHERE status='pending';`
+  确认/否决走应用层 decide（增量5 合规页接 UI）。
+- **maintenance_run**（beat 每小时）：默认**人工档**（`kinds: []`，任务只积累可见）。
+  开半自动档（自动执行下架）需运营显式操作：
+  `UPDATE app.schedule SET config = jsonb_set(config, '{kinds}', '["delist"]') WHERE code='maintenance_run';`
+  关回人工档把 kinds 改回 `[]`。end_date_renewal 执行通道随增量4b。
+- 手动单跑：`docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task item_pull`

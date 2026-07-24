@@ -28,6 +28,8 @@ from erp.channel.gateway import gateway
 from erp.core import idempotency
 from erp.core.db import ctx_tx, system_tx
 from erp.core.errors import BusinessError
+from erp.listing import item_pull as item_pull_service
+from erp.listing import maintenance as maintenance_service
 from erp.listing import service as listing_service
 from erp.notify.service import notify
 from erp.order import pull as order_pull_service
@@ -856,6 +858,16 @@ async def variant_group_sync(sessions: Sessions, config: dict[str, Any]) -> dict
     return await variant_service.run(sessions, config)
 
 
+async def item_pull(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """全店后台 SKU 拉取对账（R2-12 增量4a：三类差异发现 + error_recycle 候选）。"""
+    return await item_pull_service.run(sessions, config)
+
+
+async def maintenance_run(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
+    """maintenance_task runner 最小档（R2-12 增量4a：delist 认领执行，P0-2 读写分离）。"""
+    return await maintenance_service.run(sessions, config)
+
+
 async def ship_recon(sessions: Sessions, config: dict[str, Any]) -> dict[str, Any]:
     """order_ack/order_ship verify_pending 渠道对账（镜像 retire_recon；绝不重发）。
 
@@ -991,4 +1003,6 @@ TASKS: dict[str, TaskFn] = {
     "ship_recon": ship_recon,
     "return_pull": return_pull,
     "variant_group_sync": variant_group_sync,
+    "item_pull": item_pull,
+    "maintenance_run": maintenance_run,
 }
