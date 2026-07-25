@@ -6,7 +6,9 @@ rem Invoked by Windows Task Scheduler at 18:00 daily. Runs runbook section
 rem "USPTO trademark supply chain / daily flow" steps 1-4:
 rem   daily_update -> delta export -> copy into api container + import -> reconcile
 rem
-rem HARD RULES FOR THIS FILE (both were violated once and cost an acceptance day):
+rem HARD RULES FOR THIS FILE. Every one of these was violated in the field and
+rem each cost a full acceptance day: rules 1-2 on 2026-07-25, rules 3-4 on 07-26.
+rem There is exactly one scheduled run per day, so a latent bug here = a lost day.
 rem   1. CRLF ONLY. Repo .gitattributes pins "*.bat text eol=crlf". A LF-only
 rem      .bat makes cmd.exe eat the prefix of every line, so
 rem      set "SECRET_FILE=..." silently never runs and "if not exist" sees an
