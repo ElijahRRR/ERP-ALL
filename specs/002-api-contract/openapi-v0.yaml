@@ -565,33 +565,34 @@ paths:
         - {name: status, in: query, schema: {type: string}}
         - {name: gtin_kind, in: query, schema: {type: string}}
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/GtinPage'}}}}}
+  # import-jobs 归属 Compliance（R2-12 增量5）：权限码 compliance.import_*（0010 种子），
+  # 此前契约误标 catalog.import_*/Catalog——与路由/种子不符，一并归正。导入执行走 CLI
+  # （部署机 api 容器读本地文件，大文件不经 HTTP、全局数据需超管 system_tx——router 铁律），
+  # 故不提供 HTTP 上传端点；页面仅看进度 + 拉报错报告。
   /import-jobs:
-    post:
-      tags: [Catalog]
-      summary: 标准导入（gtin/黑名单/类目映射…；multipart 上传，D-Q35）
-      x-permission: catalog.import_write
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [domain, file]
-              properties:
-                domain: {type: string, description: 与 001 §import_job.domain 枚举一致}
-                file: {type: string, format: binary}
-                dry_run: {type: boolean, default: false}
-      responses: {'202': {description: 已受理, content: {application/json: {schema: {$ref: '#/components/schemas/ImportJob'}}}}}
     get:
-      tags: [Catalog]
-      x-permission: catalog.import_read
-      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/size'}]
+      tags: [Compliance]
+      summary: 导入作业历史（供给链进度可视；执行走 CLI 部署机，D-Q35）
+      x-permission: compliance.import_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: domain, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ImportJobPage'}}}}}
   /import-jobs/{jobId}:
     get:
-      tags: [Catalog]
-      x-permission: catalog.import_read
+      tags: [Compliance]
+      x-permission: compliance.import_read
       parameters: [{name: jobId, in: path, required: true, schema: {type: integer}}]
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ImportJob'}}}}}
+  /import-jobs/{jobId}/error-report:
+    get:
+      tags: [Compliance]
+      summary: 导入作业报错报告（err_rows 明细 + 逐块核对；对账可见性底线 008§6）
+      x-permission: compliance.import_read
+      parameters: [{name: jobId, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ImportErrorReport'}}}}}
   /category-map:
     get:
       tags: [Catalog]
@@ -659,6 +660,117 @@ paths:
       responses:
         '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BrandAssignment'}}}}
         '409': {$ref: '#/components/responses/Error'}
+
+  # ─────────────────────── Compliance（R2-12 增量5 合规中心）───────────────────────
+  # 断言账本 canonical + 追溯 + 候选闸（RS-04D/D-Q65）、商标库、TRO 案件——合规供给
+  # 链的人眼窗口 + 定点人工裁决。黑名单 domain ∈ 断言六域（001§04）。
+  /blacklist:
+    get:
+      tags: [Compliance]
+      summary: 黑名单 canonical 有效项（按域，断言投影当前生效面）
+      x-permission: compliance.blacklist_read
+      parameters:
+        - {name: domain, in: query, required: true, schema: {type: string, enum: [brand, seller, asin, category, address, zip]}}
+        - {name: q, in: query, schema: {type: string}, description: 主体模糊查询（ILIKE）}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BlacklistEntryPage'}}}}}
+  /blacklist/trace:
+    get:
+      tags: [Compliance]
+      summary: 断言追溯（某主体的全部源断言，任意状态；撤销留行）
+      x-permission: compliance.blacklist_read
+      parameters:
+        - {name: domain, in: query, required: true, schema: {type: string}}
+        - {name: subject, in: query, required: true, schema: {type: string}, description: subject_norm 精确}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/BlacklistAssertion'}}}}}}
+  /blacklist/pending:
+    get:
+      tags: [Compliance]
+      summary: 候选断言队列（D-Q65② 报错回收人工闸；pending 待裁决）
+      x-permission: compliance.blacklist_read
+      parameters:
+        - {name: domain, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BlacklistAssertionPage'}}}}}
+  /blacklist/assertions:
+    post:
+      tags: [Compliance]
+      summary: 人工登记断言（source=manual；block 拉黑 / allow 白名单裁决压自动源）
+      x-permission: compliance.blacklist_write
+      parameters: [{$ref: '#/components/parameters/idempotencyKey'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, subject_norm]
+              properties:
+                domain: {type: string, enum: [brand, seller, asin, category, address, zip]}
+                subject_norm: {type: string}
+                subject_display: {type: string}
+                verdict: {type: string, enum: [block, allow], default: block}
+                reason: {type: string}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/AssertionResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+  /blacklist/assertions/{assertionId}/decide:
+    post:
+      tags: [Compliance]
+      summary: 裁决候选断言（pending→active/revoked，D-Q65② 人工闸）
+      x-permission: compliance.blacklist_write
+      parameters:
+        - {name: assertionId, in: path, required: true, schema: {type: integer}}
+        - {$ref: '#/components/parameters/idempotencyKey'}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approve]
+              properties: {approve: {type: boolean}, reason: {type: string}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/AssertionResult'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /blacklist/assertions/{assertionId}/revoke:
+    post:
+      tags: [Compliance]
+      summary: 撤销断言（active/pending→revoked，留行；主体是否仍拉黑由余源决定）
+      x-permission: compliance.blacklist_write
+      parameters:
+        - {name: assertionId, in: path, required: true, schema: {type: integer}}
+        - {$ref: '#/components/parameters/idempotencyKey'}
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, properties: {reason: {type: string}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/AssertionResult'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /trademarks:
+    get:
+      tags: [Compliance]
+      summary: 商标库查询（mark_norm trigram 模糊 + Nice 类过滤 + LIVE 过滤）
+      x-permission: compliance.trademark_read
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: 商标名（trigram 相似，ILIKE 兜底）}
+        - {name: nice, in: query, schema: {type: integer}, description: Nice 类号过滤（nice_classes 含）}
+        - {name: live_only, in: query, schema: {type: boolean, default: false}}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/TrademarkPage'}}}}}
+  /tro-cases:
+    get:
+      tags: [Compliance]
+      summary: TRO 案件查询（品牌词/原告/案号 q + 状态过滤）
+      x-permission: compliance.tro_read
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: 案号/原告/品牌词模糊}
+        - {name: status, in: query, schema: {type: string, enum: [active, dismissed, settled]}}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/TroCasePage'}}}}}
 
   # ─────────────────────── Listing ───────────────────────
   /listings:
@@ -1692,6 +1804,97 @@ components:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
         - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/ImportJob'}}}}
+    ImportErrorReport:
+      type: object
+      required: [job_id, err_rows, chunks, errors]
+      properties:
+        job_id: {type: integer}
+        domain: {type: string}
+        status: {type: string}
+        err_rows: {type: integer}
+        error_report_ref: {type: [string, 'null']}
+        chunks: {type: array, items: {type: object}}
+        errors: {type: array, items: {type: object}, description: 逐行报错样本（≤50，含 line/reason/row）}
+    # ── Compliance（R2-12 增量5）──
+    BlacklistEntry:
+      type: object
+      required: [subject, source, status]
+      properties:
+        team_id: {type: [integer, 'null']}
+        subject: {type: string}
+        display: {type: [string, 'null']}
+        reason: {type: [string, 'null']}
+        source: {type: string}
+        status: {type: string}
+        added_at: {type: [string, 'null'], format: date-time}
+    BlacklistEntryPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/BlacklistEntry'}}}}
+    BlacklistAssertion:
+      type: object
+      required: [id, domain, subject_norm, verdict, source, status]
+      properties:
+        id: {type: integer}
+        team_id: {type: [integer, 'null']}
+        domain: {type: string}
+        subject_norm: {type: string}
+        subject_display: {type: [string, 'null']}
+        verdict: {type: string, enum: [block, allow]}
+        source: {type: string}
+        source_ref: {type: [string, 'null']}
+        reason: {type: [string, 'null']}
+        status: {type: string, enum: [pending, active, revoked]}
+        created_at: {type: [string, 'null'], format: date-time}
+        decided_at: {type: [string, 'null'], format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+        revoke_reason: {type: [string, 'null']}
+    BlacklistAssertionPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/BlacklistAssertion'}}}}
+    AssertionResult:
+      type: object
+      properties:
+        assertion_id: {type: [integer, 'null']}
+        created: {type: boolean}
+        approved: {type: boolean}
+        canonical: {type: string, description: 主体重投影结果 active|removed|unchanged}
+    Trademark:
+      type: object
+      required: [serial_no, nice_classes]
+      properties:
+        serial_no: {type: string}
+        mark_text: {type: [string, 'null']}
+        mark_norm: {type: [string, 'null']}
+        status_code: {type: [string, 'null']}
+        is_live: {type: [boolean, 'null']}
+        nice_classes: {type: array, items: {type: integer}}
+        owner_name: {type: [string, 'null']}
+        filed_date: {type: [string, 'null'], format: date}
+        registered_date: {type: [string, 'null'], format: date}
+    TrademarkPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Trademark'}}}}
+    TroCase:
+      type: object
+      required: [id, case_no, brand_terms, status, source]
+      properties:
+        id: {type: integer}
+        case_no: {type: string}
+        court: {type: [string, 'null']}
+        filed_date: {type: [string, 'null'], format: date}
+        plaintiff: {type: [string, 'null']}
+        law_firm: {type: [string, 'null']}
+        brand_terms: {type: array, items: {type: string}}
+        status: {type: string, enum: [active, dismissed, settled]}
+        source: {type: string}
+        imported_at: {type: [string, 'null'], format: date-time}
+    TroCasePage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/TroCase'}}}}
     CategoryMap:
       type: object
       properties:

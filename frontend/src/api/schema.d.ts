@@ -1778,11 +1778,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** 导入作业历史（供给链进度可视；执行走 CLI 部署机，D-Q35） */
         get: {
             parameters: {
                 query?: {
                     page?: components["parameters"]["page"];
                     size?: components["parameters"]["size"];
+                    domain?: string;
+                    status?: string;
                 };
                 header?: never;
                 path?: never;
@@ -1802,38 +1805,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** 标准导入（gtin/黑名单/类目映射…；multipart 上传，D-Q35） */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: {
-                content: {
-                    "multipart/form-data": {
-                        /** @description 与 001 §import_job.domain 枚举一致 */
-                        domain: string;
-                        /** Format: binary */
-                        file: string;
-                        /** @default false */
-                        dry_run?: boolean;
-                    };
-                };
-            };
-            responses: {
-                /** @description 已受理 */
-                202: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ImportJob"];
-                    };
-                };
-            };
-        };
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1865,6 +1837,44 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["ImportJob"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import-jobs/{jobId}/error-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导入作业报错报告（err_rows 明细 + 逐块核对；对账可见性底线 008§6） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    jobId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ImportErrorReport"];
                     };
                 };
             };
@@ -2101,6 +2111,363 @@ export interface paths {
                 409: components["responses"]["Error"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/blacklist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 黑名单 canonical 有效项（按域，断言投影当前生效面） */
+        get: {
+            parameters: {
+                query: {
+                    domain: "brand" | "seller" | "asin" | "category" | "address" | "zip";
+                    /** @description 主体模糊查询（ILIKE） */
+                    q?: string;
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BlacklistEntryPage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/blacklist/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 断言追溯（某主体的全部源断言，任意状态；撤销留行） */
+        get: {
+            parameters: {
+                query: {
+                    domain: string;
+                    /** @description subject_norm 精确 */
+                    subject: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BlacklistAssertion"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/blacklist/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 候选断言队列（D-Q65② 报错回收人工闸；pending 待裁决） */
+        get: {
+            parameters: {
+                query?: {
+                    domain?: string;
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BlacklistAssertionPage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/blacklist/assertions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 人工登记断言（source=manual；block 拉黑 / allow 白名单裁决压自动源） */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        domain: "brand" | "seller" | "asin" | "category" | "address" | "zip";
+                        subject_norm: string;
+                        subject_display?: string;
+                        /**
+                         * @default block
+                         * @enum {string}
+                         */
+                        verdict?: "block" | "allow";
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AssertionResult"];
+                    };
+                };
+                400: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/blacklist/assertions/{assertionId}/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 裁决候选断言（pending→active/revoked，D-Q65② 人工闸） */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
+                path: {
+                    assertionId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        approve: boolean;
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AssertionResult"];
+                    };
+                };
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/blacklist/assertions/{assertionId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 撤销断言（active/pending→revoked，留行；主体是否仍拉黑由余源决定） */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
+                path: {
+                    assertionId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AssertionResult"];
+                    };
+                };
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/trademarks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 商标库查询（mark_norm trigram 模糊 + Nice 类过滤 + LIVE 过滤） */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 商标名（trigram 相似，ILIKE 兜底） */
+                    q?: string;
+                    /** @description Nice 类号过滤（nice_classes 含） */
+                    nice?: number;
+                    live_only?: boolean;
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TrademarkPage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tro-cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** TRO 案件查询（品牌词/原告/案号 q + 状态过滤） */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 案号/原告/品牌词模糊 */
+                    q?: string;
+                    status?: "active" | "dismissed" | "settled";
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TroCasePage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4329,6 +4696,94 @@ export interface components {
         };
         ImportJobPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["ImportJob"][];
+        };
+        ImportErrorReport: {
+            job_id: number;
+            domain?: string;
+            status?: string;
+            err_rows: number;
+            error_report_ref?: string | null;
+            chunks: Record<string, never>[];
+            /** @description 逐行报错样本（≤50，含 line/reason/row） */
+            errors: Record<string, never>[];
+        };
+        BlacklistEntry: {
+            team_id?: number | null;
+            subject: string;
+            display?: string | null;
+            reason?: string | null;
+            source: string;
+            status: string;
+            /** Format: date-time */
+            added_at?: string | null;
+        };
+        BlacklistEntryPage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["BlacklistEntry"][];
+        };
+        BlacklistAssertion: {
+            id: number;
+            team_id?: number | null;
+            domain: string;
+            subject_norm: string;
+            subject_display?: string | null;
+            /** @enum {string} */
+            verdict: "block" | "allow";
+            source: string;
+            source_ref?: string | null;
+            reason?: string | null;
+            /** @enum {string} */
+            status: "pending" | "active" | "revoked";
+            /** Format: date-time */
+            created_at?: string | null;
+            /** Format: date-time */
+            decided_at?: string | null;
+            /** Format: date-time */
+            revoked_at?: string | null;
+            revoke_reason?: string | null;
+        };
+        BlacklistAssertionPage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["BlacklistAssertion"][];
+        };
+        AssertionResult: {
+            assertion_id?: number | null;
+            created?: boolean;
+            approved?: boolean;
+            /** @description 主体重投影结果 active|removed|unchanged */
+            canonical?: string;
+        };
+        Trademark: {
+            serial_no: string;
+            mark_text?: string | null;
+            mark_norm?: string | null;
+            status_code?: string | null;
+            is_live?: boolean | null;
+            nice_classes: number[];
+            owner_name?: string | null;
+            /** Format: date */
+            filed_date?: string | null;
+            /** Format: date */
+            registered_date?: string | null;
+        };
+        TrademarkPage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["Trademark"][];
+        };
+        TroCase: {
+            id: number;
+            case_no: string;
+            court?: string | null;
+            /** Format: date */
+            filed_date?: string | null;
+            plaintiff?: string | null;
+            law_firm?: string | null;
+            brand_terms: string[];
+            /** @enum {string} */
+            status: "active" | "dismissed" | "settled";
+            source: string;
+            /** Format: date-time */
+            imported_at?: string | null;
+        };
+        TroCasePage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["TroCase"][];
         };
         CategoryMap: {
             id?: number;
