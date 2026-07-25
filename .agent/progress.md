@@ -939,3 +939,45 @@
   故手动补跑只证链路不证调度，出现「任务未建/HEAD 在 main」时自动触发三日窗口
   从调度首次真实触发那天重新起算（严口径；Owner 可放宽为「链路三日 + 自动触发一日」，需明示）。
   此后每日只需部署机按模板回报、云端填表，不再逐日现编指令。
+
+## 2026-07-25 R2-09 考古（三档自动化贯通，六路并行 + 对抗性交叉核对）
+
+- 动因：R2-12 卡验收①（USPTO 三日连测，07-25→07-27）是**墙钟等待非工作量**，按 007 已定动工顺序
+  （R2-12 → **R2-09** → R2-08 → R2-10）提前起下一单考古，三日窗口不空等。考古只读、先于立项
+  （沿 R2-12 的 考古→立项→增量 节奏），不需授权。
+- 规模：7 agents / 411 次工具调用 / 92 万 token / 41 min。产出
+  `.agent/evidence/R2-09/archaeology.md`（1512 行）。六路=决策链与图纸口径 / automation_policy
+  现状接线 / 四条 flow 各自可停点 / 60s 切档基建 / 前端契约缺口与 008 清单 / 旧仓可考语义。
+- **合成阶段做了真对抗核对，推翻两路侦察结论**（这是本次考古最有价值处）：
+  ①路线1「半自动定点停缺状态、必动 migration」被推翻——`product.status='audit_passed'`
+  /`listing.status='draft'`/`maintenance_task(scheduled)` 已是天然停驻位，**不新增状态列**；
+  真缺的是 task 级逐条放行的**端点**，不是 DDL。②路线4 引 docstring 断言 kinds 已 fail-closed
+  被推翻——**读的是注释不是代码**。
+- **实锤一处已上线 fail-open 缺陷**（我本人复核）：`listing/maintenance.py:29`
+  `config.get("kinds", ["delist"])`，而同文件 docstring:3-5 与 `0037:34` 种子均写
+  `kinds=[]`＝人工档只积累不执行。schedule 行 config 一旦丢 `kinds` 键，runner 即自动执行
+  **真渠道下架（RETIRE_ITEM outbox）**，直接绕过 D-Q65② 刚拍板的人工闸。种子当前有该键故未触发，
+  属潜伏。修法=一行改默认 `[]` + 一条测试；属 listing 域跨界（铁律3），建议随 R2-09 增量1
+  「跨域清偿一行一测」并知会 owner，不扩成重构。
+- **四条硬阻塞（不裁定 R2-09 开不了工）**：①001§09 flow 清单要冻结 v2——007 点名的
+  `listing_pricing` 图纸真名 `pricing_watch`、`scrape_to_audit` 图纸零出处、`gtin_alert`
+  /`suspension_reminder` 两行已被 team_config 与 schedule 种子取代（保留=同参数双落点）、
+  D-Q65② 又派生一个未登记消费点；清单不冻结则 09:156 明写的「Enum 对照 + CI 校验」写不出来，
+  CI 第一天就红。②007 验收判据要「采集→审核→上架→定价四环各自可停」而 001 只供给两环
+  ——**判据超出图纸供给 2 环，不裁则验收天然不可达**。③007:79「吃 R2-04 Redis pubsub」与现状
+  不符：实测 `get_config_service` 全仓仅 3 处命中且**无任何业务代码调 ConfigService.get()**，
+  档位两处读点均每请求直连 SQL、延迟≈0；应改为「档位每决策直读不进缓存」，且配置广播 fail-open
+  与档位取值 fail-closed 要分述。④refund auto 是真实渠道退款（不可逆的钱），端点选择
+  （`/v3/orders/{po}/refund` vs `/v3/returns/{ro}/refund`，cancel 另走 cancel）决定
+  `ck_cc_action` 扩 1 个还是 3 个；工单等级建议改标【L1（refund 执行片 L2）】对齐 D-Q54。
+- 另有 6 条 Owner 待裁（二元 flow 认不认 semi、auto 准入门槛、guardrail 键集、停驻 SLA、
+  权限点命名、面板归属）与 8 条盲区（停驻积压无兜底、读档与动作原子性 beat 900s 超时击穿 60s、
+  切档时在途对象归属、auto 档烧穿 GTIN 池与配额、**验收本身不可重复执行**——商品状态单向前进、
+  超管视角面板形态、新团队档位继承、`enabled=false` 静默等价 manual）。
+- 建议拆 7 步：增量0 前置冻结（规划侧非 PR）→ 1 policy 内核+Enum+CI 校验（纯重构行为零变化）
+  → 2 策略 API+权限点+前端面板 → 3 audit_to_listing 三档 → 4 pricing_watch 三档
+  → 5 refund/cancel auto 渠道执行【唯一 L2 片，建议单独排期评审】→ 6 收尾取证。
+  量级约 R2-12 的 1.3~1.5 倍。
+- 现状口径修正（回写时须同步）：工单 check 与 007:72 写的「仅通 order_block 一档」**已过时**
+  ——R2-07 增量2 落地后 refund/cancel 已半通（manual/semi 本地闭环，auto fail-closed 拒绝）。
+- **本节仅考古，未立项、未改任何实现代码。** 立项与增量0 均待 Owner。
