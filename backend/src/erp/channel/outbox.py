@@ -37,7 +37,14 @@ Applier = Callable[
     [AsyncSession, dict[str, Any], GatewayResponse | None], Awaitable[dict[str, Any]]
 ]
 
-ACTIONS = ("feed_submit", "item_retire", "order_ack", "order_ship", "price_push")
+ACTIONS = (
+    "feed_submit",
+    "item_retire",
+    "order_ack",
+    "order_ship",
+    "price_push",
+    "item_maintenance",
+)
 
 # 敏感键黑名单（子串匹配，大小写不敏感）——payload 任何层级键名命中即拒
 _FORBIDDEN_KEY_PARTS = ("authorization", "token", "secret", "password", "credential", "proxy")

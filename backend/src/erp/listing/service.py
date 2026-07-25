@@ -1544,6 +1544,145 @@ async def _apply_item_retire(  # noqa: PLR0911 归位分支=渠道响应形态�
     return {"status": "live", "error_code": "ERP_FEED_REJECTED", "http_status": resp.status}
 
 
+async def renew_end_date(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    team_id: int,
+    listing_id: int,
+    actor_id: int | None = None,
+    is_super: bool = False,
+) -> dict[str, Any]:
+    """A 过期类续期（R2-12 增量4b）：提交 MP_MAINTENANCE feed 延 endDate 让商品 republish。
+
+    三段式（镜像 delist/item_retire——listing 级直命令、200 即成、不建 feed 行、不走
+    feed 状态机）：tx1 锁品/配额/延本地 end_date/落 outbox item_maintenance 命令 →
+    HTTP → tx2 归位（200→degraded 转 live；明确拒→留 degraded+返配额）。
+
+    只处理 degraded（item_pull 判的 A 过期类）；需 gtin 构 productIdentifiers（无则拒）。
+    endDate 与配额键走配置中心（listing.maintenance / listing_maintenance 配额向）。
+    """
+    async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
+        listing = await _load_listing(session, listing_id)
+        if listing["team_id"] != team_id:
+            raise BusinessError("LISTING_NOT_FOUND", "listing 不存在")
+        if listing["status"] != "degraded":
+            raise BusinessError("LISTING_STATE_INVALID", f"状态 {listing['status']} 不可续期")
+        gtin = listing.get("gtin")
+        if not gtin:
+            raise BusinessError("LISTING_MAINTENANCE_NO_GTIN", "无 gtin 无法构 MP_MAINTENANCE 载体")
+        if not await channel_service.consume_quota(
+            session, listing["store_id"], "listing_maintenance"
+        ):
+            raise BusinessError("ERP_QUOTA_EXHAUSTED", "listing_maintenance 配额不足")
+        cfg = await spec_builder._cfg(session, "listing.maintenance", {"end_date": "2049-12-31"})
+        new_end = str(cfg.get("end_date") or "2049-12-31")
+        await session.execute(
+            text("UPDATE app.listing SET end_date = cast(:d AS date) WHERE id = :id"),
+            {"d": new_end, "id": listing_id},
+        )
+        # 同一 listing 多轮续期各占新幂等键（episode = 既有 item_maintenance 命令数）
+        episode = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM app.channel_command"
+                    " WHERE action = 'item_maintenance' AND object_id = :l"
+                ),
+                {"l": listing_id},
+            )
+        ).scalar_one()
+        envelope = {
+            "MPItemFeedHeader": await spec_builder.feed_header(session, "build"),
+            "MPItem": [
+                {
+                    "Orderable": {
+                        "sku": listing["channel_sku"],
+                        "productIdentifiers": {
+                            "productId": gtin,
+                            "productIdType": spec_builder._identifier_type(str(gtin)),
+                        },
+                        "endDate": new_end,
+                    }
+                }
+            ],
+        }
+        await gateway.prepare(session, listing["store_id"])
+        enq = await outbox.enqueue(
+            session,
+            team_id=team_id,
+            store_id=listing["store_id"],
+            action="item_maintenance",
+            payload={
+                "method": "POST",
+                "path": "/v3/feeds",
+                "endpoint_key": "POST /v3/feeds:MP_MAINTENANCE",
+                "params": {"feedType": "MP_MAINTENANCE"},
+                "json_body": envelope,
+            },
+            idempotency_key=f"maintain:{listing_id}:{episode}",
+            object_type="listing",
+            object_id=listing_id,
+            created_by=actor_id,
+        )
+    outcome = await outbox.execute_command(
+        sessions,
+        enq["command_id"],
+        team_id=team_id,
+        is_super=is_super,
+        applier=_apply_item_maintenance,
+    )
+    if outcome.get("error_code") == "ERP_FEED_REJECTED":
+        raise BusinessError("ERP_FEED_REJECTED", f"续期提交被拒 HTTP {outcome.get('http_status')}")
+    extras: dict[str, Any] = {
+        k: outcome[k] for k in ("dry_run", "verify", "command_status") if k in outcome
+    }
+    return {"listing_id": listing_id, "status": outcome.get("status", "degraded"), **extras}
+
+
+async def _apply_item_maintenance(  # noqa: PLR0911 归位分支=渠道响应形态（dry_run/未知/成功/明确拒）
+    session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
+) -> dict[str, Any]:
+    """item_maintenance 的 tx2 归位（镜像 item_retire）：200→degraded 转 live（续期生效，
+    渠道异步 republish）；明确拒→留 degraded + 返 listing_maintenance 配额。"""
+    listing_id = int(cmd["object_id"])
+    cid, fence = int(cmd["id"]), int(cmd["fence"])
+    actor_id = cmd.get("created_by")
+    listing = await _load_listing(session, listing_id)
+
+    if resp is not None and resp.dry_run:
+        if not await outbox.complete(
+            session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
+        ):
+            return {"command_status": "superseded"}
+        return {"status": "degraded", "dry_run": True}
+
+    if resp is None or resp.status is None:
+        # 结果未知：保持 degraded（不返配额、不重发）；渠道侧核对随下轮 item_pull
+        if not await outbox.complete(session, command_id=cid, fence=fence, status="verify_pending"):
+            return {"command_status": "superseded"}
+        return {"status": "degraded", "verify": "unknown"}
+
+    if resp.status == 200:  # noqa: PLR2004
+        if not await outbox.complete(session, command_id=cid, fence=fence, status="succeeded"):
+            return {"command_status": "superseded"}
+        if listing["status"] == "degraded":
+            await transition(session, listing, "live", reason_code="maintenance_renewed",
+                             actor_id=actor_id)  # fmt: skip
+        return {"status": "live"}
+
+    # 渠道明确拒绝：配额返还，留 degraded（商品仍在问题态），错误上抛由调用方处理
+    if not await outbox.complete(
+        session,
+        command_id=cid,
+        fence=fence,
+        status="failed",
+        result={"http_status": resp.status},
+        error_code="ERP_FEED_REJECTED",
+    ):
+        return {"command_status": "superseded"}
+    await channel_service.release_quota(session, int(cmd["store_id"]), "listing_maintenance")
+    return {"status": "degraded", "error_code": "ERP_FEED_REJECTED", "http_status": resp.status}
+
+
 async def update_price(
     session: AsyncSession,
     *,

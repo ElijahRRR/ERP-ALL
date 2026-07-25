@@ -828,3 +828,22 @@
 - 测试 test_item_pull 5 项：归类保真/三类差异+幂等/J 特殊不动/runner 失败留痕/
   未开档任务留队。CI：pytest 487 passed + ruff + mypy strict 全绿。
 - 待：分支验证（0037 + run_task item_pull 真店扫描 + 候选断言/维护任务核验）→ 合并。
+
+## 2026-07-24 PR #33 合并（增量4a 入 main）+ R2-12 增量4b（end_date_renewal 执行通道）完码
+- PR #33 squash 合入 main a8b9455（Owner 授权，真店验证：missing_local 45 真实发现 /
+  读写分离守住 / 人工档 kinds=[]）；分支重建。观察项：增量4a 真机只触发"后台有本地无"
+  一支（drift/错误SKU 两支单测覆盖）；45 条 missing_local = 新旧系统补挂缺口。
+- 增量4b（P0-2 第二种 runner 通道）：renew_end_date——A 过期类续期，提交 MP_MAINTENANCE
+  feed 把 endDate 延到配置日期让商品 republish（旧仓 relisting 逐字语义：Orderable
+  {sku, productIdentifiers, endDate}）。走 item_maintenance 命令，镜像 item_retire
+  「listing 级直命令 + 200 即成、不建 feed 行、不走 feed 状态机」低风险路径：
+  200 → degraded 转 live（续期生效，渠道异步 republish）；明确拒 → 留 degraded + 返
+  listing_maintenance 配额；dry_run → 命令 succeeded 留 degraded。
+- 0038：ck_cc_action 扩 item_maintenance（现行集 feed_submit/item_retire/order_ack/
+  order_ship/price_push 之上；不动 ck_feed_kind——不建 feed 行）；outbox.ACTIONS 同步扩；
+  up/down 实测。maintenance runner 认领 end_date_renewal（默认人工档 kinds=[] 不变）。
+- 测试 test_end_date_renewal 5 项：dry_run 延期留 degraded / 守卫（非 degraded + 无 gtin）/
+  live_test 200 → live / live_test 400 → ERP_FEED_REJECTED 留 degraded / runner 认领。
+- CI：pytest 492 passed + ruff + mypy strict 全绿；0038 up/down 实测。
+- 待：分支验证（0038 + 造 degraded listing + run_task maintenance_run kinds=[end_date_renewal]
+  dry-run 看命令+状态；或真店 live_test MP_MAINTENANCE dry-run 证据）→ 合并。

@@ -1,13 +1,12 @@
-"""maintenance_task runner 最小档（R2-12 增量4a；P0-2 人工/半自动执行位）。
+"""maintenance_task runner（R2-12 增量4a 最小档 + 增量4b end_date_renewal 通道）。
 
-- 只认领 config.kinds（默认 ['delist']）中已到期的 scheduled 任务，批量小步执行；
-  SKIP LOCKED 抢占，beat 多实例安全。
-- delist：走既有三段式下架服务（配额消费 / outbox RETIRE_ITEM 真渠道写 / 状态机
-  全链复用）；degraded 状态放行（渠道已 unpublished 的清理型下架，service 侧守卫
-  已扩档）。
-- end_date_renewal：item_pull 会生成（A 过期类）但本档**不认领**——MP_MAINTENANCE
-  feed 通道随增量4b（需扩 ck_cc_action / ck_feed_kind + spec 组装），在 kinds 配置
-  加入前恒留在队列，人工可见。
+- P0-2 人工/半自动执行位：只认领 config.kinds 中已到期的 scheduled 任务，批量小步执行；
+  SKIP LOCKED 抢占，beat 多实例安全。**默认人工档 kinds=[]**（D-Q13/29 三档，半自动需
+  运营显式开）。
+- delist：走既有三段式下架服务（配额消费 / outbox RETIRE_ITEM 真渠道写 / 状态机全链
+  复用）；degraded 放行（渠道已 unpublished 的清理型下架，service 守卫已扩档）。
+- end_date_renewal（增量4b）：走 renew_end_date（提交 MP_MAINTENANCE feed 延 endDate 让
+  商品 republish，item_maintenance 命令 200 即成，degraded→live）。
 - 结果回写任务行（done/failed + result/error），全程可追溯。
 """
 
@@ -50,9 +49,14 @@ async def run(sessions: async_sessionmaker, config: dict[str, Any]) -> dict[str,
                     sessions, team_id=int(t.team_id), listing_id=int(t.listing_id), is_super=True
                 )
                 result = {"status": res.get("status")}
+            elif t.task_kind == "end_date_renewal":
+                res = await listing_service.renew_end_date(
+                    sessions, team_id=int(t.team_id), listing_id=int(t.listing_id), is_super=True
+                )
+                result = {"status": res.get("status")}
             else:  # kinds 配置闸住，理论不达；达了也留痕不吞
                 raise BusinessError(
-                    "MAINT_KIND_UNSUPPORTED", f"任务类型 {t.task_kind} 执行通道未接（增量4b）"
+                    "MAINT_KIND_UNSUPPORTED", f"任务类型 {t.task_kind} 执行通道未接"
                 )
             async with system_tx(sessions) as session:
                 await session.execute(
