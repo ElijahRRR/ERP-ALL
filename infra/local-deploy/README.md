@@ -203,8 +203,21 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
 4. **挂定时**：Windows 任务计划每日一次（建议 18:00 本地）跑
    `D:\walmart-trademark-sync\.venv\Scripts\python.exe D:\walmart-trademark-sync\daily_update.py`
    ＋随后执行下方「日常链路」第 2-4 步（可合入同一 .bat）。
-   - **.bat 前置检查**：调 Python 前先验密钥文件存在，缺则 `echo ERROR: local secret file missing`
-     + `exit /b 10`（干净退出码优于 KeyError traceback）。`Last Result=10` 即此情形。
+   - **.bat 已纳入版本管理**：`infra/local-deploy/automation/uspto-daily.bat`。部署机应从仓里
+     检出使用，**不要在机器上另存一份**（原先只存在于 `D:\erp-staging-backup\automation\`，
+     无备份、无评审）。仓根 `.gitattributes` 声明 `*.bat text eol=crlf` 强制 CRLF 检出。
+   - **`Last Result=10` 有两种成因，先排第二种**：
+     ①密钥文件（`D:\erp-staging-backup\uspto-db.env`）真的不存在；
+     ②**`.bat` 是 LF-only** —— cmd 逐行吞前缀导致 `set "SECRET_FILE=..."` 从未执行，
+     `if not exist ""` 恒真，**误报**成 ①。2026-07-25 就是栽在②上、白丢一个验收日。
+     一秒自查：`[IO.File]::ReadAllBytes("<bat>")` 数 lone LF，非 0 即中招。
+   - **.bat 里不许出现非 ASCII 路径**：本文件存 UTF-8 而 cmd 按 GBK 读，
+     `D:\项目文件\...` 会变成 `D:\椤圭洰鏂囦欢\...`。机器相关路径一律走密钥文件的
+     `ERP_COMPOSE` 键，**值填 8.3 短路径**（`for %%I in ("<长路径>") do @echo %%~sI`）。
+   - 密钥文件是 `KEY=VALUE` 文本（**不是** `set "KEY=VALUE"` 片段），bat 读
+     `POSTGRES_PASSWORD` 与 `ERP_COMPOSE` 两键，`DB_CONN` 由 bat 自行拼装。
+     ⚠ 连接自检要连**宿主机**映射端口：容器内 PG 监听 5432，5433 是宿主机映射，
+     在容器内用 `port=5433` 自检必然 `Connection refused`（自检姿势错，不是配置错）。
    - ⚠ **`Logon Mode` 必须能在无人登录时触发**。`schtasks /query /v` 若显示
      `Interactive only`，则**只有该账号处于登录态才会跑**——这与「无人值守」直接冲突，
      会让某天没人登录的验收日直接作废。两条路：①该账号常驻登录（锁屏即可，须写进运维约束、

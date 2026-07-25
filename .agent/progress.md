@@ -1015,3 +1015,39 @@
   才跑通）——已改正并注明 schema 出处；②runbook 一次性迁入第 3 步只写「设环境变量」，
   没说明**必须由 .bat 显式 set**、也没说 `.env` 不被自动读——已补全，并给 `Last Result` 常见值
   对照（0 成功 / 10 密钥文件缺失 / 267011 从未运行）。
+
+## 2026-07-26 第 1 日 FAIL 根因更正：不是密钥缺失，是 .bat LF-only（+ bat 纳入版控）
+
+- **上一节（07-25）把根因判成「密钥文件缺失」是错的，本节更正。** 部署机第二轮取证：
+  `D:\erp-staging-backup\uspto-db.env` **07-24 12:36 就已存在**、101 字节、含
+  `POSTGRES_PASSWORD`+`POSTGRES_DB`。日志那句 `local secret file missing` 是**假象**。
+- **真因：`.bat` 为 LF-only**（实测 127 LF / 0 CRLF / 无 BOM）。cmd.exe 按 CRLF 切行，
+  遇 LF-only 逐行吞前缀——现场证据：`setlocal EnableExtensions`→`EnableExtensions`、
+  `set "SYNC_DIR="`→`NC_DIR`、`PYTHON`→`HON`、`SECRET_FILE`→`RET_FILE`、`COMPOSE`→`POSE`。
+  于是 `SECRET_FILE` 从未赋值 → `if not exist ""` 恒真 → `exit /b 10`。**Python 一行没跑到**，
+  故 PR #1 两跳修复至今仍未被验证（既未证实也未证伪）。
+- **同一现场第二个坑**：bat 里硬编码 `D:\项目文件\ERP-ALL\infra\docker-compose.yml`，
+  文件存 UTF-8 被 cmd 按 GBK 读 → `D:\椤圭洰鏂囦欢\...`，路径不存在
+  （部署机实测 `BAT_COMPOSE_PATH_EXISTS=False` / `EXPECTED=True`）。日志时间戳同理，
+  `%date%` 的中文星期写成 `[鍛ㄦ棩 ...]`。
+- **根治（已落仓）**：
+  ① `.bat` 纳入版本管理 `infra/local-deploy/automation/uspto-daily.bat`——此前它**只存在于
+  那一台机器**、无备份无评审，而它是整条链的编排定义（第 1-4 步全在里面），
+  且讽刺地放在 `erp-staging-backup` 目录下自己却没被备份；
+  ② 新建仓根 `.gitattributes` 声明 `*.bat text eol=crlf`——**只提交 CRLF 字节不够**，
+  部署机 `core.autocrlf` 非 true 时仍会检出 LF、原样复发；
+  ③ 版控版改为**纯 ASCII**：compose 路径改从密钥文件读 `ERP_COMPOSE` 键（值填 8.3 短路径），
+  时间戳改用 ASCII 的 `%RUN_ID%`，新增退出码 12（ERP_COMPOSE 缺失/compose 不存在），
+  并顺手加 delta CSV 保留 14 天（原实现导完即删，出账对不上时无源可查）。
+- **Docker 诊断改变了「无人值守」的结论**（比调度配置更要命）：Docker Desktop 4.57.0，
+  全部进程在 **Console 会话 1**，`com.docker.service` 是 **Stopped/Manual**，登录自启 True。
+  即 **Docker Desktop 依赖交互式会话存在**，链路第 3-4 步 `docker compose cp/exec` 没它必挂。
+  故**只改 `/RU /RP` 存储凭据解决不了问题**——引擎命名管道是机器级跨会话可达，但没人登录时
+  Docker Desktop 压根没启动。正解=**常驻登录（保 Docker 活）+ 存储凭据（保锁屏/断开也触发）**，
+  且**真正缺口是重启**：要名副其实的无人值守须配 Windows 自动登录（AutoAdminLogon）。
+  `SYSTEM` 绝不可用。注销后容器存活性**待实测**——部署机正确拒绝了破坏性实测，需另排时间。
+- 密码轮换已完成（部署机自生成、`ALTER USER` OK、密钥文件重写 155 字节、宿主机 DB_CONN
+  自检 OK，全程未回显）。指令里那条「容器内连 127.0.0.1:5433」是我写错的自检姿势——
+  容器内 PG 监听 5432，5433 是宿主机映射，部署机已指出并改用宿主机自检。协议文档已注明。
+- **07-26 18:00 那跑当前不具备成功条件**（部署机判定，同意）：bat LF + compose 路径乱码
+  两条未修复前，仍会在下载前失败。修复后需重新取证。

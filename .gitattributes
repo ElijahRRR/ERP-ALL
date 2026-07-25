@@ -1,0 +1,10 @@
+# Windows 批处理/脚本必须以 CRLF 检出——LF-only 的 .bat 会被 cmd.exe 逐行吞掉前缀
+# （实证：2026-07-25 uspto-daily.bat 为 LF-only，导致 set "SECRET_FILE=..." 被截成
+#  RET_FILE...，变量从未赋值 → if not exist "" 恒真 → 误报 secret 缺失 exit 10，
+#  白丢一个验收日。仅提交 CRLF 字节不够：部署机 core.autocrlf 非 true 时仍会检出 LF。）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Unix 侧脚本反过来必须 LF
+*.sh text eol=lf

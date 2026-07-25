@@ -18,30 +18,96 @@ cd /d D:\walmart-trademark-sync && git rev-parse --abbrev-ref HEAD
 全部判为「非 zip」跳过。症状 = **跑了、退出码 0、但一条没导**。
 若 HEAD 在 main：这**不算 FAIL**，切分支后补跑即可，当日按「情形 C」记。
 
-## 前提一：`DB_CONN` 必须在进程环境里（07-25 实测踩中）
+## 前提一：`.bat` 必须是 CRLF 且纯 ASCII（07-25 实测踩中，代价=一个验收日）
+
+> ⚠️ **`ERROR: local secret file missing` 这条日志是假象，不要照字面信。**
+> 07-25 首跑就是被它误导：密钥文件其实一直在（`D:\erp-staging-backup\uspto-db.env`，
+> 07-24 12:36 建，101 字节，含 `POSTGRES_PASSWORD`）。
+
+真因是 **`.bat` 为 LF-only 换行**（实测 127 LF / 0 CRLF）。`cmd.exe` 按 CRLF 切行，
+遇到 LF-only 会**逐行吞掉前缀**——现场证据：
+
+| 源码 | cmd 实际执行 |
+|---|---|
+| `setlocal EnableExtensions` | `EnableExtensions`（未识别） |
+| `set "SYNC_DIR=..."` | `NC_DIR`（未识别） |
+| `set "PYTHON=..."` | `HON` |
+| `set "SECRET_FILE=..."` | `RET_FILE` |
+| `set "COMPOSE=..."` | `POSE` |
+
+于是 `SECRET_FILE` **从未被赋值**，`if not exist ""` 恒真 → `exit /b 10`。
+Python 一行都没跑到。
+
+**根治**：`.bat` 已纳入版本管理（`infra/local-deploy/automation/uspto-daily.bat`），
+仓根 `.gitattributes` 声明 `*.bat text eol=crlf` **强制检出为 CRLF**
+——只提交 CRLF 字节不够，部署机 `core.autocrlf` 非 `true` 时仍会检出 LF、原样复发。
+
+自查（怀疑时先做这个，一秒出结果）：
+
+```powershell
+$b=[IO.File]::ReadAllBytes("<bat路径>")
+"CRLF={0} LoneLF={1}" -f ([regex]::Matches([Text.Encoding]::ASCII.GetString($b),"`r`n").Count),
+                          ([regex]::Matches([Text.Encoding]::ASCII.GetString($b),"(?<!`r)`n").Count)
+# LoneLF 非 0 即中招
+```
+
+**同一现场还挖出第二个坑：`.bat` 里不许出现非 ASCII 路径。**
+原文硬编码 `D:\项目文件\ERP-ALL\infra\docker-compose.yml`，文件存为 UTF-8、被 cmd 按 GBK 读
+→ 变成 `D:\椤圭洰鏂囦欢\...`，路径不存在。现已改为从密钥文件读 `ERP_COMPOSE` 键，
+**值填 8.3 短路径**（`for %%I in ("<长路径>") do @echo %%~sI` 取，纯 ASCII，免疫代码页）。
+日志时间戳也从 `%date% %time%`（中文区域名会写成 `[鍛ㄦ棩 ...]`）改用 ASCII 的 `%RUN_ID%`。
+
+## 前提二：`DB_CONN` 的传递机制（背景知识，非 07-25 的失败原因）
 
 `etl_trademarks.py:24` 是 `DB_CONFIG = _parse_db_conn(os.environ["DB_CONN"])`——**模块级、无默认值**；
 `daily_update.py` 顶部 `import etl_trademarks`，因此**缺 `DB_CONN` 时在 import 阶段就 KeyError**。
-且全仓**没有任何 dotenv 加载**（`.env` 不会被 Python 自动读），必须由 `.bat` 读本地密钥文件再 `set`。
+全仓**没有任何 dotenv 加载**（`.env` 不会被 Python 自动读），必须由 `.bat` 读密钥文件再 `set`。
 
-`.bat` 在调 Python 前有前置检查，缺文件即 `ERROR: local secret file missing` + `exit 10`
-——**这是正确行为**（挡在 KeyError 之前给干净退出码），不要当成 bat 的 bug 去改。
+密钥文件（`uspto-db.env`）是 `KEY=VALUE` 文本，**不是** `set "KEY=VALUE"` 的 cmd 片段。
+`.bat` 读的是 `POSTGRES_PASSWORD` 与 `ERP_COMPOSE` 两个键，`DB_CONN` 由 `.bat` 自行拼装
+（格式是**空格分隔 kv 非 URI**）。
+
+⚠ 连接自检要连**宿主机映射端口**：容器内 PostgreSQL 监听 5432，`5433` 是宿主机映射。
+在容器内用 `host=127.0.0.1 port=5433` 自检必然 `Connection refused`——那是自检姿势错，不是配置错。
 
 密钥文件键名以仓内 `.env.example` 为准：`DB_CONN`（本链唯一必需）／`LARK_APP_ID`／
 `LARK_APP_SECRET`／`LARK_SPREADSHEET_TOKEN`（后三个只给飞书同步脚本用，daily_update 不需要）。
 `DB_CONN` 格式是**空格分隔 kv**（非 URI）：`dbname=uspto user=postgres password=<pw> host=127.0.0.1 port=5433`。
 
-## 前提二：计划任务必须能在无人登录时触发
+## 前提三：计划任务必须能在无人登录时触发
 
 `schtasks /query /v` 里的 **`Logon Mode: Interactive only`** 意味着**只有该用户处于登录态才会触发**。
 验收① 要证的正是「无人值守」——若这台机某天没人登录，任务根本不会跑，当日直接作废。
 07-25 能触发是因为当时 Administrator 在登录态，属侥幸不是保障。
 
-两条合规路径二选一（Owner 定）：
-1. **保持该账号常驻登录**（锁屏即可）——最省事，但要写进运维约束，且重启后必须重新登录；
-2. **改存储凭据**（`/RU <user> /RP <password>`，Logon Mode 变 `Interactive/Background`）——
-   真正无人值守。⚠ 不要改成 `SYSTEM`：链路第 3-4 步要 `docker compose cp/exec`，
-   Docker Desktop 是**按用户会话**跑的，SYSTEM 下通常不可用。
+但 07-25 的 Docker 诊断把结论改了——**光改调度不够，真正的约束在 Docker 这边**：
+
+| 实测项 | 结果 |
+|---|---|
+| Docker 形态 | Docker Desktop 4.57.0（`Context: desktop-linux`） |
+| 全部 `Docker Desktop.exe` / `com.docker.backend.exe` | 均在 **`Console` 会话 1** |
+| `com.docker.service`（系统服务） | **`Stopped` / `Manual`** |
+| 登录自启 | `AutoStart=True` + HKCU Run 项存在 |
+
+**Docker Desktop 依赖交互式用户会话存在**：它随登录自启、进程全在 Console 会话，系统服务并未承担引擎。
+链路第 3-4 步要 `docker compose cp/exec` 打进 api 容器，**Docker Desktop 不运行则必然失败**。
+
+所以三条路径的真实效果是：
+
+1. **只改存储凭据 `/RU /RP`** —— 解决「任务会不会触发」，**不解决 Docker**。
+   引擎命名管道（`\\.\pipe\dockerDesktop*`）是机器级、跨会话可达（调用方需在 `docker-users` 组），
+   所以只要 Docker Desktop **正在某个会话里跑**，非交互任务就能用它；但**没人登录时它压根没启动**。
+2. **保持该账号常驻登录**（锁屏/RDP 断开都不影响，只要不注销）—— 这才是让 Docker 活着的前提。
+3. **两者都做**（推荐）：常驻登录保证 Docker 在跑，存储凭据保证会话锁定/断开等边角情形下任务照样触发。
+
+⚠ **绝不要改成 `SYSTEM`**——SYSTEM 不在用户会话里，Docker Desktop 对它不可用。
+
+**真正的缺口是重启**：机器重启且无人登录时，Docker Desktop 不启动、链路必挂。要做到名副其实的
+无人值守，得配 **Windows 自动登录**（`netplwiz` 取消「必须输入密码」或 `AutoAdminLogon`），
+让重启后自动进入桌面会话、Docker 随之自启。这一条不做，「无人值守」就只是「没人动它的时候能跑」。
+
+**待实测（不要猜）**：注销（logoff）后容器是否存活、非交互任务能否访问 Docker。
+07-25 部署机正确地拒绝了破坏性实测——这条需要安排一个不影响验收窗口的时间做。
 
 ## 每日三段取证
 
@@ -121,9 +187,13 @@ docker compose -f infra/docker-compose.yml exec api \
 
 - 调度侧本身是**好消息**——任务已建、`Enabled`、`Schedule Type: Daily / 18:00`、准点触发、
   `Next Run Time` 正常滚到次日。A 段机制被证明可用，**不需要补建任务**。
-- 失败点是本机从未配置密钥文件（`etl_progress` 最新 `completed` 是 `apc260711.zip`，
-  `completed_at` 2026-07-12 22:03 UTC——那是**迁入前 Owner Mac 上的历史记录随 dump 带来的**，
-  说明这台部署机**一次都没成功跑过**）。因此积压约 13 个日增量待补。
+- **失败点不是密钥文件**（初判有误，已更正）：`uspto-db.env` 07-24 12:36 就建好了、101 字节、
+  含 `POSTGRES_PASSWORD`。真因是 **`.bat` 为 LF-only，cmd 吞掉每行前缀导致 `SECRET_FILE`
+  从未赋值**，`if not exist ""` 恒真 → `exit 10`。详见「前提一」。
+  日志那句 `local secret file missing` 是假象，照字面查会一路查错方向。
+- 这台部署机**确实一次都没成功跑过**：`etl_progress` 最新 `completed` 是 `apc260711.zip`，
+  `completed_at` 2026-07-12 22:03 UTC——那是**迁入前 Owner Mac 上的历史记录随 dump 带来的**。
+  因此积压约 13 个日增量待补。
 - 首跑还须注意：`download_new_files` 从 2026-03-05 起算、跳过 `existing ∪ completed`，
   且 `CIRCUIT_BREAK_AFTER=3`（连续 3 个失败即熔断本轮）。**积压首跑很可能只补一部分就熔断，
   这属设计内行为不算 FAIL**，余量次日续取。
