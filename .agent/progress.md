@@ -981,3 +981,37 @@
 - 现状口径修正（回写时须同步）：工单 check 与 007:72 写的「仅通 order_block 一档」**已过时**
   ——R2-07 增量2 落地后 refund/cancel 已半通（manual/semi 本地闭环，auto fail-closed 拒绝）。
 - **本节仅考古，未立项、未改任何实现代码。** 立项与增量0 均待 Owner。
+
+## 2026-07-25 验收① 第 1 日 FAIL（部署机回报）+ 三处根因定位
+
+- **判定：07-25 = FAIL（情形 A），第 1 日不计入**。连续三日窗口顺延 07-26/27/28，
+  最早收账 07-28 晚。取证与复盘已填进 `evidence/R2-12/uspto-3day-verification.md` 三日表。
+- 部署机回报（前提零 PASS：HEAD=`claude/fix-uspto-json-download`，`fa134dc`，工作区干净）：
+  A 段=任务已建 `\ERP-ALL USPTO Daily`、`Enabled`、Daily 18:00、**准点触发**、`Next Run Time`
+  正常滚次日，但 **`Last Result=10`**；B 段=日志仅两行，`ERROR: local secret file missing`，
+  链路在调下载前退出；C 段=跳过（无新 completed）。**调度机制本身被证明可用，不需补建任务。**
+- **根因链（已核源码坐实）**：`etl_trademarks.py:24`
+  `DB_CONFIG = _parse_db_conn(os.environ["DB_CONN"])` 是**模块级无默认值**，而
+  `daily_update.py` 顶部 `import etl_trademarks`——缺 `DB_CONN` 即**在 import 阶段 KeyError**。
+  仓内**无任何 dotenv 加载**，`.env` 不会被 Python 自动读，必须由 `.bat` 读密钥文件再 `set`。
+  `.bat` 的前置检查（缺文件 → exit 10）**是正确设计**，挡在 KeyError 之前，不要当 bug 改。
+- **这台部署机一次都没成功跑过**：`etl_progress` 最新 completed 是 `apc260711.zip`，
+  `completed_at` 2026-07-12 22:03 UTC——那是迁入前 Owner Mac 的历史记录随 dump 带来的。
+  故积压约 13 个日增量。首跑注意 `CIRCUIT_BREAK_AFTER=3`（连续 3 失败熔断本轮），
+  **积压首跑只补一部分属设计内行为不算 FAIL**，余量次日续取。
+- **两条比 secret 更要紧的发现**：
+  ① **`Logon Mode: Interactive only`** —— 只有该账号登录态才触发。07-25 能跑是因当时
+  Administrator 在登录，属侥幸非保障；**与验收① 要证的「无人值守」直接冲突**，某天没人登录
+  该验收日即作废。两条路：常驻登录（写进运维约束）或 `/RU /RP` 存储凭据；
+  **不可改 SYSTEM**——链路第 3-4 步要 `docker compose cp/exec`，Docker Desktop 按用户会话跑。
+  ② **`D:\erp-staging-backup\automation\uspto-daily.bat` 未纳入任何版本管理**（ERP-ALL 与
+  walmart-trademark-sync 两仓都没有）。它是整条链的编排定义（链路第 1-4 步全在里面），
+  却只存在于那一台机器上——机器一坏链路定义即失传。且讽刺的是它放在 `erp-staging-backup`
+  目录下，自己却没被备份。已在 runbook 标注应纳入 `infra/local-deploy/automation/`。
+- **PR #1（两跳下载修复）的「首跑绿」至今未被验证**——本次失败发生在下载之前，两跳代码
+  一行没执行到。合并前置条件未解除。
+- 顺手修两处我方文档失真：①三日连测协议里 `etl_progress` 的核验 SQL 用了不存在的
+  `updated_at` 列（实际只有 `started_at`/`completed_at`，部署机自行用 COALESCE 等价替代
+  才跑通）——已改正并注明 schema 出处；②runbook 一次性迁入第 3 步只写「设环境变量」，
+  没说明**必须由 .bat 显式 set**、也没说 `.env` 不被自动读——已补全，并给 `Last Result` 常见值
+  对照（0 成功 / 10 密钥文件缺失 / 267011 从未运行）。

@@ -193,10 +193,26 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
 2. **同步链代码**：`git clone https://github.com/ElijahRRR/walmart-trademark-sync D:\walmart-trademark-sync`
    → `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`。
 3. **连接配置**：环境变量 `DB_CONN="dbname=uspto user=postgres password=<pw> host=127.0.0.1 port=5433"`
-   （空格分隔 kv 格式，密码只落本机，不入仓不进对话）。
+   （空格分隔 kv 格式**非 URI**，密码只落本机，不入仓不进对话）。
+   ⚠ **必须是进程环境变量，且必须由 `.bat` 显式 `set`**——`etl_trademarks.py:24` 是
+   `DB_CONFIG = _parse_db_conn(os.environ["DB_CONN"])`，**模块级、无默认值**，而
+   `daily_update.py` 顶部就 `import etl_trademarks`，所以缺该变量时**在 import 阶段直接
+   KeyError**。仓内**没有任何 dotenv 加载**，放一个 `.env` 在仓根 Python 也不会读
+   （`.env.example` 只是键名模板：`DB_CONN` 是本链唯一必需，`LARK_*` 三个仅飞书同步脚本用）。
+   本链唯一必需的就是 `DB_CONN`。
 4. **挂定时**：Windows 任务计划每日一次（建议 18:00 本地）跑
    `D:\walmart-trademark-sync\.venv\Scripts\python.exe D:\walmart-trademark-sync\daily_update.py`
    ＋随后执行下方「日常链路」第 2-4 步（可合入同一 .bat）。
+   - **.bat 前置检查**：调 Python 前先验密钥文件存在，缺则 `echo ERROR: local secret file missing`
+     + `exit /b 10`（干净退出码优于 KeyError traceback）。`Last Result=10` 即此情形。
+   - ⚠ **`Logon Mode` 必须能在无人登录时触发**。`schtasks /query /v` 若显示
+     `Interactive only`，则**只有该账号处于登录态才会跑**——这与「无人值守」直接冲突，
+     会让某天没人登录的验收日直接作废。两条路：①该账号常驻登录（锁屏即可，须写进运维约束、
+     重启后要重新登录）；②`/RU <user> /RP <password>` 存储凭据（Logon Mode 变
+     `Interactive/Background`）。**不要改成 `SYSTEM`**——日常链路第 3-4 步要
+     `docker compose cp/exec`，Docker Desktop 按用户会话跑，SYSTEM 下通常不可用。
+   - ⚠ **这个 `.bat` 是整条链的编排定义，必须纳入版本管理**（见
+     `infra/local-deploy/automation/`），否则它只存在于那一台机器上，机器一坏链路定义即失传。
 
 ### 日常链路（部署机每日自动）
 
