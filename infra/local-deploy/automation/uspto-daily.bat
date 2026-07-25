@@ -1,26 +1,29 @@
 @echo off
 rem ============================================================================
-rem USPTO 商标供给链日常编排（R2-12 增量3，D-Q65① 方案 A）
+rem USPTO trademark supply chain - daily orchestration (R2-12 / D-Q65 option A)
 rem
-rem 由部署机 Windows 任务计划每日 18:00 调用，串起 runbook「USPTO 商标供给链 ·
-rem 日常链路」第 1-4 步：daily_update → delta 导出 → 拷入 api 容器导入 → 对账。
+rem Invoked by Windows Task Scheduler at 18:00 daily. Runs runbook section
+rem "USPTO trademark supply chain / daily flow" steps 1-4:
+rem   daily_update -> delta export -> copy into api container + import -> reconcile
 rem
-rem 【本文件必须 CRLF】仓根 .gitattributes 已声明 `*.bat text eol=crlf` 强制检出。
-rem   实证（2026-07-25）：本文件曾为 LF-only，cmd.exe 逐行吞掉前缀——
-rem   `set "SECRET_FILE=..."` 被截成 `RET_FILE...` 从而变量从未赋值，
-rem   `if not exist ""` 恒真 → 误报 secret 缺失 exit 10，白丢一个验收日。
+rem HARD RULES FOR THIS FILE (both were violated once and cost an acceptance day):
+rem   1. CRLF ONLY. Repo .gitattributes pins "*.bat text eol=crlf". A LF-only
+rem      .bat makes cmd.exe eat the prefix of every line, so
+rem      set "SECRET_FILE=..." silently never runs and "if not exist" sees an
+rem      empty path -> false "secret file missing" + exit 10.
+rem   2. ASCII ONLY. This file is stored UTF-8 but cmd.exe reads it as the OEM
+rem      codepage, so any non-ASCII path turns into mojibake and stops existing.
+rem      Machine-specific paths belong in SECRET_FILE (key ERP_COMPOSE), never here.
 rem
-rem 【本文件必须纯 ASCII】机器相关的中文路径一律走 SECRET_FILE 的 ERP_COMPOSE 键，
-rem   不要写进本文件。实证：硬编码的 `D:\项目文件\...` 在本文件里存成 UTF-8、
-rem   被 cmd 按 GBK 读 → `D:\椤圭洰鏂囦欢\...`，路径不存在。
+rem See ./README.md for the full Chinese notes, field history and self-checks.
 rem
-rem 退出码：
-rem   0  成功
-rem   10 SECRET_FILE 不存在
-rem   11 SECRET_FILE 缺 POSTGRES_PASSWORD 键
-rem   12 SECRET_FILE 缺 ERP_COMPOSE 键，或该 compose 文件不存在
-rem   20 delta 导出失败      21 拷入容器失败      22 ERP 导入失败
-rem   其他 = 被调用命令的原始返回码
+rem Exit codes:
+rem   0  ok
+rem   10 SECRET_FILE not found
+rem   11 SECRET_FILE has no POSTGRES_PASSWORD key
+rem   12 SECRET_FILE has no ERP_COMPOSE key, or that compose file is missing
+rem   20 delta export failed   21 copy into container failed   22 ERP import failed
+rem   otherwise = raw return code of the failing command
 rem ============================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
@@ -31,8 +34,8 @@ set "SECRET_FILE=D:\erp-staging-backup\uspto-db.env"
 set "OUT_DIR=%SYNC_DIR%\out"
 set "LOG_DIR=D:\erp-staging-backup\logs"
 
-rem RUN_ID 同时作为日志时间戳——不要用 %date% %time%，中文区域名在 chcp 65001 下
-rem 会写成乱码（实证：`[鍛ㄦ棩 2026/07/26 0:59:35]`）。
+rem RUN_ID doubles as the log timestamp. Do NOT use %date% %time%: on a
+rem Chinese locale the weekday name renders as mojibake under chcp 65001.
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "RUN_ID=%%I"
 set "LOG=%LOG_DIR%\uspto-daily-%RUN_ID%.log"
 set "BEFORE_FILE=%TEMP%\uspto-completed-before-%RUN_ID%.txt"
@@ -49,11 +52,12 @@ if not exist "%SECRET_FILE%" (
   exit /b 10
 )
 
-rem SECRET_FILE 为 KEY=VALUE 文本，值一律不落日志。
-rem   POSTGRES_PASSWORD = uspto-db 的 postgres 口令
-rem   ERP_COMPOSE       = ERP-ALL 的 docker-compose.yml 绝对路径。**务必填 8.3 短路径**
-rem                       （`for %%I in ("<长路径>") do @echo %%~sI` 取），纯 ASCII，
-rem                       免疫任何代码页问题。
+rem SECRET_FILE is plain KEY=VALUE text. Values are never logged.
+rem   POSTGRES_PASSWORD = postgres password of the uspto-db container
+rem   ERP_COMPOSE       = absolute path of ERP-ALL docker-compose.yml.
+rem                       MUST be the 8.3 short path (get it with:
+rem                       for %%I in ("<long path>") do @echo %%~sI) so the
+rem                       value stays pure ASCII and codepage-proof.
 set "PGPASSWORD_LOCAL="
 set "ERP_COMPOSE="
 for /f "usebackq tokens=1,* delims==" %%A in ("%SECRET_FILE%") do (
@@ -142,9 +146,10 @@ if errorlevel 1 (
   endlocal & exit /b 21
 )
 
-rem 首跑不加 --resume：manifest 不存在时 bulk_import_trademark 会硬失败
-rem （tools/bulk_import_trademark.py:145 raise）。--resume 仅用于中断续跑，
-rem 且须同文件 sha256 + 同 batch_size。本链每个 delta 只导一次，故永不加。
+rem Never pass --resume here: bulk_import_trademark hard-fails when the
+rem manifest is absent (tools/bulk_import_trademark.py:145). --resume is only
+rem for resuming an interrupted run and needs the same sha256 + batch_size.
+rem This chain imports each delta exactly once.
 docker compose -f "%COMPOSE%" exec -T api python -m erp.tools.bulk_import_trademark --file "/tmp/!DELTA_NAME!" >>"%LOG%" 2>&1
 if errorlevel 1 (
   echo ERROR: ERP import failed for !SOURCE_FILE!>>"%LOG%"
@@ -152,7 +157,8 @@ if errorlevel 1 (
 )
 
 docker compose -f "%COMPOSE%" exec -T api rm -f "/tmp/!DELTA_NAME!" >>"%LOG%" 2>&1
-rem delta 保留 14 天供事后核对（原实现导完即删，出账对不上时无源可查）
+rem Keep deltas 14 days for post-hoc checks (the original deleted them
+rem immediately, leaving no source to audit when counts disagreed).
 forfiles /p "%OUT_DIR%" /m "delta-*.csv" /d -14 /c "cmd /c del /q @path" >nul 2>&1
 echo [IMPORT] completed !SOURCE_FILE!>>"%LOG%"
 endlocal & exit /b 0
