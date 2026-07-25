@@ -359,8 +359,8 @@
    "backend/tests/db/test_blacklist_assertion.py"
   ],
   "acceptance": "在blacklist_brand真实跑通：同品牌manual+TRO+trademark三源断言；撤销一源不误删仍有效证据的品牌；人工裁决覆盖+完整回滚；canonical可由assertion全量重建且一致（评审R2-03硬验收：不得只交付空框架）",
-  "finding": "B5① 四条硬验收（三源并存/撤销一源/人工裁决压自动源可回滚/canonical 全量重建幂等）已在 blacklist_brand 测试跑通（非空框架）；存量回填+导入改造完成（增量1 已并 main，真机 0035 回填四域全等）。增量2：TRO 源真实接入（tro 导入域→tro_sync 断言→L2 命中复现测试）+ revoke_by_source_ref 批撤通道。余：TRO 真实数据真机验证",
-  "last_checked_at": "2026-07-23"
+  "finding": "B5① 四条硬验收（三源并存/撤销一源/人工裁决压自动源可回滚/canonical 全量重建幂等）已在 blacklist_brand 测试跑通（非空框架）；存量回填+导入改造完成（增量1 已并 main，真机 0035 回填四域全等）。增量2：TRO 源真实接入（tro 导入域→tro_sync 断言→L2 命中复现测试）+ revoke_by_source_ref 批撤通道。增量3（USPTO 链）+ 增量4/4b（全店对账+报错回收+end_date_renewal 通道）均已并 main 真机验证。**增量5（合规中心页，收口验收⑤）完码 CI 绿**：契约新增 Compliance 端点组（GET /blacklist canonical+/blacklist/trace 断言追溯+/blacklist/pending 候选闸+POST assertions 登记/decide 裁决/revoke 撤销+GET /trademarks trgm+nice+GET /tro-cases+GET /import-jobs/{id}/error-report）；修 import-jobs 权限码契约 catalog.import_*→compliance.import_*+归 Compliance tag（此前契约误标，与路由/0010 种子不符，一并归正）；CompliancePage 四 Tab（黑名单账本/商标库/TRO/导入作业）照 ListingsPage 骨架+路由/菜单/权限三处接线+对账可见性（导入报错报告 Drawer 透出 verify.sample_errors）；schema.d.ts codegen 重生成（响应类型全 codegen，零手写 interface）。测试 test_compliance_api 9 项（断言登记+追溯+allow 压 block+候选裁决+撤销余源仍拉黑+trgm/nice/live+TRO 过滤+报错报告+403 门控）。CI：pytest 501 passed+ruff/format/mypy strict 干净+前端 eslint/tsc/vite build 绿。**上传 HTTP 端点按 router CLI-only 铁律不实现（大文件不经 HTTP、全局数据需超管 system_tx）——人工单主体走 manual 断言写入，契约移除幻影 POST 声明**。待：分支验证（部署机）→ Owner 授权合并 → R2-12 整单收账（验收①三日连测 USPTO 链自 07-25 首跑起算）",
+  "last_checked_at": "2026-07-25"
  },
  {
   "id": "RS-05",

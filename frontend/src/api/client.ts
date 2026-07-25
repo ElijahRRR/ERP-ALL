@@ -9,6 +9,14 @@ export type Role = Schemas['Role']
 export type Permission = Schemas['Permission']
 export type Team = Schemas['Team']
 export type AuditLog = Schemas['AuditLog']
+// R2-12 增量5 合规中心（契约 codegen 类型，禁页面手写响应 interface——008§2）
+export type BlacklistEntry = Schemas['BlacklistEntry']
+export type BlacklistAssertion = Schemas['BlacklistAssertion']
+export type AssertionResult = Schemas['AssertionResult']
+export type Trademark = Schemas['Trademark']
+export type TroCase = Schemas['TroCase']
+export type ImportJob = Schemas['ImportJob']
+export type ImportErrorReport = Schemas['ImportErrorReport']
 export type PageOf<T> = { items: T[]; total: number; page: number; size: number }
 
 // ACCESS_KEY 导出给 AuthContext 监听跨标签页 token 变更（storage 事件按 key 过滤）

@@ -847,3 +847,34 @@
 - CI：pytest 492 passed + ruff + mypy strict 全绿；0038 up/down 实测。
 - 待：分支验证（0038 + 造 degraded listing + run_task maintenance_run kinds=[end_date_renewal]
   dry-run 看命令+状态；或真店 live_test MP_MAINTENANCE dry-run 证据）→ 合并。
+
+## 2026-07-25 R2-12 增量5（合规中心页，收口验收⑤）——完码 CI 绿
+
+- 分支自 origin/main（83866c7，#34 增量4b 已并）重建 claude/r2-03-launch-leg5n8 开工。
+- **契约（002 openapi-v0.yaml）**：新增 Compliance 端点组——GET /blacklist（canonical 有效项
+  按域）、GET /blacklist/trace（断言追溯，任意状态含撤销留行）、GET /blacklist/pending（候选闸
+  队列 D-Q65②）、POST /blacklist/assertions（人工登记 source=manual，block/allow）、POST
+  …/{id}/decide（裁决 pending→active/revoked）、…/{id}/revoke（撤销留行余源重投影）、GET
+  /trademarks（mark_norm trgm 模糊+Nice 类+LIVE 过滤）、GET /tro-cases（案号/原告/品牌词 q+状态）、
+  GET /import-jobs/{id}/error-report（verify.sample_errors 逐行透出）。新增 schemas（BlacklistEntry
+  /Assertion/AssertionResult/Trademark/TroCase/ImportErrorReport +Page）。
+- **修 import-jobs 权限码**：契约此前误标 catalog.import_*/Catalog tag——与路由（compliance.import_read）
+  及 0010 种子（compliance.import_read/admin）不符，一并归正为 compliance.import_*/Compliance tag。
+  **移除幻影 POST /import-jobs（multipart 上传）契约声明**：导入执行走 CLI（部署机读本地文件，
+  大文件不经 HTTP、全局数据需超管 system_tx——router 铁律），HTTP 上传不实现；人工单主体走
+  manual 断言写入（正确粒度），bulk 走 CLI。
+- **后端**：compliance/router.py 加 8 端点，写侧全走 erp.compliance.assertion 服务（canonical 由
+  投影维护），AuditWriter 留痕；SQL 表/列插值取自受控 TABLE_BY_DOMAIN（非用户注入）；not-found
+  沿用 BusinessError 默认 422。
+- **前端**：CompliancePage 四 Tab（黑名单账本/商标库/TRO 案件/导入作业）照 ListingsPage 骨架，
+  拆 pages/compliance/ 四子组件（008§1 >400 行拆分）；三态+服务端分页齐全；类型全 codegen
+  （schema.d.ts 重生成，关键响应字段补 required 使类型非可选，零手写 interface——清 008§2 债）；
+  对账可见性（导入报错报告 Drawer 透出逐块核对+报错样本）；路由/菜单/权限三处接线（菜单
+  compliance.blacklist_read 门控，Tab 各按权限点，写按钮 compliance.blacklist_write 门控）。
+- **测试** test_compliance_api 9 项：断言登记→canonical active+追溯见 manual / allow 压 block→
+  removed / 候选裁决 approve→active·reject→revoked / 撤销 manual 余 import 仍拉黑（B5① 语义经
+  HTTP 复现）/ trgm+nice+live / TRO q+status / 报错报告 sample_errors / 无权 403。
+- **CI**：backend pytest 501 passed（+9）+ ruff check/format + mypy strict 干净；frontend
+  eslint + tsc -b + vite build 全绿；pnpm gen:api 产物同 PR。无迁移（纯读+写走既有表）。
+- 待：分支验证（部署机：登录合规超管→黑名单登记/追溯/撤销走通、商标 trgm 查询命中、
+  导入报错报告可拉）→ Owner 授权合并 → **R2-12 整单收账**（验收①三日连测 USPTO 链自 07-25 起算）。
