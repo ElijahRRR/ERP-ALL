@@ -878,3 +878,23 @@
   eslint + tsc -b + vite build 全绿；pnpm gen:api 产物同 PR。无迁移（纯读+写走既有表）。
 - 待：分支验证（部署机：登录合规超管→黑名单登记/追溯/撤销走通、商标 trgm 查询命中、
   导入报错报告可拉）→ Owner 授权合并 → **R2-12 整单收账**（验收①三日连测 USPTO 链自 07-25 起算）。
+
+### 2026-07-25 增量5 补丁：黑名单「按主体追溯」入口（部署机验收暴露的 UX 缺口）
+
+- **部署机分支验证四项全 PASS**（HEAD b0d335d，Alembic 0038 head）：黑名单账本
+  block→allow 压制→revoke 恢复；商标库 nike+仅LIVE 208 条 nice_classes 208/208；导入报错
+  Drawer（job#18 total=1/ok=0/err=1，逐块核对+报错样本）；无 compliance.* 账号 /compliance
+  拦截 + /api/v1/trademarks HTTP 403。6 张截图证据已挂 PR #35 评论。
+- **验收暴露的缺口**（非数据正确性 bug，是操作够不到）：行内「追溯」按钮只挂在生效名单行上，
+  而 allow 一旦压制某主体，canonical 即 0 行 → 没有行可点 → 打不开追溯抽屉 → 够不到抽屉内的
+  「撤销」按钮。故部署机第 3 步只能退回走 /blacklist/assertions/{id}/revoke API 撤销 allow。
+  后端闭环本就是通的（撤销留行+余源重投影语义已由测试与真机双证），缺的只是前端入口。
+- **修复**：BlacklistTab 工具栏加 Input.Search「按主体追溯」，复用既有 showTrace + 追溯抽屉 +
+  抽屉内撤销按钮，不依赖列表命中；两种 mode 下均可用。**零后端/契约/迁移改动**（纯前端）。
+- **归一化不在前端做**（008§3.4 业务规则零前端）：/blacklist/trace 为 subject_norm 精确匹配，
+  且 subject_norm 由调用方供给（assertion.py 无归一化函数）——故沿用 RecordModal 既有措辞，
+  placeholder 提示「归一化，如 nike」，不在前端复制归一化规则。已知限制：主体需按归一形式录入
+  （canonical 列表的 q 是 ILIKE 模糊，但只覆盖 active 行，够不到被压制主体）。
+- **CI**：frontend eslint + tsc -b + vite build 全绿（后端零改动）。
+- 待：部署机只需重验一条路径「allow 生效 → UI 内按主体追溯 → 抽屉内撤销 → canonical 恢复拉黑」，
+  其余三项验收不受影响（无需重做）→ Owner 授权合并 → R2-12 整单收账。

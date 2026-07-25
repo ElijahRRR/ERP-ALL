@@ -145,6 +145,18 @@ export default function BlacklistTab() {
             }}
           />
         )}
+        {/* 按主体直查追溯：allow 压制后该主体从生效名单消失（0 行），行内「追溯」入口
+            随之消失 → 解白名单/撤 allow 在 UI 内够不到。此入口不依赖列表命中。 */}
+        <Input.Search
+          allowClear
+          enterButton="追溯"
+          placeholder="按主体追溯（归一化，如 nike）"
+          style={{ width: 260 }}
+          onSearch={(v) => {
+            const s = v.trim()
+            if (s) void showTrace(s)
+          }}
+        />
         {canWrite && (
           <Button type="primary" onClick={() => setRecordOpen(true)}>
             登记断言
