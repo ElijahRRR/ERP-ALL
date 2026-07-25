@@ -1051,3 +1051,33 @@
   容器内 PG 监听 5432，5433 是宿主机映射，部署机已指出并改用宿主机自检。协议文档已注明。
 - **07-26 18:00 那跑当前不具备成功条件**（部署机判定，同意）：bat LF + compose 路径乱码
   两条未修复前，仍会在下载前失败。修复后需重新取证。
+
+## 2026-07-26 第二次重跑仍 FAIL：findstr /x 对 Docker 裸 LF 输出误判（bat 静态过一遍）
+
+- 部署机第 1-4 步全过：从仓 `git checkout` 取修复版 bat（`.gitattributes` 生效，
+  `i/lf w/crlf attr/` 确认过滤链正确）、字节校验 `CRLF=177 LoneLF=0 NonAscii=0`、
+  `ERP_COMPOSE` 短路径 `D:\5D7D~1\ERP-ALL\infra\DOCKER~1.YML` 追加且存在性 True、
+  copy 到任务路径后**源/目标 SHA-256 完全一致**。LF 与路径乱码两个坑确认解除。
+- **但第 5 步仍 FAIL**：`ERROR: uspto-db is not running`，而容器实际 `Up 36 hours`。
+  部署机取字节坐实：`docker inspect -f "{{.State.Running}}" uspto-db` 输出
+  `74 72 75 65 0A`＝`true`+**裸 LF**；`| findstr /i /x "true"` 退出 1（误判），
+  对照组 `echo true | findstr /i /x "true"` 退出 0（echo 出 CRLF）。
+  **`findstr /x` 整行精确匹配在 Windows 上匹配不上 LF-only 行。**
+- **这行是原 bat 就有的、我逐字照抄进版控没看出来**（此前 LF 问题让它根本没执行到，
+  属被掩盖的下一层 bug）。教训：这个 bat 每个潜伏 bug 都要花掉一个验收日
+  （每天只有一次调度窗口），必须静态过完而不是一天挖一个。
+- **故本轮把整个 bat 静态过了一遍，共修四处**：
+  ① `findstr /x` → 改 `for /f` 捕获后比较（`for /f` 对 CR 和 LF 都切分），
+     并把观测值写进报错，下次诊断不用再取字节；
+  ② **数字紧邻 `>>` 被当成文件描述符** —— 实证就在本轮日志末行
+     `USPTO daily chain failed rc=` 后为空：`rc=%RC%>>` 在 RC=1 时被解析成
+     `rc=` ＋ `1>>` 重定向，**恰好把最需要的错误码吃掉**；`!DAILY_RC!>>` 同病。
+     已把全部 **16 处** `echo → 日志` 统一改成 `(echo ...)>>"%LOG%"`；
+  ③ delta 行数统计的 PowerShell 里**嵌套单引号 + 未转义管道**（`'!DELTA!'` 会提前
+     终止 `for /f` 的 `'...'`，`|` 也需转义）——改走 `$env:DELTA_PATH` 且用
+     `@(...).Count` 去掉管道；
+  ④ bat 头部 HARD RULES 从 2 条扩到 4 条，README 同步补第 3/4 节含现场取证。
+- **PR #1 两跳修复仍未验证**（第三次未执行到下载代码）。三日连测第 1 日仍是 FAIL；
+  07-26 18:00 那跑在部署机取到新 bat 之前不具备成功条件。
+- 部署机纪律执行到位：发现版控 bat 有 bug 后**没有在机器上直接改**，而是回报等仓内修
+  ——符合铁律，值得保持。

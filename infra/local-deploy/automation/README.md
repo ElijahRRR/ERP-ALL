@@ -56,6 +56,39 @@ $s = [Text.Encoding]::ASCII.GetString($b)
 
 改完务必用上面两条自查确认 `LoneLF=0` 且非 ASCII 字节数为 0。
 
+### 3. 绝不把 Docker CLI 输出管道进 `findstr /x`
+
+**Docker CLI 的输出行尾是裸 LF**，而 `findstr /x`（整行精确匹配）在 Windows 上**匹配不上
+LF-only 的行**——于是一个健康运行的容器会被判成「没在跑」。
+
+2026-07-26 现场取证：
+
+```
+docker inspect -f "{{.State.Running}}" uspto-db   → BYTES=74 72 75 65 0A  即 true<LF>
+docker inspect ... | findstr /i /x "true"          → CMD_PIPE_EXIT=1   ← 误判
+echo true          | findstr /i /x "true"          → ECHO_PIPE_EXIT=0   ← 对照组（echo 出 CRLF）
+```
+
+正确写法是用 `for /f` 捕获后比较（`for /f` 对 CR 和 LF 都会切分）：
+
+```cmd
+set "USPTO_RUNNING="
+for /f "usebackq delims=" %%S in (`docker inspect -f "{{.State.Running}}" uspto-db 2^>^>"%LOG%"`) do set "USPTO_RUNNING=%%S"
+if /i not "!USPTO_RUNNING!"=="true" ( ... )
+```
+
+顺带把观测到的值写进报错——下次诊断一眼可见，不用再取字节。
+
+### 4. 日志追加一律写成 `(echo ...)>>"%LOG%"`
+
+不加括号时，**值末尾的数字会被 cmd 解析成重定向的文件描述符**。
+
+实证：`echo ... rc=%RC%>>"%LOG%"` 在 `RC=1` 时被解析为 `echo ... rc=` ＋ `1>>` 重定向，
+日志里留下 `USPTO daily chain failed rc=` ——**恰恰把最需要的那个错误码吃掉了**。
+`!DAILY_RC!>>` 同理。
+
+本目录的 bat 已把全部 16 处 `echo → 日志` 统一加上括号。新增日志行时照做。
+
 ## 密钥文件
 
 路径：`D:\erp-staging-backup\uspto-db.env`（机器本地，**不入仓**）。
