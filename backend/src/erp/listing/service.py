@@ -1447,7 +1447,8 @@ async def delist(
         listing = await _load_listing(session, listing_id)
         if listing["team_id"] != team_id:
             raise BusinessError("LISTING_NOT_FOUND", "listing 不存在")
-        if listing["status"] != "live":
+        # degraded 放行：对账发现渠道已 unpublished 的清理型下架（R2-12 增量4a runner）
+        if listing["status"] not in ("live", "degraded"):
             raise BusinessError("LISTING_STATE_INVALID", f"状态 {listing['status']} 不可下架")
         if not await channel_service.consume_quota(session, listing["store_id"], "listing_delete"):
             raise BusinessError("ERP_QUOTA_EXHAUSTED", "listing_delete 配额不足")

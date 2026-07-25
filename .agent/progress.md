@@ -809,3 +809,22 @@
   Task Scheduler）+ 日常四步（daily_update → source_file 切片 delta 导出 csv（不筛
   live，DEAD 翻转要同步）→ bulk_import_trademark → 对账）。
 - 待：部署机执行一次性迁入 + 首轮日增实测 → 验收① 三日连测起算。
+
+## 2026-07-24 PR #32 合并（增量3 入 main）+ USPTO 链运营态 + R2-12 增量4a 完码
+- PR #32 squash 合入 main 49994f6（Owner 授权）；分支重建。USPTO 链方案 A 落成：
+  部署机 uspto-db 常驻（14.19M 行）、daily_update 修复（两跳下载/已导入不回补/
+  熔断/USPTO_API_KEY 预留，walmart-trademark-sync PR #1 两提交待首跑绿后合并）、
+  计划任务每日 18:00（07-25 首跑，验收① 三日连测起算）。
+- 增量4a（D-Q65② 上游）：item_pull 全店对账 beat——GET /v3/items 逐态扫描
+  （显式 endpoint_key 60/min 桶 + offset 翻页 + 跨页去重），三类差异只发现不执行
+  （P0-2）：①后台有本地无→通知+sync_state 样例 ②漂移→degraded+13 类归类
+  （旧仓 feishu_sync 逐字保真）+维护任务分派（A→end_date_renewal，处置类→delist）
+  ③永久禁售六类→error_recycle pending 候选断言（asin 恒记+C/E 品牌，team 作用域）。
+- maintenance runner 最小档：SKIP LOCKED 认领 + delist 走既有三段式（service 守卫
+  扩 degraded 放行）；**默认人工档 kinds=[]**（D-Q13/29 三档，半自动需运营显式开）；
+  end_date_renewal 生成不认领（增量4b 接 MP_MAINTENANCE 通道）。
+- 0037 调度种子（item_pull 每日 09:00 UTC / maintenance_run 每小时人工档）up/down 实测；
+  runbook 新节「全店对账与报错回收」。
+- 测试 test_item_pull 5 项：归类保真/三类差异+幂等/J 特殊不动/runner 失败留痕/
+  未开档任务留队。CI：pytest 487 passed + ruff + mypy strict 全绿。
+- 待：分支验证（0037 + run_task item_pull 真店扫描 + 候选断言/维护任务核验）→ 合并。
