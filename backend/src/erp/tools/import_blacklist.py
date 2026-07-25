@@ -1,8 +1,10 @@
 """黑名单导入 CLI（R2-02；部署机 api 容器内执行，读本地文件灌入 app.blacklist_*）。
 
-用法：
+用法（api 容器无 volume 挂载，先 cp 进 /tmp 再 exec；运维全流程见
+infra/local-deploy/README.md「黑名单 / TRO bulk 导入」）：
+  docker compose -f infra/docker-compose.yml cp ./brands.csv api:/tmp/
   docker compose -f infra/docker-compose.yml exec api \\
-    python -m erp.tools.import_blacklist --domain blacklist_brand --file /data/brands.csv
+    python -m erp.tools.import_blacklist --domain blacklist_brand --file /tmp/brands.csv
 
 文件格式（按扩展名识别 csv/xlsx/jsonl）；列名任一即可（大小写敏感按下表）：
   blacklist_brand    → brand[, brand_display, reason]

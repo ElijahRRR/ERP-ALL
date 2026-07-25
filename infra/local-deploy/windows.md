@@ -88,6 +88,12 @@ docker compose -f infra/docker-compose.yml exec -e ERP_BOOTSTRAP_PASSWORD="$PW" 
   HMR + bind-mount 的固有病（HF-0716①/FE-0716 两起同源）。INFRA-0716 已根治：
   生产 frontend 改为构建产物 + nginx（index.html 不缓存、hashed 资产不可变），
   升级 = `docker compose -f infra/docker-compose.yml up -d --build frontend`。
+- **`up -d --build frontend` 会连带拉起 api/migrate**（不是异常）：compose 里
+  `frontend depends_on api`，api 又 `depends_on db + migrate(service_completed_successfully)`，
+  所以纯前端升级也会带着后端链走一遍。无新迁移时 migrate 就是 Exited(0)、
+  Alembic 停在原 head，属正常；**不要**因此以为动了库。想只换前端镜像不触依赖链：
+  `docker compose -f infra/docker-compose.yml up -d --build --no-deps frontend`
+  （前提：api 已在跑）。实证：PR #35 补丁部署（2026-07-25），Alembic 仍 0038 head。
 
 ## 注意
 

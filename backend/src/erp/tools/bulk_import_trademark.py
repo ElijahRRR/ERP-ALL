@@ -11,9 +11,10 @@
     显式列优先，否则查 tm_status_code 字典——bulk 预载成内存 dict）；
   - merge 触发 0014 统计触发器 → dataset_revision('trademark') 事务内递增。
 
-用法（api 容器内）：
-  python -m erp.tools.bulk_import_trademark --file /data/trademarks.csv
-  python -m erp.tools.bulk_import_trademark --file /data/trademarks.csv --resume
+用法（api 容器无 volume 挂载，先 `docker compose cp <文件> api:/tmp/` 再 exec；
+日常链路见 infra/local-deploy/README.md「USPTO 商标供给链」）：
+  python -m erp.tools.bulk_import_trademark --file /tmp/trademarks.csv
+  python -m erp.tools.bulk_import_trademark --file /tmp/trademarks.csv --resume
 """
 
 import argparse

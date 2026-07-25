@@ -619,7 +619,7 @@
   ],
   "gate": "RS-04D 断言账本先行或同窗（blacklist 写路径）；07c 邮件钩子后置不阻塞",
   "acceptance": "①连续3个USPTO日度增量自动入库且与etl_progress对账一致、审核检索可见新商标；②真实TRO采集→tro_case→品牌断言→L2命中复现；③全店拉取对账在A152跑通(后台有本地无/状态漂移/错误SKU三类均可发现);真实永久禁售报错→黑名单候选→人工确认落库全程可追溯；④合规页四黑名单管理/商标查询/import_job全流程走通",
-  "finding": "增量1-4a 已并 main 真机验证；增量4b（end_date_renewal 执行通道）完码待分支验证——renew_end_date 提交 MP_MAINTENANCE feed 延 endDate 让 A 过期类 republish（item_maintenance 命令镜像 item_retire、200 即成 degraded→live），maintenance runner 认领两类（delist/end_date_renewal，默认人工档）。P0-2 两种 runner 通道全接通。余：增量5 合规中心页；观察项 listing 补挂缺口/USPTO 验收①三日连测。",
-  "last_checked_at": "2026-07-24"
+  "finding": "增量1-5 全部并入 main（增量5 = PR #35 squash 73b8c19，2026-07-25 Owner 授权）。部署机两段分支验证全 PASS：b0d335d 四项（黑名单账本 block→allow 压制→revoke 恢复 / 商标库 nike+仅LIVE 208 条 nice_classes 208/208 / 导入报错 Drawer job#18 total=1 ok=0 err=1 逐块核对+报错样本 / 无 compliance.* 账号 /compliance 拦截 + /api/v1/trademarks 403），6 图；补丁 9fc9711 补验路径（allow 压制 canonical 归 0 行时 UI 内「按主体追溯」→ 抽屉内撤销 → canonical 恢复拉黑，全程未调 API 未直改库），2 图。补丁成因=行内追溯入口只挂生效名单行，投影归零即够不到账本（已由审计侧泛化进 008§6，main 4a472d3，列为 R2-08 建域预检项）。Owner 2026-07-25 认现方案：**bulk 导入只走 CLI，不实现 HTTP 上传端点**；已补 runbook「黑名单 / TRO bulk 导入（CLI 唯一入口）」四段（灌数据/核对/纠错/对账口径）。**验收① 未完**：USPTO 三日连测自 07-25 起算，第 1 日核验指令已交部署机尚未回报，07-26 / 07-27 两日待核；验收②③④ 已由前序增量真机复现。整单收账待验收① 三日齐绿。",
+  "last_checked_at": "2026-07-25"
  }
 ]

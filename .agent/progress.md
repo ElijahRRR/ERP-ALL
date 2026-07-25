@@ -898,3 +898,38 @@
 - **CI**：frontend eslint + tsc -b + vite build 全绿（后端零改动）。
 - 待：部署机只需重验一条路径「allow 生效 → UI 内按主体追溯 → 抽屉内撤销 → canonical 恢复拉黑」，
   其余三项验收不受影响（无需重做）→ Owner 授权合并 → R2-12 整单收账。
+
+## 2026-07-25 PR #35 合并（增量5 入 main）+ bulk 导入运维路径落笔
+
+- **PR #35 squash 合入 main `73b8c19`**（Owner 授权）；分支自 origin/main 重建。
+  部署机两段分支验证全 PASS：`b0d335d` 四项（黑名单账本 block→allow 压制→revoke 恢复 /
+  商标库 nike+仅LIVE 208 条 nice_classes 208/208 / 导入报错 Drawer job#18 total=1 ok=0
+  err=1 逐块核对+报错样本 / 无 compliance.* 账号 /compliance 拦截 + /api/v1/trademarks
+  403），6 图；补丁 `9fc9711` 补验路径（allow 压制 canonical 归 0 行时，UI 内「按主体
+  追溯」→ 抽屉内撤销 → canonical 恢复拉黑 1 行，全程未调 API 未直改库），2 图。
+- **008§6 已由审计工作区落笔**（main `4a472d3`，非本会话）：「账本/投影类域必须有不依赖
+  投影命中的独立账本入口」，引 PR #35 补丁为实证并列为 R2-08 建域预检项——本会话不重复写。
+- **Owner 2026-07-25 认现方案：bulk 导入只走 CLI，不实现 HTTP 上传端点**（PR #35 body
+  标注的设计取舍就此定案）。据此补 runbook 新节「黑名单 / TRO bulk 导入（CLI 唯一入口 ·
+  #35 合并后的日常运维路径）」四段：①灌数据（七域必需/可选列名表 + cp 进 /tmp + 幂等
+  skip + TRO 域特例：恒全局、brand_terms 格式、dismissed/settled 撤销该案断言）②核对
+  （合规中心导入作业 Tab 看 total/ok/err + 报错报告 Drawer 逐块核对与样本，不再查库）
+  ③纠错（按主体追溯撤那条 import 断言，余源仍在则保持拉黑=多源并存语义；要压全部自动源
+  用 manual allow；禁直改 blacklist_* 表——canonical 由断言投影维护，直改即失同步）
+  ④对账口径（**canonical 生效面 ≠ job 的 ok 数**，差值来自 allow 压制/多源合并/占位符跳过，
+  查条数以账本为准不要用 ok 数反推）。分工定死：单主体走页面「登记断言」，bulk 走 CLI。
+- 顺手清三处文档失真（都是本次运维路径落笔时对出来的）：
+  ①runbook「候选断言人工闸（合规页上线前用 SQL 审）」——增量5 已上线，改为走 UI
+  「候选待裁决」Tab 逐条通过/驳回，SQL 降为排障兜底；
+  ②`import_blacklist` / `bulk_import_trademark` docstring 的 `--file /data/...`——compose
+  给 api **没挂任何 volume**（无 /data），真实机制是 `docker compose cp <文件> api:/tmp/`
+  再 exec，已改正并互指 runbook；
+  ③`windows.md` 补注：`up -d --build frontend` 因 `frontend depends_on api → db+migrate`
+  会**连带拉起 api/migrate**，无新迁移时 migrate=Exited(0)、Alembic 停在原 head，属正常，
+  不要误判动了库；只换前端镜像用 `--no-deps`。实证=PR #35 补丁部署，Alembic 仍 0038 head。
+- **R2-12 状态**：增量1-5 全并 main；**整单未收账——卡验收①**。USPTO 三日连测自 07-25
+  起算：第 1 日（07-25 18:00+08 计划任务首跑）核验指令已交部署机、**尚未回报**；
+  07-26 / 07-27 两日待核。验收②（TRO→断言→L2 命中）③（全店对账三类差异 + 报错回收
+  候选可追溯）④（合规页四 Tab 全流程）已由前序增量真机复现。
+  另：walmart-trademark-sync PR #1（USPTO 两跳下载修复，`fa134dc`）待首跑绿后合并——
+  首跑核验须先确认部署机工作副本 HEAD 是该分支而非 main，否则跑的是旧代码。
