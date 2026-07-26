@@ -1654,3 +1654,42 @@ Owner 表单式逐条确认「决策按你建议的执行」，并批准墙钟�
   ＝动 `DECISION-FORM.md` 宪法，**需 Owner 批准**后由规划/审查 AI 落笔 ③NOT VALID→VALIDATE
   纪律入 `00-conventions`＝图纸，归规划/审查 AI ④001 财务域图纸修＝**已由审计侧 421f83d 完成，
   可核销**。
+
+### RS-11 门禁落地：契约四向一致性 CI 化，并被自身的反向不变量逼出一条无主欠账（2026-07-27，云端 AI）
+
+- 按探测报告 §6 落 `backend/tests/db/test_contract_permission_consistency.py`（7 条测试）：
+  **A/B/E 设硬断言**（探测已证 0 例外）；**C/D 设「带白名单的硬断言」**——白名单只冻结
+  2026-07-27 的既有状态，新增漂移一律红。路径按 `{anything}` → `{}` 归一化（契约用
+  camelCase、代码用 snake_case，不归一化满屏假阳性）。取路由仍走递归
+  `_IncludedRouter.original_router.routes` + 叠 `include_context.prefix`，并加
+  `assert len(out) > 50` 自检，防哪天 FastAPI 改内部结构后递归静默失效、门禁变成空跑。
+- **第一次跑就红，红在我自己写的那条反向不变量上**（`test_contract_ahead_entries_have_open_owner`：
+  C 类白名单每条的归属工单必须仍未收账）。我把 catalog 5 条 + listing 2 条分别挂在
+  R2-02 / R2-03 / R2-05 名下，而那三单已 accepted / done / accepted-l2-ship-deferred。
+- **查证后确认不是工单误关账，是我的归属判断错了**：三单的 `check` 分别是「审核弹药灌入」
+  「上架真实化」「订单履约最小闭环」，验收口径里从来没有这 7 个端点；`grep` 全仓零命中，
+  **也不是路径漂移**（一开始怀疑是端点建在别的前缀下，先排除了这个可能）。这 7 条是**无主欠账**。
+  故另立 **CT-0727** 认领，白名单改指本单。**7 条都是想要而未建、不是废声明**：编辑产品
+  （不可改 master_sku/source_ref）、货源录入（契约明写「confirmed 驱动 product→ready，
+  D-Q25/41」）、类目映射查询与人工修正、错误分类字典运营可维护（D-Q11）。
+  优先级与拆单口径待 Owner 立项时拍，本单只做登记、不预设范围。
+- **这 7 条正好消费 0039 补授 8 码里的 4 个**（catalog.product_write / category_write /
+  source_write、listing.error_admin）——权限已授、端点未建，属提前授权。合起来把
+  R2-08 考古阶段一「三码无角色可达」那个发现的两半都解释完了。
+- **门禁做了对抗性证伪**（新门禁没见过红＝未经检验）：伪造①加一个契约里没有的路由 →
+  D 红；伪造②把既有路由的权限码改成种子里没有的码 → A 与 E 同时红。B 未响应且**应当不响应**
+  ——B 是契约→种子方向，两处伪造都在代码侧。证伪后原样还原，`git status` 空。
+- 全量：532 passed / 1 skipped（基线 525，+7 为本门禁），ruff check + format 清、mypy（CI 口径
+  `uv run mypy`）0 issue。**注意 backend 的 CI 口径是裸 `uv run mypy`**（配置内限定 src）；
+  `mypy src tests` 是 workers job 的命令，在 backend 下跑会报 818 个既有 test 侧告警，
+  拿它当门禁会误判。
+- 副产物一条运维记录：临时 PG 簇重建后**只有 `erp_app`、没有 `erp_migrator` 角色**，
+  conftest 默认 DSN 连不上而 `ERP_REQUIRE_DB=1` 正确地硬失败（上午刚加的那条防 fail-open
+  今天第二次生效，这次是保护我自己）。本地跑法：migrator DSN 指 `postgres` 超级用户。
+- **顺带记一条门禁③ 自身的弱点**（我建的 evidence-gate，2026-07-27 发现）：跑一遍测试套件会
+  重新生成 `.agent/evidence/R1-11/dry-run-feed-snapshot.json`，diff 出 SKU 序号与 startDate
+  两行——请求**形态**没变，纯 churn。这意味着 evidence-gate 的「同 diff 内有 evidence 变更」
+  信号**可以被纯 churn 满足**：只要跑一遍测试就能过闸，并不保证真补了证据。目前 gate 是
+  `ADVISORY=1` 只告警，危害有限；清偿方向是让判据看**内容语义**而非文件是否变动（例如
+  dry-run 快照落库时把易变字段规范化，或改判「新增/修改的 evidence 文件里须含本次渠道写路径
+  的 feedType」）。本轮已把这次 churn 还原，不混进提交。

@@ -129,3 +129,13 @@
   infra/local-deploy/README.md「切回 main 前必做」节）作为长期 fail-closed 门保留，防将来
   又有只活在分支上的运维资产：三行不齐**不许切**。Owner 明示不必另拆 ops-only PR。
 - 本工作区环境：开发分支 claude/r2-03-launch-leg5n8（PR 按增量推），旧 erpAPI 仓挂载于 /home/user/erpAPI。
+- **CT-0727 新登记（2026-07-27，由 RS-11 门禁的反向不变量逼出）**：002 契约已声明但端点未建的
+  7 个 operation——catalog 5（`GET /category-map`、`PATCH /category-map/{mapId}`、
+  `PATCH /products/{productId}`、`GET`+`POST /products/{productId}/sources`）+ listing 2
+  （`GET /listing-errors`、`PATCH /listing-errors/{errorCode}`）。**7 条都是想要而未建、不是废
+  声明**，且正好消费 0039 补授 8 码里的 4 个（权限已授、端点未建＝提前授权）。**优先级与拆单
+  口径待 Owner 立项时拍**，本单只做登记不预设范围。门禁白名单已改指 CT-0727——本单一旦收账
+  而端点仍未建，反向不变量会再红（防「前置声明豁免」退化成永久豁免）。
+- **RS-11 子项① 已落地、本单不能关账**：契约四向一致性门禁已进 CI；子项② `superseded_by` 标注
+  与 D-Q→文档→工单追踪列**需 Owner 批准**（动 DECISION-FORM 宪法）后由规划/审查 AI 落笔；
+  子项③ NOT VALID→VALIDATE 纪律入 `00-conventions` 归规划/审查 AI；子项④ 已由审计侧 421f83d 核销。
