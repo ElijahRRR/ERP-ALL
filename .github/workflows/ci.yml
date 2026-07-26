@@ -45,6 +45,9 @@ jobs:
       ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/erp_all
       ERP_DATABASE_URL: postgresql+psycopg://erp_app:erp_app@localhost:5432/erp_all
       ERP_REDIS_URL: redis://localhost:6379/0
+      # 库不可达时 tests/db/conftest.py 默认静默跳过（本地开发方便）；CI 必须硬失败，
+      # 否则 postgres 服务起不来 / DSN 写错时近 400 个 DB 集成测试无声消失而 CI 照样绿。
+      ERP_REQUIRE_DB: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

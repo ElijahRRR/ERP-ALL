@@ -1508,3 +1508,55 @@ Owner 表单式逐条确认「决策按你建议的执行」，并批准墙钟�
 - **协作侧观察**：这是三 AI 分工写进 CLAUDE.md 后的第一次跨方协作，链路走通了——云端侧出批注
   → 规划审查侧核实源码后落笔 main → 云端侧 rebase 吸收。唯一摩擦是**双方同时改同一条台账**
   造成冲突；若后续频繁，可考虑把「裁定详情」与「落笔回执」分列两个字段，而非都追加进 finding。
+
+## 2026-07-27 R2-08 财务域考古（阶段一）：闸门早已解除 + 幂等自然键错位
+墙钟窗口开工（Owner 已批 R2-08 考古 + RS-11）。只读，未改实现代码，未立项。
+
+- **最要紧的一条：工单写的「硬前置：等图纸」早已解除，台账没跟上。** 图纸 `421f83d`
+  （2026-07-17）已按 immutable event ledger 修订完毕，**commit 标题就叫「§08 财务图纸
+  immutable event ledger 修订(D-Q56 C4)——R2-08 闸门解除」**，正文自注「R2-08 建域前生效」；
+  而 review_list 的 R2-08 停在 07-16 写着「开发等图纸」。**这与 PR #29 那类「解闸/关账不回写
+  review_list」同源**——今日已是本周第三例。已修条目并把日期推到 07-27。
+  注：台账门禁只校验结构、抓不到这类；「finding 声称的前置 vs specs 现状」需自然语言理解，
+  判据不可机械化，**不建议做成门禁**（做出来必然是脆的），只能靠例行核对兜。
+- **现状基线**：财务域**代码与表全仓为零**——`financial_event`/`ledger_entry`/`profit_ledger`/
+  `settlement` 在 `backend/src/` 与 0001~0039 全部迁移零命中，无 `erp/finance` 模块。纯新建、
+  无历史包袱（对照 R2-11 当初「图纸说列亦未建、实际 0007 已建全套 DDL」那种错位，此处不存在）。
+- **⚠️ 幂等自然键错位（阻塞增量2，需裁）**：图纸定
+  `source_ref = store:period:line_kind:order_no:sku:seq`，而渠道实际唯一标识是
+  `transaction_key` + `amount_type`（旧仓 `recon_details` 唯一键 = store/report_date/
+  transaction_key/amount_type）。图纸组成里 `line_kind` 是**我方归类不是渠道字段**、`seq` 渠道
+  无此概念、费用类行 `sku`/`order_no` 为空。照字面实现两头都出错**且都不报错**：归类规则一变
+  → 同一行算出不同 source_ref → **重拉二次过账（重复计收入）**；多条费用行拼出相同 source_ref
+  → **被幂等键静默吞掉（少计费用）**。建议 source_ref 直采渠道自然键
+  `store:report_date:transaction_key:amount_type`（与旧仓同构），`line_kind` 降为派生列、由
+  版本化规则映射、不参与幂等键——让幂等只依赖渠道给的事实，不依赖我方可变口径。
+- **渠道限额**：`payment/statement`=15/min（已列）；但旧仓实际用的 `reconFileJson` 与
+  `availableReconFiles` **未列入官方表**（同族 `reconFile`=100/min 可类推）。**与 MP_MAINTENANCE
+  同类风险**（R2-12 已踩过），处置口径应一致：类推值须在 `rate_limiter.py` 注明「非官方、真实
+  上限未知」+ 必须读 `x-current-token-count` / `X-Next-Replenishment-Time` 自适应退避。
+- **一个正好的验证机会**：现有 `permission` 表**无任何 finance 模块权限码**，R2-08 新增权限码时
+  会撞上 2026-07-26 刚上线的可达性门禁（新增即须授模板角色或声明超管专属，否则 CI 红）——
+  本单是该门禁上线后**第一个会撞上它的工单**，正好实地验证它有没有用。
+- 口径注记：D-Q56 原文说「R4/R5 建域前改图纸」而 007 排成 R2-08，图纸已按 R2-08 口径落笔，
+  实质已对齐，记下来免得将来有人拿原文质疑「财务域为何提前到 R2」。
+- 初判量级**接近 R2-12、明显小于 R2-09**，可拆 6 增量；**最该先裁的是那条 source_ref 组成**
+  ——它是增量2 的地基，且定错是破坏性的（已过账事件要全量重算），不能边做边改。
+- 阶段二待做见 archaeology.md §6（旧仓 820 行全文语义 / settlement_snapshots 字段映射表 /
+  旧 store_kpi_snapshots 与 payout_accounts（本轮 find 未命中，需在 erpAPI 与 T7 备份继续找）/
+  前端 pages-finance.jsx 形态 / 契约与权限点缺口）。
+
+### 同轮补两个基架缺陷（都是自己的门禁/测试基架抓出自己的）
+1. **台账门禁用错时区口径**。`test_agent_ledger.py` 首版用 `dt.date.today()`（容器本地＝UTC）判
+   「日期不得在未来」。北京时间 2026-07-27 写 R2-08 条目时立刻红了——UTC 还是 07-26。台账是人
+   在北京时区写的，判据必须同口径。已改为与 `channel/service.py::_business_date()` 同源的
+   Asia/Shanghai（`00-conventions §quota_usage` 早已把业务日定死为该时区）。
+2. **测试基架自身的 fail-open：库不可达时静默跳过整套 DB 测试**。`tests/db/conftest.py:41-42`
+   在 PG 不可达时 `pytest.skip(allow_module_level=True)`。本轮临时簇挂掉后实测：
+   `uv run pytest` 报 **「127 passed」**，与正常的「525 passed」**同样是绿的，肉眼分辨不出**——
+   近 400 个 DB 集成测试无声消失。CI 若遇 postgres 服务起不来 / DSN 写错，会以同样方式静默变绿。
+   修法：新增 `ERP_REQUIRE_DB=1` 环境开关，置位时把 skip 改为 `RuntimeError` 硬失败；
+   `ci.yml` backend job 已设该变量。本地开发无库时行为不变（仍跳过，方便）。
+   **已证伪**：库停 + 无开关 → 「127 passed」显示绿；库停 + 开关 → 硬错、退出码 2。
+   > 这条与今日其余几处同类——`maintenance.py` 的 kinds fallback、配额闸幻影 kind、
+   > evidence 门禁自命中——共同点都是**失败时表现为「看起来正常」**。

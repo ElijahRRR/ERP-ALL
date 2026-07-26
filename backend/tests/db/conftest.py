@@ -39,6 +39,15 @@ def _reachable(dsn: str) -> bool:
 
 
 if not _reachable(MIGRATOR_URL):
+    # 本地开发方便：无库时跳过。**但 CI 里必须硬失败**——否则 postgres 服务起不来 / DSN 写错时，
+    # 近 400 个 DB 集成测试会无声消失而 CI 照样绿。这是测试基架自身的 fail-open：
+    # 2026-07-27 本地实测撞到——簇挂掉后 `uv run pytest` 报「127 passed」，与正常的
+    # 「525 passed」同样是绿的，肉眼分辨不出。ci.yml 三个 job 均设 ERP_REQUIRE_DB=1。
+    if os.environ.get("ERP_REQUIRE_DB") == "1":
+        raise RuntimeError(
+            f"ERP_REQUIRE_DB=1 但 PostgreSQL 不可达：{_pg_dsn(MIGRATOR_URL)}。"
+            "CI 环境不允许静默跳过 DB 集成测试（跳过后仍显示绿，会掩盖整套测试未运行）。"
+        )
     pytest.skip("PostgreSQL 不可达，跳过 DB 集成测试", allow_module_level=True)
 
 

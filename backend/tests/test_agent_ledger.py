@@ -77,8 +77,18 @@ def test_status_values_known(entries: list[dict[str, Any]]) -> None:
     assert not bad, f"出现未登记的 status 取值（新增状态须先进 KNOWN_STATUS）：{bad}"
 
 
+def _business_today() -> dt.date:
+    """业务日按 Asia/Shanghai 口径，与 `channel/service.py::_business_date()` 同源。
+
+    首版误用 `dt.date.today()`（容器本地＝UTC），2026-07-27 北京时间写台账时立刻红了：
+    UTC 还是 07-26，于是把当天的条目判成「日期在未来」。台账是人在北京时区写的，
+    判据必须同口径——`00-conventions §quota_usage` 已把业务日定死为 Asia/Shanghai。
+    """
+    return (dt.datetime.now(dt.UTC) + dt.timedelta(hours=8)).date()
+
+
 def test_dates_valid_and_not_in_future(entries: list[dict[str, Any]]) -> None:
-    today = dt.date.today()
+    today = _business_today()
     problems: list[str] = []
     for e in entries:
         raw = e.get("last_checked_at")
