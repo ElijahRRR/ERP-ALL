@@ -46,10 +46,33 @@ BEFORE UPDATE/DELETE 触发器 RAISE——**订正只能追加冲销事件**（�
 | note | TEXT | NULL | 冲销/手工事件必填原因 |
 | created_by / created_at | | | 手工事件必填 created_by |
 
-**幂等协议**：`uq_financial_event (source_kind, source_ref, event_kind)`。
-`source_ref` 用**来源自然键**而非行 id——结算重拉产生新 snapshot 版本时，同一笔
-结算行（`store:period:line_kind:order_no:sku:seq`）不会二次过账；重拉后金额有出入
-→ 生成 `reversal`（冲原事件）+ 新事件，差异走 notification（不静默改）。
+**幂等协议（2026-07-26 修订，原键作废）**：
+
+| 项 | 定义 |
+|---|---|
+| 唯一约束 | `uq_financial_event (source_kind, source_ref, posting_seq)` |
+| `source_ref` | **渠道自身的行身份**，不含任何我方派生值。结算行=`{store_id}:{report_date}:{transaction_key}:{amount_type}` |
+| `posting_seq` | INT NOT NULL DEFAULT 1；同一渠道行的第 n 次过账，**仅当前次已被 reversal 冲销后**才允许递增重过 |
+
+> **原键 `store:period:line_kind:order_no:sku:seq` 作废**（本文 2026-07-17 初版的设计
+> 错误；开发侧 R2-08 考古阶段一指出，审计侧核实属实后修订）。两处致命且**静默**：
+> ① `line_kind` 是**我方归类**不是渠道字段——归类规则一改，同一笔渠道行的键就变，
+> 重拉即**二次过账（重复计收入）**；② 费用类行 `order_no`/`sku` 常为空、渠道无 `seq`
+> 概念——多条不同费用行会拼出**相同** `source_ref`，被幂等键**静默吞掉（少计费用）**。
+> 两者都不报错，正是不可变账本要防的那类失真。
+> **实证**：旧生产脚本 `fetch_walmart_settlement.py:192` 的唯一约束即
+> `UNIQUE(store, report_date, transaction_key, amount_type)`——渠道行身份本就由
+> `transaction_key`+`amount_type` 确定，新键与旧系统同源。
+
+配套约束：
+- **`line_kind` 降为版本化派生列**：仅用于分类展示与过账规则输入，**不参与任何唯一键**；
+  归类规则演进由 `posting_rule_version` 记录，历史事件不重写；
+- **`event_kind` 同为派生值，已移出唯一键**（原键含 `event_kind`，归类一变即重复过账）；
+- 重拉后金额有出入 → `reversal`（冲原事件）+ `posting_seq+1` 的新事件，差异走
+  notification（不静默改）；
+- **R2-08 建域预检**：拉取实现必须原样落库 `transaction_key` / `amount_type`
+  （见 settlement_line 列表），缺任一即无法构造幂等键——建表迁移须将两列设为 NOT NULL。
+
 索引：`(team_id, occurred_at)`、`(source_kind, source_ref)`、`(reverses_event_id) WHERE reverses_event_id IS NOT NULL`。
 
 ## ledger_entry 分录（append-only，规范化记账单元）
@@ -104,7 +127,9 @@ settlement_fee→channel_fee、settlement_adjustment→adjustment、purchase_cos
 | settlement_line 列 | 说明 |
 |---|---|
 | snapshot_id, team_id | |
-| line_kind CHECK IN (sale, refund, fee, adjustment) | |
+| **transaction_key** TEXT NOT NULL | **渠道行身份**（原值落库，不加工）——幂等键组成，2026-07-26 补 |
+| **amount_type** TEXT NOT NULL | 同上；`(store_id, report_date, transaction_key, amount_type)` 唯一确定一条渠道明细 |
+| line_kind CHECK IN (sale, refund, fee, adjustment) | **我方派生归类**（非渠道字段）——只作展示与过账规则输入，**不得进任何唯一键** |
 | channel_order_no/order_id/channel_sku | 回连订单（解析回填） |
 | amount（有向）/currency/detail | 渠道明细原字段 |
 | matched/matched_at | 对账工作流状态（可变）；索引 `(matched) WHERE NOT matched` |

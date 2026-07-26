@@ -538,8 +538,8 @@
   "evidence": [
    "specs/007-mvp-completion-plan/README.md"
   ],
-  "finding": "PRD §8 模块8，审计补单(2026-07-16)。硬前置：§08 图纸按 immutable event ledger 修订(D-Q56 裁定,审计工作区落笔)——开发等图纸",
-  "last_checked_at": "2026-07-16",
+  "finding": "PRD §8 模块8，审计补单(2026-07-16)。图纸前置已于 2026-07-17 解除(421f83d「R2-08 闸门解除」)——原 finding 残留「开发等图纸」旧话与 gate 矛盾，2026-07-26 清理(开发侧考古指出，属实)。【图纸修订 2026-07-26】幂等自然键错位已修正：原 source_ref=store:period:line_kind:order_no:sku:seq 作废(line_kind/event_kind 是我方派生值,归类一变即二次过账;费用行 order_no/sku 空+渠道无 seq 致多行撞键被静默吞)，改为渠道行身份 {store_id}:{report_date}:{transaction_key}:{amount_type} + posting_seq，唯一键移除 event_kind;settlement_line 补 transaction_key/amount_type 两列 NOT NULL。实证=旧 fetch_walmart_settlement.py:192 同款唯一约束。",
+  "last_checked_at": "2026-07-26",
   "gate": "✅ 前置已解除(2026-07-16)：§08 图纸 immutable event ledger 修订完成(D-Q56 C4)，见 specs/001-domain-model/08-finance.md——含验收补强四条(可复算/不可变实证/冲销演练/汇率审计)",
   "note": "验收：A152 真实结算单入库；结算↔订单对账差异可解释；利润账三粒度与结算金额闭合(抽 10 单人工核对)"
  },
