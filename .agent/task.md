@@ -79,7 +79,12 @@
   listing_dispatch 凑齐③order_block/compliance_block 认二元（唯一已上线消费点，不动）
   ④删「吃 R2-04 Redis pubsub」实现指定，改「档位每决策直读、不进缓存」（实测那套缓存生产零
   读者、且 fail-open 与档位必须 fail-closed 方向相反）。
-  **R2-09 立项前置 = 审计侧按批注落笔 001§09 与 007 正文**，落笔后按考古 §4 的 7 增量拆分立项。
+  ✅ **前置已解除（2026-07-26）**：规划/审查 AI 已按批注落笔并合入 main `de3c546`——001§09
+  flow 清单 v2 冻结（九条：新登记 scrape_to_audit / listing_dispatch / maintenance_run，删
+  gtin_alert / suspension_reminder，listing_pricing→pricing_watch 归一）+ 逐 flow 求值语义表
+  （实时求值 vs 创建快照）+ order_block/compliance_block 二元档位 + 直读不进缓存 + beat 逐条目
+  读档纪律；007 验收四环 flow 映射与切档口径同步修订。审计侧另注明四条断言已源码复核属实。
+  **R2-09 可立项开工**（按考古 §4 的 7 增量拆分；余 §2[5]~[10] 六条随对应增量提请）。
 - **验证纪律挂账（2026-07-26 Owner 查出，铁律 4 实质违反，已认）**：增量 1/3/4b 均在
   「待分支验证」状态下直接合并，验证结果全仓零记录；4b 属渠道写路径而 R2-12 全单无一份
   dry-run 快照落仓（对照 R1-07/R1-11/R2-03/R2-06 皆有）；真机图全在 PR 评论、不在仓内

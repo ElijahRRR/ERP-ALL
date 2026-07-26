@@ -1487,3 +1487,24 @@ Owner 表单式逐条确认「决策按你建议的执行」，并批准墙钟�
 - **必须等 07-28 收账后才能做的三件**（现在派下去会打断连测）：R2-04 验收② 模拟断连（动
   beat/DB）；注销后容器存活性实测（破坏性，直接杀掉连测）；`alembic upgrade head` 应用 0039
   （尚未并 main）。切回 main 亦在收账后，且须先过「运维资产在位检查」。
+
+## 2026-07-27 规划/审查 AI 已落笔 R2-09 前置（main de3c546）+ 分支 rebase 解冲突
+- 自检发现 PR #37 的 `mergeable_state` 由 `unstable` 变 `dirty`——**不是 CI 问题，是 main 前进了**：
+  规划/审查 AI 合入 `de3c546`「R2-09 开工前置落笔——001§09 flow 清单 v2 冻结（九条+求值语义+
+  二元档位）+ 007 四环映射与直读口径」。**我那份 owner-rulings 批注被采纳并落地，R2-09 立项
+  前置解除。** 它落的内容：新登记 scrape_to_audit / listing_dispatch / maintenance_run，删
+  gtin_alert / suspension_reminder，listing_pricing→pricing_watch 归一；逐 flow 求值语义表；
+  order_block/compliance_block 二元档位；直读不进缓存 + beat 逐条目读档纪律；007 验收四环
+  flow 映射与切档口径同步修订。并注明四条断言已源码复核属实。
+- **冲突面只有 `.agent/review_list.json` 的 R2-09 条**——双方同时改了同一个 `finding`。
+  审计侧是在**我更新前的版本**上追加的（` | 【审计 2026-07-26】…落笔完成…`）并新增了 `gate`
+  字段（「✅ 开工前置已解除」），故两边互补不互斥。**按合并解而非取一边**：保留我的四条裁定
+  详情 + 接上审计侧的落笔段 + 保留它的 `gate` 字段 + 日期取 2026-07-26。合并后 finding 2404 字，
+  JSON 有效、台账门禁自查通过。
+- rebase 到 `de3c546` 后本地全量重验（基线变了不能只信 rebase 前的结果）：ruff + format 全绿、
+  mypy strict 103 文件无问题、**pytest 525 passed / 1 skipped**、迁移 up→down→up 三步全过、
+  evidence 门禁通过（本 diff 有 2 个渠道写路径文件 + 2 个 evidence 变更）。
+- task.md 的「R2-09 立项前置 = 待审计侧落笔」已改为「✅ 前置已解除，可立项开工」。
+- **协作侧观察**：这是三 AI 分工写进 CLAUDE.md 后的第一次跨方协作，链路走通了——云端侧出批注
+  → 规划审查侧核实源码后落笔 main → 云端侧 rebase 吸收。唯一摩擦是**双方同时改同一条台账**
+  造成冲突；若后续频繁，可考虑把「裁定详情」与「落笔回执」分列两个字段，而非都追加进 finding。
