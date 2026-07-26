@@ -129,7 +129,7 @@ schtasks /query /tn "<任务名>" /v /fo LIST
 ```bash
 # 1. 本轮日志尾（下载/ETL/完整性校验三段）
 #    关注：下载到的 apcYYMMDD.zip 列表、404=当日无数据（正常）、
-#         "非 zip" 字样出现即前提零没过
+#    ⚠ 「非 zip」要看**比例**，不要一见就停（见下方「非 zip 的两种含义」）
 # 2. etl_progress 本轮新转 completed 的文件
 #    注意：etl_progress 无 updated_at 列，只有 started_at / completed_at
 #    （写入处见 walmart-trademark-sync/etl_trademarks.py process_zip）
@@ -161,6 +161,25 @@ docker compose -f infra/docker-compose.yml exec api \
   python -m erp.tools.run_task trademark_freshness
 ```
 
+## 「非 zip」的两种含义（2026-07-26 踩过，勿再混淆）
+
+`daily_update.py` 对「响应体非 zip」记 WARNING、计一次失败、连续 `CIRCUIT_BREAK_AFTER=3` 才熔断本轮。
+这条日志有两种截然不同的含义，**判据是比例不是有无**：
+
+| 形态 | 含义 | 处置 |
+|---|---|---|
+| **全部/绝大多数**候选文件都「非 zip」，`下载完成: 0 个` | 两跳修复失效（或 HEAD 在 main 跑了旧码） | **立即停**，回报，切分支 |
+| **队尾一两个**「非 zip」，其余正常下载 | 门户对**尚未发布/限流中**的最新日期返回挑战页。`end = now - 1 天`，故当天跑必然会碰最新那个 | **正常，不要停**，余量次日自然重取 |
+
+**2026-07-26 实测**：14 个候选 → 12 个成功下载（3.6~64 MB 真 ZIP）、`apc260723` HTTP 429 跳过、
+`apc260725`（昨天的数据，门户未发布）「非 zip」。**这是健康形态**，链路已进入 Step 2 导入。
+当时因指令写成「一见非 zip 就停」而被硬停在 ETL 中途——**是指令的错，不是链路的错**。
+
+> **ETL 被中断不需要人工修库**：`process_zip` 只跳过 `status='completed'`，
+> 残留的 `running` 行下次会 `ON CONFLICT DO UPDATE` 重置并重新处理；
+> `insert_batch` 先按 serial_number 删子表再插、主表 `ON CONFLICT DO UPDATE`。
+> **重跑幂等，禁止手工改 `etl_progress` 状态。**
+
 ## 判定表
 
 | 情形 | A 段 | B/C 段 | 记法 | 处置 |
@@ -168,7 +187,7 @@ docker compose -f infra/docker-compose.yml exec api \
 | 正常 | 触发且 result=0 | 通过 | **PASS**（当日计入三日） | 无 |
 | 无数据日 | 触发且 result=0 | 全 404、库无新增 | **PASS**（计入，标注「无数据日」） | 无 |
 | 情形 A | 触发但 result≠0 / 日志报错 | — | **FAIL** | 只回报日志，不改码；等云端定位 |
-| 情形 B | 触发且 0，但一条没导 | 日志含「非 zip」 | 不计入 | 前提零没过 → 切分支补跑 |
+| 情形 B | 触发且 0，但一条没导 | **全部/绝大多数**文件「非 zip」 | 不计入 | 前提零没过 → 切分支补跑 |
 | 情形 C | 未触发（任务未建/未启用） | — | 不计入 | 建/修计划任务 + 今日手动补跑取 B/C 段 |
 
 **手动补跑只证链路，不证调度**：出现情形 B/C 时，自动触发三日窗口从「调度首次真实触发的那天」重新起算。
