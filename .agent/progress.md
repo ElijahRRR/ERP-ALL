@@ -1333,3 +1333,70 @@ upgrade head` 三步全过。新测试**已证伪**：对回退后的旧码跑�
   三档齐动，不再重犯。
 - R2-12 剩余：**只差验收① 第 2、3 日**（07-27 / 07-28 各 18:00 的 A 段）。三日齐绿即可
   与 RS-04D 一并关账。
+
+## 2026-07-26 按 Owner 批准落地四件：删返还 + 快照落库 + 三条 CI 只读门禁 + 自动登录定案
+Owner 对前一轮分析建议全批（「按你建议的做」），并定 **Windows 自动登录不配**。
+
+### ① `service.py` 渠道明确拒绝**不再返还** maintenance 配额（活 fail-open 已清）
+- 三条理由（已写进代码注释）：**语义反了**（同函数「结果未知」分支明写「不返配额、不重发」，
+  可能没消耗都不返；本分支拿到明确 HTTP 码、feed 确已送达，反倒返）；**闭环无界**
+  （`item_pull.py:307-309` 去重只排除 `scheduled`/`running`，被拒任务落 `failed` 不在其内，
+  下轮 item_pull 为同一 degraded listing 重建任务 → 再被拒 → 再返还，永久坏品每周期烧一次
+  真实 feed 提交而本地日限计数原地不动）；**唯一刹车是推测值**（`rate_limiter.py` 给
+  `POST /v3/feeds:MP_MAINTENANCE` 配的 10/3600 是从 MP_ITEM 实测值类推，官方
+  `walmart_rate_limits.tsv` 根本没列 MP_MAINTENANCE，真实上限可能更低）。
+- **前一轮我说「改这个属渠道写路径、按铁律 4 需 dry-run 证据」——那个判断偏保守，已更正**：
+  删返还不改变任何对外请求，只动本地计数器，单元测试即充分证据。
+- 2 条回归测试。其中 `test_repeated_rejects_exhaust_the_daily_gate` 是**闭环收敛的实测证明**：
+  日限=2、连续三次被拒 → 期望第三次被闸挡住（`ERP_QUOTA_EXHAUSTED`、零发包）。对回退后的
+  旧码跑，该用例红成 `[REJECTED, REJECTED, REJECTED]`——**「无限重试」不再是推理，是测出来的**；
+  另一条红成 `assert (0,) == (1,)`（旧码把 used 回血到 0）。
+
+### ④ dry_run 请求快照落进 `channel_command.result`
+- 抽 `_dry_run_result(resp)` 统一三处 dry_run 归位（`submit` / `item_retire` / `item_maintenance`
+  ——原先**三处都在丢** `GatewayResponse.request_snapshot`，不只 maintenance 那处）。
+  此前生产 dry_run 态观测不到实际会发什么，只能去读测试代码。
+- 体积守卫 `_DRY_RUN_SNAPSHOT_MAX_BYTES=32768`：超限只把 `json_body` 换成体积标记，保留
+  method/url/endpoint_key/params/headers（MP_ITEM 类整品 spec body 可达数十 KB，不设守卫会
+  撑大 channel_command）。
+- 凭证安全本就成立并加断言锁定：headers 只存字段名单、proxy 已脱敏 `<bound>`；用例断言
+  落库 blob 里不出现 `zedr-secret` / `Bearer` / `access_token`。3 条测试。
+
+### ③ 三条 CI 只读门禁（把今日查出的三类坏账全部机器化）
+1. **`tests/db/test_permission_reachability.py`** —— 每个 permission 码必须要么被至少一个全局
+   模板角色持有、要么显式列入 `SUPER_ONLY`。**并把「0035 授权没发出去」那个误判的更正写进
+   文件头注**：干净库实跑全量迁移证伪——0002 本就种了七个模板角色，0035 按名匹配确实命中
+   （团队管理员 5 条 compliance、审核员 3 条），`identity/router.py` 建团队时复制模板角色连带
+   权限映射，范式自洽；现网 `compliance_perms=0` 的真因是**没有任何用户绑角色**。
+   同一次实测撞出真问题：**10 个权限码无任何角色可达**，已按判断分 A 组（设计上超管专属：
+   `identity.team_admin`/`compliance.import_admin`）与 **B 组「疑似漏授，待 Owner 逐条裁」**
+   （`procurement.execute`/`procurement.admin`——与 D-Q50 双入口的内部权限点相悖、
+   `pricing.write`——read 已授而 write 无人持有、`catalog.source_write`/`category_write`/
+   `import_read`/`import_write`、`listing.error_admin`），每条都写了「为什么像漏的」。
+   另 3 条辅助不变量：白名单不许养僵尸（已授权的码须移出）、白名单不许含幽灵码（防改名后
+   变哑条目把真漏网放过去）、模板角色必须存在（缺则 0031/0033/0035 三个按名授权迁移静默失效）。
+2. **`tests/test_agent_ledger.py`**（不连库）—— 台账结构不变量。**首次跑就抓出两处真问题**：
+   8 条 `evidence` 写成裸字符串而非数组（R1-09/10/11/12、R2-01/03/04/05，已归一化）；
+   字段形状收敛（核对时 47 条竟有 8 种形状，现把必填/可选键都登记，新增字段须先进集合）。
+   另含：id 唯一、status 取值须登记、日期 ISO 合法且不在未来、已收账条目 finding 不得为空占位、
+   文本字段不得以标点开头（**正是 R2-11 那个 `"；改一个产品字段→..."` 坏字段的机器判据**）。
+   关于「`accepted` 的 `last_checked_at` 不得早于关账 PR 合并日」：**PR 合并日不在检出树里、
+   CI 拿不到，做不成硬判据**，故用可机械判定的等价替代，并在文件头注写明这个取舍。
+3. **`scripts/ci_evidence_gate.py` + ci.yml 新 job** —— 改了含网关调用的后端源码，就必须同
+   diff 带 `.agent/evidence/` 变更。判定刻意从宽（宁漏不误伤）：按改动后内容判定（删掉调用的
+   PR 不该被拦）、只认网关入口。**首轮以 `ADVISORY=1` 上车只告警不拦**，观察无误伤后删掉
+   即变硬闸。失败信息直接给出仓内三处可照抄范式与那份新补的快照路径。
+
+### Windows 自动登录：Owner 定案不配，已写成「已知限制」而非待办
+- 理由：自动登录须把口令写进注册表 `DefaultPassword` 或凭据管理器，等于给这台存有全部店铺
+  API 凭证的机器开明文后门，代价不值。
+- 已在 `infra/local-deploy/README.md` 与三日验证协议两处写明**被接受的空档**：锁屏/RDP 断开/
+  长期空闲都照跑，但**机器重启到有人手工登录之前链路完全不跑**（期间每天 18:00 档全部丢失）。
+  故「无人值守」在本部署下的准确含义 = **无人干预，但需要有人保持登录态**；重启后须尽快人工
+  登录是**长期运维约束、不是待办**。三日连测期间若遇此情形，当日按情形 C 判不计入、窗口顺延。
+- 留了三条不需明文口令的备选路（containerd 服务化 / WSL2+systemd / TPM 保护方案），不现在做。
+
+### 本轮验证
+临时 PG16 簇实跑：`ruff check` + `format --check` 全绿、`mypy strict` 103 文件无问题、
+**pytest 523 passed / 1 skipped**（较上轮 507 增 16：① 2 条、④ 3 条、门禁① 4 条、门禁② 7 条）、
+`alembic up→down→up` 三步全过。①④ 的新测试均已对回退后的旧码证伪。

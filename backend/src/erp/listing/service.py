@@ -112,6 +112,32 @@ async def _load_listing(session: AsyncSession, listing_id: int) -> dict[str, Any
     return dict(row)
 
 
+# dry_run 归位时 channel_command.result 里存的请求快照上限（序列化后字节数）。
+# 超限只丢 json_body（换成体积标记），保留 method/url/endpoint_key/params/headers——
+# 那几项才是排障最常看的，而 MP_ITEM 类整品 spec body 可达数十 KB。
+_DRY_RUN_SNAPSHOT_MAX_BYTES = 32768
+
+
+def _dry_run_result(resp: GatewayResponse | None) -> dict[str, Any]:
+    """dry_run 归位写进 channel_command.result 的内容——带上网关请求快照。
+
+    此前三处 dry_run 归位都只落 `{"dry_run": True}`，把
+    `GatewayResponse.request_snapshot` 丢掉了：**生产 dry_run 态也观测不到实际会发什么**，
+    只能去读测试代码。落进 result 后运维直接查命令行即可看请求全貌（2026-07-26 Owner 拍板）。
+
+    安全性：快照本就不含明文凭证——headers 只存字段名单、proxy 已脱敏为 `<bound>`
+    （见 channel/gateway/client.py 构造处）。
+    """
+    snap = getattr(resp, "request_snapshot", None) if resp is not None else None
+    if not snap:
+        return {"dry_run": True}
+    if len(json.dumps(snap, ensure_ascii=False).encode()) > _DRY_RUN_SNAPSHOT_MAX_BYTES:
+        body = snap.get("json_body")
+        size = len(json.dumps(body, ensure_ascii=False).encode()) if body is not None else 0
+        snap = {**snap, "json_body": {"_truncated": True, "bytes": size}}
+    return {"dry_run": True, "request_snapshot": snap}
+
+
 # ── allocate：批量建 draft（去重/GTIN 预占/初价）──
 
 
@@ -1003,7 +1029,11 @@ async def _apply_feed_submit(  # noqa: PLR0911, PLR0912 归位分支=渠道响�
 
     if resp is not None and resp.dry_run:
         if not await outbox.complete(
-            session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
+            session,
+            command_id=cid,
+            fence=fence,
+            status="succeeded",
+            result=_dry_run_result(resp),
         ):
             return {"command_status": "superseded"}
         await session.execute(
@@ -1508,7 +1538,11 @@ async def _apply_item_retire(  # noqa: PLR0911 归位分支=渠道响应形态�
 
     if resp is not None and resp.dry_run:
         if not await outbox.complete(
-            session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
+            session,
+            command_id=cid,
+            fence=fence,
+            status="succeeded",
+            result=_dry_run_result(resp),
         ):
             return {"command_status": "superseded"}
         return {"status": "delist_pending", "dry_run": True}
@@ -1645,7 +1679,8 @@ async def _apply_item_maintenance(  # noqa: PLR0911 归位分支=渠道响应形
     session: AsyncSession, cmd: dict[str, Any], resp: GatewayResponse | None
 ) -> dict[str, Any]:
     """item_maintenance 的 tx2 归位（镜像 item_retire）：200→degraded 转 live（续期生效，
-    渠道异步 republish）；明确拒→留 degraded + 返 listing_maintenance 配额。"""
+    渠道异步 republish）；明确拒→留 degraded，**不返 maintenance 配额**（见下方分支注释：
+    feed 已真实送达，返还会让永久坏品每轮 item_pull 烧一次真实提交而本地计数不动）。"""
     listing_id = int(cmd["object_id"])
     cid, fence = int(cmd["id"]), int(cmd["fence"])
     actor_id = cmd.get("created_by")
@@ -1653,7 +1688,11 @@ async def _apply_item_maintenance(  # noqa: PLR0911 归位分支=渠道响应形
 
     if resp is not None and resp.dry_run:
         if not await outbox.complete(
-            session, command_id=cid, fence=fence, status="succeeded", result={"dry_run": True}
+            session,
+            command_id=cid,
+            fence=fence,
+            status="succeeded",
+            result=_dry_run_result(resp),
         ):
             return {"command_status": "superseded"}
         return {"status": "degraded", "dry_run": True}
@@ -1672,7 +1711,20 @@ async def _apply_item_maintenance(  # noqa: PLR0911 归位分支=渠道响应形
                              actor_id=actor_id)  # fmt: skip
         return {"status": "live"}
 
-    # 渠道明确拒绝：配额返还，留 degraded（商品仍在问题态），错误上抛由调用方处理
+    # 渠道明确拒绝：**不返还配额**，留 degraded（商品仍在问题态），错误上抛由调用方处理。
+    #
+    # 此处曾返还 maintenance 配额，构成 fail-open，已于 2026-07-26 删除（Owner 拍板）。删除理由：
+    # ① 语义反了——本文件上方「结果未知」分支明写「不返配额、不重发」（可能没消耗都不返），
+    #    而本分支拿到了明确的 HTTP 状态码、feed 确已真实送达 Walmart，反倒返还；
+    # ② 闭环无界：item_pull.py:307-309 的去重只排除 status IN ('scheduled','running')，
+    #    被拒任务落 'failed' 不在其内，故下一轮 item_pull 会为同一个仍 degraded 的 listing
+    #    重建任务 → runner 认领 → 再被拒 → 再返还……永久坏品（GTIN 不合规 / 类目被拒 /
+    #    spec 违规）每个周期烧一次真实 feed 提交，而本地日限计数原地不动；
+    # ③ 唯一的刹车是推测值：rate_limiter.py 给 POST /v3/feeds:MP_MAINTENANCE 配的
+    #    10/3600 是从 MP_ITEM 实测值类推的——官方 docs/walmart_rate_limits.tsv 根本没列
+    #    MP_MAINTENANCE，真实上限可能更低。这种情况下本地闸不该被架空。
+    # 与 channel_service.release_quota docstring「create/delete 返还、maintenance 不返还」
+    # 的既有约定一致。被拒后的重试须走人工（改好 listing 再重排任务），不靠配额回血自动刷。
     if not await outbox.complete(
         session,
         command_id=cid,
@@ -1682,12 +1734,6 @@ async def _apply_item_maintenance(  # noqa: PLR0911 归位分支=渠道响应形
         error_code="ERP_FEED_REJECTED",
     ):
         return {"command_status": "superseded"}
-    # 同上：词表只认 'maintenance'（此前 'listing_maintenance' 使本行恒影响 0 行）。
-    # 【待 Owner 裁】本行的存在本身与 release_quota docstring「create/delete 返还、
-    # maintenance 不返还」相矛盾：MP_MAINTENANCE 被渠道拒时该次 feed 提交已真实消耗
-    # Walmart 侧调用，返还会让反复被拒的 listing 无限重试而本地计数不动（fail-open）。
-    # 改限流语义属渠道写路径，按铁律 4 需 dry-run 证据，故本轮只修名不动语义。
-    await channel_service.release_quota(session, int(cmd["store_id"]), "maintenance")
     return {"status": "degraded", "error_code": "ERP_FEED_REJECTED", "http_status": resp.status}
 
 

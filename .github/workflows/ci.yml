@@ -6,6 +6,20 @@ on:
   pull_request:
 
 jobs:
+  # 只读门禁③（铁律 4 机器化）：改了渠道写路径就必须同 diff 带 .agent/evidence/ 变更。
+  # 起因见 scripts/ci_evidence_gate.py 头注（2026-07-26 Owner 审计：R2-12 增量 1/3/4b 在
+  # 「待分支验证」态直接合并，4b 属渠道写路径却全单零 dry-run 快照落仓）。
+  # 首轮以 advisory 上车（只告警不拦），观察一段时间确认无误伤后删掉 ADVISORY 即变硬闸。
+  evidence-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}  # merge-base 需要完整历史
+      - name: 渠道写路径 evidence 门禁
+        env:
+          ADVISORY: "1"
+        run: python3 scripts/ci_evidence_gate.py
+
   backend:
     runs-on: ubuntu-latest
     defaults:

@@ -16,6 +16,7 @@ import psycopg
 import pytest
 
 from erp.channel.gateway import gateway
+from erp.channel.gateway.client import GatewayResponse
 from erp.core.db import get_session_factory
 from erp.core.errors import BusinessError
 from erp.core.settings import get_settings
@@ -447,3 +448,158 @@ class TestMpMaintenanceDryRunEvidence:
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class TestRejectDoesNotRefundQuota:
+    """① 回归（2026-07-26 Owner 拍板）：渠道明确拒绝**不返还** maintenance 配额。
+
+    删除返还的三条理由（见 service.py 该分支注释）：
+    ① 语义反了——「结果未知」分支明写「不返配额、不重发」（可能没消耗都不返），本分支
+       拿到明确 HTTP 状态码、feed 确已送达 Walmart，反倒返还；
+    ② 闭环无界——item_pull.py:307-309 去重只排除 scheduled/running，被拒任务落 failed
+       不在其内，下一轮 item_pull 会为同一 degraded listing 重建任务，永久坏品每周期烧
+       一次真实 feed 提交而本地日限计数原地不动；
+    ③ 唯一刹车是推测值——rate_limiter 给 MP_MAINTENANCE 配的 10/3600 是从 MP_ITEM 实测值
+       类推，官方速率表根本没列 MP_MAINTENANCE。
+    """
+
+    async def test_channel_reject_keeps_quota_consumed(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        _wipe_quota(migrated_db, seeded)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO app.quota_config (store_id, quota_kind, daily_limit, enabled)"
+                " VALUES (%s, 'maintenance', 5, true)",
+                (seeded["store"],),
+            )
+        try:
+            lid = _mk_listing(migrated_db, seeded, gtin=_ean13(10))
+            _set_mode(migrated_db, "live_test")
+            f = _fake_gateway()
+            f.routes["POST /v3/feeds"] = httpx.Response(400, json={"error": "bad"})
+            try:
+                with pytest.raises(BusinessError) as ei:
+                    await listing_service.renew_end_date(
+                        get_session_factory(),
+                        team_id=seeded["team"],
+                        listing_id=lid,
+                        is_super=True,
+                    )
+            finally:
+                _restore_gateway()
+            assert ei.value.code == "ERP_FEED_REJECTED"
+
+            with psycopg.connect(migrated_db) as conn:
+                used = conn.execute(
+                    "SELECT used FROM app.quota_usage"
+                    " WHERE store_id = %s AND quota_kind = 'maintenance'",
+                    (seeded["store"],),
+                ).fetchone()
+            # 关键断言：被拒后 used 仍为 1——配额没被回血
+            assert used == (1,)
+            status, _ = _listing_row(migrated_db, lid)
+            assert status == "degraded"  # 商品仍在问题态
+        finally:
+            _wipe_quota(migrated_db, seeded)
+
+    async def test_repeated_rejects_exhaust_the_daily_gate(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """闭环收敛证明：日限=2 时，连续两次被拒即耗尽——第三次被闸挡住不再触达渠道。
+
+        这正是删除返还所要达到的效果：返还版本下本用例会无限循环（used 恒为 0）。
+        """
+        _wipe_quota(migrated_db, seeded)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO app.quota_config (store_id, quota_kind, daily_limit, enabled)"
+                " VALUES (%s, 'maintenance', 2, true)",
+                (seeded["store"],),
+            )
+        try:
+            _set_mode(migrated_db, "live_test")
+            f = _fake_gateway()
+            f.routes["POST /v3/feeds"] = httpx.Response(400, json={"error": "bad"})
+            codes: list[str] = []
+            try:
+                for seed in (11, 12, 13):
+                    lid = _mk_listing(migrated_db, seeded, gtin=_ean13(seed))
+                    with pytest.raises(BusinessError) as ei:
+                        await listing_service.renew_end_date(
+                            get_session_factory(),
+                            team_id=seeded["team"],
+                            listing_id=lid,
+                            is_super=True,
+                        )
+                    codes.append(ei.value.code)
+                sent_before_third = len(f.requests)
+            finally:
+                _restore_gateway()
+            assert codes == [
+                "ERP_FEED_REJECTED",
+                "ERP_FEED_REJECTED",
+                "ERP_QUOTA_EXHAUSTED",  # 第三次被日限闸挡住
+            ]
+            assert sent_before_third == 2  # 只有前两次真触达渠道，第三次零发包
+        finally:
+            _wipe_quota(migrated_db, seeded)
+
+
+class TestDryRunSnapshotInCommandResult:
+    """④ 回归（2026-07-26 Owner 拍板）：dry_run 归位把网关请求快照落进
+    channel_command.result，使生产 dry_run 态可直接查命令行看请求全貌。"""
+
+    async def test_snapshot_persisted_and_credential_safe(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        lid = _mk_listing(migrated_db, seeded, gtin=_ean13(14))
+        res = await listing_service.renew_end_date(
+            get_session_factory(), team_id=seeded["team"], listing_id=lid, is_super=True
+        )
+        assert res.get("dry_run") is True
+        with psycopg.connect(migrated_db) as conn:
+            result = conn.execute(
+                "SELECT result FROM app.channel_command"
+                " WHERE action = 'item_maintenance' AND object_id = %s",
+                (lid,),
+            ).fetchone()[0]
+        assert result["dry_run"] is True
+        snap = result["request_snapshot"]
+        assert snap["endpoint_key"] == "POST /v3/feeds:MP_MAINTENANCE"
+        assert snap["params"]["feedType"] == "MP_MAINTENANCE"
+        assert snap["json_body"]["MPItem"][0]["Orderable"]["endDate"] == "2049-12-31"
+        # 凭证安全：headers 只存字段名单、proxy 已脱敏——落库不得带出明文
+        assert all(isinstance(h, str) for h in snap["headers"])
+        assert snap["proxy"] in (None, "<bound>")
+        blob = json.dumps(result, ensure_ascii=False)
+        assert "zedr-secret" not in blob  # 店铺 client_secret 明文不得出现
+        assert "Bearer" not in blob and "access_token" not in blob
+
+    def test_oversized_body_is_truncated_not_stored_whole(self) -> None:
+        """体积守卫：超限只丢 json_body 换体积标记，其余字段保留。
+
+        MP_ITEM 类整品 spec body 可达数十 KB，不设守卫会把 channel_command 撑大。
+        """
+        big = {"MPItem": [{"blob": "x" * 40000}]}
+        resp = GatewayResponse(
+            status=None,
+            headers={},
+            data=None,
+            dry_run=True,
+            request_snapshot={
+                "mode": "dry_run",
+                "endpoint_key": "POST /v3/feeds:MP_ITEM",
+                "json_body": big,
+                "headers": ["Authorization"],
+            },
+        )
+        out = listing_service._dry_run_result(resp)
+        snap = out["request_snapshot"]
+        assert snap["json_body"]["_truncated"] is True
+        assert snap["json_body"]["bytes"] > 40000
+        assert snap["endpoint_key"] == "POST /v3/feeds:MP_ITEM"  # 其余字段保留
+
+    def test_missing_snapshot_falls_back_cleanly(self) -> None:
+        """无快照（如非 dry_run 或旧响应）时退回原样 {"dry_run": True}，不炸。"""
+        assert listing_service._dry_run_result(None) == {"dry_run": True}

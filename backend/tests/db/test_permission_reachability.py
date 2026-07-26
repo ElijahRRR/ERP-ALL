@@ -1,0 +1,120 @@
+"""CI 只读门禁①：权限可达性不变量（2026-07-26 Owner 拍板）。
+
+**为什么要这条门禁**——起因是一次误判。审计时看到现网两账号 `compliance_perms=0`，
+一度判成「0035 按角色名字面授权至今一份都没发出去」。在干净库上实跑全量迁移后证伪：
+`0002_identity.py` 本就把七个角色种成全局模板角色（`team_id IS NULL`），0035 的
+`ON r.name = p.role_name` 匹配上了、权限确实发出去了（团队管理员 5 条 compliance、
+审核员 3 条）；而 `identity/router.py` 建团队时会复制模板角色连带权限映射。那套
+「多点范式」是自洽的。`compliance_perms=0` 的真因是**没有任何用户绑角色**（user_role 空）。
+
+但同一次实测撞出真问题：**有 10 个 permission 码没有任何角色能拿到**，即那些能力
+只有超管（`authn.py` 的 `is_super` 短路）能行使，非超管永远拿不到。本门禁把这件事
+钉死，一次防住两类复发：
+
+1. 将来某个迁移把角色名写错（改名 / 多语言 / 新建团队），授权静默不生效——名字匹配
+   不上不会报错，只会「什么都没发生」；
+2. 新增 permission 码时忘了授给任何角色——功能上线了但只有超管能用，没人会注意。
+
+判据：每个 `app.permission` 码必须**要么**被至少一个全局模板角色持有，**要么**
+显式列入下面的 `SUPER_ONLY`。新增权限时必须二选一，不许沉默。
+"""
+
+import psycopg
+import pytest
+
+# ── 超管专属权限白名单 ──
+#
+# ⚠️ 下列 10 条是 2026-07-26 实测出的「无任何角色可达」清单，**已按我方判断分成两组，
+#    但最终定性待 Owner 逐条裁定**。裁完请把「疑似漏授」组真正授给合适的模板角色
+#    （新迁移或补进 0002），并从本白名单移除。
+#
+# A 组｜按设计就该超管专属（判断依据写在各行）
+_SUPER_ONLY_BY_DESIGN = {
+    # 建团队/改团队属平台级操作，router 亦明确「超管请在目标团队上下文中操作」
+    "identity.team_admin",
+    # D-Q65① 方案A + compliance/router.py CLI-only 铁律：全局黑名单/商标 bulk 写入
+    # 需超管 system_tx，页面只负责看/核对/纠错，故不授普通角色
+    "compliance.import_admin",
+}
+#
+# B 组｜**疑似漏授，待 Owner 裁**（下面每条都写了「为什么像漏的」）
+_SUPER_ONLY_PENDING_OWNER = {
+    # D-Q50 明写采购执行「内部权限点 + 外部隔离门户」双入口——内部权限点若无角色持有，
+    # 双入口的内部那半等于只有超管能用，与决策不符
+    "procurement.execute",
+    "procurement.admin",
+    # 定价维护是维护员/团队管理员的日常动作；pricing.read 已授而 write 无人持有
+    "pricing.write",
+    # 采集源与类目维护是采集员/团队管理员职责范围
+    "catalog.source_write",
+    "catalog.category_write",
+    # 导入作业查看/发起：compliance.import_* 已归超管，但 catalog 侧这两条无人持有，
+    # 且合规中心「导入作业」Tab 的读权限若不授，运营看不到自己的导入结果
+    "catalog.import_read",
+    "catalog.import_write",
+    # 上架报错处置（error_recycle 候选闸相关）是上架员/维护员职责
+    "listing.error_admin",
+}
+SUPER_ONLY = _SUPER_ONLY_BY_DESIGN | _SUPER_ONLY_PENDING_OWNER
+
+
+@pytest.fixture(scope="module")
+def perm_rows(migrated_db: str) -> list[tuple[str, int]]:
+    """(权限码, 持有它的全局模板角色数)。只看模板角色：团队副本由应用层从模板复制。"""
+    with psycopg.connect(migrated_db) as conn:
+        return [
+            (str(code), int(n))
+            for code, n in conn.execute(
+                "SELECT p.code, count(r.id)"
+                " FROM app.permission p"
+                " LEFT JOIN app.role_permission rp ON rp.permission_code = p.code"
+                " LEFT JOIN app.role r ON r.id = rp.role_id AND r.team_id IS NULL"
+                " GROUP BY p.code ORDER BY p.code"
+            ).fetchall()
+        ]
+
+
+def test_every_permission_is_reachable_or_declared_super_only(
+    perm_rows: list[tuple[str, int]],
+) -> None:
+    orphans = sorted(code for code, n in perm_rows if n == 0)
+    undeclared = [c for c in orphans if c not in SUPER_ONLY]
+    assert not undeclared, (
+        "以下 permission 码没有任何全局模板角色持有，且未列入 SUPER_ONLY——"
+        "新增权限必须二选一（授给模板角色，或显式声明超管专属并写明理由）：\n  "
+        + "\n  ".join(undeclared)
+    )
+
+
+def test_super_only_whitelist_has_no_stale_entries(perm_rows: list[tuple[str, int]]) -> None:
+    """白名单不许养僵尸：已被授权的码要从 SUPER_ONLY 移除，否则白名单会越攒越松。"""
+    reachable = {code for code, n in perm_rows if n > 0}
+    stale = sorted(SUPER_ONLY & reachable)
+    assert not stale, (
+        "以下码已有模板角色持有，应从 SUPER_ONLY 移除（Owner 裁定后补授的记得清理白名单）：\n  "
+        + "\n  ".join(stale)
+    )
+
+
+def test_super_only_entries_all_exist(perm_rows: list[tuple[str, int]]) -> None:
+    """白名单里的码必须真实存在，防权限码改名后白名单变成哑条目、把真漏网放过去。"""
+    known = {code for code, _ in perm_rows}
+    ghosts = sorted(SUPER_ONLY - known)
+    assert not ghosts, "SUPER_ONLY 含不存在的权限码（改名或删除后未同步）：\n  " + "\n  ".join(
+        ghosts
+    )
+
+
+def test_template_roles_seeded(migrated_db: str) -> None:
+    """回归本次误判：0002 的模板角色必须真实存在——它们是按名匹配授权范式的地基。
+
+    若这条红了，说明模板角色被改名/删除，则 0031/0033/0035 那三个按角色名授权的迁移
+    会静默失效（名字匹配不上，不报错、什么都不发生）。
+    """
+    with psycopg.connect(migrated_db) as conn:
+        names = {
+            str(r[0])
+            for r in conn.execute("SELECT name FROM app.role WHERE team_id IS NULL").fetchall()
+        }
+    # 这两个是 0031/0033/0035 按名授权时点到的角色，缺一个就有迁移静默失效
+    assert {"团队管理员", "审核员"} <= names, f"模板角色缺失：{{'团队管理员', '审核员'}} - {names}"

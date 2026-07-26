@@ -58,6 +58,16 @@
 - 全局挂账：R2-05 L2 发货补验（等 A152 真实来单）；R2-04 验收②模拟断连；钓鱼黑名单导入；
   erpAPI PR #2 待授权；售后前端页（returns/refund 部分随 07c；店铺事件页 07b 已交付）。
   已清偿：前端 schema.d.ts codegen（07b 随契约重生成，含 R2-05/06/07a/11 既往欠账）。
+- **2026-07-26 Owner 批准落地四件（「按你建议的做」），见 progress 同日末节**：
+  ①`service.py` 渠道明确拒绝**不再返还** maintenance 配额（活 fail-open 已清；闭环无界已由
+  `test_repeated_rejects_exhaust_the_daily_gate` 对旧码实测证明，非推理）②dry_run 请求快照
+  落进 `channel_command.result`（抽 `_dry_run_result` 统一三处，原先三处都在丢快照，带 32KB
+  体积守卫）③三条 CI 只读门禁上车（权限可达性 / 台账结构 / 渠道写路径必带 evidence——第三条
+  首轮 `ADVISORY=1` 只告警，观察无误伤后删掉即变硬闸）④Windows 自动登录**定案不配**。
+  **待 Owner 逐条裁**：门禁① `SUPER_ONLY` 的 B 组 8 个「疑似漏授」权限码
+  （`procurement.execute`/`procurement.admin`/`pricing.write`/`catalog.source_write`/
+  `catalog.category_write`/`catalog.import_read`/`catalog.import_write`/`listing.error_admin`），
+  裁定为漏授的请补授给合适模板角色并从白名单移除（白名单有防僵尸不变量兜着）。
 - **验证纪律挂账（2026-07-26 Owner 查出，铁律 4 实质违反，已认）**：增量 1/3/4b 均在
   「待分支验证」状态下直接合并，验证结果全仓零记录；4b 属渠道写路径而 R2-12 全单无一份
   dry-run 快照落仓（对照 R1-07/R1-11/R2-03/R2-06 皆有）；真机图全在 PR 评论、不在仓内
@@ -70,11 +80,12 @@
   PR 必须带 evidence 变更）④是否让服务层把 `request_snapshot` 落进 `channel_command.result`
   ——现 `_apply_item_maintenance` 在 dry_run 分支只落 `{"dry_run": True}` 把快照丢了，
   致生产 dry_run 态也观测不到请求全貌。
-- **RBAC 挂账（2026-07-26）**：`0035_blacklist_assertion.py:150-167` 按角色名字面
-  （'团队管理员'/'审核员'）发 `compliance.*`，而现网两账号均未绑任何角色——**该种子至今
-  一份权限都没发出去，且静默不报错**。超管走 `is_super` 短路不受影响（authn.py:47），
-  但一旦出现第二个真人非超管账号，合规中心即 403/空。待 Owner 定：是否改为按权限码
-  声明式授权（按角色名字面匹配对改名/多语言/新建团队都会漏）。
+- **RBAC 结论（2026-07-26，前述判断已更正，0035 不改）**：曾判「0035 按角色名字面授权至今
+  一份都没发出去」——**干净库实跑全量迁移已证伪**：0002 本就把七个角色种成全局模板角色，
+  0035 按名匹配确实命中（团队管理员 5 条 compliance、审核员 3 条），且 `identity/router.py`
+  建团队时复制模板角色连带权限映射，范式自洽，无需改造。现网 `compliance_perms=0` 的真因是
+  **没有任何用户绑角色**（user_role 空）——部署数据状态，非代码缺陷。真问题是那 10 个无角色
+  可达的权限码，已由 CI 门禁① 钉住 + B 组 8 条待 Owner 裁（见本文件上方条目）。
 - **次要项挂账（2026-07-26 Owner 提出）**：`rebuild_canonical` 无生产入口（CLI/端点/beat 皆无），
   RS-04D 第四条硬验收只在 pytest 内成立；`item_pull` 第四类差异 `gone_remote` 在 beat 聚合
   （:369-379）被丢弃；契约顶层 tags 块少声明 4 个 tag；`ImportJobsTab.tsx:15` 手写 interface
