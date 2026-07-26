@@ -212,9 +212,20 @@ docker compose -f infra/docker-compose.yml exec api \
 | 日期 | A 自动触发 | B 链路 | C 对账（revision / newest） | 判定 |
 |---|---|---|---|---|
 | ~~2026-07-25~~ | 已触发 18:00，**Last Result=10** | **报错**：`local secret file missing`（假象，真因 bat LF-only） | 跳过 | **FAIL（情形 A）·不计入** |
-| 2026-07-26 | 待回报（任务 Enabled/Ready，Next Run 07-26 18:00） | 预期**无数据日** | 预期跳过 | — |
-| 2026-07-27 | — | — | — | — |
+| **2026-07-26** | **PASS**：`Last Run 18:00:01` / `Last Result=0` / `Ready` / `Enabled` / `Next Run 07-27 18:00` | **PASS（无数据日）**：新下载 0、新导入 0（`apc260723` HTTP 429 仍在限流窗内）；完整性检查全过、ETL 错误 0、孤儿检查通过；`ETL_PROCESS=NONE`；日志正常收尾 `USPTO daily chain done` | USPTO 14,216,076 / newest `2026-07-25` / completed 232 · ERP 4,475,105 / newest `2026-07-25` / **revision 204** | **PASS（第 1/3 日，情形「无数据日」）** |
+| 2026-07-27 | 待回报（Next Run 07-27 18:00） | — | — | — |
 | 2026-07-28 | — | — | — | — |
+
+#### 第 1 日（2026-07-26）判定依据
+
+按上表「情形」口径，本日属**无数据日**：A 段触发且 `Last Result=0`，B 段无新文件可导
+（剩余候选 `apc260723` 在 429 限流窗内），库无新增——按既定判据 **计入三日、标注「无数据日」**。
+这是本窗口第一条 **A 段实质证据**：`Last Run Time` 落在 18:00:01（自动触发，非手动），
+`Next Run Time` 已自行推进到 07-27 18:00，证明计划任务日程在正常滚动。
+
+- 完整日志：部署机 `D:\erp-staging-backup\logs\uspto-daily-20260726-180001.log`。
+- 429 属预期、不构成 FAIL：`apc260723` 的余量按设计次日自然重取（见上文「非 zip / 限流」判据表）。
+- 对账一致：USPTO 侧与 ERP 侧 newest 同为 `2026-07-25`，新鲜度守卫 `lag_days=1` 在容差内。
 
 > **窗口维持 07-26/27/28，最早收账 07-28 晚。** 一度以为 07-26 因手动彩排 + 临时禁用调度而作废，
 > 实际不会：**手动跑 bat 不推进 Windows 计划任务日程**，任务重新 `/enable` 后

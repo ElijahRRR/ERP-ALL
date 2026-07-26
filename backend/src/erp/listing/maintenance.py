@@ -26,7 +26,12 @@ log = structlog.get_logger()
 
 async def run(sessions: async_sessionmaker, config: dict[str, Any]) -> dict[str, Any]:  # type: ignore[type-arg]
     batch = int(config.get("batch", 5))
-    kinds = [str(k) for k in config.get("kinds", ["delist"])]
+    # 默认必须是空表（人工档）：D-Q13/29 三档口径、本文件 docstring、0037 种子
+    # ('{"batch": 5, "kinds": []}') 三处一致。此处曾误写 ["delist"] fallback，构成 fail-open——
+    # beat.py:129 / run_task.py:32 都是 `config or {}` 不补键，schedule.config 一旦丢 kinds 键
+    # （0037 用 ON CONFLICT DO NOTHING，既有行不会被覆盖），runner 会直接发 RETIRE_ITEM
+    # outbox 真渠道下架，绕过 D-Q65② 人工闸。空表=认领不到任何任务，fail-closed。
+    kinds = [str(k) for k in config.get("kinds", [])]
     async with system_tx(sessions) as session:
         tasks = (
             await session.execute(

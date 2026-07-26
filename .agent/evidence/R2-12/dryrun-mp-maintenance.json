@@ -1,0 +1,38 @@
+{
+  "mode": "dry_run",
+  "store": "ZEDR1",
+  "method": "POST",
+  "url": "https://marketplace.walmartapis.com/v3/feeds",
+  "endpoint_key": "POST /v3/feeds:MP_MAINTENANCE",
+  "params": {
+    "feedType": "MP_MAINTENANCE"
+  },
+  "json_body": {
+    "MPItem": [
+      {
+        "Orderable": {
+          "sku": "zedr-SKU12",
+          "endDate": "2049-12-31",
+          "productIdentifiers": {
+            "productId": "6900000000090",
+            "productIdType": "EAN"
+          }
+        }
+      }
+    ],
+    "MPItemFeedHeader": {
+      "locale": "en",
+      "version": "5.0.20260304-22_45_32-api",
+      "businessUnit": "WALMART_US"
+    }
+  },
+  "proxy": null,
+  "headers": [
+    "Authorization",
+    "WM_SVC.NAME",
+    "WM_QOS.CORRELATION_ID",
+    "WM_CONSUMER.ID",
+    "WM_SEC.ACCESS_TOKEN",
+    "Accept"
+  ]
+}

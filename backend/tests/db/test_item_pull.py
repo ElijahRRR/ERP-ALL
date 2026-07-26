@@ -209,7 +209,10 @@ class TestMaintenanceRunner:
                 " scheduled_at) VALUES (%s, %s, %s, 'delist', now())",
                 (seeded["team"], seeded["store"], l_draft),
             )
-        stats = await maintenance.run(get_session_factory(), {"batch": 5})
+        # kinds 必须显式给：本例意图是验 delist 的失败路径，与默认档无关。
+        # 此前传 {"batch": 5} 靠 runner 的 ["delist"] fallback 才能认领——那个 fallback 本身
+        # 是 fail-open 缺陷（已修为 []），本例曾是它的挡枪测试之一。
+        stats = await maintenance.run(get_session_factory(), {"batch": 5, "kinds": ["delist"]})
         assert stats == {"claimed": 1, "done": 0, "failed": 1}
         with psycopg.connect(migrated_db) as conn:
             status, error = conn.execute(
@@ -222,7 +225,12 @@ class TestMaintenanceRunner:
     async def test_unclaimed_kinds_stay_queued(
         self, migrated_db: str, seeded: dict[str, int]
     ) -> None:
-        """end_date_renewal 不在默认 kinds → 恒留队列（增量4b 接通前人工可见）。"""
+        """kinds 的选择性认领：配了 delist 档时，end_date_renewal 任务恒留队列。
+
+        原措辞「不在默认 kinds」把 runner 的 ["delist"] fallback 追认成了「默认档」，与
+        D-Q13/29、本文件 runner docstring、0037 种子（kinds=[]）三处相悖；fallback 已修为
+        空表。这里改为显式配 kinds，避免退化成「空表当然认领不到」的空转断言。
+        """
         l_a = _mk_listing(migrated_db, seeded, f"{PREFIX}-EDR", seeded["p3"], "degraded")
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             conn.execute(
@@ -230,7 +238,7 @@ class TestMaintenanceRunner:
                 " scheduled_at) VALUES (%s, %s, %s, 'end_date_renewal', now())",
                 (seeded["team"], seeded["store"], l_a),
             )
-        stats = await maintenance.run(get_session_factory(), {"batch": 5})
+        stats = await maintenance.run(get_session_factory(), {"batch": 5, "kinds": ["delist"]})
         assert stats["claimed"] == 0
         with psycopg.connect(migrated_db) as conn:
             st = conn.execute(

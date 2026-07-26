@@ -1218,3 +1218,98 @@
   （progress + task + review_list），可加一个 CI 只读检查——`status=accepted` 的条目其
   `last_checked_at` 不得早于对应关账 PR 的合并日。
 - 无代码变更；本次只动 `.agent/` 台账。
+
+## 2026-07-26 验收① 第 1 日 PASS（首条 A 段实质证据）+ Owner 查出三条 P0，两条已修
+- **第 1 日 PASS（无数据日）**：`Last Run 18:00:01` / `Last Result=0` / `Ready` / `Enabled` /
+  `Next Run 07-27 18:00`。新下载 0、新导入 0（`apc260723` HTTP 429 仍在限流窗内，属预期）；
+  完整性检查全过、ETL 错误 0、孤儿检查通过、`ETL_PROCESS=NONE`、日志正常收尾。
+  USPTO 14,216,076 / newest `2026-07-25` / completed 232；ERP 4,475,105 / newest `2026-07-25` /
+  revision 204；`lag_days=1` 在容差内。已填入三日表——**这是窗口内第一条 A 段（自动触发）证据**，
+  `Next Run` 自行推进即证日程在滚动。余 07-27 / 07-28 两日。
+
+### P0-1 fail-open 已修（`listing/maintenance.py:29`）
+- Owner 逐行坐实：`config.get("kinds", ["delist"])` 与同文件 docstring:4、0037 种子
+  `{"batch": 5, "kinds": []}`、D-Q13/29 三档口径**三处全冲突**；beat.py:129 与 run_task.py:32
+  都是 `config or {}` 不补键，0037 又是 `ON CONFLICT DO NOTHING`（既有 schedule 行不被覆盖）
+  ——config 一丢 kinds 键，runner 就发 RETIRE_ITEM outbox 真渠道下架，绕过 D-Q65② 人工闸。
+- 修为 `config.get("kinds", [])`（空表=认领不到=fail-closed）+ 3 条回归测试。
+- **顺带查出病根：这缺陷是被既有测试挡着的。** `test_item_pull.py::TestMaintenanceRunner`
+  两条用例都围着 fail-open 写——`test_claim_and_fail_cleanly` 传 `{"batch": 5}` 不带 kinds
+  却断言 `claimed: 1`（**断言的正是 fail-open**，唯有 fallback=["delist"] 能过）；
+  `test_unclaimed_kinds_stay_queued` docstring 写「不在**默认 kinds**」，把 `["delist"]`
+  追认成了「默认档」。已按各自真实意图改为显式传 kinds，并在注释里写明它们曾是挡枪测试。
+  这解释了缺陷为何能过评审——不是没人看，是测试在替它背书。
+
+### P0-2 配额闸空转已修（`listing/service.py:1573/1682`）
+- Owner 坐实 `ck_quota_kind`（0003:162）自建库起只有
+  `listing_create/listing_delete/maintenance`，0004~0038 无一扩过（0038 扩的是
+  `ck_cc_action`，不是它）。代码却传 `listing_maintenance`。
+- **修法与 Owner 初判不同，已核实为更正**：不该扩约束——配额 API
+  （`channel/router.py:22` `QUOTA_KINDS` + `:93` pattern）词表同样只有那三个，
+  `listing_maintenance` 过不了 pattern，**运营根本无法通过 API 配出这行**；光加迁移，
+  闸照样是死的（得迁移+router+契约+前端四处齐改）。正解是把代码对齐既有 `maintenance`
+  （零迁移、零契约变更）。`release_quota` 自己的 docstring 也写「create/delete 返还、
+  **maintenance** 不返还」，反证 `maintenance` 才是正名。
+- 2 条回归测试：日限=1 时第二次续期抛 `ERP_QUOTA_EXHAUSTED`、`quota_usage` 计在
+  `'maintenance'` 名下；另一条锁死方向——幻影 kind 连库都插不进（CheckViolation）。
+- **【待 Owner 裁】`:1682` 返还本身与 docstring 相矛盾**：MP_MAINTENANCE 被渠道拒时该次
+  feed 已真实消耗 Walmart 调用，返还会让反复被拒的 listing 无限重试而本地计数不动
+  （fail-open）。改限流语义属渠道写路径、按铁律 4 需 dry-run 证据，**本轮只修名不动语义**，
+  已在代码注释就地标注。
+
+### P0-3 运维资产只在开发分支（已加 fail-closed 门，根治待合并）
+- 复核确认：`.gitattributes` + `infra/local-deploy/automation/`（uspto-daily.bat + README）
+  由 `a145602` / `635fb12` 加在开发分支，`origin/main`=`5329146` **确实没有**。而
+  task.md 规定「部署机验完切回 main 常驻」——一执行就把修复版 bat 与 CRLF 声明一起抹掉，
+  07-25 LF-only 事故原样复发。Owner 那句「从『只存在于一台机器』换成了『只存在于一条
+  随时会被 squash 掉的分支』」是准确的，风险并未消除。
+- 我能自主做的那半已做：`infra/local-deploy/README.md` 增「切回 main 前必做：运维资产在位
+  检查（fail-closed）」——`git ls-tree -r origin/main` 三行不齐**不许切**，另附 Windows 侧
+  `git check-attr text eol` 复核（防 CRLF 被规范化）；task.md 真机验证流程同步加约束。
+- **根治需 Owner 决**：PR #36 已含这些资产（合并即根治），或另拆 ops-only PR——后者要开新
+  分支，按纪律需 Owner 明示许可，我没擅自开。
+
+### 铁律 4 违反：认，且是我的问题
+- Owner 指出：增量 1/3/4b 三个 PR 都在「待：分支验证 → 合并」状态下直接合并，验证结果全仓
+  零记录；4b 是渠道写路径，铁律 4 明写「渠道写路径必须有 dry-run 证据」，而 R2-12 全单
+  **一份 dry-run 快照都没落仓**（对照 R1-07/R1-11/R2-03/R2-06 都有）；真机图证据全挂 PR
+  评论、不在仓内，`evidence/R2-12/` 只有 6 个 .md、零图片。**核实无误，不辩解。**
+- 这条与本日上午查出的「关账回写漏 review_list.json」是同一类病：把「过程写在别处」
+  当成了「过程有记录」。PR 评论与部署机聊天记录都不是仓内证据。
+- 补救待 Owner 定优先级（见 task.md 挂账）：①补 R2-12 dry-run 快照落仓（renew_end_date /
+  item_pull 两条渠道路径，本地假渠道可产）②把已有真机图从 PR 评论搬进 evidence/R2-12/
+  ③CI 加只读门禁：渠道写路径增量的 PR 必须带 evidence 变更。
+- **①当轮即清偿**：新增 `evidence/R2-12/dryrun-mp-maintenance.json`。查阅时发现仓里本就有
+  「dry_run 断言请求形态 + 写 evidence」的机制三处（test_gateway / test_listing_api /
+  test_price_push），照同一模式补 MP_MAINTENANCE——那是增量4b 引入的唯一新增渠道**写**路径
+  （item_pull 是 GET 读路径，不在铁律 4 范围）。快照含 feedType 查询参、MPItemFeedHeader
+  spec 版本、Orderable 载荷；用例硬断言端点键 `POST /v3/feeds:MP_MAINTENANCE`、五个必填渠道头
+  齐备、代理地址不泄漏进证据、dry_run 零发包。**顺带查出**：`_apply_item_maintenance` 在
+  dry_run 分支只落 `{"dry_run": True}`，把 `GatewayResponse.request_snapshot` 丢掉了——
+  即生产 dry_run 态也观测不到请求全貌。本轮从网关 seam 抓取，不动生产码；是否让服务层把快照
+  落进 `channel_command.result` 已入挂账待 Owner 定。
+
+### RBAC：超管默认全权限已成立；但查出一条真缺口
+- Owner 的 SQL 结果（我原查询表名写错，实为 `app.app_user`）：`admin` `is_super=true` /
+  role NULL / compliance_perms 0；`pr35_nocompliance` `is_super=false`。两账号**都没绑角色**。
+- 结论一：`authn.py:47` `has() = is_super or perm in permissions`，`is_super` 无条件短路
+  全部权限校验——**「超管默认拥有所有权限」在代码里本就成立**，admin 有全量合规访问权。
+  故合规中心「空」**不是权限问题**，是数据面/查询面（该 team 下无黑名单断言行、商标 Tab
+  需先给检索词）。`pr35_nocompliance` 是 PR #35 专为验 403 门控造的账号，符合预期。
+- 结论二（新缺口，已入挂账）：**0035 按角色名字面授权至今一份都没发出去。**
+  `0035_blacklist_assertion.py:150-167` 只给名字恰为 '团队管理员' / '审核员' 的角色发
+  `compliance.*`；现实是没有任何角色被绑到人身上。一旦出现第二个真人非超管账号，他打开
+  合规中心就是 403/空，而种子**静默不生效、不报错**。按角色名字面匹配发权限本身是脆的
+  （改名/换语言/新建团队都会漏），待 Owner 定是否改为按权限码声明式授权。
+
+### 次要项（Owner 提出，全部登记，本轮未改）
+`rebuild_canonical` 无生产入口（CLI/端点/beat 皆无）→ RS-04D 第四条硬验收只在 pytest 内成立；
+`item_pull` 第四类差异 `gone_remote` 在 beat 聚合（:369-379）被丢弃；契约顶层 tags 块少声明
+4 个 tag；`ImportJobsTab.tsx:15` 手写 interface（FE-DEBT-01 累计 29 处未清）；CI 无 codegen
+漂移检查、无前端测试。
+
+### 本轮验证
+本机起临时 PG16 簇实跑（此环境无 docker）：`ruff check` + `format` 全绿、`mypy strict`
+103 文件无问题、**pytest 507 passed / 1 skipped**（含本轮新增 6 项：P0-1 三条、P0-2 两条、dry-run 证据一条）、`alembic upgrade head → downgrade base →
+upgrade head` 三步全过。新测试**已证伪**：对回退后的旧码跑，3 条按预期变红
+（含 `assert None == (1,)`——旧码下 `quota_usage` 连行都不建，坐实闸完全空转）。

@@ -53,6 +53,31 @@
 - 全局挂账：R2-05 L2 发货补验（等 A152 真实来单）；R2-04 验收②模拟断连；钓鱼黑名单导入；
   erpAPI PR #2 待授权；售后前端页（returns/refund 部分随 07c；店铺事件页 07b 已交付）。
   已清偿：前端 schema.d.ts codegen（07b 随契约重生成，含 R2-05/06/07a/11 既往欠账）。
+- **验证纪律挂账（2026-07-26 Owner 查出，铁律 4 实质违反，已认）**：增量 1/3/4b 均在
+  「待分支验证」状态下直接合并，验证结果全仓零记录；4b 属渠道写路径而 R2-12 全单无一份
+  dry-run 快照落仓（对照 R1-07/R1-11/R2-03/R2-06 皆有）；真机图全在 PR 评论、不在仓内
+  （evidence/R2-12/ 6 个 .md、零图）。**①已清偿（2026-07-26）**：新增
+  `evidence/R2-12/dryrun-mp-maintenance.json`——MP_MAINTENANCE（增量4b 引入的唯一新增渠道
+  **写**路径）dry-run 请求快照落仓，机制与既有三处一致（test_gateway/test_listing_api/
+  test_price_push：dry_run 断言请求形态 + 写 evidence），并硬断言 feedType 查询参/五必填头/
+  代理地址不泄漏。item_pull 是 GET 读路径，不在铁律 4「渠道写路径」范围。
+  余待 Owner 定序：②真机图从 PR 评论搬进 evidence/R2-12/ ③CI 加只读门禁（渠道写路径增量的
+  PR 必须带 evidence 变更）④是否让服务层把 `request_snapshot` 落进 `channel_command.result`
+  ——现 `_apply_item_maintenance` 在 dry_run 分支只落 `{"dry_run": True}` 把快照丢了，
+  致生产 dry_run 态也观测不到请求全貌。
+- **RBAC 挂账（2026-07-26）**：`0035_blacklist_assertion.py:150-167` 按角色名字面
+  （'团队管理员'/'审核员'）发 `compliance.*`，而现网两账号均未绑任何角色——**该种子至今
+  一份权限都没发出去，且静默不报错**。超管走 `is_super` 短路不受影响（authn.py:47），
+  但一旦出现第二个真人非超管账号，合规中心即 403/空。待 Owner 定：是否改为按权限码
+  声明式授权（按角色名字面匹配对改名/多语言/新建团队都会漏）。
+- **次要项挂账（2026-07-26 Owner 提出）**：`rebuild_canonical` 无生产入口（CLI/端点/beat 皆无），
+  RS-04D 第四条硬验收只在 pytest 内成立；`item_pull` 第四类差异 `gone_remote` 在 beat 聚合
+  （:369-379）被丢弃；契约顶层 tags 块少声明 4 个 tag；`ImportJobsTab.tsx:15` 手写 interface
+  （FE-DEBT-01 累计 29 处）；CI 无 codegen 漂移检查、无前端测试。
+- **待 Owner 裁（P0-2 衍生）**：`listing/service.py:1682` 渠道拒时返还 maintenance 配额，与
+  `release_quota` docstring「maintenance 不返还」相矛盾——该次 feed 已真实消耗 Walmart 调用，
+  返还会让反复被拒的 listing 无限重试而本地计数不动（fail-open）。改限流语义属渠道写路径、
+  按铁律 4 需 dry-run 证据，本轮只修名未动语义，代码注释已就地标注。
 - **台账纪律挂账（2026-07-26 全面核对查出，见 progress 同日节）**：关账回写此前只做
   progress+task 两处、漏 review_list.json（PR #29「R2-11 整单关账回写」实证只改两文件，
   致 R2-11 accepted 后台账仍挂 in_progress 达 9 天）。已补修四条（R2-11/R2-07/RS-04A/RS-04D）。
@@ -64,4 +89,10 @@
 - 真机验证流程（2026-07-18 Owner 拍板）：增量先在 PR 分支上由部署机验证（前置核验点
   分支 head），通过后 Owner 授权合并 main，合并后重建分支接着开发；部署机验完切回 main
   常驻；含迁移的增量若分支被弃须 alembic downgrade 归位。
+  **切回 main 前必做「运维资产在位检查」**（2026-07-26 Owner 查出 P0-3）：只在开发分支上的
+  运维资产会随切换从检出树消失。现 `.gitattributes` + `infra/local-deploy/automation/`
+  （uspto-daily.bat + README）**尚未进 main**（origin/main=5329146 无此二者），一旦执行
+  「切回 main」修复版 bat 与 CRLF 声明同时丢失，07-25 LF-only 事故原样复发。检查命令见
+  infra/local-deploy/README.md「切回 main 前必做」节，三行不齐**不许切**。
+  根治=让这些资产进 main（PR #36 已含，待 Owner 授权合并；或另拆 ops-only PR，需 Owner 允许开新分支）。
 - 本工作区环境：开发分支 claude/r2-03-launch-leg5n8（PR 按增量推），旧 erpAPI 仓挂载于 /home/user/erpAPI。

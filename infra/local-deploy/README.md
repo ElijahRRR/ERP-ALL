@@ -62,6 +62,28 @@ git checkout main && git pull && make up   # 部署机切回 main 常驻
 - 含迁移的增量：分支验证会把库 schema 推前；若增量最终被弃，须先 `alembic downgrade`
   归位再切回 main（增量门槛本就要求迁移 up/down 实测过）。
 
+### ⚠️ 切回 main 前必做：运维资产在位检查（fail-closed）
+
+「切回 main」会把只存在于开发分支上的运维资产**从检出树里抹掉**。USPTO 日更链正是
+踩过这个坑的活例：`uspto-daily.bat` 与强制 CRLF 的 `.gitattributes` 一度只在开发分支上，
+一旦切回 main，修复版 bat 连同换行声明同时消失，**07-25 那次 LF-only 事故会原样复发**。
+把 bat 纳入版控的初衷是「不能只存在于一台机器」，若它只存在于一条随时被 squash 的分支，
+风险并没有消除。故切之前先跑这一段，**任一项缺失就不要切**：
+
+```bash
+git fetch origin main
+git ls-tree -r origin/main --name-only | grep -E '^\.gitattributes$|^infra/local-deploy/automation/'
+# 期望三行齐全：.gitattributes / automation/README.md / automation/uspto-daily.bat
+# 少任何一行 → main 还没收到这些资产，别切；先让对应 PR 合并，或把当前分支保留常驻。
+```
+
+Windows 侧同时确认（切完再核一次，防 CRLF 被规范化掉）：
+
+```bat
+git -C <仓库根> check-attr text eol -- infra/local-deploy/automation/uspto-daily.bat
+:: 期望 eol: crlf；若为 unset/lf，则 .gitattributes 未生效，bat 会重演 LF-only 事故
+```
+
 ## 故障处置速查
 
 | 症状 | 动作 |

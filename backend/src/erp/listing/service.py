@@ -1570,10 +1570,13 @@ async def renew_end_date(
         gtin = listing.get("gtin")
         if not gtin:
             raise BusinessError("LISTING_MAINTENANCE_NO_GTIN", "无 gtin 无法构 MP_MAINTENANCE 载体")
-        if not await channel_service.consume_quota(
-            session, listing["store_id"], "listing_maintenance"
-        ):
-            raise BusinessError("ERP_QUOTA_EXHAUSTED", "listing_maintenance 配额不足")
+        # quota_kind 必须用 'maintenance'：ck_quota_kind（0003:162）与配额 API
+        # （channel/router.py:22,93 pattern）的词表都只有 listing_create/listing_delete/
+        # maintenance。此处曾写 'listing_maintenance'——该值既插不进 quota_config，也过不了
+        # 配额 API 的 pattern（运营根本配不出这行），consume_quota 遂走「未配置=不设限」
+        # 恒返 True，MP_MAINTENANCE 续期实际无任何日限闸。
+        if not await channel_service.consume_quota(session, listing["store_id"], "maintenance"):
+            raise BusinessError("ERP_QUOTA_EXHAUSTED", "maintenance 配额不足")
         cfg = await spec_builder._cfg(session, "listing.maintenance", {"end_date": "2049-12-31"})
         new_end = str(cfg.get("end_date") or "2049-12-31")
         await session.execute(
@@ -1679,7 +1682,12 @@ async def _apply_item_maintenance(  # noqa: PLR0911 归位分支=渠道响应形
         error_code="ERP_FEED_REJECTED",
     ):
         return {"command_status": "superseded"}
-    await channel_service.release_quota(session, int(cmd["store_id"]), "listing_maintenance")
+    # 同上：词表只认 'maintenance'（此前 'listing_maintenance' 使本行恒影响 0 行）。
+    # 【待 Owner 裁】本行的存在本身与 release_quota docstring「create/delete 返还、
+    # maintenance 不返还」相矛盾：MP_MAINTENANCE 被渠道拒时该次 feed 提交已真实消耗
+    # Walmart 侧调用，返还会让反复被拒的 listing 无限重试而本地计数不动（fail-open）。
+    # 改限流语义属渠道写路径，按铁律 4 需 dry-run 证据，故本轮只修名不动语义。
+    await channel_service.release_quota(session, int(cmd["store_id"]), "maintenance")
     return {"status": "degraded", "error_code": "ERP_FEED_REJECTED", "http_status": resp.status}
 
 
