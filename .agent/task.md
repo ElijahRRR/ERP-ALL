@@ -64,10 +64,22 @@
   落进 `channel_command.result`（抽 `_dry_run_result` 统一三处，原先三处都在丢快照，带 32KB
   体积守卫）③三条 CI 只读门禁上车（权限可达性 / 台账结构 / 渠道写路径必带 evidence——第三条
   首轮 `ADVISORY=1` 只告警，观察无误伤后删掉即变硬闸）④Windows 自动登录**定案不配**。
-  **待 Owner 逐条裁**：门禁① `SUPER_ONLY` 的 B 组 8 个「疑似漏授」权限码
-  （`procurement.execute`/`procurement.admin`/`pricing.write`/`catalog.source_write`/
-  `catalog.category_write`/`catalog.import_read`/`catalog.import_write`/`listing.error_admin`），
-  裁定为漏授的请补授给合适模板角色并从白名单移除（白名单有防僵尸不变量兜着）。
+  ✅ **8 个漏授权限码已裁定并补齐（迁移 0039，2026-07-26）**：实测坐实 0039 生效后无角色可达
+  的码只剩 `identity.team_admin` + `compliance.import_admin` 两条设计上超管专属；白名单同步
+  收窄。三处授予对象按权限官方名称收敛（我给 Owner 的描述与实际名称不符，故未照批的执行）：
+  `listing.error_admin`=错误字典维护→仅团管；`catalog.source_write`=货源录入→仅团管；
+  `catalog.category_write`=类目映射修正→审核员+团管。新增授予矩阵精确锁定 + read/write
+  对称性两条测试。
+- **R2-09 开工前四条硬阻塞：Owner 2026-07-26 全部裁定，批注已回传待审计侧落笔**
+  （`.agent/evidence/R2-09/owner-rulings-20260726.md`，逐条给出可套用的改动请求）。
+  口径更正：此前说「四条硬阻塞」，核原文应为**10 条待裁、前 4 条不裁开不了工**，后 6 条随
+  对应增量逐个提请、不阻塞开工。裁定：①flow 清单 v2 冻结（删两行双落点 / listing_pricing 归一
+  为 pricing_watch / 新登记 scrape_to_audit / 新登记 D-Q65② 宪法要求的 maintenance runner 档位 /
+  match 跳 sourcing 归 audit_to_listing）②验收判据四环不下调，补登记 scrape_to_audit +
+  listing_dispatch 凑齐③order_block/compliance_block 认二元（唯一已上线消费点，不动）
+  ④删「吃 R2-04 Redis pubsub」实现指定，改「档位每决策直读、不进缓存」（实测那套缓存生产零
+  读者、且 fail-open 与档位必须 fail-closed 方向相反）。
+  **R2-09 立项前置 = 审计侧按批注落笔 001§09 与 007 正文**，落笔后按考古 §4 的 7 增量拆分立项。
 - **验证纪律挂账（2026-07-26 Owner 查出，铁律 4 实质违反，已认）**：增量 1/3/4b 均在
   「待分支验证」状态下直接合并，验证结果全仓零记录；4b 属渠道写路径而 R2-12 全单无一份
   dry-run 快照落仓（对照 R1-07/R1-11/R2-03/R2-06 皆有）；真机图全在 PR 评论、不在仓内

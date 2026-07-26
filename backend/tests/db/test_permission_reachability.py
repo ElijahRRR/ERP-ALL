@@ -24,38 +24,16 @@ import pytest
 
 # ── 超管专属权限白名单 ──
 #
-# ⚠️ 下列 10 条是 2026-07-26 实测出的「无任何角色可达」清单，**已按我方判断分成两组，
-#    但最终定性待 Owner 逐条裁定**。裁完请把「疑似漏授」组真正授给合适的模板角色
-#    （新迁移或补进 0002），并从本白名单移除。
-#
-# A 组｜按设计就该超管专属（判断依据写在各行）
-_SUPER_ONLY_BY_DESIGN = {
-    # 建团队/改团队属平台级操作，router 亦明确「超管请在目标团队上下文中操作」
+# 2026-07-26 首次实测出 10 条「无任何角色可达」，Owner 逐条裁定后：8 条属漏授、已由迁移
+# 0039 补授给模板角色并从本白名单移除（下方 `test_super_only_whitelist_has_no_stale_entries`
+# 会盯着——补授后忘了清理白名单就红）；仅剩这 2 条确认为设计上超管专属。
+SUPER_ONLY = {
+    # 建团队/改团队属平台级操作，identity/router.py 亦明确「超管请在目标团队上下文中建角色」
     "identity.team_admin",
-    # D-Q65① 方案A + compliance/router.py CLI-only 铁律：全局黑名单/商标 bulk 写入
-    # 需超管 system_tx，页面只负责看/核对/纠错，故不授普通角色
+    # D-Q65① 方案A + compliance/router.py CLI-only 铁律：全局黑名单/商标 bulk 写入需超管
+    # system_tx（大文件不经 HTTP、全局数据跨团队），页面只负责看/核对/纠错，故不授普通角色
     "compliance.import_admin",
 }
-#
-# B 组｜**疑似漏授，待 Owner 裁**（下面每条都写了「为什么像漏的」）
-_SUPER_ONLY_PENDING_OWNER = {
-    # D-Q50 明写采购执行「内部权限点 + 外部隔离门户」双入口——内部权限点若无角色持有，
-    # 双入口的内部那半等于只有超管能用，与决策不符
-    "procurement.execute",
-    "procurement.admin",
-    # 定价维护是维护员/团队管理员的日常动作；pricing.read 已授而 write 无人持有
-    "pricing.write",
-    # 采集源与类目维护是采集员/团队管理员职责范围
-    "catalog.source_write",
-    "catalog.category_write",
-    # 导入作业查看/发起：compliance.import_* 已归超管，但 catalog 侧这两条无人持有，
-    # 且合规中心「导入作业」Tab 的读权限若不授，运营看不到自己的导入结果
-    "catalog.import_read",
-    "catalog.import_write",
-    # 上架报错处置（error_recycle 候选闸相关）是上架员/维护员职责
-    "listing.error_admin",
-}
-SUPER_ONLY = _SUPER_ONLY_BY_DESIGN | _SUPER_ONLY_PENDING_OWNER
 
 
 @pytest.fixture(scope="module")
@@ -118,3 +96,69 @@ def test_template_roles_seeded(migrated_db: str) -> None:
         }
     # 这两个是 0031/0033/0035 按名授权时点到的角色，缺一个就有迁移静默失效
     assert {"团队管理员", "审核员"} <= names, f"模板角色缺失：{{'团队管理员', '审核员'}} - {names}"
+
+
+# ── 0039 授予矩阵锁定 ──
+#
+# 逐条钉死「哪个角色拿到哪个码」。没有这层，将来谁动了 0039 的 _GRANTS 不会有任何信号——
+# 上面的可达性不变量只管「至少一个角色持有」，不管持有者是谁；授给错的角色照样能过。
+_EXPECTED_0039 = {
+    "procurement.execute": {"订单员", "团队管理员"},
+    "procurement.admin": {"团队管理员"},
+    "pricing.write": {"维护员", "团队管理员"},
+    "catalog.import_read": {"采集员", "审核员", "团队管理员"},
+    "catalog.import_write": {"团队管理员"},
+    "catalog.category_write": {"审核员", "团队管理员"},
+    # 以下两条 Owner 裁定后按实际语义收敛为仅团管（见 0039 头注表格）：
+    # source_write=货源录入（采购/上架前置，非采集配置）、error_admin=错误字典维护（平台级调优）
+    "catalog.source_write": {"团队管理员"},
+    "listing.error_admin": {"团队管理员"},
+}
+
+
+def test_0039_grant_matrix_exact(migrated_db: str) -> None:
+    """0039 补授的 8 个码，其模板角色持有者集合必须与裁定完全一致（多一个少一个都红）。"""
+    with psycopg.connect(migrated_db) as conn:
+        rows = conn.execute(
+            "SELECT rp.permission_code, r.name FROM app.role_permission rp"
+            " JOIN app.role r ON r.id = rp.role_id AND r.team_id IS NULL"
+            " WHERE rp.permission_code = ANY(%s)",
+            (list(_EXPECTED_0039),),
+        ).fetchall()
+    actual: dict[str, set[str]] = {code: set() for code in _EXPECTED_0039}
+    for code, role in rows:
+        actual[str(code)].add(str(role))
+    diffs = [
+        f"{code}: 期望 {sorted(want)}，实得 {sorted(actual[code])}"
+        for code, want in _EXPECTED_0039.items()
+        if actual[code] != want
+    ]
+    assert not diffs, "0039 授予矩阵与裁定不符：\n  " + "\n  ".join(diffs)
+
+
+def test_pricing_read_write_symmetry(migrated_db: str) -> None:
+    """回归本次漏授的形态特征：read 授了 write 没授。
+
+    `pricing.write` 当初就是这么漏的（`pricing.read` 已授维护员/上架员/团管）。这条把
+    read/write 成对的模块钉住——凡持 *.read 的角色，若该模块存在同名 *.write 且该 write
+    无任何角色持有，即视为同类漏授。
+    """
+    with psycopg.connect(migrated_db) as conn:
+        holders = {
+            f"{code}": n
+            for code, n in conn.execute(
+                "SELECT p.code, count(r.id) FROM app.permission p"
+                " LEFT JOIN app.role_permission rp ON rp.permission_code = p.code"
+                " LEFT JOIN app.role r ON r.id = rp.role_id AND r.team_id IS NULL"
+                " GROUP BY p.code"
+            ).fetchall()
+        }
+    orphan_writes = [
+        w
+        for r, w in ((c, c[: -len("read")] + "write") for c in holders if c.endswith(".read"))
+        if w in holders and holders[w] == 0 and holders[r] > 0 and w not in SUPER_ONLY
+    ]
+    assert not orphan_writes, (
+        "以下 *.write 权限无任何角色持有，而同模块 *.read 已授——与 pricing.write 当初的漏授"
+        "形态相同：\n  " + "\n  ".join(sorted(orphan_writes))
+    )
