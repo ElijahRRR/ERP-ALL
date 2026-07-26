@@ -1560,3 +1560,40 @@ Owner 表单式逐条确认「决策按你建议的执行」，并批准墙钟�
    **已证伪**：库停 + 无开关 → 「127 passed」显示绿；库停 + 开关 → 硬错、退出码 2。
    > 这条与今日其余几处同类——`maintenance.py` 的 kinds fallback、配额闸幻影 kind、
    > evidence 门禁自命中——共同点都是**失败时表现为「看起来正常」**。
+
+## 2026-07-27 R2-08 考古阶段二：KPI 归属缺口 + settlement 字段映射三处收缩
+- **第二条硬缺口：007 要 KPI，图纸零覆盖。** 007:58 标题写「R2-08 财务域【L1】（结算对账 +
+  利润账 + **KPI**）」，工单 check 也点名「日报 KPI（考古＝旧 store_kpi_snapshots/
+  payout_accounts）」，但 `08-finance.md` 全文 grep `kpi|otd|vtr|payout_account|收款账户|绩效`
+  **零命中**。
+- 已定位那两张旧表：**`store_kpi_snapshots`（erp-core 0003）是店铺健康 KPI、不是财务指标**
+  ——otd/cancellation/vtr/srr/refund_rate/negative_review/return_rate/inr 八项 + 红黄绿综合灯 +
+  raw_payload，全部对应 Insights Performance 系端点（CLAUDE.md 已注「**全部 1/min**」，
+  其中 6 个未列入官方限额表、`refunds/summary` 已被官方标 Deprecated 由 `returns/summary` 取代），
+  与结算/利润/分录三层模型**零数据耦合**，唯一共同点是「都按店按日出报表」；
+  `payout_accounts`（erp-core 0002）是收款账户主数据（账号打码/绑店 JSONB/kyc/月入账/待入账/
+  冻结），图纸只在 `settlement_snapshot.payment_processor` 留了个**标签**，无账户实体、无资金态。
+- **建议把「日报 KPI」拆出 R2-08**，三条理由：①不是财务数据，塞进财务域污染域边界；
+  ②数据源是 Insights 系 22 个端点（全部 1/min，节流与重试自成一套），与结算报告（15/min、
+  100/min）不同量级；③图纸零覆盖 ⇒ 做它要先补图纸，而结算/利润那两块图纸**已就绪可立刻开工**，
+  捆一起会让已就绪的部分陪着等。R2-08 收敛为「结算对账+利润账+收款账户」，KPI 另开或并入 R2-07。
+  **不裁不影响结算/利润开工**，但影响拆单粒度与验收判据，宜立项时一并定。
+- **settlement 字段映射：图纸 5 个聚合数 vs 旧仓约 75 列**（七组：卖家信息/账户摘要/销售汇总/
+  退款汇总/调整项/WFS/合作伙伴 + raw_json）。三处收缩值得裁（**均不阻塞**，增量1 落表时可带）：
+  - **(a) 缺渠道自报的实付锚点**。图纸 `net_payout` 是我方口径净额；旧仓的 `paid_to_you` /
+    `opening_balance` / `closing_balance` 才是渠道自报实付。图纸 §92 要求「headline 与明细求和
+    不平 → 告警」，可**真正该对的那个数（钱到底打了多少）图纸里没有独立字段**。建议保留三列，
+    让「期初 + 本期活动 = 期末 = 实付」成为可机械校验的恒等式。
+  - **(b) WFS 七项费用 + 佣金四项被压进单一 `channel_fee` 科目**。「本月 WFS 费用为什么涨了」
+    在系统里答不出来，只能回去翻 raw_json。建议加 `fee_subtype` 维度列，而非扩
+    `ledger_entry.account` 那个六科目 CHECK 集合——**扩科目会动记账模型，加维度只影响可分析性**。
+  - **(c) 图纸无 `raw_payload` 落点**，而旧仓每张快照都存原始响应。immutable ledger 尤其需要
+    原始凭证（审计复算 / 争议回溯 / 解析规则改了要能重放）。文档层本就「只进不改」，存原文与
+    该层定位一致。
+- 三条都属图纸修订、归规划/审查 AI，本文件即批注素材；但都是「加列/加维度」，不动事件-分录-投影
+  三层骨架，**不阻塞开工**。
+- 截至阶段二共 **6 条待裁**（archaeology §11 汇总表），**其中仅 `source_ref` 一条阻塞增量2**，
+  余五条可边做边带。
+- 仍未做：旧仓 820 行的**行为语义**（本轮只读了 schema 与端点，未读控制流——增量拉取断点续跑、
+  `--force` 全量重拉、脏值处理、headline 平账校验的实际实现）；前端 `pages-finance.jsx` 形态；
+  OpenAPI 契约缺口细目。

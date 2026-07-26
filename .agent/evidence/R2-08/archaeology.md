@@ -1,9 +1,11 @@
-# R2-08 财务域考古（阶段一：闸门核实 + 现状基线 + 渠道供给）
+# R2-08 财务域考古
 
-> **状态**：阶段一完成（2026-07-27，R2-12 三日连测墙钟等待期间）。只读，未改任何实现代码，未立项。
-> **阶段二待做**：旧仓 `fetch_walmart_settlement.py` 全文逐段语义（820 行，本轮只读了端点与表结构）、
-> `settlement_snapshots` 全字段与 headline 平账口径、旧 `store_kpi_snapshots`/`payout_accounts`、
-> 前端 `erp-core/handoff-design/project/src/pages-finance.jsx` 的既有形态、契约与权限点缺口。
+> **状态**：阶段一 + 阶段二完成（2026-07-27，R2-12 三日连测墙钟等待期间）。
+> 只读，未改任何实现代码，未立项。
+> **阶段一**（§0~§7）：闸门核实 · 现状基线 · 幂等键错位 · 渠道限额 · 初步拆单判断。
+> **阶段二**（§8~§11）：KPI 归属缺口 · settlement 字段映射三处收缩 · 待裁清单汇总。
+> **未做**（见 §10）：旧仓 820 行的**行为语义**（本轮只读了 schema 与端点，未读控制流）、
+> 前端 `pages-finance.jsx` 形态、OpenAPI 契约缺口细目。
 
 ---
 
@@ -158,3 +160,135 @@ D-Q56 原文（`DECISION-FORM.md:221`）：
   ④投影层 + rebuild_check 内建对账 ⑤对账工作台页 + 未匹配行人工核对 ⑥日报 KPI。
 - **最该先裁的**：§3 的 `source_ref` 组成。它是增量2 的地基，且改起来是**破坏性**的
   （幂等键定错，已过账的事件要全量重算），不能边做边改。
+
+---
+
+# 阶段二（2026-07-27 续）：旧仓字段全貌 · 图纸覆盖缺口 · KPI 归属
+
+## 8 ⚠️ 第二条硬缺口：007 要「KPI」，图纸 §08 零覆盖
+
+007 对 R2-08 的标题原文（`007:58`）：
+
+> ### R2-08 财务域【L1】（结算对账 + 利润账 + **KPI**）
+
+工单 `check` 亦写「→ 日报 KPI（考古＝旧 `store_kpi_snapshots`/`payout_accounts`）」。
+
+**但 `specs/001-domain-model/08-finance.md` 全文对 KPI 与收款账户零字**——
+`grep -niE 'kpi|otd|vtr|payout_account|收款账户|绩效'` 在图纸里**零命中**。
+
+### 旧 `store_kpi_snapshots` 到底是什么（`erp-core/backend/alembic/versions/0003_kpi_snapshots.py:21-41`）
+
+| 列 | 含义（阈值来自注释） |
+|---|---|
+| `otd` | On-time Delivery ≥90% |
+| `cancellation` | Cancellation Rate ≤2% |
+| `vtr` | Valid Tracking Rate ≥99% |
+| `srr` | Seller Response Rate ≥95% |
+| `refund_rate` | Refund Rate ≤6% |
+| `negative_review` | Negative Review Rate ≤2% |
+| `return_rate` | Return Rate ≤6% |
+| `inr` | Item Not Received ≤2% |
+| `composite` | green / yellow / red 综合灯 |
+| `source` | walmart_api / yingdao_rpa / manual |
+| `raw_payload` | JSONB 原始响应 |
+| 键 | `(store_id, store_name, snapshot_date)` |
+
+**这是店铺健康/绩效 KPI，不是财务指标。** 八项全部对应 Walmart **Insights Performance** 系端点
+（CLAUDE.md 已注明「Insights 性能指标类**全部 1/min**」，共 22 个端点；其中 `refunds/summary`
+已被官方标 Deprecated、由 `returns/summary` 取代）。它与结算/利润/分录**没有任何数据关系**——
+唯一的共同点是「都按店按日出一份报表」。
+
+### 旧 `payout_accounts`（`0002_phase1b_v5_tables.py:231-245`）
+
+| 列 | 说明 |
+|---|---|
+| `id`/`name`/`account_masked`/`type` | 收款账户（账号打码） |
+| `stores` JSONB | 该账户绑定哪些店 |
+| `kyc`/`status` | 认证与启用态 |
+| `month_income`/`pending`/`frozen` | 月入账 / 待入账 / 冻结 |
+
+这是**收款通道账户主数据**（D-Q40 已定「收款仅 PingPong 标签」）。图纸 §08 只在
+`settlement_snapshot.payment_processor` 留了一个**标签字段**，没有账户实体，
+也没有 `pending`/`frozen` 这类资金状态。
+
+### 结论与建议（待裁）
+
+**R2-08 当前范围有三块，图纸只覆盖了一块半**：
+
+| 子域 | 007 要求 | 图纸 §08 覆盖 | 缺口 |
+|---|---|---|---|
+| 结算对账 + 利润账 | ✅ | ✅ 完整（事件/分录/投影三层） | — |
+| 收款账户 | 隐含（payout_accounts 考古锚点） | ⚠️ 只有一个 `payment_processor` 标签 | 无账户实体、无 pending/frozen 资金态 |
+| 日报 KPI | ✅ 写进标题 | ❌ **零覆盖** | 整块无图纸 |
+
+**建议（供 Owner/规划侧裁）**：**把「日报 KPI」从 R2-08 拆出去**，理由三条——
+①它不是财务数据，与事件/分录/投影三层模型没有任何耦合，塞进财务域会污染域边界；
+②它的数据源是 Insights 系 22 个端点（**全部 1/min**，且有 6 个未列入官方限额表、
+1 个已 Deprecated），拉取节流与重试策略自成一套，与结算报告（15/min、100/min）不同量级；
+③图纸零覆盖意味着**做它就要先补图纸**，而结算/利润那两块图纸已就绪、可以立刻开工——
+捆在一起会让已就绪的部分陪着等。
+
+若 Owner 认可拆分，建议新开 **R2-13 店铺健康 KPI**（或并入既有的店铺事件域 R2-07），
+R2-08 收敛为「结算对账 + 利润账 + 收款账户」。**这条不裁不影响结算/利润部分开工**，
+但会影响拆单粒度与验收判据，宜在立项时一并定。
+
+## 9 settlement_snapshot 字段映射：图纸 5 个聚合数 vs 旧仓 ~75 列
+
+旧 `settlement_snapshots`（`fetch_walmart_settlement.py:41-135`）分七组共约 75 列：
+
+| 组 | 列数 | 代表字段 |
+|---|---|---|
+| 卖家信息 | 5 | `partner_id` / `seller_status` / `payment_status` / `tenure_days` |
+| **账户摘要** | 15 | `opening_balance` / `order_activity` / `wfs_fees` / `reserve` / `hold_amount` / `hold_dates` / **`paid_to_you`** / `closing_balance` / `scheduled_settlement_date` / `settle_cycle` / `reserve_to_date` / `outstanding_mca` |
+| 销售汇总 | 20 | `sale_product_price` / `sale_net_comm` / `sale_total_base_comm` / `sale_comm_savings` / `sale_wfs_shipping` / `sale_above_cap` / `sale_pricing_adjustment` / `sale_net_payable` … |
+| 退款汇总 | 20 | `refund_*` 与销售组对称 |
+| 调整项 | 5 | `adj_net_payable` / `adj_dispute_settlement` / `adj_return_ship_charge` / `adj_return_handling_charge` / `adj_fwd_shipping_fee` |
+| WFS | 9 | `wfs_fulfillment_fee` / `wfs_storage_fee` / `wfs_return_shipping_fee` / `wfs_removal_fee` / `wfs_disposal_fee` / `wfs_prep_fee` / `wfs_adjustment` |
+| 合作伙伴 | 2 | `partner_net_payable` / `partner_advance_payment` |
+| 原始 | 1 | `raw_json` |
+
+图纸 `settlement_snapshot`（`08-finance.md:97-102`）只有：
+`team_id/store_id` · `period_start/end` · `currency` · **`gross_sales`/`refunds`/`channel_fees`/`adjustments`/`net_payout`**（5 个 headline 聚合） · `payment_processor` · `report_ref/pulled_at` · `version/status`。
+
+### 三处值得裁的收缩
+
+**(a) 缺「渠道自报的已付金额」这个对账锚点。** 图纸 `net_payout` 是我方口径的净额；
+旧仓的 **`paid_to_you`** 与 `closing_balance` 是**渠道自报的实付**。图纸 §92 要求
+「headline 与明细求和不平 → 对账异常 notification」——但真正该对的那个数（钱到底打了多少）
+在图纸里没有独立字段。建议至少保留 `paid_to_you` / `opening_balance` / `closing_balance`
+三列，让「期初 + 本期活动 = 期末 = 实付」成为可机械校验的恒等式。
+
+**(b) WFS 与佣金明细被压成一个 `channel_fees`。** 旧仓把 WFS 拆成 7 项费用、佣金拆成
+`net_comm`/`base_comm`/`comm_savings`/`above_cap` 四项。全压进 `channel_fee` 一个科目后，
+**「这个月 WFS 费用为什么涨了」在系统里答不出来**，只能回去翻 `raw_json`。
+考虑到 `ledger_entry.account` 的 CHECK 集合是图纸定死的六个（revenue/refund/channel_fee/
+adjustment/purchase_cost/freight_cost），要么扩科目集合，要么在 `ledger_entry` 加一个
+`fee_subtype` 维度列。建议后者——扩科目会动记账模型，加维度列只影响可分析性。
+
+**(c) 图纸没有 `raw_json` 落点。** 旧仓每张快照都存原始响应。immutable ledger 设计尤其需要
+原始凭证（审计要能复算、争议要能回溯、字段解析改了要能重放）。图纸只有 `report_ref`
+（凭证**引用**）。建议 `settlement_snapshot` 增 `raw_payload JSONB`——它本就是「只进不改」
+的文档层，存原文与该层定位一致。
+
+> 注：(a)(b)(c) 三条都属**图纸修订**，按纪律归规划/审查 AI，本文件即批注素材。
+> 但**不阻塞开工**——三条都是「加列/加维度」，不动事件/分录/投影三层骨架，可在增量1 落表时一并带上。
+
+## 10 阶段二余下未做
+
+- `fetch_walmart_settlement.py` 的**行为语义**（增量拉取断点续跑口径、`--force` 全量重拉、
+  `_to_float`/`_to_int` 脏值处理、headline 平账校验的实际实现）——本轮只读了 schema 与端点，
+  未逐段读 820 行的控制流。
+- `erp-core/handoff-design/project/src/pages-finance.jsx` 既有前端形态（D-Q53 触发制，可后置）。
+- 契约缺口：`permission` 表**无任何 finance 模块权限码**（已在阶段一记）；OpenAPI 契约无
+  Finance tag；前端无财务页路由。
+
+## 11 截至阶段二的待裁清单（立项时一并提请）
+
+| # | 事项 | 阻塞面 | 建议 |
+|---|---|---|---|
+| 1 | `source_ref` 幂等键组成（阶段一 §3） | **阻塞增量2** | 直采渠道自然键，`line_kind` 降为版本化派生列 |
+| 2 | 「日报 KPI」是否拆出 R2-08（§8） | 影响拆单与验收判据 | 拆出（不是财务数据 / 限额量级不同 / 图纸零覆盖会拖累已就绪部分） |
+| 3 | snapshot 保留 `paid_to_you` 等对账锚点（§9a） | 不阻塞，增量1 带 | 保留三列，让平账成为恒等式 |
+| 4 | 费用明细维度 `fee_subtype`（§9b） | 不阻塞，增量1 带 | 加维度列而非扩科目集合 |
+| 5 | `raw_payload` 落点（§9c） | 不阻塞，增量1 带 | 文档层存原文，与「只进不改」定位一致 |
+| 6 | 收款账户实体是否建（§8） | 影响范围 | 待裁；D-Q40 只定了标签，未定实体 |
