@@ -1184,3 +1184,37 @@
   届时前提零改为核「HEAD=main 且含 `9bc0bbbf`」、远端分支可删。
 - 至此 R2-12 的外部依赖全部清零，**整单只剩验收① 三日连测**（07-26/27/28，
   今日 18:00 那次是第 1 日 A 段）。
+
+## 2026-07-26 台账全面核对（Owner 三问「工作记录是否有好好写」）——查出一处系统性欠账
+- 范围：`.agent/task.md` / `review_list.json`（47 条）/ `progress.md`（38 条日记）/ `evidence/`
+  （65 份，覆盖 R1-01~R2-12 全工单）/ 已合并 PR 正文，四线交叉核对：完整性、一致性、证据链。
+- **系统性欠账（本次最重要的发现）**：**关账回写只做 `progress.md`+`task.md` 两处，漏 `review_list.json`。**
+  实证——PR #29 标题就叫「R2-11 整单关账回写（docs-only）」，`git show --stat` 只有
+  `progress.md`(+16) 和 `task.md`(±12) 两个文件，**从未触碰 review_list.json**。后果：R2-11 已于
+  07-23 accepted，评审台账里却挂着 `in_progress` / `last_checked_at=2026-07-17` / finding 只写到
+  增量1，整整 9 天与事实相反。CLAUDE.md 铁律 2「产出必须回写工单状态」在此被打了折。
+- 已修四条（`review_list.json`）：
+  - **R2-11**：`in_progress`→`accepted`，finding 补检修(PR #26)/二期A(#27)/二期B(#28)/关账全史
+    与两路真机验收，`last_checked_at`→07-23；顺带修复损坏的 `acceptance` 字段（原值
+    `"；改一个产品字段→audit_log可见操作人与前后值"`——开头孤立分号，随单补欠项串进了
+    验收判据位，真正的两条验收判据当时只写在 `note` 里）。
+  - **R2-07**：补「07b PR #25 已 squash 合并 main `bb75790`（07-18），0033 已在 main」；并写明
+    整单仍 `in_progress` 的确切残项=07b 验收②未收 + 07c 未开工（07a 已随 PR #18/#19 收口），
+    `last_checked_at`→07-26。此前 finding 停在「开发面完成」，读者无法判断代码是否已进 main。
+  - **RS-04A**：finding 原写「余项：14.18M 真实数据实测（待 Owner USPTO 导出）」——与事实脱节
+    14 天。改为已进入实测阶段（07-26 整链跑通 EXIT=0/5.5min/12 文件/0 错误/对账齐/lag_days=1），
+    量化数据随三日连测落账；并把 `pg_restore -t` 丢二级索引致 ETL 5.5 条/秒的运维坑写进本条
+    （搬运通道的知识该归 RS-04A），`last_checked_at`→07-26。
+  - **RS-04D**：补「增量5 PR #35 已合并 main `73b8c19`（07-25）+ 部署机两段分支验证全 PASS」，
+    并把三日窗口顺延 07-26/27/28 写入，`last_checked_at`→07-26。
+- 核对为「无问题」的部分（避免只报坏消息）：`progress.md` 38 条按日连续、每处误判都有显式
+  更正段（密钥缺失→bat LF-only、GIN 开销→索引丢失、非 zip 停机判据写错），没有静默改口；
+  `evidence/` 每个工单齐备（考古+runbook/verify+真机截图/JSON 快照），R2-09 考古 1512 行、
+  R2-12 三日验证表 278 行；已合并 PR 正文均含验证证据（PR #1 正文即永久记录）。
+- **仍存的记账缺口（本次未改，登记备查）**：① `progress.md` 无 PR #25 合并的独立条目（只有
+  07-17「07b 开发面完成」），合并事实此前只能从 git log 反推——已在本条写明；② `review_list.json`
+  字段形状 8 种（`acceptance`/`gate`/`note` 三个可选键随意出现），机器化校验困难；
+  ③ 无「关账 checklist」机制，故障可复发。建议（待 Owner 定）：关账时强制三档齐写
+  （progress + task + review_list），可加一个 CI 只读检查——`status=accepted` 的条目其
+  `last_checked_at` 不得早于对应关账 PR 的合并日。
+- 无代码变更；本次只动 `.agent/` 台账。

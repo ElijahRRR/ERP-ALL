@@ -53,6 +53,11 @@
 - 全局挂账：R2-05 L2 发货补验（等 A152 真实来单）；R2-04 验收②模拟断连；钓鱼黑名单导入；
   erpAPI PR #2 待授权；售后前端页（returns/refund 部分随 07c；店铺事件页 07b 已交付）。
   已清偿：前端 schema.d.ts codegen（07b 随契约重生成，含 R2-05/06/07a/11 既往欠账）。
+- **台账纪律挂账（2026-07-26 全面核对查出，见 progress 同日节）**：关账回写此前只做
+  progress+task 两处、漏 review_list.json（PR #29「R2-11 整单关账回写」实证只改两文件，
+  致 R2-11 accepted 后台账仍挂 in_progress 达 9 天）。已补修四条（R2-11/R2-07/RS-04A/RS-04D）。
+  待 Owner 定机制：①关账强制三档齐写 ②加 CI 只读检查（status=accepted 条目的
+  last_checked_at 不得早于其关账 PR 合并日）③review_list.json 字段形状收敛（现 8 种）。
 - Constraints: workflow discipline per CLAUDE.md；每增量 CI 绿（pytest/ruff[check+format]/mypy +
   pnpm lint/build）；业务参数一律 system_config；不绕过 walmart_client 语义直连渠道；
   fail-closed 底线；migration 仅 ar 帽；specs 正文只由云端 AI 落笔（007/图纸归审计侧，批注回传）。
