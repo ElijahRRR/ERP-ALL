@@ -1313,3 +1313,23 @@
 103 文件无问题、**pytest 507 passed / 1 skipped**（含本轮新增 6 项：P0-1 三条、P0-2 两条、dry-run 证据一条）、`alembic upgrade head → downgrade base →
 upgrade head` 三步全过。新测试**已证伪**：对回退后的旧码跑，3 条按预期变红
 （含 `assert None == (1,)`——旧码下 `quota_usage` 连行都不建，坐实闸完全空转）。
+
+## 2026-07-26 PR #36 合并（Owner 授权）——P0-3 根治坐实，分支重建
+- **PR #36 squash 合入 main `5b37ded`**。合并前先更正正文三处失真（写着「验收① 0/3」、
+  `pytest 501`、以及把 `maintenance.py:29` 那个 fail-open 记为「本 PR 未修、待 Owner 定」
+  ——三处均已被后续进展取代）。合并后的正文即永久记录，不能留着错的进去。
+  CI 3/3 绿于 head `c58afb9`；`mergeable_state: clean`。
+- **P0-3 根治已实测坐实**：就用 runbook 里那条检查命令核 `origin/main`=`5b37ded`——
+  `.gitattributes` / `automation/README.md` / `automation/uspto-daily.bat` **三行齐全**。
+  至此「切回 main 就丢修复版 bat 与 CRLF 声明」的复发路径关闭，**部署机收账后可安全切回
+  main 常驻**。runbook 的「切回 main 前运维资产在位检查」作为长期 fail-closed 门保留
+  （防将来又有只活在分支上的运维资产）。Owner 明示不必另拆 ops-only PR。
+- **重建前先验内容零丢失**：比对分支 head 树与 main 树，唯一差异是 **main 多**一处
+  `specs/007` 验收④措辞修订（审计侧落笔，不在开发分支上），squash 正确保留；
+  我分支的东西一件没丢。据此 `git checkout -B claude/r2-03-launch-leg5n8 origin/main` 重建。
+- **本条即三档齐写的第一次实践**：今日上午查出「关账回写只做 progress+task、漏
+  review_list.json」（PR #29 实证）。本次合并回写同时落 `progress.md`（本节）、
+  `task.md`（R2-12 状态 + P0-3 挂账清偿）、`review_list.json`（R2-12 / RS-04D 两条），
+  三档齐动，不再重犯。
+- R2-12 剩余：**只差验收① 第 2、3 日**（07-27 / 07-28 各 18:00 的 A 段）。三日齐绿即可
+  与 RS-04D 一并关账。

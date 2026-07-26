@@ -22,9 +22,14 @@
     误判 / 日志 `>>` 数字吞重定向 / PS 嵌套引号管道）→ `walmart-trademark-sync` PR #1
     （两跳下载修复）验证通过并合并 main `9bc0bbbf` → 彩排发现 ETL 慢如龟爬，根因是一次性
     迁移 `pg_restore -t` 遗漏四张子表二级索引（非 GIN 维护开销，此前误判已更正），补索引
-    后整链首次端到端跑通（EXIT=0，300 倍提速）。**07-26 18:00 起为 A 段（自动触发）实质
-    证据窗口**，待部署机回报填入三日表。docs 收尾 PR #36（草稿，另含 R2-09 考古，待三日
-    连测结束后与 Owner 商定合并范围）。
+    后整链首次端到端跑通（EXIT=0，300 倍提速）。**验收① 第 1 日（07-26）PASS**（首条 A 段
+    实质证据：Last Run 18:00:01 / Result=0 / Next Run 07-27 18:00；无数据日——apc260723
+    429 限流窗内；USPTO 14,216,076 / ERP 4,475,105 / 双侧 newest 2026-07-25 / revision 204 /
+    lag_days=1）。**只差第 2、3 日（07-27 / 07-28 各 18:00 的 A 段）**，三日齐绿即与 RS-04D
+    一并关账。收尾 PR #36 已由 Owner 授权 **squash 合入 main `5b37ded`（2026-07-26）**，
+    含运维路径/三日协议/两处 fail-open 修复/bat 纳入版控/R2-09 考古/台账修正；合并前已
+    更正正文三处失真（合并后正文即永久记录）。分支已按纪律从 main 重建（重建前比对树，
+    唯一差异是 main 多一处 specs/007 验收④措辞修订＝审计侧落笔，本分支内容零丢失）。
   - R2-11 ✅ **accepted（2026-07-23，PR #24/26/27/28 全合并）**：D-Q64 四点全落地——
     实时归组（入库即组，真机 B0DGTYRBZQ 实证）/ 自动路由与散品上架双档 / 批次原子性
     守卫 v2 / live 补挂成组（组 8 真机修复 feed#42 8/8）+ 组 6 子集全 live 成组。
@@ -90,9 +95,9 @@
   分支 head），通过后 Owner 授权合并 main，合并后重建分支接着开发；部署机验完切回 main
   常驻；含迁移的增量若分支被弃须 alembic downgrade 归位。
   **切回 main 前必做「运维资产在位检查」**（2026-07-26 Owner 查出 P0-3）：只在开发分支上的
-  运维资产会随切换从检出树消失。现 `.gitattributes` + `infra/local-deploy/automation/`
-  （uspto-daily.bat + README）**尚未进 main**（origin/main=5329146 无此二者），一旦执行
-  「切回 main」修复版 bat 与 CRLF 声明同时丢失，07-25 LF-only 事故原样复发。检查命令见
-  infra/local-deploy/README.md「切回 main 前必做」节，三行不齐**不许切**。
-  根治=让这些资产进 main（PR #36 已含，待 Owner 授权合并；或另拆 ops-only PR，需 Owner 允许开新分支）。
+  运维资产会随切换从检出树消失。**该 P0 已根治**——PR #36 合并后 `origin/main`=`5b37ded`
+  已含 `.gitattributes` + `infra/local-deploy/automation/`（uspto-daily.bat + README），
+  实测三行齐全，**部署机收账后可安全切回 main 常驻**。检查命令（见
+  infra/local-deploy/README.md「切回 main 前必做」节）作为长期 fail-closed 门保留，防将来
+  又有只活在分支上的运维资产：三行不齐**不许切**。Owner 明示不必另拆 ops-only PR。
 - 本工作区环境：开发分支 claude/r2-03-launch-leg5n8（PR 按增量推），旧 erpAPI 仓挂载于 /home/user/erpAPI。
