@@ -37,6 +37,11 @@ GATEWAY_CALL_MARKERS = (
 )
 EVIDENCE_PREFIX = ".agent/evidence/"
 SOURCE_SUFFIXES = (".py",)
+# 只扫真正的应用/测试代码。收紧范围有两个作用：
+# ① 本脚本自身含 GATEWAY_CALL_MARKERS 的字符串字面量，不收紧就会自己命中自己（首次冒烟即踩）；
+# ② 工具脚本、迁移、示例代码不构成渠道写路径。
+# 测试目录**刻意保留在范围内**——dry-run 快照正是由测试产出的，改动那里恰恰该带 evidence。
+SCAN_PREFIXES = ("backend/src/", "backend/tests/", "workers/")
 
 
 def _run(*args: str) -> str:
@@ -58,7 +63,7 @@ def touches_channel_write(files: list[str]) -> list[str]:
     """改动文件里哪些含网关调用（按改动后的内容判定——删掉调用的 PR 不该被拦）。"""
     hits = []
     for f in files:
-        if not f.endswith(SOURCE_SUFFIXES):
+        if not f.endswith(SOURCE_SUFFIXES) or not f.startswith(SCAN_PREFIXES):
             continue
         path = REPO_ROOT / f
         if not path.exists():  # 本 PR 删除的文件
