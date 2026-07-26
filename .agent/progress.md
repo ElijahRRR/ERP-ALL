@@ -1620,3 +1620,37 @@ Owner 表单式逐条确认「决策按你建议的执行」，并批准墙钟�
   阶段一+阶段二详版 + 接上审计侧的落笔回执段。这已是**连续第二次**双方同改一条 finding
   （上次是 R2-09）。前次记的那个建议现在更值得做了：**把「裁定详情」与「落笔回执」分列两个
   字段**，别都往 `finding` 里堆——R2-08 这条现在 3061 字，R2-09 那条 2404 字。
+
+## 2026-07-27 RS-11 开工：契约四向一致性首次全量探测
+- RS-11 的 acceptance 头一句就是「**CI 自动四向校验：OpenAPI operation ↔ 实际路由 ↔
+  x-permission ↔ permission seed**」。本轮做探测（只读），门禁代码下轮落。
+- **唯一改动**：`core/authn.py` 给 `require_permission` 返回的依赖函数挂了个
+  `erp_permission` 属性，使权限码可内省，不改行为。**刻意不用 `__closure__` 反查**——
+  那依赖闭包变量顺序，改个形参就静默失效，理由已写进代码注释。
+- 取路由花了点功夫：FastAPI 把 `include_router` 的结果包成内部类 `_IncludedRouter`，
+  **直接遍历 `app.routes` 只能拿到 5 条**（其余 13 条是包装对象），须递归
+  `_IncludedRouter.original_router.routes` 并叠加 `include_context.prefix`。
+- **探测结果：契约 118 operation（106 带 x-permission）/ 实际路由 112（97 带权限）/ 种子权限码 53。**
+  - **A（代码权限码→种子）、B（契约 x-permission→种子）、E（两边权限码一致）三项全清、0 例外。**
+    即 `require_permission` docstring 那句「与 002 契约 x-permission **一字不差**」**经得起全量
+    检验**——此前只是口头约定、从无强制手段，这是第一次被机器验证。
+  - **C 契约有而路由无 15 条，性质分两种**：Portal 6 条是**前置声明不是漂移**（门户 router
+    全仓未挂载，属 R2-10 未开工，D-Q50 双入口的外侧）；Catalog 5 条 + Listing 4 条是端点未建。
+  - **C 的后者解释了 R2-08 考古阶段一那个发现的另一半**：`catalog.source_write` /
+    `catalog.category_write` / `listing.error_admin` 三码之所以曾「无角色可达」，
+    **是因为它们的端点本来就还没建**——契约先声明、代码后实现，权限码随契约种下但功能未上线。
+    0039 已授给团管属**提前授权**，不影响正确性（端点建成即可用）。
+  - **D 路由有而契约无 9 条是真欠账**：通知中心四端点（**前端在用**、契约里没有）+ 采集 worker
+    五端点。
+- 另发现两处小漂移：①契约路径参数用 camelCase（`{teamId}`）而代码用 snake_case（`{team_id}`）
+  ——功能等价，但 codegen 出的前端类型命名与后端日志/错误信息对不上，排查多绕一层；
+  ②`worker_router` 自带 `prefix="/worker/v1"` 又被挂在 `/api/v1` 下，叠成
+  `/api/v1/worker/v1/...` **双版本号**路径。**改路径是破坏性的**（采集 worker 在跑），
+  不建议现在动，但契约补登记时须如实写这个路径，别写成 `/worker/v1/...` 造成新的对不上。
+- **门禁设计要点已写进报告 §6**，其中一条值得单说：**C 的白名单必须配反向不变量——
+  工单一旦 accepted，其白名单条目必须清空**，否则「前置声明豁免」会退化成永久豁免，
+  跟今天上午修的 `SUPER_ONLY` 防僵尸不变量是同一个道理。
+- **子项归属按更正后的三 AI 分工重新划**：①四向校验＝我 ②`superseded_by` 标注与 D-Q 追踪列
+  ＝动 `DECISION-FORM.md` 宪法，**需 Owner 批准**后由规划/审查 AI 落笔 ③NOT VALID→VALIDATE
+  纪律入 `00-conventions`＝图纸，归规划/审查 AI ④001 财务域图纸修＝**已由审计侧 421f83d 完成，
+  可核销**。

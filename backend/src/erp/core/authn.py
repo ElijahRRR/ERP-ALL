@@ -133,4 +133,9 @@ def require_permission(permission: str) -> Callable[..., Awaitable[CurrentUser]]
             raise PermissionDenied(permission)
         return user
 
+    # 把权限码挂在依赖函数上，供 RS-11 的四向一致性校验内省
+    # （tests/test_contract_permission_consistency.py）。上面那句 docstring 的
+    # 「一字不差」此前只是口头约定、从无强制手段——挂上这个属性才使它可机器校验。
+    # 不用 `__closure__` 反查：那依赖闭包变量顺序，改个形参就静默失效。
+    _check.erp_permission = permission  # type: ignore[attr-defined]
     return _check
