@@ -1108,3 +1108,33 @@
   bat 部署校验：`CRLF=197 LoneLF=0 NonAscii=0`，源/目标 SHA-256 一致。
 - **当前状态**：任务路径上的 bat **已经是正确的新版**（SHA-256 已核），
   12 个 zip 已在磁盘、待导入。18:00 那次调度**具备成功条件**。
+
+## 2026-07-26 彩排慢如龟爬：根因=`pg_restore -t` 不带索引（我写的迁移步骤缺陷）
+
+- 现象：彩排跑 1 小时只导完 1 个小文件。实测 `apc260712.zip | 5,501 条 | 1003 秒`＝**5.5 条/秒**；
+  `apc260713` 日志 `10,000 条, 6 条/秒`；`pg_stat_activity` 显示单条
+  `DELETE FROM trademark_statements WHERE serial_number = ANY(...)` 跑 **20~29 秒且无锁等待**。
+  **无锁等待的 20 秒删除 = 顺序扫描 12.4 GB 子表。**
+- **我上一条判断错了**：当时说主因是三个 GIN trigram 索引的写入维护。实际那些索引**根本不存在**
+  ——真因是**索引整体缺失**。
+- **根因在我写的 runbook 迁移步骤**：`pg_restore --no-owner -x -t $t <dump>` 逐表还原。
+  **`-t` 只还原表与数据，不还原索引**——索引在 dump 里是独立 TOC 条目、tag 是索引名
+  （`idx_tm_classes_serial`），`-t trademark_classes` 匹配不到。
+  且**我写的核验步骤只查 `count(*)` 与 `max(filing_date)`**，这两项在无索引时照样通过，
+  **盲区放过了整整一层**。全程也没有 `ANALYZE`（pg_restore 后 reltuples 可能为 0，
+  planner 会误选顺序扫）。
+- 影响面不止 ETL：delta 导出的两个相关子查询
+  （`... FROM trademark_classes c WHERE c.serial_number = t.serial_number` 等）同样退化为逐行全表扫，
+  **C 段也会被拖死**；另 `WHERE t.source_file = 'apcYYMMDD.zip'` 原 schema 就没有索引，
+  每个文件一次 14M 行全表扫。
+- **runbook 已修**：迁移第 1 步补「必须手工重建索引」清单（4 个子表 serial_number + 新增
+  `idx_trademarks_source_file` + pg_trgm/GIN + 五张表 ANALYZE），核验步骤改为
+  **必须查 `pg_indexes` + 一条 `EXPLAIN ANALYZE` 冒烟**（毫秒级才算过），并写明
+  「只查行数会漏检」这个 2026-07-26 的实证盲区。
+- 排除项：磁盘 32 个 zip / 库内 220 completed / 本轮明确「需要导入 12 个文件」——
+  **没有误扫迁移带来的旧 zip**，Owner 关心的「是不是在全量拉取」已排除
+  （下载阶段上一轮 100 秒就跑完，`download_file` 对已存在文件直接短路）。
+- 处置：停 ETL（6 条/秒下 12 个文件要 20 小时以上，不可行）→ 查 `pg_indexes` 坐实 →
+  建索引 + ANALYZE → 重跑。同时**禁用 18:00 调度**（要做 DB 手术，绝不能并发；
+  且子表无 `(serial_number,…)` 唯一约束，并发会留重复行）。
+  代价：07-26 无 A 段 → 第 2 日 FAIL → 窗口顺延 **07-27/28/29**。

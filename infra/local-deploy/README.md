@@ -186,9 +186,46 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
      pg_restore --no-owner -x -d "postgresql://postgres:<pw>@127.0.0.1:5433/uspto" \
        -t $t D:\\erp-staging-backup\\<dump文件>
    done
-   # 核验：SELECT count(*), max(filing_date) FROM trademarks; —— 应为 14.19M 级 / 2026-07 上旬
-   #       SELECT count(*) FROM etl_progress WHERE data_type='trademark'; —— 有历史文件记录
    ```
+   🔴 **`pg_restore -t <表名>` 只还原表与数据，不还原索引！**（2026-07-26 实测代价：ETL
+   降到 **5.5 条/秒**、单条 `DELETE ... WHERE serial_number = ANY(...)` 顺序扫 12.4 GB 子表
+   耗时 20~29 秒，12 个日增量要跑 20 小时以上。）
+   原因：索引在 dump 里是**独立 TOC 条目、tag 是索引名**（`idx_tm_classes_serial`），
+   `-t trademark_classes` 匹配不到。**必须在还原后手工重建**：
+
+   ```sql
+   -- P0：ETL 与 delta 导出都靠它，缺了整条链没法用
+   CREATE INDEX IF NOT EXISTS idx_tm_classes_serial      ON trademark_classes      (serial_number);
+   CREATE INDEX IF NOT EXISTS idx_tm_owners_serial       ON trademark_owners       (serial_number);
+   CREATE INDEX IF NOT EXISTS idx_tm_statements_serial   ON trademark_statements   (serial_number);
+   CREATE INDEX IF NOT EXISTS idx_tm_design_codes_serial ON trademark_design_codes (serial_number);
+   -- P0：delta 导出按 source_file 取当轮增量（原 schema 无此索引，加了省 12 次全表扫）
+   CREATE INDEX IF NOT EXISTS idx_trademarks_source_file ON trademarks (source_file);
+   -- P1：daily_update 的 validate_data 要跑 mark_identification % 'NIKE'
+   CREATE EXTENSION IF NOT EXISTS pg_trgm;
+   CREATE INDEX IF NOT EXISTS idx_trademarks_mark_trgm ON trademarks USING gin (mark_identification gin_trgm_ops);
+   -- 统计信息：pg_restore 后 reltuples 可能为 0，planner 会误选顺序扫
+   ANALYZE trademarks; ANALYZE trademark_classes; ANALYZE trademark_owners;
+   ANALYZE trademark_statements; ANALYZE trademark_design_codes;
+   ```
+
+   **核验必须查索引，不能只查行数**——行数与 `max(filing_date)` 在无索引时照样通过，
+   2026-07-26 就是被这个盲区放过去的：
+
+   ```sql
+   SELECT tablename, indexname FROM pg_indexes
+    WHERE schemaname='public'
+      AND tablename IN ('trademarks','trademark_classes','trademark_owners',
+                        'trademark_statements','trademark_design_codes')
+    ORDER BY tablename, indexname;
+   -- 至少要看到：trademarks_pkey + 上面五条 + 各子表 serial_number 索引
+   SELECT count(*), max(filing_date) FROM trademarks;      -- 14.19M 级 / 2026-07 上旬
+   SELECT count(*) FROM etl_progress WHERE data_type='trademark';  -- 有历史文件记录
+   -- 冒烟：下面这条应是毫秒级；若要 20 秒以上，说明索引仍缺或统计信息未更新
+   EXPLAIN (ANALYZE, BUFFERS)
+     SELECT count(*) FROM trademark_classes WHERE serial_number = ANY(ARRAY[73000000,73000001]);
+   ```
+
    ⚠ 铁律不变：绝不 pg_restore 进 erp_all；uspto 库只被本链读写。
 2. **同步链代码**：`git clone https://github.com/ElijahRRR/walmart-trademark-sync D:\walmart-trademark-sync`
    → `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`。
