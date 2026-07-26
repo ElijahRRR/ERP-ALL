@@ -185,7 +185,7 @@ docker compose -f infra/docker-compose.yml exec api \
 | 情形 | A 段 | B/C 段 | 记法 | 处置 |
 |---|---|---|---|---|
 | 正常 | 触发且 result=0 | 通过 | **PASS**（当日计入三日） | 无 |
-| 无数据日 | 触发且 result=0 | 全 404、库无新增 | **PASS**（计入，标注「无数据日」） | 无 |
+| 无数据日 | 触发且 result=0 | **无新文件可导**（全 404 / 剩余候选在 429 限流窗内 / 已全部 completed），库无新增 | **PASS**（计入，标注「无数据日」） | 无 |
 | 情形 A | 触发但 result≠0 / 日志报错 | — | **FAIL** | 只回报日志，不改码；等云端定位 |
 | 情形 B | 触发且 0，但一条没导 | **全部/绝大多数**文件「非 zip」 | 不计入 | 前提零没过 → 切分支补跑 |
 | 情形 C | 未触发（任务未建/未启用） | — | 不计入 | 建/修计划任务 + 今日手动补跑取 B/C 段 |
@@ -197,10 +197,46 @@ docker compose -f infra/docker-compose.yml exec api \
 
 | 日期 | A 自动触发 | B 链路 | C 对账（revision / newest） | 判定 |
 |---|---|---|---|---|
-| ~~2026-07-25~~ | 已触发 18:00，**Last Result=10** | **报错**：`local secret file missing`，链路在下载前退出 | 跳过（B 无新 completed） | **FAIL（情形 A）·不计入** |
-| 2026-07-26 | — | — | — | — |
+| ~~2026-07-25~~ | 已触发 18:00，**Last Result=10** | **报错**：`local secret file missing`（假象，真因 bat LF-only） | 跳过 | **FAIL（情形 A）·不计入** |
+| 2026-07-26 | 待回报（任务 Enabled/Ready，Next Run 07-26 18:00） | 预期**无数据日** | 预期跳过 | — |
 | 2026-07-27 | — | — | — | — |
 | 2026-07-28 | — | — | — | — |
+
+> **窗口维持 07-26/27/28，最早收账 07-28 晚。** 一度以为 07-26 因手动彩排 + 临时禁用调度而作废，
+> 实际不会：**手动跑 bat 不推进 Windows 计划任务日程**，任务重新 `/enable` 后
+> `Next Run Time` 仍是 **07-26 18:00**，当日自动触发照常发生。
+
+### 2026-07-26 手动彩排：整链首次端到端跑通（非 A 段，不计入三日）
+
+`START 16:22:07 → END 16:27:35，EXIT=0`，**5.5 分钟**跑完。这是链路后半段
+（delta 导出 → `docker compose cp` → `bulk_import_trademark` → `[RECONCILE]`）**有史以来第一次被执行**。
+
+- 12 个文件全部 completed、**0 ETL 错误**；最大的 `apc260713` 75,283 条 / 43.9 秒。
+- `apc260725` 本轮已发布并成功导入（前一轮的「非 zip」确系门户未发布，判定正确）。
+- **DELTA ↔ importer 全部对齐、err 全 0**（12 个文件逐一核对）。
+  ⚠ 口径提醒：日志的 `[DELTA] rows` 是**物理文本行数**，CSV 字段内含换行时会大于逻辑记录数；
+  对账要按**逻辑 CSV 记录**比，否则会误判成不一致。
+- `[RECONCILE]`：uspto `total=14,216,076 / newest=2026-07-25 / completed_files=232`；
+  ERP `total=4,475,105 / newest=2026-07-25 / revision=204`。
+- 新鲜度守卫：`{"lag_days":1,"severity":"ok"}`。
+
+**故 `walmart-trademark-sync` PR #1 的形式证据已齐**（多个 zip 走完两跳 + ETL completed + 全链对账），
+合并前置**完全解除**。
+
+### ⚠ 本次最贵的一课：`pg_restore` 后必须核验索引
+
+彩排第一次跑时 ETL 只有 **5.5 条/秒**（12 个文件要 20 小时以上）。根因是**四张子表的
+`serial_number` 索引在迁移中全部丢失**，单条 `DELETE ... WHERE serial_number = ANY(...)`
+顺序扫 7.2 GB/3.2 GB 子表要 20~29 秒。
+
+补索引 + ANALYZE **总共只花 23 秒**，之后 **1,500~2,300 条/秒（约 300 倍）**。
+
+- 索引耗时：classes 2.9s / owners 7.3s / statements 6.2s / design_codes 1.3s / source_file 4.4s；
+  五张表 ANALYZE 合计不到 1s。
+- 冒烟：`Index Only Scan ... Execution Time: 0.485 ms`（此前同类删除 20~29 秒）。
+- **迁移核验从此必须查 `pg_indexes` + 跑一条 `EXPLAIN ANALYZE` 冒烟**——
+  原核验只查 `count(*)` 与 `max(filing_date)`，这两项**在无索引时照样通过**，
+  盲区放过了整整一层，见 `infra/local-deploy/README.md` 一次性迁入第 1 步。
 
 **07-25 复盘**（第 1 日作废，连续三日窗口顺延至 07-26/27/28，最早收账 07-28 晚）：
 

@@ -187,11 +187,26 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
        -t $t D:\\erp-staging-backup\\<dump文件>
    done
    ```
-   🔴 **`pg_restore -t <表名>` 只还原表与数据，不还原索引！**（2026-07-26 实测代价：ETL
-   降到 **5.5 条/秒**、单条 `DELETE ... WHERE serial_number = ANY(...)` 顺序扫 12.4 GB 子表
-   耗时 20~29 秒，12 个日增量要跑 20 小时以上。）
-   原因：索引在 dump 里是**独立 TOC 条目、tag 是索引名**（`idx_tm_classes_serial`），
-   `-t trademark_classes` 匹配不到。**必须在还原后手工重建**：
+   🔴 **还原后必须逐项核对索引——本步骤实测会丢索引。**
+
+   2026-07-26 实测：四张子表**全部缺失 `serial_number` 索引**（只剩 `id` 主键），
+   代价是 ETL 掉到 **5.5 条/秒**、单条 `DELETE ... WHERE serial_number = ANY(...)`
+   顺序扫子表耗时 **20~29 秒**，12 个日增量要跑 20 小时以上；补上索引后
+   **1,500~2,300 条/秒**（约 300 倍），整链 5.5 分钟跑完。
+
+   **机制未完全定论，不要照抄任何单一解释**——现场事实是：
+   `trademarks` 的 5 个二级索引（含 GIN trgm）**全在**、四张子表的外键（`contype='f'`）
+   **也全在**，唯独四张子表的二级索引**全丢**。最可信的猜想是大表
+   （`trademark_statements` 7.2 GB / `trademark_owners` 3.2 GB）在还原期间建索引失败，
+   而**下面这个 `for` 循环从不检查 `pg_restore` 退出码**，错误被静默吞掉。
+   故：**循环要检查退出码，且完成后必须显式核验索引**（核验清单见本步末尾）。
+
+   ```bash
+   # 循环务必带退出码检查，别让 pg_restore 的失败被吞掉：
+   #   pg_restore ... -t $t <dump> || echo "RESTORE FAILED: $t"
+   ```
+
+   **必须在还原后手工重建（缺哪个补哪个）**：
 
    ```sql
    -- P0：ETL 与 delta 导出都靠它，缺了整条链没法用
