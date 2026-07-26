@@ -15,7 +15,7 @@
 |---|---|---|
 | 1 | **工单写的「硬前置：等图纸」早已解除**——图纸 `421f83d`（2026-07-17）已按 immutable event ledger 修订完毕，commit 标题就叫「R2-08 闸门解除」，台账停在 07-16 未回写 | **台账失实**，已修 |
 | 2 | 财务域**代码与表全仓为零**，真空地；`financial_event`/`ledger_entry`/`profit_ledger`/`settlement` 在 `backend/src/` 与全部 39 个迁移中零命中 | 现状核实 |
-| 3 | 图纸提议的幂等自然键与渠道**实际提供的字段对不上**——这是「重拉不二次过账」这条硬保证的地基 | **待裁，阻塞增量1** |
+| 3 | 图纸提议的幂等自然键与渠道**实际提供的字段对不上**——这是「重拉不二次过账」这条硬保证的地基 | **已裁定并落笔**（main `b4f286f`，阻塞解除） |
 | 4 | 旧仓实际用的两个 recon 端点**未列入官方限额表**，只能按同族类推 | 风险登记 |
 | 5 | D-Q56 原文说「R4/R5 建域前改图纸」，而 007 把财务域排成 R2-08——顺序错位，图纸已按 R2-08 口径改了，此处只作记录 | 口径注记 |
 
@@ -59,7 +59,7 @@ ls backend/src/erp/    # aftersale audit automation catalog channel compliance c
 
 ## 3 ⚠️ 幂等自然键：图纸提议 vs 渠道实际供给，对不上
 
-这是本阶段最要紧的发现，**直接阻塞增量1**。
+这是本阶段最要紧的发现。**已于 2026-07-26 裁定并落笔（main `b4f286f`），阻塞解除**——详见本节末。
 
 ### 图纸怎么定的（`08-finance.md:49-52`）
 
@@ -95,7 +95,19 @@ UNIQUE(store, report_date, transaction_key, amount_type)
 ②费用类行 `sku`/`order_no` 为空 → 多条不同费用行拼出**相同** `source_ref` → 后到的被幂等键**静默吞掉**（少计费用）。
 两个方向都是钱算错，且都不会报错。
 
-**建议（待 Owner/规划侧裁）**：`source_ref` 直接采用渠道自然键
+> ### ✅ 已裁定并落笔（2026-07-26，main `b4f286f`）
+>
+> 本条建议**已被规划/审查 AI 采纳并写进图纸**，且比原建议更进一步：
+> - `source_ref` 改为 `{store_id}:{report_date}:{transaction_key}:{amount_type}`（渠道行身份，不含任何我方派生值）；
+> - **另发现 `event_kind` 也是派生值且原本在唯一键里**（我这条没抓到），一并移出；
+> - 新增 `posting_seq INT`——同一渠道行的第 n 次过账，**仅当前次已被 reversal 冲销后**才允许递增重过；
+> - 唯一约束改为 `uq_financial_event (source_kind, source_ref, posting_seq)`；
+> - `settlement_line` 补 `transaction_key` / `amount_type` 两列 **NOT NULL**，并写入「R2-08 建域预检：
+>   拉取实现必须原样落库这两列，缺任一即无法构造幂等键」。
+>
+> **增量2 的阻塞已解除。** 下文保留原分析作为该修订的依据记录。
+
+**原建议（已采纳）**：`source_ref` 直接采用渠道自然键
 `store:report_date:transaction_key:amount_type`，与旧仓唯一键同构；`line_kind` 降级为**派生列**
 （由 `transaction_type`+`amount_type` 按版本化规则映射，规则版本记在 `posting_rule_version` 上），
 不参与幂等键。这样幂等只依赖渠道给的事实，不依赖我方可变的归类口径。
@@ -286,7 +298,7 @@ adjustment/purchase_cost/freight_cost），要么扩科目集合，要么在 `le
 
 | # | 事项 | 阻塞面 | 建议 |
 |---|---|---|---|
-| 1 | `source_ref` 幂等键组成（阶段一 §3） | **阻塞增量2** | 直采渠道自然键，`line_kind` 降为版本化派生列 |
+| ~~1~~ | ~~`source_ref` 幂等键组成（阶段一 §3）~~ | ~~阻塞增量2~~ | ✅ **已裁定并落笔**（main `b4f286f`，另加 `posting_seq` 与 `event_kind` 移出唯一键；阻塞解除） |
 | 2 | 「日报 KPI」是否拆出 R2-08（§8） | 影响拆单与验收判据 | 拆出（不是财务数据 / 限额量级不同 / 图纸零覆盖会拖累已就绪部分） |
 | 3 | snapshot 保留 `paid_to_you` 等对账锚点（§9a） | 不阻塞，增量1 带 | 保留三列，让平账成为恒等式 |
 | 4 | 费用明细维度 `fee_subtype`（§9b） | 不阻塞，增量1 带 | 加维度列而非扩科目集合 |
