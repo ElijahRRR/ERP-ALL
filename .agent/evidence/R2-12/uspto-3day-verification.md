@@ -4,19 +4,33 @@
 > 必须证明它**无人值守连续三日自动跑通**——不是「手动跑一次成功」。
 > 本文件是三日证据容器，收齐即 R2-12 整单收账。
 >
-> 相关：链路定义见 `infra/local-deploy/README.md`「USPTO 商标供给链」；
-> 修复分支 `ElijahRRR/walmart-trademark-sync` PR #1（`fa134dc`，两跳下载修复）待首跑绿后合并。
+> 相关：链路定义见 `infra/local-deploy/README.md`「USPTO 商标供给链」。
+> ✅ `ElijahRRR/walmart-trademark-sync` PR #1（两跳下载修复）**已于 2026-07-26 squash 合入
+> main `9bc0bbbf`**（Owner 授权）。
 
-## 前提零：先核 HEAD 分支（每日必查，最容易踩）
+## 前提零：核 HEAD 分支（每日必查，最容易踩）
 
 ```bash
 cd /d D:\walmart-trademark-sync && git rev-parse --abbrev-ref HEAD
-# 必须是 claude/fix-uspto-json-download —— 不是 main
 ```
 
-修复前的 main 版本在两跳下载处拿到的是**中间跳转页而非 zip 实体**，会把 141 个待补日期
-全部判为「非 zip」跳过。症状 = **跑了、退出码 0、但一条没导**。
-若 HEAD 在 main：这**不算 FAIL**，切分支后补跑即可，当日按「情形 C」记。
+**三日连测窗口内（07-26/27/28）：应仍是 `claude/fix-uspto-json-download`，不要切！**
+
+PR #1 已合入 main，但**窗口期内不切分支**——该分支内容与 main 里的修复**逐字相同**，
+中途切换只增加变量、零收益。远端分支**已刻意保留不删**（`fa134dc`），就是为了让部署机
+安稳踩到窗口结束。
+
+**收账（07-28 晚）之后**再按 runbook「部署机验完切回 main 常驻」处置：
+
+```bash
+git checkout main && git pull      # main 已含 9bc0bbbf 的两跳修复
+git log --oneline -1               # 应见 9bc0bbbf
+```
+切回后本前提零改为核「HEAD=main 且含 `9bc0bbbf`」；届时远端分支可删。
+
+**为什么这条必须每日查**：修复前的 main 在两跳下载处拿到的是**中间跳转页而非 zip 实体**，
+会把 141 个待补日期全部判「非 zip」跳过，症状 = **跑了、退出码 0、但一条没导**。
+（该风险自 `9bc0bbbf` 合入后已消除，但窗口期内仍逐日核 HEAD，防止有人误切到旧提交。）
 
 ## 前提一：`.bat` 必须是 CRLF 且纯 ASCII（07-25 实测踩中，代价=一个验收日）
 
