@@ -72,14 +72,24 @@
 **现状核实**：`automation_policy` 表已建（0025），但只消费 `flow=order_block` 一档。
 本单=补全 flow 枚举与消费点，非建表：
 
-- flow 全集接线：`audit_to_listing`（D-Q13，审核 pass 后是否自动进分配）、
-  `listing_pricing`（改价守护联动 R2-06）、`refund`（D-Q29 三档原文）、
-  `scrape_to_audit`（采集完自动送审）等——以 §09 automation 图纸 flow 清单为准；
+- flow 全集接线：以 **§09 flow 注册清单 v2（2026-07-26 冻结）** 为唯一权威，九条：
+  `scrape_to_audit` · `audit_to_listing` · `listing_dispatch` · `pricing_watch` ·
+  `order_block` · `compliance_block` · `refund` · `cancel` · `maintenance_run`。
+  （原文误写的 `listing_pricing` 系本计划笔误，代码与图纸真名均为 `pricing_watch`，
+  2026-07-26 归一；v1 的 `gtin_alert`/`suspension_reminder` 已移出注册表——阈值与
+  节奏另有落点，告警能力不变，详见 §09。）
 - 三档语义统一（人工/半自动/全自动，团队级面板）+ 前端策略面板页；
-- 档位变更即时生效（吃 R2-04 Redis pubsub 配置广播）。
+  **`order_block`/`compliance_block` 只有 manual/auto 两档**（裁定 3）；
+- **档位在每次决策时直读 `automation_policy`，不进缓存**（裁定 4：原文"吃 R2-04
+  Redis pubsub 配置广播"的实现指定作废——该缓存无业务读者且方向为 fail-open，
+  与档位闸必须 fail-closed 相悖；直读延迟≈0）。即时生效的**目标**保留。
 
 **验收**：同一商品在三档下各跑一遍采集→审核→上架→定价全链：全自动零人工介入、
-半自动在设定环节停、人工档每环节停；切档 60s 内生效。
+半自动在设定环节停、人工档每环节停。**四环对应 flow**（裁定 2 补齐，判据不下调）：
+①`scrape_to_audit` ②`audit_to_listing` ③`listing_dispatch` ④`pricing_watch`。
+**切档生效口径（裁定 4 修订，替代原"60s 内生效"）**：实时求值类 flow 于**下一次
+决策**即生效（含 auto 档 beat 逐条目读档，最坏陈旧=一个条目，非一批）；创建快照类
+（`refund`/`cancel`）对在途请求**不生效属正确行为**，验收查新建请求即可。
 
 ### R2-10 采购方门户对外【L2】
 

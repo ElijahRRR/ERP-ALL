@@ -153,17 +153,53 @@
 | updated_by / updated_at / created_at | | | |
 
 约束：`uq_automation_policy (team_id, flow_code)`。
-flow_code 注册清单（v1，代码 Enum 对照 + CI 校验）：
+flow_code 注册清单（**v2，2026-07-26 冻结**；代码 Enum 对照 + CI 校验）：
 
-| flow_code | 三档语义 | config 关键项 |
-|---|---|---|
-| audit_to_listing | 审核通过后：人工逐批确认 / 半自动（批量待确认队列）/ 全自动进分配（D-Q13） | batch_size |
-| compliance_block | off(=manual 纯软标记) / block 拦截（D-Q14） | 按 severity 分档 |
-| order_block | 四检 flagged 单是否冻结分配 | check_kinds |
-| refund / cancel | 记录 / 审批 / 自动执行（D-Q29） | amount_ceiling（auto 档金额上限） |
-| pricing_watch | 盯价改价：仅报告 / 待确认 / 自动改价 | frequency（默认 1/日，店铺覆盖 D-Q26） |
-| gtin_alert | 水位告警阈值 | warn_pct, critical_pct |
-| suspension_reminder | 封店提醒节奏（D-Q33） | remind_days |
+> **v2 冻结依据**：Owner 2026-07-26 裁定四条（开发侧考古 `.agent/evidence/R2-09/`
+> `archaeology.md` §2[1]~[4] + `owner-rulings-20260726.md`；审计侧核实源码后落笔）。
+> 本表即 `AutomationFlow` 枚举的唯一权威——增删 flow 必须先改本表。
+
+| flow_code | 环节 | 合法档位 | 求值语义 | 三档语义 | config 关键项 |
+|---|---|---|---|---|---|
+| scrape_to_audit | ①采集 | manual/semi/auto | 实时 | 采集完成后送审：人工点送 / 半自动批量待确认 / 自动送审 | batch_size |
+| audit_to_listing | ②审核 | manual/semi/auto | 实时 | 审核通过后：人工逐批确认 / 半自动待确认队列 / 全自动进分配（D-Q13）。**含 match 模式跳过 sourcing 的判定**——§03「match 跳过 sourcing 由 automation_policy 决定」归属本 flow（生效点在 allocate→submit 链上） | batch_size |
+| listing_dispatch | ③上架 | manual/semi/auto | 实时 | 分配完成后派发上架：人工点发 / 半自动待确认 / 自动提交 feed | batch_size |
+| pricing_watch | ④定价 | manual/semi/auto | 实时 | 盯价改价：仅报告 / 待确认 / 自动改价 | frequency（默认 1/日，店铺覆盖 D-Q26） |
+| order_block | 订单闸 | **manual/auto（无 semi）** | 实时 | 四检 flagged 单是否冻结分配 | check_kinds |
+| compliance_block | 合规闸 | **manual/auto（无 semi）** | 实时 | manual=纯软标记 / auto=block 拦截（D-Q14） | 按 severity 分档 |
+| refund | 退款 | manual/semi/auto | **创建快照** | 记录 / 审批 / 自动执行（D-Q29） | amount_ceiling（auto 档金额上限） |
+| cancel | 取消 | manual/semi/auto | **创建快照** | 同 refund（D-Q29） | amount_ceiling |
+| maintenance_run | 维护执行 | manual/semi/auto | 实时 | maintenance_task runner 认领档位：人工点跑 / 半自动按 kind 白名单 / 自动执行。**D-Q65② 宪法级要求**：报错回收的 DELETE/republish 必须有人工闸 | kinds（**默认空=最保守**，不得 fail-open） |
+
+**四环映射**（007 R2-09 验收判据「采集→审核→上架→定价四环各自可停」的 flow 对应）：
+`scrape_to_audit` → `audit_to_listing` → `listing_dispatch` → `pricing_watch`。
+v1 只供给了②④两环，判据要求四环——**补登记①③，判据不下调**（裁定 2：漏登记是图纸的
+问题，不该反过来降标准迁就图纸）。
+
+**档位集合声明（裁定 3）**：`order_block` / `compliance_block` 合法档位**只有两档**
+`{manual, auto}`——不是"隐藏第三个选项"，是本来就没有 semi；面板对这两条渲染二选一。
+其余 flow 为三档全集。理由：`order_block` 是唯一已上线在跑的消费点，为概念整齐给它造
+semi 语义 = 改动正在工作的订单冻结行为，风险与收益不对称。
+
+**求值语义声明（裁定 4 的直接后果，逐 flow 定死，不留"未定"）**：
+- **实时求值**：每次决策直读 `automation_policy`，切档对**下一次决策**即生效；
+- **创建快照**：档位在请求创建时固化进 `mode_applied`（refund/cancel 已如此实现），
+  切档**不影响在途请求**——这是正确行为，验收时不得判为"未生效"；
+- **不进缓存**：档位**不走 ConfigService / Redis 广播**。实测该缓存无业务读者
+  （`get_config_service` 仅用于启动失效订阅器，`main.py:39`/`beat.py:155`；
+  `pricing/service.py:134` 注明业务侧一律经请求会话直读），且 config bus 是
+  **fail-open**，而档位闸必须 **fail-closed**——用 fail-open 载体承载 fail-closed
+  语义即自相矛盾。直读延迟≈0，比走缓存更准且不更慢。
+- **读写同事务 + 每条决策读一次**：档位读必须与被它闸住的写落在同一事务
+  （`procurement.py` 现状已合规）。**auto 档 beat 推进器禁止"读一次档跑完整批"**——
+  beat 任务级硬超时 900s（`beat.py:_DEFAULT_TASK_TIMEOUT_SECONDS`），批级读档会让最坏
+  陈旧达 900s+tick、击穿即时生效承诺；须**逐条目读档**，把最坏陈旧收敛到一个条目。
+
+**v2 相对 v1 的删除项（能力未减，只是档位不再由本表管）**：
+- ~~`gtin_alert`~~ → 阈值实落 `system_config` 的 `gtin.warn_pct` / `gtin.critical_pct`
+  （`automation/tasks.py` 直读）。保留=同一参数两个落点，运营改 A 处不生效；
+- ~~`suspension_reminder`~~ → 节奏实落 schedule 种子 `remind_days=7`。
+  **两项告警照常工作**，仅从 automation_policy 注册表移除，勿误读为功能下线。
 
 ### schedule 调度注册（beat 读表驱动，运营可维护）
 
