@@ -17,6 +17,15 @@
 - 放行条件 = 同一份 diff 里有任何 `.agent/evidence/` 下的文件变更。
 
 `ADVISORY=1` 时只告警不拦（首轮上车用），否则命中即非零退出。
+
+**本闸自己曾有一处 fail-open，2026-07-27 已修（记在此以免复发）**：放行条件是「evidence 有
+文件变更」，而 `evidence/R1-11/dry-run-feed-snapshot.json` 每跑一遍测试就变两行——`sku` 是
+库内序号分配、`startDate` 是构包时刻的 `now()`——**请求形态一个字没变**。于是**跑一遍测试
+就能过闸**，「有 evidence 变更」并不代表真补了证据。已在源头治：证据落盘统一走
+`backend/tests/db/_evidence.py` 的规范化写入器，把这类字段换成固定占位符并在文件内留痕。
+实测两跑逐字节相同；注入一处形态变更则精确产出一行 diff——**既不再被 churn 满足，也没被弄哑**。
+
+残留局限（不掩盖）：规范化只覆盖调用方**显式声明**的字段，新证据写入点漏声明就会重新 churn。
 """
 
 from __future__ import annotations
