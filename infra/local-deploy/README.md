@@ -62,6 +62,28 @@ git checkout main && git pull && make up   # 部署机切回 main 常驻
 - 含迁移的增量：分支验证会把库 schema 推前；若增量最终被弃，须先 `alembic downgrade`
   归位再切回 main（增量门槛本就要求迁移 up/down 实测过）。
 
+### ⚠️ 切回 main 前必做：运维资产在位检查（fail-closed）
+
+「切回 main」会把只存在于开发分支上的运维资产**从检出树里抹掉**。USPTO 日更链正是
+踩过这个坑的活例：`uspto-daily.bat` 与强制 CRLF 的 `.gitattributes` 一度只在开发分支上，
+一旦切回 main，修复版 bat 连同换行声明同时消失，**07-25 那次 LF-only 事故会原样复发**。
+把 bat 纳入版控的初衷是「不能只存在于一台机器」，若它只存在于一条随时被 squash 的分支，
+风险并没有消除。故切之前先跑这一段，**任一项缺失就不要切**：
+
+```bash
+git fetch origin main
+git ls-tree -r origin/main --name-only | grep -E '^\.gitattributes$|^infra/local-deploy/automation/'
+# 期望三行齐全：.gitattributes / automation/README.md / automation/uspto-daily.bat
+# 少任何一行 → main 还没收到这些资产，别切；先让对应 PR 合并，或把当前分支保留常驻。
+```
+
+Windows 侧同时确认（切完再核一次，防 CRLF 被规范化掉）：
+
+```bat
+git -C <仓库根> check-attr text eol -- infra/local-deploy/automation/uspto-daily.bat
+:: 期望 eol: crlf；若为 unset/lf，则 .gitattributes 未生效，bat 会重演 LF-only 事故
+```
+
 ## 故障处置速查
 
 | 症状 | 动作 |
@@ -186,17 +208,98 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
      pg_restore --no-owner -x -d "postgresql://postgres:<pw>@127.0.0.1:5433/uspto" \
        -t $t D:\\erp-staging-backup\\<dump文件>
    done
-   # 核验：SELECT count(*), max(filing_date) FROM trademarks; —— 应为 14.19M 级 / 2026-07 上旬
-   #       SELECT count(*) FROM etl_progress WHERE data_type='trademark'; —— 有历史文件记录
    ```
+   🔴 **还原后必须逐项核对索引——本步骤实测会丢索引。**
+
+   2026-07-26 实测：四张子表**全部缺失 `serial_number` 索引**（只剩 `id` 主键），
+   代价是 ETL 掉到 **5.5 条/秒**、单条 `DELETE ... WHERE serial_number = ANY(...)`
+   顺序扫子表耗时 **20~29 秒**，12 个日增量要跑 20 小时以上；补上索引后
+   **1,500~2,300 条/秒**（约 300 倍），整链 5.5 分钟跑完。
+
+   **机制未完全定论，不要照抄任何单一解释**——现场事实是：
+   `trademarks` 的 5 个二级索引（含 GIN trgm）**全在**、四张子表的外键（`contype='f'`）
+   **也全在**，唯独四张子表的二级索引**全丢**。最可信的猜想是大表
+   （`trademark_statements` 7.2 GB / `trademark_owners` 3.2 GB）在还原期间建索引失败，
+   而**下面这个 `for` 循环从不检查 `pg_restore` 退出码**，错误被静默吞掉。
+   故：**循环要检查退出码，且完成后必须显式核验索引**（核验清单见本步末尾）。
+
+   ```bash
+   # 循环务必带退出码检查，别让 pg_restore 的失败被吞掉：
+   #   pg_restore ... -t $t <dump> || echo "RESTORE FAILED: $t"
+   ```
+
+   **必须在还原后手工重建（缺哪个补哪个）**：
+
+   ```sql
+   -- P0：ETL 与 delta 导出都靠它，缺了整条链没法用
+   CREATE INDEX IF NOT EXISTS idx_tm_classes_serial      ON trademark_classes      (serial_number);
+   CREATE INDEX IF NOT EXISTS idx_tm_owners_serial       ON trademark_owners       (serial_number);
+   CREATE INDEX IF NOT EXISTS idx_tm_statements_serial   ON trademark_statements   (serial_number);
+   CREATE INDEX IF NOT EXISTS idx_tm_design_codes_serial ON trademark_design_codes (serial_number);
+   -- P0：delta 导出按 source_file 取当轮增量（原 schema 无此索引，加了省 12 次全表扫）
+   CREATE INDEX IF NOT EXISTS idx_trademarks_source_file ON trademarks (source_file);
+   -- P1：daily_update 的 validate_data 要跑 mark_identification % 'NIKE'
+   CREATE EXTENSION IF NOT EXISTS pg_trgm;
+   CREATE INDEX IF NOT EXISTS idx_trademarks_mark_trgm ON trademarks USING gin (mark_identification gin_trgm_ops);
+   -- 统计信息：pg_restore 后 reltuples 可能为 0，planner 会误选顺序扫
+   ANALYZE trademarks; ANALYZE trademark_classes; ANALYZE trademark_owners;
+   ANALYZE trademark_statements; ANALYZE trademark_design_codes;
+   ```
+
+   **核验必须查索引，不能只查行数**——行数与 `max(filing_date)` 在无索引时照样通过，
+   2026-07-26 就是被这个盲区放过去的：
+
+   ```sql
+   SELECT tablename, indexname FROM pg_indexes
+    WHERE schemaname='public'
+      AND tablename IN ('trademarks','trademark_classes','trademark_owners',
+                        'trademark_statements','trademark_design_codes')
+    ORDER BY tablename, indexname;
+   -- 至少要看到：trademarks_pkey + 上面五条 + 各子表 serial_number 索引
+   SELECT count(*), max(filing_date) FROM trademarks;      -- 14.19M 级 / 2026-07 上旬
+   SELECT count(*) FROM etl_progress WHERE data_type='trademark';  -- 有历史文件记录
+   -- 冒烟：下面这条应是毫秒级；若要 20 秒以上，说明索引仍缺或统计信息未更新
+   EXPLAIN (ANALYZE, BUFFERS)
+     SELECT count(*) FROM trademark_classes WHERE serial_number = ANY(ARRAY[73000000,73000001]);
+   ```
+
    ⚠ 铁律不变：绝不 pg_restore 进 erp_all；uspto 库只被本链读写。
 2. **同步链代码**：`git clone https://github.com/ElijahRRR/walmart-trademark-sync D:\walmart-trademark-sync`
    → `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`。
 3. **连接配置**：环境变量 `DB_CONN="dbname=uspto user=postgres password=<pw> host=127.0.0.1 port=5433"`
-   （空格分隔 kv 格式，密码只落本机，不入仓不进对话）。
+   （空格分隔 kv 格式**非 URI**，密码只落本机，不入仓不进对话）。
+   ⚠ **必须是进程环境变量，且必须由 `.bat` 显式 `set`**——`etl_trademarks.py:24` 是
+   `DB_CONFIG = _parse_db_conn(os.environ["DB_CONN"])`，**模块级、无默认值**，而
+   `daily_update.py` 顶部就 `import etl_trademarks`，所以缺该变量时**在 import 阶段直接
+   KeyError**。仓内**没有任何 dotenv 加载**，放一个 `.env` 在仓根 Python 也不会读
+   （`.env.example` 只是键名模板：`DB_CONN` 是本链唯一必需，`LARK_*` 三个仅飞书同步脚本用）。
+   本链唯一必需的就是 `DB_CONN`。
 4. **挂定时**：Windows 任务计划每日一次（建议 18:00 本地）跑
    `D:\walmart-trademark-sync\.venv\Scripts\python.exe D:\walmart-trademark-sync\daily_update.py`
    ＋随后执行下方「日常链路」第 2-4 步（可合入同一 .bat）。
+   - **.bat 已纳入版本管理**：`infra/local-deploy/automation/uspto-daily.bat`。部署机应从仓里
+     检出使用，**不要在机器上另存一份**（原先只存在于 `D:\erp-staging-backup\automation\`，
+     无备份、无评审）。仓根 `.gitattributes` 声明 `*.bat text eol=crlf` 强制 CRLF 检出。
+   - **`Last Result=10` 有两种成因，先排第二种**：
+     ①密钥文件（`D:\erp-staging-backup\uspto-db.env`）真的不存在；
+     ②**`.bat` 是 LF-only** —— cmd 逐行吞前缀导致 `set "SECRET_FILE=..."` 从未执行，
+     `if not exist ""` 恒真，**误报**成 ①。2026-07-25 就是栽在②上、白丢一个验收日。
+     一秒自查：`[IO.File]::ReadAllBytes("<bat>")` 数 lone LF，非 0 即中招。
+   - **.bat 里不许出现非 ASCII 路径**：本文件存 UTF-8 而 cmd 按 GBK 读，
+     `D:\项目文件\...` 会变成 `D:\椤圭洰鏂囦欢\...`。机器相关路径一律走密钥文件的
+     `ERP_COMPOSE` 键，**值填 8.3 短路径**（`for %%I in ("<长路径>") do @echo %%~sI`）。
+   - 密钥文件是 `KEY=VALUE` 文本（**不是** `set "KEY=VALUE"` 片段），bat 读
+     `POSTGRES_PASSWORD` 与 `ERP_COMPOSE` 两键，`DB_CONN` 由 bat 自行拼装。
+     ⚠ 连接自检要连**宿主机**映射端口：容器内 PG 监听 5432，5433 是宿主机映射，
+     在容器内用 `port=5433` 自检必然 `Connection refused`（自检姿势错，不是配置错）。
+   - ⚠ **`Logon Mode` 必须能在无人登录时触发**。`schtasks /query /v` 若显示
+     `Interactive only`，则**只有该账号处于登录态才会跑**——这与「无人值守」直接冲突，
+     会让某天没人登录的验收日直接作废。两条路：①该账号常驻登录（锁屏即可，须写进运维约束、
+     重启后要重新登录）；②`/RU <user> /RP <password>` 存储凭据（Logon Mode 变
+     `Interactive/Background`）。**不要改成 `SYSTEM`**——日常链路第 3-4 步要
+     `docker compose cp/exec`，Docker Desktop 按用户会话跑，SYSTEM 下通常不可用。
+   - ⚠ **这个 `.bat` 是整条链的编排定义，必须纳入版本管理**（见
+     `infra/local-deploy/automation/`），否则它只存在于那一台机器上，机器一坏链路定义即失传。
 
 ### 日常链路（部署机每日自动）
 
@@ -249,6 +352,70 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
     python -m erp.tools.run_task trademark_freshness
   ```
 
+## 黑名单 / TRO bulk 导入（CLI 唯一入口 · #35 合并后的日常运维路径）
+
+> 定位（Owner 2026-07-25 认现方案）：**bulk 导入只走 CLI，不做 HTTP 上传端点**。
+> 理由三条：部署机直读本地文件（大文件不经 HTTP）；黑名单/TRO 是全局数据，写入
+> 需超管 `system_tx`；合规中心页的职责是**看 / 核对 / 纠错**，不负责灌数据。
+> 分工：**单主体**人工录入走页面「登记断言」（block/allow，带追溯）；**bulk** 走本节 CLI。
+
+### 1 灌数据（写，CLI）
+
+文件格式 csv / xlsx / jsonl（按扩展名识别）；列名按域，权威清单见
+`backend/src/erp/tools/import_blacklist.py` 模块 docstring：
+
+| `--domain` | 必需列 | 可选列 |
+|---|---|---|
+| `blacklist_brand` | `brand` | `brand_display`, `reason` |
+| `blacklist_seller` | `seller_id` | `seller_name`, `reason` |
+| `blacklist_asin` | `asin` | `reason` |
+| `blacklist_category` | `category` | `reason` |
+| `blacklist_address` | `street` / `address` / `地址` | `reason` |
+| `blacklist_zip` | `zip` / `zipcode` / `邮编`（取前 5 位） | `reason` |
+| `tro` | `case_no` | `plaintiff`, `court`, `filed_date`, `law_firm`, `brand_terms`, `status`, `raw_ref` |
+
+```bash
+# ① 拷进 api 容器：compose 给 api 没挂任何 volume（无 /data），一律 cp 到 /tmp
+docker compose -f infra/docker-compose.yml cp D:/path/brands.csv api:/tmp/
+
+# ② 导入（缺省全局 team_id NULL；--team <id> 限定团队）
+docker compose -f infra/docker-compose.yml exec api \
+  python -m erp.tools.import_blacklist --domain blacklist_brand --file /tmp/brands.csv
+```
+
+要点：
+
+- **幂等**：重复行 skip，占位符品牌（unbranded 等）skip——重跑安全。
+- **TRO 域**（`--domain tro`）恒为全局，`--team` 对本域无效；`brand_terms` 为 JSON 数组或
+  分号分隔串（词内逗号不拆）；`status ∈ active/dismissed/settled`（缺省 active）。
+  active 案派生全局 `tro_sync` 品牌断言，dismissed/settled **撤销**该案断言。
+- lark 钓鱼地址表表头在第 5 行，导出 csv 前先删表头前的噪声行。
+- xlsx 需容器内有 openpyxl，否则改用 csv/jsonl。
+
+### 2 核对（读，走合规中心页——增量5 起不再查库）
+
+1. 合规中心 → **导入作业** Tab：找到刚生成的 job，看 `total / ok / err`（权限 `compliance.import_read`）。
+2. `err > 0` → 点「报错报告」→ Drawer 透出**逐块核对**（chunk expected/loaded）+
+   **报错样本**（≤50 条，行号 + 原因）。
+3. 黑名单账本 Tab 按域查 canonical 生效面；商标库 / TRO 案件各自 Tab 查。
+
+### 3 纠错（灌错了怎么撤，全在 UI 内）
+
+- **误拉黑某主体**：黑名单账本 →「**按主体追溯**」输入归一化主体（不依赖列表命中，
+  被压制/已撤销的主体也查得到）→ 抽屉列出各源断言 → 撤销那条 `import` 断言。
+  若该主体还有其他源断言（tro_sync / trademark_sync 等），canonical **仍保持拉黑**
+  ——多源并存语义，这是对的。
+- **要压住所有自动源**：登记 `manual + allow`（人工 allow 压一切自动源，D-Q65 P1 优先级）。
+  解白名单 = 按主体追溯 → 撤销该 allow → canonical 恢复拉黑。
+- **整批灌错**且逐主体撤销不可接受：提单处理，**不要直改库**——canonical 由断言投影
+  维护，直改 `blacklist_*` 表会与账本失同步。
+
+### 4 对账口径
+
+- job 的 `total` = 文件数据行数，`ok + skip + err = total`。
+- **canonical 生效面 ≠ job 的 ok 数**：allow 压制、多源合并、占位符跳过都会造成差值。
+  查名单条数以黑名单账本 / 按主体追溯为准，不要用 ok 数反推。
+
 ## 全店对账与报错回收（R2-12 增量4a，D-Q65②）
 
 - **item_pull**（beat 每日 09:00 UTC）：全店 GET /v3/items 逐态扫描，三类差异**只发现
@@ -257,9 +424,11 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
   `blacklist_assertion` **pending** 候选（人工确认前不拉黑）。
 - 查看差异：通知中心 `item_recon` 条目；明细
   `SELECT stats FROM app.sync_state WHERE scope='item_pull' AND ref_id=<store_id>;`
-- 候选断言人工闸（合规页上线前用 SQL 审）：
+- 候选断言人工闸（**增量5 起走 UI**）：合规中心 → 黑名单账本 → 切「候选待裁决」→
+  逐条「通过 / 驳回」（权限 `compliance.blacklist_write`）。通过=落 active 拉黑，
+  驳回=留 revoked 行（不删，可追溯）。
+  只读兜底查询（排障用）：
   `SELECT id, domain, subject_norm, reason FROM app.blacklist_assertion WHERE status='pending';`
-  确认/否决走应用层 decide（增量5 合规页接 UI）。
 - **maintenance_run**（beat 每小时）：默认**人工档**（`kinds: []`，任务只积累可见）。
   开半自动档（自动执行下架）需运营显式操作：
   `UPDATE app.schedule SET config = jsonb_set(config, '{kinds}', '["delist"]') WHERE code='maintenance_run';`

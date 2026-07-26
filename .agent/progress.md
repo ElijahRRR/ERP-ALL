@@ -898,3 +898,418 @@
 - **CI**：frontend eslint + tsc -b + vite build 全绿（后端零改动）。
 - 待：部署机只需重验一条路径「allow 生效 → UI 内按主体追溯 → 抽屉内撤销 → canonical 恢复拉黑」，
   其余三项验收不受影响（无需重做）→ Owner 授权合并 → R2-12 整单收账。
+
+## 2026-07-25 PR #35 合并（增量5 入 main）+ bulk 导入运维路径落笔
+
+- **PR #35 squash 合入 main `73b8c19`**（Owner 授权）；分支自 origin/main 重建。
+  部署机两段分支验证全 PASS：`b0d335d` 四项（黑名单账本 block→allow 压制→revoke 恢复 /
+  商标库 nike+仅LIVE 208 条 nice_classes 208/208 / 导入报错 Drawer job#18 total=1 ok=0
+  err=1 逐块核对+报错样本 / 无 compliance.* 账号 /compliance 拦截 + /api/v1/trademarks
+  403），6 图；补丁 `9fc9711` 补验路径（allow 压制 canonical 归 0 行时，UI 内「按主体
+  追溯」→ 抽屉内撤销 → canonical 恢复拉黑 1 行，全程未调 API 未直改库），2 图。
+- **008§6 已由审计工作区落笔**（main `4a472d3`，非本会话）：「账本/投影类域必须有不依赖
+  投影命中的独立账本入口」，引 PR #35 补丁为实证并列为 R2-08 建域预检项——本会话不重复写。
+- **Owner 2026-07-25 认现方案：bulk 导入只走 CLI，不实现 HTTP 上传端点**（PR #35 body
+  标注的设计取舍就此定案）。据此补 runbook 新节「黑名单 / TRO bulk 导入（CLI 唯一入口 ·
+  #35 合并后的日常运维路径）」四段：①灌数据（七域必需/可选列名表 + cp 进 /tmp + 幂等
+  skip + TRO 域特例：恒全局、brand_terms 格式、dismissed/settled 撤销该案断言）②核对
+  （合规中心导入作业 Tab 看 total/ok/err + 报错报告 Drawer 逐块核对与样本，不再查库）
+  ③纠错（按主体追溯撤那条 import 断言，余源仍在则保持拉黑=多源并存语义；要压全部自动源
+  用 manual allow；禁直改 blacklist_* 表——canonical 由断言投影维护，直改即失同步）
+  ④对账口径（**canonical 生效面 ≠ job 的 ok 数**，差值来自 allow 压制/多源合并/占位符跳过，
+  查条数以账本为准不要用 ok 数反推）。分工定死：单主体走页面「登记断言」，bulk 走 CLI。
+- 顺手清三处文档失真（都是本次运维路径落笔时对出来的）：
+  ①runbook「候选断言人工闸（合规页上线前用 SQL 审）」——增量5 已上线，改为走 UI
+  「候选待裁决」Tab 逐条通过/驳回，SQL 降为排障兜底；
+  ②`import_blacklist` / `bulk_import_trademark` docstring 的 `--file /data/...`——compose
+  给 api **没挂任何 volume**（无 /data），真实机制是 `docker compose cp <文件> api:/tmp/`
+  再 exec，已改正并互指 runbook；
+  ③`windows.md` 补注：`up -d --build frontend` 因 `frontend depends_on api → db+migrate`
+  会**连带拉起 api/migrate**，无新迁移时 migrate=Exited(0)、Alembic 停在原 head，属正常，
+  不要误判动了库；只换前端镜像用 `--no-deps`。实证=PR #35 补丁部署，Alembic 仍 0038 head。
+- **R2-12 状态**：增量1-5 全并 main；**整单未收账——卡验收①**。USPTO 三日连测自 07-25
+  起算：第 1 日（07-25 18:00+08 计划任务首跑）核验指令已交部署机、**尚未回报**；
+  07-26 / 07-27 两日待核。验收②（TRO→断言→L2 命中）③（全店对账三类差异 + 报错回收
+  候选可追溯）④（合规页四 Tab 全流程）已由前序增量真机复现。
+  另：walmart-trademark-sync PR #1（USPTO 两跳下载修复，`fa134dc`）待首跑绿后合并——
+  首跑核验须先确认部署机工作副本 HEAD 是该分支而非 main，否则跑的是旧代码。
+- **三日连测证据容器落笔**：`evidence/R2-12/uspto-3day-verification.md`——前提零（HEAD 分支）
+  ＋每日三段取证（**A 自动触发 / B 链路 / C 对账**）＋五情形判定表＋三日记录表。
+  口径定死：**A 段是三日连测的实质**（B/C 手动也能跑出来，只有 A 证明调度在工作），
+  故手动补跑只证链路不证调度，出现「任务未建/HEAD 在 main」时自动触发三日窗口
+  从调度首次真实触发那天重新起算（严口径；Owner 可放宽为「链路三日 + 自动触发一日」，需明示）。
+  此后每日只需部署机按模板回报、云端填表，不再逐日现编指令。
+
+## 2026-07-25 R2-09 考古（三档自动化贯通，六路并行 + 对抗性交叉核对）
+
+- 动因：R2-12 卡验收①（USPTO 三日连测，07-25→07-27）是**墙钟等待非工作量**，按 007 已定动工顺序
+  （R2-12 → **R2-09** → R2-08 → R2-10）提前起下一单考古，三日窗口不空等。考古只读、先于立项
+  （沿 R2-12 的 考古→立项→增量 节奏），不需授权。
+- 规模：7 agents / 411 次工具调用 / 92 万 token / 41 min。产出
+  `.agent/evidence/R2-09/archaeology.md`（1512 行）。六路=决策链与图纸口径 / automation_policy
+  现状接线 / 四条 flow 各自可停点 / 60s 切档基建 / 前端契约缺口与 008 清单 / 旧仓可考语义。
+- **合成阶段做了真对抗核对，推翻两路侦察结论**（这是本次考古最有价值处）：
+  ①路线1「半自动定点停缺状态、必动 migration」被推翻——`product.status='audit_passed'`
+  /`listing.status='draft'`/`maintenance_task(scheduled)` 已是天然停驻位，**不新增状态列**；
+  真缺的是 task 级逐条放行的**端点**，不是 DDL。②路线4 引 docstring 断言 kinds 已 fail-closed
+  被推翻——**读的是注释不是代码**。
+- **实锤一处已上线 fail-open 缺陷**（我本人复核）：`listing/maintenance.py:29`
+  `config.get("kinds", ["delist"])`，而同文件 docstring:3-5 与 `0037:34` 种子均写
+  `kinds=[]`＝人工档只积累不执行。schedule 行 config 一旦丢 `kinds` 键，runner 即自动执行
+  **真渠道下架（RETIRE_ITEM outbox）**，直接绕过 D-Q65② 刚拍板的人工闸。种子当前有该键故未触发，
+  属潜伏。修法=一行改默认 `[]` + 一条测试；属 listing 域跨界（铁律3），建议随 R2-09 增量1
+  「跨域清偿一行一测」并知会 owner，不扩成重构。
+- **四条硬阻塞（不裁定 R2-09 开不了工）**：①001§09 flow 清单要冻结 v2——007 点名的
+  `listing_pricing` 图纸真名 `pricing_watch`、`scrape_to_audit` 图纸零出处、`gtin_alert`
+  /`suspension_reminder` 两行已被 team_config 与 schedule 种子取代（保留=同参数双落点）、
+  D-Q65② 又派生一个未登记消费点；清单不冻结则 09:156 明写的「Enum 对照 + CI 校验」写不出来，
+  CI 第一天就红。②007 验收判据要「采集→审核→上架→定价四环各自可停」而 001 只供给两环
+  ——**判据超出图纸供给 2 环，不裁则验收天然不可达**。③007:79「吃 R2-04 Redis pubsub」与现状
+  不符：实测 `get_config_service` 全仓仅 3 处命中且**无任何业务代码调 ConfigService.get()**，
+  档位两处读点均每请求直连 SQL、延迟≈0；应改为「档位每决策直读不进缓存」，且配置广播 fail-open
+  与档位取值 fail-closed 要分述。④refund auto 是真实渠道退款（不可逆的钱），端点选择
+  （`/v3/orders/{po}/refund` vs `/v3/returns/{ro}/refund`，cancel 另走 cancel）决定
+  `ck_cc_action` 扩 1 个还是 3 个；工单等级建议改标【L1（refund 执行片 L2）】对齐 D-Q54。
+- 另有 6 条 Owner 待裁（二元 flow 认不认 semi、auto 准入门槛、guardrail 键集、停驻 SLA、
+  权限点命名、面板归属）与 8 条盲区（停驻积压无兜底、读档与动作原子性 beat 900s 超时击穿 60s、
+  切档时在途对象归属、auto 档烧穿 GTIN 池与配额、**验收本身不可重复执行**——商品状态单向前进、
+  超管视角面板形态、新团队档位继承、`enabled=false` 静默等价 manual）。
+- 建议拆 7 步：增量0 前置冻结（规划侧非 PR）→ 1 policy 内核+Enum+CI 校验（纯重构行为零变化）
+  → 2 策略 API+权限点+前端面板 → 3 audit_to_listing 三档 → 4 pricing_watch 三档
+  → 5 refund/cancel auto 渠道执行【唯一 L2 片，建议单独排期评审】→ 6 收尾取证。
+  量级约 R2-12 的 1.3~1.5 倍。
+- 现状口径修正（回写时须同步）：工单 check 与 007:72 写的「仅通 order_block 一档」**已过时**
+  ——R2-07 增量2 落地后 refund/cancel 已半通（manual/semi 本地闭环，auto fail-closed 拒绝）。
+- **本节仅考古，未立项、未改任何实现代码。** 立项与增量0 均待 Owner。
+
+## 2026-07-25 验收① 第 1 日 FAIL（部署机回报）+ 三处根因定位
+
+- **判定：07-25 = FAIL（情形 A），第 1 日不计入**。连续三日窗口顺延 07-26/27/28，
+  最早收账 07-28 晚。取证与复盘已填进 `evidence/R2-12/uspto-3day-verification.md` 三日表。
+- 部署机回报（前提零 PASS：HEAD=`claude/fix-uspto-json-download`，`fa134dc`，工作区干净）：
+  A 段=任务已建 `\ERP-ALL USPTO Daily`、`Enabled`、Daily 18:00、**准点触发**、`Next Run Time`
+  正常滚次日，但 **`Last Result=10`**；B 段=日志仅两行，`ERROR: local secret file missing`，
+  链路在调下载前退出；C 段=跳过（无新 completed）。**调度机制本身被证明可用，不需补建任务。**
+- **根因链（已核源码坐实）**：`etl_trademarks.py:24`
+  `DB_CONFIG = _parse_db_conn(os.environ["DB_CONN"])` 是**模块级无默认值**，而
+  `daily_update.py` 顶部 `import etl_trademarks`——缺 `DB_CONN` 即**在 import 阶段 KeyError**。
+  仓内**无任何 dotenv 加载**，`.env` 不会被 Python 自动读，必须由 `.bat` 读密钥文件再 `set`。
+  `.bat` 的前置检查（缺文件 → exit 10）**是正确设计**，挡在 KeyError 之前，不要当 bug 改。
+- **这台部署机一次都没成功跑过**：`etl_progress` 最新 completed 是 `apc260711.zip`，
+  `completed_at` 2026-07-12 22:03 UTC——那是迁入前 Owner Mac 的历史记录随 dump 带来的。
+  故积压约 13 个日增量。首跑注意 `CIRCUIT_BREAK_AFTER=3`（连续 3 失败熔断本轮），
+  **积压首跑只补一部分属设计内行为不算 FAIL**，余量次日续取。
+- **两条比 secret 更要紧的发现**：
+  ① **`Logon Mode: Interactive only`** —— 只有该账号登录态才触发。07-25 能跑是因当时
+  Administrator 在登录，属侥幸非保障；**与验收① 要证的「无人值守」直接冲突**，某天没人登录
+  该验收日即作废。两条路：常驻登录（写进运维约束）或 `/RU /RP` 存储凭据；
+  **不可改 SYSTEM**——链路第 3-4 步要 `docker compose cp/exec`，Docker Desktop 按用户会话跑。
+  ② **`D:\erp-staging-backup\automation\uspto-daily.bat` 未纳入任何版本管理**（ERP-ALL 与
+  walmart-trademark-sync 两仓都没有）。它是整条链的编排定义（链路第 1-4 步全在里面），
+  却只存在于那一台机器上——机器一坏链路定义即失传。且讽刺的是它放在 `erp-staging-backup`
+  目录下，自己却没被备份。已在 runbook 标注应纳入 `infra/local-deploy/automation/`。
+- **PR #1（两跳下载修复）的「首跑绿」至今未被验证**——本次失败发生在下载之前，两跳代码
+  一行没执行到。合并前置条件未解除。
+- 顺手修两处我方文档失真：①三日连测协议里 `etl_progress` 的核验 SQL 用了不存在的
+  `updated_at` 列（实际只有 `started_at`/`completed_at`，部署机自行用 COALESCE 等价替代
+  才跑通）——已改正并注明 schema 出处；②runbook 一次性迁入第 3 步只写「设环境变量」，
+  没说明**必须由 .bat 显式 set**、也没说 `.env` 不被自动读——已补全，并给 `Last Result` 常见值
+  对照（0 成功 / 10 密钥文件缺失 / 267011 从未运行）。
+
+## 2026-07-26 第 1 日 FAIL 根因更正：不是密钥缺失，是 .bat LF-only（+ bat 纳入版控）
+
+- **上一节（07-25）把根因判成「密钥文件缺失」是错的，本节更正。** 部署机第二轮取证：
+  `D:\erp-staging-backup\uspto-db.env` **07-24 12:36 就已存在**、101 字节、含
+  `POSTGRES_PASSWORD`+`POSTGRES_DB`。日志那句 `local secret file missing` 是**假象**。
+- **真因：`.bat` 为 LF-only**（实测 127 LF / 0 CRLF / 无 BOM）。cmd.exe 按 CRLF 切行，
+  遇 LF-only 逐行吞前缀——现场证据：`setlocal EnableExtensions`→`EnableExtensions`、
+  `set "SYNC_DIR="`→`NC_DIR`、`PYTHON`→`HON`、`SECRET_FILE`→`RET_FILE`、`COMPOSE`→`POSE`。
+  于是 `SECRET_FILE` 从未赋值 → `if not exist ""` 恒真 → `exit /b 10`。**Python 一行没跑到**，
+  故 PR #1 两跳修复至今仍未被验证（既未证实也未证伪）。
+- **同一现场第二个坑**：bat 里硬编码 `D:\项目文件\ERP-ALL\infra\docker-compose.yml`，
+  文件存 UTF-8 被 cmd 按 GBK 读 → `D:\椤圭洰鏂囦欢\...`，路径不存在
+  （部署机实测 `BAT_COMPOSE_PATH_EXISTS=False` / `EXPECTED=True`）。日志时间戳同理，
+  `%date%` 的中文星期写成 `[鍛ㄦ棩 ...]`。
+- **根治（已落仓）**：
+  ① `.bat` 纳入版本管理 `infra/local-deploy/automation/uspto-daily.bat`——此前它**只存在于
+  那一台机器**、无备份无评审，而它是整条链的编排定义（第 1-4 步全在里面），
+  且讽刺地放在 `erp-staging-backup` 目录下自己却没被备份；
+  ② 新建仓根 `.gitattributes` 声明 `*.bat text eol=crlf`——**只提交 CRLF 字节不够**，
+  部署机 `core.autocrlf` 非 true 时仍会检出 LF、原样复发；
+  ③ 版控版改为**纯 ASCII**：compose 路径改从密钥文件读 `ERP_COMPOSE` 键（值填 8.3 短路径），
+  时间戳改用 ASCII 的 `%RUN_ID%`，新增退出码 12（ERP_COMPOSE 缺失/compose 不存在），
+  并顺手加 delta CSV 保留 14 天（原实现导完即删，出账对不上时无源可查）。
+- **Docker 诊断改变了「无人值守」的结论**（比调度配置更要命）：Docker Desktop 4.57.0，
+  全部进程在 **Console 会话 1**，`com.docker.service` 是 **Stopped/Manual**，登录自启 True。
+  即 **Docker Desktop 依赖交互式会话存在**，链路第 3-4 步 `docker compose cp/exec` 没它必挂。
+  故**只改 `/RU /RP` 存储凭据解决不了问题**——引擎命名管道是机器级跨会话可达，但没人登录时
+  Docker Desktop 压根没启动。正解=**常驻登录（保 Docker 活）+ 存储凭据（保锁屏/断开也触发）**，
+  且**真正缺口是重启**：要名副其实的无人值守须配 Windows 自动登录（AutoAdminLogon）。
+  `SYSTEM` 绝不可用。注销后容器存活性**待实测**——部署机正确拒绝了破坏性实测，需另排时间。
+- 密码轮换已完成（部署机自生成、`ALTER USER` OK、密钥文件重写 155 字节、宿主机 DB_CONN
+  自检 OK，全程未回显）。指令里那条「容器内连 127.0.0.1:5433」是我写错的自检姿势——
+  容器内 PG 监听 5432，5433 是宿主机映射，部署机已指出并改用宿主机自检。协议文档已注明。
+- **07-26 18:00 那跑当前不具备成功条件**（部署机判定，同意）：bat LF + compose 路径乱码
+  两条未修复前，仍会在下载前失败。修复后需重新取证。
+
+## 2026-07-26 第二次重跑仍 FAIL：findstr /x 对 Docker 裸 LF 输出误判（bat 静态过一遍）
+
+- 部署机第 1-4 步全过：从仓 `git checkout` 取修复版 bat（`.gitattributes` 生效，
+  `i/lf w/crlf attr/` 确认过滤链正确）、字节校验 `CRLF=177 LoneLF=0 NonAscii=0`、
+  `ERP_COMPOSE` 短路径 `D:\5D7D~1\ERP-ALL\infra\DOCKER~1.YML` 追加且存在性 True、
+  copy 到任务路径后**源/目标 SHA-256 完全一致**。LF 与路径乱码两个坑确认解除。
+- **但第 5 步仍 FAIL**：`ERROR: uspto-db is not running`，而容器实际 `Up 36 hours`。
+  部署机取字节坐实：`docker inspect -f "{{.State.Running}}" uspto-db` 输出
+  `74 72 75 65 0A`＝`true`+**裸 LF**；`| findstr /i /x "true"` 退出 1（误判），
+  对照组 `echo true | findstr /i /x "true"` 退出 0（echo 出 CRLF）。
+  **`findstr /x` 整行精确匹配在 Windows 上匹配不上 LF-only 行。**
+- **这行是原 bat 就有的、我逐字照抄进版控没看出来**（此前 LF 问题让它根本没执行到，
+  属被掩盖的下一层 bug）。教训：这个 bat 每个潜伏 bug 都要花掉一个验收日
+  （每天只有一次调度窗口），必须静态过完而不是一天挖一个。
+- **故本轮把整个 bat 静态过了一遍，共修四处**：
+  ① `findstr /x` → 改 `for /f` 捕获后比较（`for /f` 对 CR 和 LF 都切分），
+     并把观测值写进报错，下次诊断不用再取字节；
+  ② **数字紧邻 `>>` 被当成文件描述符** —— 实证就在本轮日志末行
+     `USPTO daily chain failed rc=` 后为空：`rc=%RC%>>` 在 RC=1 时被解析成
+     `rc=` ＋ `1>>` 重定向，**恰好把最需要的错误码吃掉**；`!DAILY_RC!>>` 同病。
+     已把全部 **16 处** `echo → 日志` 统一改成 `(echo ...)>>"%LOG%"`；
+  ③ delta 行数统计的 PowerShell 里**嵌套单引号 + 未转义管道**（`'!DELTA!'` 会提前
+     终止 `for /f` 的 `'...'`，`|` 也需转义）——改走 `$env:DELTA_PATH` 且用
+     `@(...).Count` 去掉管道；
+  ④ bat 头部 HARD RULES 从 2 条扩到 4 条，README 同步补第 3/4 节含现场取证。
+- **PR #1 两跳修复仍未验证**（第三次未执行到下载代码）。三日连测第 1 日仍是 FAIL；
+  07-26 18:00 那跑在部署机取到新 bat 之前不具备成功条件。
+- 部署机纪律执行到位：发现版控 bat 有 bug 后**没有在机器上直接改**，而是回报等仓内修
+  ——符合铁律，值得保持。
+
+## 2026-07-26 PR #1 两跳修复**验证通过**（12 文件真下载）+ 我的停机判据写错致硬停
+
+- **PR #1 合并前置解除**：部署机第三轮跑出决定性证据——14 个候选中 **12 个走完两跳下载**，
+  拿到 3.6~64 MB 的**真 ZIP**（`apc260712`~`apc260722`、`apc260724`）。修复前是 141 个日期
+  **全部**误判「非 zip」、下载 0。两跳识别 + Location 二跳流式下载**确证有效**。
+  另两个：`apc260723` HTTP 429 跳过（官方 604800s 窗内，PR body 已预告属预期）；
+  `apc260725`「非 zip」（**昨天的数据，门户尚未发布**——`end = now - 1 天`，当天跑必碰最新那个）。
+- **但链路被硬停在 ETL 中途，是我的指令写错**：我写「日志再现『非 zip』→ 两跳没生效，立即停」，
+  本意是抓「**全部**文件非 zip」的失效形态；部署 AI 完全照做、正确执行了指令。而日志下一行
+  已经是 `下载完成: 12 个新文件` + `[Step 2] 开始处理: apc260712.zip`——**链路本来正常推进**。
+  结果 `apc260712.zip` 留在 `running / records_inserted=0`，本轮无 completed、未进 C 段。
+- **判据已更正并落仓**（协议文档新增「『非 zip』的两种含义」节）：
+  **看比例不看有无**——全部/绝大多数非 zip 且 `下载完成: 0 个` = 修复失效，立即停；
+  **队尾一两个**非 zip 而其余正常 = 门户对未发布/限流中的最新日期返回挑战页，**正常不要停**。
+  判定表情形 B 同步改为「**全部/绝大多数**文件非 zip」。
+- **残留 `running` 行不需要人工修**（已写进文档）：`process_zip` 只跳过 `status='completed'`，
+  `running` 行下次 `ON CONFLICT DO UPDATE` 重置重跑；`insert_batch` 先按 serial_number 删子表
+  再插、主表 `ON CONFLICT DO UPDATE`。**重跑幂等，禁止手工改 etl_progress 状态**——
+  部署机没去动它，符合铁律。
+- 预检段五项**全过**（这是本轮真正的价值，把「一天挖一个」压成了「一轮挖完」）：
+  2a `CAPTURED=[true]`（findstr 误判确认解除）／2b uspto psql 219 completed／
+  2c **`DB_CONFIG_KEYS=['dbname','host','password','port','user']`——DB_CONN 传递链首次被验证**
+  （前三次失败全倒在它之前）／2d compose 6 容器 running + `API_OK`／2e PS 行数统计 50 行。
+  bat 部署校验：`CRLF=197 LoneLF=0 NonAscii=0`，源/目标 SHA-256 一致。
+- **当前状态**：任务路径上的 bat **已经是正确的新版**（SHA-256 已核），
+  12 个 zip 已在磁盘、待导入。18:00 那次调度**具备成功条件**。
+
+## 2026-07-26 彩排慢如龟爬：根因=`pg_restore -t` 不带索引（我写的迁移步骤缺陷）
+
+- 现象：彩排跑 1 小时只导完 1 个小文件。实测 `apc260712.zip | 5,501 条 | 1003 秒`＝**5.5 条/秒**；
+  `apc260713` 日志 `10,000 条, 6 条/秒`；`pg_stat_activity` 显示单条
+  `DELETE FROM trademark_statements WHERE serial_number = ANY(...)` 跑 **20~29 秒且无锁等待**。
+  **无锁等待的 20 秒删除 = 顺序扫描 12.4 GB 子表。**
+- **我上一条判断错了**：当时说主因是三个 GIN trigram 索引的写入维护。实际那些索引**根本不存在**
+  ——真因是**索引整体缺失**。
+- **根因在我写的 runbook 迁移步骤**：`pg_restore --no-owner -x -t $t <dump>` 逐表还原。
+  **`-t` 只还原表与数据，不还原索引**——索引在 dump 里是独立 TOC 条目、tag 是索引名
+  （`idx_tm_classes_serial`），`-t trademark_classes` 匹配不到。
+  且**我写的核验步骤只查 `count(*)` 与 `max(filing_date)`**，这两项在无索引时照样通过，
+  **盲区放过了整整一层**。全程也没有 `ANALYZE`（pg_restore 后 reltuples 可能为 0，
+  planner 会误选顺序扫）。
+- 影响面不止 ETL：delta 导出的两个相关子查询
+  （`... FROM trademark_classes c WHERE c.serial_number = t.serial_number` 等）同样退化为逐行全表扫，
+  **C 段也会被拖死**；另 `WHERE t.source_file = 'apcYYMMDD.zip'` 原 schema 就没有索引，
+  每个文件一次 14M 行全表扫。
+- **runbook 已修**：迁移第 1 步补「必须手工重建索引」清单（4 个子表 serial_number + 新增
+  `idx_trademarks_source_file` + pg_trgm/GIN + 五张表 ANALYZE），核验步骤改为
+  **必须查 `pg_indexes` + 一条 `EXPLAIN ANALYZE` 冒烟**（毫秒级才算过），并写明
+  「只查行数会漏检」这个 2026-07-26 的实证盲区。
+- 排除项：磁盘 32 个 zip / 库内 220 completed / 本轮明确「需要导入 12 个文件」——
+  **没有误扫迁移带来的旧 zip**，Owner 关心的「是不是在全量拉取」已排除
+  （下载阶段上一轮 100 秒就跑完，`download_file` 对已存在文件直接短路）。
+- 处置：停 ETL（6 条/秒下 12 个文件要 20 小时以上，不可行）→ 查 `pg_indexes` 坐实 →
+  建索引 + ANALYZE → 重跑。同时**禁用 18:00 调度**（要做 DB 手术，绝不能并发；
+  且子表无 `(serial_number,…)` 唯一约束，并发会留重复行）。
+  代价：07-26 无 A 段 → 第 2 日 FAIL → 窗口顺延 **07-27/28/29**。
+
+## 2026-07-26 整链首次端到端跑通 + PR #1 形式证据齐 + 索引根因坐实
+
+- **补索引后整链 5.5 分钟跑完，EXIT=0**（`16:22:07→16:27:35`）。这是链路后半段
+  （delta 导出 → `docker compose cp` → `bulk_import_trademark` → `[RECONCILE]`）**有史以来第一次
+  被执行**。12 文件全 completed、**0 ETL 错误**；最大 `apc260713` 75,283 条 / 43.9 秒。
+  `apc260725` 本轮已发布并成功导入——**前一轮判它「门户未发布」是对的**。
+- **性能修复实测**：索引 + ANALYZE **总共 23 秒**（classes 2.9s / owners 7.3s / statements 6.2s /
+  design_codes 1.3s / source_file 4.4s，五张表 ANALYZE 合计 <1s），之后 **6 → 1,500~2,300 条/秒
+  （约 300 倍）**；冒烟 `Index Only Scan ... 0.485 ms`（此前同类删除 20~29 秒）。
+- **我的机制解释错了，已更正**：先前 runbook 写「`pg_restore -t` 不带索引」。实测反证——
+  `trademarks` 的 5 个二级索引（含 GIN trgm）**全在**、四张子表的外键（`contype='f'`）**也全在**，
+  唯独四张子表的二级索引全丢。**机制未定论**；最可信猜想是大表（statements 7.2GB /
+  owners 3.2GB）还原期间建索引失败，而 runbook 那个 `for` 循环**从不检查 `pg_restore` 退出码**、
+  错误被静默吞掉。runbook 已改为陈述实测事实 + 要求循环查退出码 + **强制核验索引与冒烟**。
+- **DELTA ↔ importer 12 文件全对齐、err 全 0**。⚠ 口径提醒（部署机指出，已落文档）：
+  日志 `[DELTA] rows` 是**物理文本行数**，CSV 字段内含换行时大于逻辑记录数，
+  **对账须按逻辑 CSV 记录比**，否则误判不一致。
+- `[RECONCILE]`：uspto `14,216,076 / newest 2026-07-25 / 232 files`；
+  ERP `4,475,105 / newest 2026-07-25 / revision 204`；新鲜度守卫 `lag_days=1, severity=ok`。
+- ✅ **`walmart-trademark-sync` PR #1 合并前置完全解除**（多 zip 两跳 + ETL completed + 全链对账）。
+  待 Owner 授权合并。
+- **窗口不顺延，维持 07-26/27/28**（更正我此前「第 2 日必 FAIL」的判断）：**手动跑 bat 不推进
+  Windows 计划任务日程**，任务重新 `/enable` 后 `Next Run Time` 仍是 **07-26 18:00**，
+  当日自动触发照常发生。预期是「无数据日」（唯一剩余候选 `apc260723` 仍在 429 窗内、
+  磁盘 zip 已全部 completed）——判定表已把「无数据日」判据从「全 404」放宽为
+  「无新文件可导（全 404 / 剩余在 429 窗内 / 已全部 completed）」，**计 PASS**。
+- 部署机纪律持续到位：判据写成「四张子表一个索引都没有」时它发现子表有 `id` 主键、
+  **停下来要确认而不是自行放行**——这是对的，判据措辞是我的问题，已改为「缺少
+  `serial_number` 列索引」。
+
+## 2026-07-26 walmart-trademark-sync PR #1 合并（Owner 授权）
+
+- **PR #1 squash 合入 main `9bc0bbbf`**（两跳下载修复 + 429 温柔处理 + GBK 控制台安全）。
+  合并前把完整验证证据写进 PR 正文（那是永久记录）：14 候选中 12 个走完两跳、
+  落地 3.6~64MB 真 ZIP；`apc260723` 429、`apc260725` 门户未发布次轮成功——均属预期；
+  整链 EXIT=0 / 5.5 分钟 / 12 文件全 completed / 0 ETL 错误 / delta↔importer 全对齐 /
+  守卫 `lag_days=1 severity=ok`。并在正文注明「索引缺失是部署机环境问题，不是本 PR 的代码问题」。
+- **远端分支 `claude/fix-uspto-json-download`（`fa134dc`）刻意保留不删**——部署机正踩在上面
+  跑三日连测。**窗口期内（07-26/27/28）不切分支**：分支内容与 main 里的修复逐字相同，
+  中途切换只增加变量、零收益。
+- 协议文档「前提零」已同步改写：窗口内应仍是该分支、**不要切**；**收账后**再按 runbook
+  「部署机验完切回 main 常驻」处置（`git checkout main && git pull`，应见 `9bc0bbbf`），
+  届时前提零改为核「HEAD=main 且含 `9bc0bbbf`」、远端分支可删。
+- 至此 R2-12 的外部依赖全部清零，**整单只剩验收① 三日连测**（07-26/27/28，
+  今日 18:00 那次是第 1 日 A 段）。
+
+## 2026-07-26 台账全面核对（Owner 三问「工作记录是否有好好写」）——查出一处系统性欠账
+- 范围：`.agent/task.md` / `review_list.json`（47 条）/ `progress.md`（38 条日记）/ `evidence/`
+  （65 份，覆盖 R1-01~R2-12 全工单）/ 已合并 PR 正文，四线交叉核对：完整性、一致性、证据链。
+- **系统性欠账（本次最重要的发现）**：**关账回写只做 `progress.md`+`task.md` 两处，漏 `review_list.json`。**
+  实证——PR #29 标题就叫「R2-11 整单关账回写（docs-only）」，`git show --stat` 只有
+  `progress.md`(+16) 和 `task.md`(±12) 两个文件，**从未触碰 review_list.json**。后果：R2-11 已于
+  07-23 accepted，评审台账里却挂着 `in_progress` / `last_checked_at=2026-07-17` / finding 只写到
+  增量1，整整 9 天与事实相反。CLAUDE.md 铁律 2「产出必须回写工单状态」在此被打了折。
+- 已修四条（`review_list.json`）：
+  - **R2-11**：`in_progress`→`accepted`，finding 补检修(PR #26)/二期A(#27)/二期B(#28)/关账全史
+    与两路真机验收，`last_checked_at`→07-23；顺带修复损坏的 `acceptance` 字段（原值
+    `"；改一个产品字段→audit_log可见操作人与前后值"`——开头孤立分号，随单补欠项串进了
+    验收判据位，真正的两条验收判据当时只写在 `note` 里）。
+  - **R2-07**：补「07b PR #25 已 squash 合并 main `bb75790`（07-18），0033 已在 main」；并写明
+    整单仍 `in_progress` 的确切残项=07b 验收②未收 + 07c 未开工（07a 已随 PR #18/#19 收口），
+    `last_checked_at`→07-26。此前 finding 停在「开发面完成」，读者无法判断代码是否已进 main。
+  - **RS-04A**：finding 原写「余项：14.18M 真实数据实测（待 Owner USPTO 导出）」——与事实脱节
+    14 天。改为已进入实测阶段（07-26 整链跑通 EXIT=0/5.5min/12 文件/0 错误/对账齐/lag_days=1），
+    量化数据随三日连测落账；并把 `pg_restore -t` 丢二级索引致 ETL 5.5 条/秒的运维坑写进本条
+    （搬运通道的知识该归 RS-04A），`last_checked_at`→07-26。
+  - **RS-04D**：补「增量5 PR #35 已合并 main `73b8c19`（07-25）+ 部署机两段分支验证全 PASS」，
+    并把三日窗口顺延 07-26/27/28 写入，`last_checked_at`→07-26。
+- 核对为「无问题」的部分（避免只报坏消息）：`progress.md` 38 条按日连续、每处误判都有显式
+  更正段（密钥缺失→bat LF-only、GIN 开销→索引丢失、非 zip 停机判据写错），没有静默改口；
+  `evidence/` 每个工单齐备（考古+runbook/verify+真机截图/JSON 快照），R2-09 考古 1512 行、
+  R2-12 三日验证表 278 行；已合并 PR 正文均含验证证据（PR #1 正文即永久记录）。
+- **仍存的记账缺口（本次未改，登记备查）**：① `progress.md` 无 PR #25 合并的独立条目（只有
+  07-17「07b 开发面完成」），合并事实此前只能从 git log 反推——已在本条写明；② `review_list.json`
+  字段形状 8 种（`acceptance`/`gate`/`note` 三个可选键随意出现），机器化校验困难；
+  ③ 无「关账 checklist」机制，故障可复发。建议（待 Owner 定）：关账时强制三档齐写
+  （progress + task + review_list），可加一个 CI 只读检查——`status=accepted` 的条目其
+  `last_checked_at` 不得早于对应关账 PR 的合并日。
+- 无代码变更；本次只动 `.agent/` 台账。
+
+## 2026-07-26 验收① 第 1 日 PASS（首条 A 段实质证据）+ Owner 查出三条 P0，两条已修
+- **第 1 日 PASS（无数据日）**：`Last Run 18:00:01` / `Last Result=0` / `Ready` / `Enabled` /
+  `Next Run 07-27 18:00`。新下载 0、新导入 0（`apc260723` HTTP 429 仍在限流窗内，属预期）；
+  完整性检查全过、ETL 错误 0、孤儿检查通过、`ETL_PROCESS=NONE`、日志正常收尾。
+  USPTO 14,216,076 / newest `2026-07-25` / completed 232；ERP 4,475,105 / newest `2026-07-25` /
+  revision 204；`lag_days=1` 在容差内。已填入三日表——**这是窗口内第一条 A 段（自动触发）证据**，
+  `Next Run` 自行推进即证日程在滚动。余 07-27 / 07-28 两日。
+
+### P0-1 fail-open 已修（`listing/maintenance.py:29`）
+- Owner 逐行坐实：`config.get("kinds", ["delist"])` 与同文件 docstring:4、0037 种子
+  `{"batch": 5, "kinds": []}`、D-Q13/29 三档口径**三处全冲突**；beat.py:129 与 run_task.py:32
+  都是 `config or {}` 不补键，0037 又是 `ON CONFLICT DO NOTHING`（既有 schedule 行不被覆盖）
+  ——config 一丢 kinds 键，runner 就发 RETIRE_ITEM outbox 真渠道下架，绕过 D-Q65② 人工闸。
+- 修为 `config.get("kinds", [])`（空表=认领不到=fail-closed）+ 3 条回归测试。
+- **顺带查出病根：这缺陷是被既有测试挡着的。** `test_item_pull.py::TestMaintenanceRunner`
+  两条用例都围着 fail-open 写——`test_claim_and_fail_cleanly` 传 `{"batch": 5}` 不带 kinds
+  却断言 `claimed: 1`（**断言的正是 fail-open**，唯有 fallback=["delist"] 能过）；
+  `test_unclaimed_kinds_stay_queued` docstring 写「不在**默认 kinds**」，把 `["delist"]`
+  追认成了「默认档」。已按各自真实意图改为显式传 kinds，并在注释里写明它们曾是挡枪测试。
+  这解释了缺陷为何能过评审——不是没人看，是测试在替它背书。
+
+### P0-2 配额闸空转已修（`listing/service.py:1573/1682`）
+- Owner 坐实 `ck_quota_kind`（0003:162）自建库起只有
+  `listing_create/listing_delete/maintenance`，0004~0038 无一扩过（0038 扩的是
+  `ck_cc_action`，不是它）。代码却传 `listing_maintenance`。
+- **修法与 Owner 初判不同，已核实为更正**：不该扩约束——配额 API
+  （`channel/router.py:22` `QUOTA_KINDS` + `:93` pattern）词表同样只有那三个，
+  `listing_maintenance` 过不了 pattern，**运营根本无法通过 API 配出这行**；光加迁移，
+  闸照样是死的（得迁移+router+契约+前端四处齐改）。正解是把代码对齐既有 `maintenance`
+  （零迁移、零契约变更）。`release_quota` 自己的 docstring 也写「create/delete 返还、
+  **maintenance** 不返还」，反证 `maintenance` 才是正名。
+- 2 条回归测试：日限=1 时第二次续期抛 `ERP_QUOTA_EXHAUSTED`、`quota_usage` 计在
+  `'maintenance'` 名下；另一条锁死方向——幻影 kind 连库都插不进（CheckViolation）。
+- **【待 Owner 裁】`:1682` 返还本身与 docstring 相矛盾**：MP_MAINTENANCE 被渠道拒时该次
+  feed 已真实消耗 Walmart 调用，返还会让反复被拒的 listing 无限重试而本地计数不动
+  （fail-open）。改限流语义属渠道写路径、按铁律 4 需 dry-run 证据，**本轮只修名不动语义**，
+  已在代码注释就地标注。
+
+### P0-3 运维资产只在开发分支（已加 fail-closed 门，根治待合并）
+- 复核确认：`.gitattributes` + `infra/local-deploy/automation/`（uspto-daily.bat + README）
+  由 `a145602` / `635fb12` 加在开发分支，`origin/main`=`5329146` **确实没有**。而
+  task.md 规定「部署机验完切回 main 常驻」——一执行就把修复版 bat 与 CRLF 声明一起抹掉，
+  07-25 LF-only 事故原样复发。Owner 那句「从『只存在于一台机器』换成了『只存在于一条
+  随时会被 squash 掉的分支』」是准确的，风险并未消除。
+- 我能自主做的那半已做：`infra/local-deploy/README.md` 增「切回 main 前必做：运维资产在位
+  检查（fail-closed）」——`git ls-tree -r origin/main` 三行不齐**不许切**，另附 Windows 侧
+  `git check-attr text eol` 复核（防 CRLF 被规范化）；task.md 真机验证流程同步加约束。
+- **根治需 Owner 决**：PR #36 已含这些资产（合并即根治），或另拆 ops-only PR——后者要开新
+  分支，按纪律需 Owner 明示许可，我没擅自开。
+
+### 铁律 4 违反：认，且是我的问题
+- Owner 指出：增量 1/3/4b 三个 PR 都在「待：分支验证 → 合并」状态下直接合并，验证结果全仓
+  零记录；4b 是渠道写路径，铁律 4 明写「渠道写路径必须有 dry-run 证据」，而 R2-12 全单
+  **一份 dry-run 快照都没落仓**（对照 R1-07/R1-11/R2-03/R2-06 都有）；真机图证据全挂 PR
+  评论、不在仓内，`evidence/R2-12/` 只有 6 个 .md、零图片。**核实无误，不辩解。**
+- 这条与本日上午查出的「关账回写漏 review_list.json」是同一类病：把「过程写在别处」
+  当成了「过程有记录」。PR 评论与部署机聊天记录都不是仓内证据。
+- 补救待 Owner 定优先级（见 task.md 挂账）：①补 R2-12 dry-run 快照落仓（renew_end_date /
+  item_pull 两条渠道路径，本地假渠道可产）②把已有真机图从 PR 评论搬进 evidence/R2-12/
+  ③CI 加只读门禁：渠道写路径增量的 PR 必须带 evidence 变更。
+- **①当轮即清偿**：新增 `evidence/R2-12/dryrun-mp-maintenance.json`。查阅时发现仓里本就有
+  「dry_run 断言请求形态 + 写 evidence」的机制三处（test_gateway / test_listing_api /
+  test_price_push），照同一模式补 MP_MAINTENANCE——那是增量4b 引入的唯一新增渠道**写**路径
+  （item_pull 是 GET 读路径，不在铁律 4 范围）。快照含 feedType 查询参、MPItemFeedHeader
+  spec 版本、Orderable 载荷；用例硬断言端点键 `POST /v3/feeds:MP_MAINTENANCE`、五个必填渠道头
+  齐备、代理地址不泄漏进证据、dry_run 零发包。**顺带查出**：`_apply_item_maintenance` 在
+  dry_run 分支只落 `{"dry_run": True}`，把 `GatewayResponse.request_snapshot` 丢掉了——
+  即生产 dry_run 态也观测不到请求全貌。本轮从网关 seam 抓取，不动生产码；是否让服务层把快照
+  落进 `channel_command.result` 已入挂账待 Owner 定。
+
+### RBAC：超管默认全权限已成立；但查出一条真缺口
+- Owner 的 SQL 结果（我原查询表名写错，实为 `app.app_user`）：`admin` `is_super=true` /
+  role NULL / compliance_perms 0；`pr35_nocompliance` `is_super=false`。两账号**都没绑角色**。
+- 结论一：`authn.py:47` `has() = is_super or perm in permissions`，`is_super` 无条件短路
+  全部权限校验——**「超管默认拥有所有权限」在代码里本就成立**，admin 有全量合规访问权。
+  故合规中心「空」**不是权限问题**，是数据面/查询面（该 team 下无黑名单断言行、商标 Tab
+  需先给检索词）。`pr35_nocompliance` 是 PR #35 专为验 403 门控造的账号，符合预期。
+- 结论二（新缺口，已入挂账）：**0035 按角色名字面授权至今一份都没发出去。**
+  `0035_blacklist_assertion.py:150-167` 只给名字恰为 '团队管理员' / '审核员' 的角色发
+  `compliance.*`；现实是没有任何角色被绑到人身上。一旦出现第二个真人非超管账号，他打开
+  合规中心就是 403/空，而种子**静默不生效、不报错**。按角色名字面匹配发权限本身是脆的
+  （改名/换语言/新建团队都会漏），待 Owner 定是否改为按权限码声明式授权。
+
+### 次要项（Owner 提出，全部登记，本轮未改）
+`rebuild_canonical` 无生产入口（CLI/端点/beat 皆无）→ RS-04D 第四条硬验收只在 pytest 内成立；
+`item_pull` 第四类差异 `gone_remote` 在 beat 聚合（:369-379）被丢弃；契约顶层 tags 块少声明
+4 个 tag；`ImportJobsTab.tsx:15` 手写 interface（FE-DEBT-01 累计 29 处未清）；CI 无 codegen
+漂移检查、无前端测试。
+
+### 本轮验证
+本机起临时 PG16 簇实跑（此环境无 docker）：`ruff check` + `format` 全绿、`mypy strict`
+103 文件无问题、**pytest 507 passed / 1 skipped**（含本轮新增 6 项：P0-1 三条、P0-2 两条、dry-run 证据一条）、`alembic upgrade head → downgrade base →
+upgrade head` 三步全过。新测试**已证伪**：对回退后的旧码跑，3 条按预期变红
+（含 `assert None == (1,)`——旧码下 `quota_usage` 连行都不建，坐实闸完全空转）。

@@ -8,6 +8,9 @@
 - runner 认领 end_date_renewal → 调 renew_end_date（dry_run）→ 任务 done。
 """
 
+import json
+from pathlib import Path
+
 import httpx
 import psycopg
 import pytest
@@ -261,3 +264,186 @@ class TestRenewEndDate:
                 "SELECT status FROM app.maintenance_task WHERE listing_id = %s", (lid,)
             ).fetchone()[0]
         assert st == "done"
+
+
+def _wipe_quota(migrated_db: str, seeded: dict[str, int]) -> None:
+    with psycopg.connect(migrated_db, autocommit=True) as conn:
+        conn.execute("DELETE FROM app.quota_usage WHERE store_id = %s", (seeded["store"],))
+        conn.execute("DELETE FROM app.quota_config WHERE store_id = %s", (seeded["store"],))
+
+
+class TestMaintenanceRunnerFailClosed:
+    """P0-1 回归：runner 的 kinds 默认值必须是空表（人工档），不得 fail-open 成 ['delist']。
+
+    真实触发路径：0037 用 ON CONFLICT DO NOTHING，既有 schedule 行不会被覆盖；
+    beat.py:129 与 run_task.py:32 都是 `config or {}` 不补键。故 schedule.config 一旦
+    缺 kinds 键，runner 就会拿到 fallback——若 fallback 非空，就绕过 D-Q65② 人工闸
+    直接发 RETIRE_ITEM outbox 真渠道下架。
+    """
+
+    async def _pending_delist(self, migrated_db: str, seeded: dict[str, int]) -> int:
+        lid = _mk_listing(migrated_db, seeded, status="live", gtin=_ean13(6))
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO app.maintenance_task (team_id, store_id, listing_id, task_kind,"
+                " scheduled_at) VALUES (%s, %s, %s, 'delist', now())",
+                (seeded["team"], seeded["store"], lid),
+            )
+        return lid
+
+    async def test_empty_config_claims_nothing(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        lid = await self._pending_delist(migrated_db, seeded)
+        # config 全空（beat/run_task 在 schedule.config IS NULL 时就是传这个）
+        assert await maintenance.run(get_session_factory(), {}) == {
+            "claimed": 0,
+            "done": 0,
+            "failed": 0,
+        }
+        with psycopg.connect(migrated_db) as conn:
+            st = conn.execute(
+                "SELECT status FROM app.maintenance_task WHERE listing_id = %s", (lid,)
+            ).fetchone()[0]
+            sent = conn.execute(
+                "SELECT count(*) FROM app.channel_command"
+                " WHERE action = 'retire_item' AND object_id = %s",
+                (lid,),
+            ).fetchone()[0]
+        assert st == "scheduled"  # 任务原地不动
+        assert sent == 0  # 关键：没有真渠道下架命令外发
+
+    async def test_config_missing_kinds_key_claims_nothing(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        await self._pending_delist(migrated_db, seeded)
+        # 只有 batch、丢了 kinds 键——正是 0037 DO NOTHING 留下的旧行形态
+        assert await maintenance.run(get_session_factory(), {"batch": 5}) == {
+            "claimed": 0,
+            "done": 0,
+            "failed": 0,
+        }
+
+    async def test_explicit_kinds_still_claims(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """对照组：运营显式开半自动档时照常认领——修复不是把 runner 焊死。"""
+        await self._pending_delist(migrated_db, seeded)
+        stats = await maintenance.run(get_session_factory(), {"batch": 5, "kinds": ["delist"]})
+        assert stats["claimed"] == 1
+
+
+class TestMaintenanceQuotaGate:
+    """P0-2 回归：MP_MAINTENANCE 续期的日限闸必须真的咬得住。
+
+    quota_kind 词表由 ck_quota_kind（0003:162）与配额 API（channel/router.py:22,93）共同
+    锁定为 listing_create/listing_delete/maintenance。代码此前传 'listing_maintenance'——
+    该值插不进 quota_config、也过不了 API pattern，consume_quota 遂走「未配置=不设限」
+    恒返 True，闸形同不存在。
+    """
+
+    async def test_daily_limit_blocks_second_renewal(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        _wipe_quota(migrated_db, seeded)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO app.quota_config (store_id, quota_kind, daily_limit, enabled)"
+                " VALUES (%s, 'maintenance', 1, true)",
+                (seeded["store"],),
+            )
+        try:
+            first = _mk_listing(migrated_db, seeded, gtin=_ean13(7))
+            res = await listing_service.renew_end_date(
+                get_session_factory(), team_id=seeded["team"], listing_id=first, is_super=True
+            )
+            assert res["status"] == "degraded"  # dry_run 归位，但配额已扣
+
+            with psycopg.connect(migrated_db) as conn:
+                used = conn.execute(
+                    "SELECT used FROM app.quota_usage"
+                    " WHERE store_id = %s AND quota_kind = 'maintenance'",
+                    (seeded["store"],),
+                ).fetchone()
+            assert used == (1,)  # 计入 'maintenance' 而非幻影 kind
+
+            second = _mk_listing(migrated_db, seeded, gtin=_ean13(8))
+            with pytest.raises(BusinessError) as ei:
+                await listing_service.renew_end_date(
+                    get_session_factory(), team_id=seeded["team"], listing_id=second, is_super=True
+                )
+            assert ei.value.code == "ERP_QUOTA_EXHAUSTED"  # 闸咬住了
+        finally:
+            _wipe_quota(migrated_db, seeded)
+
+    async def test_quota_kind_rejected_by_db_constraint(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """锁死回归方向：幻影 kind 连库都插不进——证明扩约束不是正解，对齐词表才是。"""
+        _wipe_quota(migrated_db, seeded)
+        with (
+            psycopg.connect(migrated_db, autocommit=True) as conn,
+            pytest.raises(psycopg.errors.CheckViolation),
+        ):
+            conn.execute(
+                "INSERT INTO app.quota_config (store_id, quota_kind, daily_limit, enabled)"
+                " VALUES (%s, 'listing_maintenance', 1, true)",
+                (seeded["store"],),
+            )
+
+
+class TestMpMaintenanceDryRunEvidence:
+    """铁律 4 补账：MP_MAINTENANCE 是渠道写路径，必须有 dry-run 请求快照落仓。
+
+    此前 R2-12 全单没有一份 dry-run 快照进 `.agent/evidence/`（对照 R1-07/R1-11/R2-03/R2-06
+    皆有），增量4b 就这么合并了。补齐机制与既有三处一致（test_gateway / test_listing_api /
+    test_price_push）：dry_run 模式下断言请求形态，并把快照写进 evidence 供审计与回归对拍。
+
+    注：`_apply_item_maintenance` 在 dry_run 分支只落 `{"dry_run": True}`，把
+    `GatewayResponse.request_snapshot` 丢掉了——即生产 dry_run 态也观测不到请求全貌。
+    本用例从网关 seam 抓取，不改生产码；是否让服务层把快照落进
+    `channel_command.result` 待 Owner 定（已入 task.md 挂账）。
+    """
+
+    async def test_dry_run_snapshot_written_to_evidence(
+        self, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        lid = _mk_listing(migrated_db, seeded, gtin=_ean13(9))
+        captured: list[dict[str, object]] = []
+        original = gateway.request_prepared
+
+        async def _spy(*args: object, **kwargs: object) -> object:
+            resp = await original(*args, **kwargs)  # type: ignore[arg-type]
+            snap = getattr(resp, "request_snapshot", None)
+            if getattr(resp, "dry_run", False) and snap:
+                captured.append(snap)
+            return resp
+
+        gateway.request_prepared = _spy  # type: ignore[method-assign,assignment]
+        try:
+            res = await listing_service.renew_end_date(
+                get_session_factory(), team_id=seeded["team"], listing_id=lid, is_super=True
+            )
+        finally:
+            gateway.request_prepared = original  # type: ignore[method-assign]
+
+        assert res.get("dry_run") is True
+        assert len(captured) == 1, "MP_MAINTENANCE 应恰好构造一次 dry_run 请求（零发包）"
+        snap = captured[0]
+
+        # 请求形态硬断言（考古口径：MP_MAINTENANCE 走 feeds 端点 + feedType 查询参数）
+        assert snap["mode"] == "dry_run"
+        assert snap["method"] == "POST"
+        assert str(snap["url"]).endswith("/v3/feeds")
+        assert snap["endpoint_key"] == "POST /v3/feeds:MP_MAINTENANCE"
+        assert dict(snap["params"] or {}).get("feedType") == "MP_MAINTENANCE"  # type: ignore[arg-type]
+        # 五个必填渠道头齐备（walmart_client 语义，不得裸调）
+        for h in ("Authorization", "WM_SVC.NAME", "WM_CONSUMER.ID", "WM_SEC.ACCESS_TOKEN"):
+            assert h in list(snap["headers"])  # type: ignore[arg-type]
+        assert snap["proxy"] in (None, "<bound>")  # 代理地址不得泄漏进证据
+
+        out = (
+            Path(__file__).resolve().parents[3] / ".agent/evidence/R2-12/dryrun-mp-maintenance.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
