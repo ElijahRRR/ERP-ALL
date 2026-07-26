@@ -18,6 +18,9 @@
 | 3 | 图纸提议的幂等自然键与渠道**实际提供的字段对不上**——这是「重拉不二次过账」这条硬保证的地基 | **已裁定并落笔**（main `b4f286f`，阻塞解除） |
 | 4 | 旧仓实际用的两个 recon 端点**未列入官方限额表**，只能按同族类推 | 风险登记 |
 | 5 | D-Q56 原文说「R4/R5 建域前改图纸」，而 007 把财务域排成 R2-08——顺序错位，图纸已按 R2-08 口径改了，此处只作记录 | 口径注记 |
+| 6 | **图纸两处「沿用/保留原版」与原版实际不符**——原版既无 `matched` 对账态列、也无 headline 平账校验，两者都是**新设计**（§12.1） | **图纸表述失实**，批注待落笔 |
+| 7 | 旧仓 `INSERT OR IGNORE` + 丢弃 skip 计数＝双重吞噬，是 §3「少计费用」风险的**实证机制**而非推测（§12.1） | 现状核实 |
+| 8 | 契约 finance 零覆盖；顶层 `tags` 缺 4 个；两处 tag 大小写漂移（§12.3） | 欠账登记 |
 
 ---
 
@@ -285,7 +288,7 @@ adjustment/purchase_cost/freight_cost），要么扩科目集合，要么在 `le
 > 注：(a)(b)(c) 三条都属**图纸修订**，按纪律归规划/审查 AI，本文件即批注素材。
 > 但**不阻塞开工**——三条都是「加列/加维度」，不动事件/分录/投影三层骨架，可在增量1 落表时一并带上。
 
-## 10 阶段二余下未做
+## 10 阶段二余下未做（✅ 三项均已于 2026-07-27 完成，详见 §12）
 
 - `fetch_walmart_settlement.py` 的**行为语义**（增量拉取断点续跑口径、`--force` 全量重拉、
   `_to_float`/`_to_int` 脏值处理、headline 平账校验的实际实现）——本轮只读了 schema 与端点，
@@ -304,3 +307,45 @@ adjustment/purchase_cost/freight_cost），要么扩科目集合，要么在 `le
 | 4 | 费用明细维度 `fee_subtype`（§9b） | 不阻塞，增量1 带 | 加维度列而非扩科目集合 |
 | 5 | `raw_payload` 落点（§9c） | 不阻塞，增量1 带 | 文档层存原文，与「只进不改」定位一致 |
 | 6 | 收款账户实体是否建（§8） | 影响范围 | 待裁；D-Q40 只定了标签，未定实体 |
+| 7 | **三方对账是否在 R2-08 范围**（§12.2） | 影响范围与验收判据 | 待裁；设计稿 `pages-finance.jsx` 做的是 Walmart 结算 × Amazon 采购 × **支付流水** 三方，图纸 §08 只有两方、第三方无对应实体 |
+| 8 | **结算真值回填订单佣金是否 R2-08 承接**（§12.4） | 影响拆单 | 待裁；`erp-core` 已上线该行为并带 `commission_source: settlement\|estimated` 标记，图纸未覆盖此链路 |
+
+## 12 阶段二收尾：余下三项已做完（2026-07-27，只读）
+
+### 12.1 `fetch_walmart_settlement.py` 控制流（820 行逐段读完）
+
+**⚠️ 两条图纸表述与原版实际不符（批注素材，归规划/审查 AI 落笔）**
+
+| 图纸原文（`08-finance.md`） | 原版实际 | 核实方式 |
+|---|---|---|
+| :108「结构与原版一致（headline 汇总 + 明细行 + **matched 对账态**）」、:117「沿用原版语义（按 `channel_order_no+sku` 匹配→回填 `order_id`/`matched`、未匹配行进人工核对页）」 | **原版没有 `matched`/`matched_at`/`order_id` 任何一列**。`recon_details` 全仓只在 `fetch_walmart_settlement.py:136` 定义一处；全仓 grep `matched` 在结算语境下零命中；`erp-core/backend/alembic/versions/` 无任何结算表 | `grep -rn "CREATE TABLE.*recon"` + 全仓 `matched` 扫描 + erp-core 迁移目录扫描 |
+| :115「headline 与明细求和不平 → 对账异常 notification（不静默吞，**原版保留**）」 | **原版没有任何平账校验**。全文只有 `cmd_query` 里 `pending_payment = closing - hold` 一处展示算术，不是校验 | 全文 grep `平账/balance/校验/assert` 后逐处确认 |
+
+**危害不在措辞而在后果**：「沿用原版语义」这类写法会让实现方以为有现成参照、细节已定，于是不写详细规格；而匹配规则（一对多怎么办、部分匹配算什么态）、平账容差（浮点求和允许差多少）**原版根本不存在，全都没定义**。这与本周修的几处 fail-open 同形——**看起来有依据，实际是空的**。建议图纸把这两处从「沿用/保留原版」改写为「**新增设计**」并补规格。
+
+**其余控制流要点**
+
+- **增量断点续跑口径**：`get_existing_recon_dates` 只查 `SELECT DISTINCT report_date FROM recon_details WHERE store=?`——**靠「行是否存在」推断账期是否拉全**。逐层核实后**当前实现下是安全的**，但这份安全依赖三个细节同时成立：①`fetch_recon_json` 累积完所有页才整体返回，任一页抛异常则整个账期不落库；②`save_recon_records` 每账期一次 `commit()`；③sqlite 隐式事务保证进程被杀时回滚。**任一处改动就会退化**——比如改成流式逐页写库，就变成「部分落库 → 永久跳过 → 静默缺数」。R2-08 若沿用「按账期判增量」，必须**显式记录账期级完成态**，不能靠行存在性推断。
+- **⚠️ `INSERT OR IGNORE` + 丢弃 skip 计数＝双重吞噬**（`:309` / `:361` / `:572`）：`INSERT OR IGNORE` 已经吞掉约束冲突，外层还 `except sqlite3.IntegrityError`（因而基本永不触发、`skipped` 恒为 0）；调用方 `ins, skip = save_recon_records(...)` 把 `skip` **直接丢弃**，只累加并打印 `ins`。→ **幂等键一旦选错造成碰撞，少计费用且计数器不报**。这就是阶段一 §3「多条费用行拼出相同 `source_ref` → 被幂等键静默吞掉」那条风险在旧仓里的**实证机制，不是推测**。
+- **`--force` 是「重拉但不覆盖」**（`:536`）：force 只是不预加载 `existing_map`，所有行仍走 `INSERT OR IGNORE`。→ **渠道事后修订过的行不会更新，静默保持旧值**；旧仓没有「渠道数据可被修订」的处理路径。这印证了图纸修订②「重拉协议版本化」的必要性，但图纸只处理了 snapshot 层——**明细行层（`settlement_line`）的重拉语义图纸没说**，建议一并补。
+- **`_to_float`/`_to_int` 脏值→`None`**（`:367`）：金额字段解析失败静默变 NULL。NULL 与 0 在后续 `SUM` 里表现不同但都不告警。
+- **限额量级**（补齐阶段一 §4 那条只说了「未列入官方表」的风险）：`cmd_fetch` 用 `ThreadPoolExecutor(max_workers=8)` **8 店并发**，每店多账期、每账期 `fetch_recon_json` 分页循环（`page_size=1000`）**无节流、无退避、无页数上限**。而 `reconFileJson` 未列入官方限额表。突发请求量不可控。
+- **`settlement_snapshots` 无任何唯一键**（`:42` 仅 `AUTOINCREMENT`）：每次 fetch 插一行新的 → 它是**抓取日志，不是账期记录**。图纸给的 `uq_settlement (store_id, period_start, period_end)` 同样是**新增约束而非沿用原版**。
+
+### 12.2 `pages-finance.jsx`（532 行）：设计稿，不是实现
+
+硬编码数组（`:12` `items`、`:326` `weeks`、`:348` `wf`），**零 API 调用**，位于 `handoff-design/` 下，属 UI 设计原型。
+
+但它定义了一个**图纸没有的产品概念**：`FinanceReconPage` 做的是**三方对账**——Walmart 结算 × Amazon 采购成本 × 支付流水（`:10` 注释「Every order has 3 legs」），三态 `matched` / `partial` / `unmatched`，`partial` 的实例是「支付金额 $32.80 ≠ 采购金额 $30.50，差 $2.30（疑似 tip / 加急）」。而图纸 §08 的对账只有**两方**（渠道明细 ↔ 本地订单），**第三方「支付流水」在图纸里没有对应实体**。→ 列入待裁（是否在 R2-08 范围）。
+
+### 12.3 契约缺口（三条，均已实测）
+
+1. **finance 零覆盖**：契约无 `Finance` tag，无任何 settlement/profit 路径（grep 零命中）。与阶段一记的「`permission` 表无任何 finance 权限码」构成同一个空白面——R2-08 建端点时**契约、权限码、tag 三样都要新建**。
+2. **顶层 `tags` 块缺 4 个**（坐实 Owner 2026-07-26 的次要项报告）：已声明 7 个 `[Auth, Identity, Channel, Catalog, Listing, Order, Portal]`，而 paths 实际用到 11 个，缺 **`Scrape`(5) / `Audit`(3) / `Compliance`(11) / `Aftersale`(6)**。反向无废声明（声明了却无 operation 使用的为 0）。
+3. **两处 tag 大小写漂移**（本轮新发现）：代码 `aftersale/router.py:23` 用 `tags=["aftersale"]`、`order/router.py:25` 用 `tags=["order"]`，**均为小写**，而契约写 `Aftersale` / `Order`。codegen 按 tag 分组生成客户端命名空间，大小写不一致会产出两套命名。另 `Notify` 与 `ScrapeWorker` 两个 tag 只存在于代码、契约完全没有——与 RS-11 D 类欠账 9 条同源。
+
+### 12.4 一条既有产品行为，图纸未覆盖（供拆单参考）
+
+`erp-core/backend/app/api/v1/orders.py` **已经在用结算数据回填订单佣金真值**：`commission_source: "settlement" | "estimated"`（`:309`），取不到真值才估算 15%（`:584`），真值来源写明是 `walmart_settlement.db.recon_details` 里 `amount_type='Commission on Product'`（`:618`）。这是**已上线的产品行为且带真值/估算标记**，图纸 §08 未覆盖「结算真值回填订单」这条链路。→ 列入待裁（R2-08 是否承接）。
+
+> 附一条与 R2-08 无关的旧仓事实：该文件用**硬编码 macOS 绝对路径** `/Users/nextderboy/Projects/erpAPI/walmart_settlement.db`（`:89`）连 SQLite。仅作旧仓现状记录，新仓不涉及（禁 SQLite 进生产路径是铁律 5）。
