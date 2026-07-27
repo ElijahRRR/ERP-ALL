@@ -22,7 +22,9 @@ tags:
   - {name: Aftersale, description: 退货与退款（R2-07）}
   - {name: Compliance, description: 合规数据供给：黑名单/商标/TRO/导入作业（R2-12）}
   - {name: Audit, description: 商品审核（L0/L2/L3 分层判定）}
-  - {name: Scrape, description: 采集工单与采集端 worker}
+  - {name: Scrape, description: 采集工单与采集端（内部 API 面）}
+  - {name: Notify, description: 通知中心：列表/未读数/已读（任何登录用户可用，无权限点）}
+  - {name: ScrapeWorker, description: 采集节点回调面（X-Node-Key + X-Node-Token 双头部认证，非 JWT）}
   - {name: Portal, description: 采购方门户（独立认证域，白名单最小面）}
 
 security:
@@ -1380,10 +1382,152 @@ paths:
               properties: {reason: {type: string}}
       responses: {'200': {description: OK}}
 
+  # ───────────────────────── Notify ─────────────────────────
+  # 通知中心：任何登录用户可用，**无权限点**（`notify/router.py:1` docstring 即此口径），
+  # 故这四条不带 x-permission。前端通知铃/通知中心页在用（此前手写响应类型，属 FE-DEBT）。
+  /notifications:
+    get:
+      tags: [Notify]
+      summary: 通知列表（分页）
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: unread_only, in: query, schema: {type: boolean, default: false}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationPage'}}}}
+  /notifications/unread-count:
+    get:
+      tags: [Notify]
+      summary: 未读数（铃铛轮询）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, required: [count], properties: {count: {type: integer}}}
+  /notifications/read-all:
+    post:
+      tags: [Notify]
+      summary: 全部标记已读
+      responses:
+        '204': {description: No Content}
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notify]
+      summary: 单条标记已读
+      parameters:
+        - {name: notificationId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '204': {description: No Content}
+
+  # ───────────────────── ScrapeWorker（采集节点） ─────────────────────
+  # **路径里的双版本号 `/api/v1/worker/v1/…` 是如实登记、不是笔误**：`worker_router` 自带
+  # `prefix=/worker/v1`（`scrape/router.py:26`）又被挂在 `/api/v1` 下叠出来的。改路径是破坏性
+  # 的（采集 worker 在跑），故保留现状并在此照实写明。
+  # 认证走**第三个域**：`X-Node-Key` + `X-Node-Token` 双头部（非 JWT、无权限点）。
+  # `register` 用一次性 enroll_token 换取长期凭证，因此它本身不带 node 认证。
+  /worker/v1/register:
+    post:
+      tags: [ScrapeWorker]
+      security: []
+      summary: 节点注册（以 enroll_token 换取长期凭证）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node_key, kind, enroll_token]
+              properties:
+                node_key: {type: string, minLength: 3, maxLength: 64}
+                kind: {type: string, enum: [scraper_amazon, scraper_walmart]}
+                enroll_token: {type: string}
+                version: {type: [string, 'null']}
+                capacity: {type: integer, minimum: 1, maximum: 64, default: 1}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {type: object}}}}
+  /worker/v1/sync:
+    post:
+      tags: [ScrapeWorker]
+      security: [{nodeKeyAuth: [], nodeTokenAuth: []}]
+      summary: 节点心跳与状态上报
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: {type: [string, 'null']}
+                metrics: {type: object}
+                window_state: {type: object}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object}}}}
+  /worker/v1/tasks/pull:
+    get:
+      tags: [ScrapeWorker]
+      security: [{nodeKeyAuth: [], nodeTokenAuth: []}]
+      summary: 认领采集任务
+      parameters:
+        - {name: count, in: query, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, required: [tasks], properties: {tasks: {type: array, items: {type: object}}}}
+  /worker/v1/tasks/release:
+    post:
+      tags: [ScrapeWorker]
+      security: [{nodeKeyAuth: [], nodeTokenAuth: []}]
+      summary: 释放已认领任务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tasks]
+              properties:
+                tasks:
+                  type: array
+                  items: {type: object, properties: {task_id: {type: integer}, attempt: {type: integer}}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, required: [released], properties: {released: {type: integer}}}
+  /worker/v1/tasks/result:
+    post:
+      tags: [ScrapeWorker]
+      security: [{nodeKeyAuth: [], nodeTokenAuth: []}]
+      summary: 回传采集结果
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_id, attempt]
+              properties:
+                task_id: {type: integer}
+                attempt: {type: integer}
+                success: {type: boolean, default: true}
+                payload: {type: [object, 'null']}
+                payload_ref: {type: [string, 'null']}
+                fetched_at: {type: [string, 'null'], format: date-time}
+                error_type: {type: [string, 'null']}
+                error_detail: {type: [string, 'null']}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object}}}}
+
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 内部 JWT（audience=erp）}
     portalAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 门户 JWT（audience=portal）}
+    nodeKeyAuth: {type: apiKey, in: header, name: X-Node-Key, description: 采集节点标识（与 nodeTokenAuth 同时提供）}
+    nodeTokenAuth: {type: apiKey, in: header, name: X-Node-Token, description: 采集节点令牌（`scrape/router.py::_node_auth` 双头部校验）}
 
   parameters:
     page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
@@ -2231,3 +2375,19 @@ components:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
         - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/PortalProcurement'}}}}
+    Notification:
+      type: object
+      properties:
+        id: {type: integer}
+        severity: {type: string}
+        category: {type: string}
+        title: {type: string}
+        body: {type: [string, 'null']}
+        object_type: {type: [string, 'null']}
+        object_id: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+        read_at: {type: [string, 'null'], format: date-time}
+    NotificationPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Notification'}}}}

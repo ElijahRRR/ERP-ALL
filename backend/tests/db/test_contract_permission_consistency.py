@@ -72,19 +72,8 @@ CONTRACT_AHEAD_OF_CODE: dict[tuple[str, str], str] = {
 # **新增路由必须同时登记契约**，否则 `test_no_new_undocumented_routes` 红。
 # 清偿属 RS-11 后续增量：补登记进 002 契约后从本表删除。
 CODE_AHEAD_OF_CONTRACT: dict[tuple[str, str], str] = {
-    # 通知中心四端点——前端通知铃/通知中心页在用，契约里没有
-    ("GET", f"{API_PREFIX}/notifications"): "RS-11 欠账：通知中心，前端在用",
-    ("GET", f"{API_PREFIX}/notifications/unread-count"): "RS-11 欠账：通知中心",
-    ("POST", f"{API_PREFIX}/notifications/read-all"): "RS-11 欠账：通知中心",
-    ("POST", f"{API_PREFIX}/notifications/{{}}/read"): "RS-11 欠账：通知中心",
-    # 采集 worker 五端点。注意路径含双版本号 /api/v1/worker/v1/——worker_router 自带
-    # prefix="/worker/v1"（scrape/router.py:26）又被挂在 /api/v1 下所致。改路径是破坏性的
-    # （采集 worker 在跑），故不动；补登记契约时须**如实写这个路径**，别写成 /worker/v1/...
-    ("POST", f"{API_PREFIX}/worker/v1/register"): "RS-11 欠账：采集 worker（双版本号路径）",
-    ("POST", f"{API_PREFIX}/worker/v1/sync"): "RS-11 欠账：采集 worker",
-    ("GET", f"{API_PREFIX}/worker/v1/tasks/pull"): "RS-11 欠账：采集 worker",
-    ("POST", f"{API_PREFIX}/worker/v1/tasks/release"): "RS-11 欠账：采集 worker",
-    ("POST", f"{API_PREFIX}/worker/v1/tasks/result"): "RS-11 欠账：采集 worker",
+    # 2026-07-27 全部清偿完毕：通知中心四端点 + 采集 worker 五端点已补登记进 002 契约。
+    # 空表＝任何新增未登记路由都会被 `test_d_no_new_undocumented_routes` 当场判红。
 }
 
 CLOSED_TICKET_STATUS = {"done", "accepted", "accepted-l2-ship-deferred"}
@@ -277,10 +266,8 @@ CODE_ONLY_TAGS = {
     # ① 设计上就不进契约，**不是欠账**：探活端点在 /api/v1 之外，不属业务 API 面。
     #    （本条是这组判据首跑抓出来的——D 类那条判据只看 /api/v1，`/healthz` 从没露过面。）
     "ops": "设计如此：`main.py:101` 的 `/healthz` 探活端点，在 /api/v1 之外，不属业务契约面",
-    # ② 与 CODE_AHEAD_OF_CONTRACT 同源的**真欠账**：端点本就没登记进契约。
-    #    契约补登记那批端点时，这两条要一并删。
-    "Notify": "RS-11 欠账：通知中心四端点未登记契约",
-    "ScrapeWorker": "RS-11 欠账：采集 worker 五端点未登记契约",
+    # ② 曾有 Notify / ScrapeWorker 两条真欠账，2026-07-27 补登记进契约后已摘牌
+    #    （摘牌是门禁强制的：`stale` 那条断言会在 tag 进了契约后要求删除白名单条目）。
 }
 
 

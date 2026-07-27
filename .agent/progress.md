@@ -1808,3 +1808,29 @@ Owner 表单式逐条确认「决策按你建议的执行」，并批准墙钟�
   从 git 恢复重来，第二版改用绝对路径并先验证备份确实建成。教训与上一轮那个「pytest 跑在
   仓根」同源：**清理/还原动作失败时不出声，后续步骤照跑**。
 - 全量 537 passed / 1 skipped（+2 为 F 组）、ruff 清、mypy 0 issue、前端 lint 绿、codegen 无漂移。
+
+### RS-11 D 类欠账清零：9 条未登记路由补进契约（2026-07-27，云端 AI）
+
+`CODE_AHEAD_OF_CONTRACT` 从 9 条清到 **0**。按上一轮的教训**先看代码、不凭通例推断**，
+读完两组路由后查出两点结构事实，都影响契约怎么写：
+
+- **通知四条无权限点**——`notify/router.py:1` 的 docstring 就写着「任何登录用户可用（无权限点）」。
+  所以这四条**不带 x-permission**，不是漏写。另外前端是**手写响应类型**在调
+  （`api.get<{count:number}>`、`PageOf<Notification>`），正是 008 规范禁止的那类 FE-DEBT；
+  补进契约后它们才有 codegen 类型可换。
+- **worker 五条走第三个认证域**——`X-Node-Key` + `X-Node-Token` 双头部（`_node_auth`），
+  既不是 JWT 也没有权限点。故新增 `nodeKeyAuth` / `nodeTokenAuth` 两个 securityScheme，
+  与既有 `bearerAuth`/`portalAuth` 并列。`register` 是用一次性 `enroll_token` 换长期凭证的，
+  **它本身不带 node 认证**，契约里显式写 `security: []`。
+  **双版本号路径 `/api/v1/worker/v1/…` 如实登记**并在契约注释里写明成因，不是笔误。
+- 顶层 tags 11 → 13（补 `Notify`/`ScrapeWorker`）；`CODE_ONLY_TAGS` 里那两条随之摘牌——
+  **摘牌不是我自觉，是门禁强制的**：F 组那条 `stale` 断言在 tag 进契约后就会要求删白名单条目。
+  实际跑起来也确实先红了一次（我补了 paths 却忘了补顶层声明），门禁当场点名。
+- **codegen 这次应当有漂移，也确实有**：`pnpm gen:api` 产出 9 条新 path 的类型，+394 行。
+  与上一轮 tag 改动「产物逐字节相同」正好构成对照——**说明那次的「零漂移」不是 codegen 没跑，
+  是 tag 真的不进产物**。
+- 途中又栽了一次同类跟头（本会话第三次）：`pnpm lint`/`pnpm build` 跑在了 `backend/` 目录下，
+  报红。不是代码问题，是**工作目录错了**。从 `frontend/` 重跑，lint 与 build 均绿。
+  这三次（pytest 跑仓根 / 备份 cp 跑错目录 / pnpm 跑 backend）是同一个形状：
+  **命令在错误的地方执行，输出看起来像是「结论」，其实是「没执行」或「执行错了对象」。**
+- 全量 537 passed / 1 skipped、ruff 清、mypy 0 issue、前端 lint + build 绿。

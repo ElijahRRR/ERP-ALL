@@ -493,6 +493,11 @@
         "date": "2026-07-27",
         "kind": "progress",
         "text": "**D 类欠账清偿一部分：契约 tag 三处修完 + 补 F 组门禁**。顶层 `tags` 补齐 4 个（Scrape/Audit/Compliance/Aftersale，7 → 11）；代码侧 `aftersale`/`order` 两个小写 tag改为与契约一致的 `Aftersale`/`Order`（契约侧其余 9 个一律首字母大写，代码这两个是异类）。新增 `test_f_contract_tags_all_declared`（paths 用到的必须声明、顶层不得有废声明）与 `test_f_route_tags_match_contract`（代码 tag 须与契约一致**含大小写**，未登记者进 `CODE_ONLY_TAGS` 白名单）。**门禁首跑抓出第三个我没算到的 code-only tag `ops`**——`main.py:101` 的 `/healthz` 探活端点，在 /api/v1 之外、本就不该进业务契约，属合法 code-only 而非欠账（D 类那条判据只看 /api/v1，它从没露过面）。三向证伪：复现刚修掉的大小写漂移 → 红；复现刚修掉的漏声明 → 红；加一个废声明 → 红。**同时更正了我自己一条错判**：原说「改 tag 会动 codegen 产物命名」，实测 `openapi-typescript` 根本不输出 tag，改完产物逐字节相同（详见 R2-08 台账 correction 条）。"
+      },
+      {
+        "date": "2026-07-27",
+        "kind": "progress",
+        "text": "**D 类欠账清偿完毕：`CODE_AHEAD_OF_CONTRACT` 从 9 条清到 0**。通知中心四端点 + 采集 worker 五端点已补登记进 002 契约。按上轮教训**先看代码不凭通例**，查出两点结构事实：①通知四条**无权限点**（`notify/router.py:1` docstring 即此口径：任何登录用户可用），故不带 x-permission；前端此前是手写响应类型调用（`api.get<{count:number}>`），属 008 禁止的那类 FE-DEBT，补进契约后才能换 codegen 类型。②worker 五条走的是**第三个认证域**——`X-Node-Key` + `X-Node-Token` 双头部（`_node_auth`），既非 JWT 也无权限点，故新增 `nodeKeyAuth`/`nodeTokenAuth` 两个 securityScheme（与既有 bearerAuth/portalAuth 并列）；`register` 用一次性 enroll_token 换长期凭证，本身不带 node 认证，契约里显式 `security: []`。**双版本号路径 `/api/v1/worker/v1/…` 如实登记并在契约里注明成因**（worker_router 自带 prefix 又挂在 /api/v1 下），不是笔误。顶层 tags 13 个（补 Notify/ScrapeWorker），`CODE_ONLY_TAGS` 里那两条随之摘牌——**摘牌是门禁强制的**，不摘会被 stale 断言判红。验证：契约门禁全绿、`pnpm gen:api` 产出 9 条新 path 的类型（+394 行）、前端 lint 与 build 均绿、537 passed。RS-11 仍不能关账（子项②③ 待 Owner 批准 / 规划审查 AI 落笔）。"
       }
     ]
   },
