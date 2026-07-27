@@ -97,6 +97,32 @@ git -C <仓库根> check-attr text eol -- infra/local-deploy/automation/uspto-da
 test -f infra/.env && echo "ENV_OK" || echo "缺 infra/.env —— 见 .agent/evidence/RS-02a/deploy-rotate-secrets.md"
 ```
 
+### `.sh` 也要自查行尾（与上面的 `.bat` 并列，反方向同一个坑）
+
+`.gitattributes` 声明了 `*.sh text eol=lf`，但**那条规则只在 git「检出该文件」时才生效，
+不会追溯已经躺在工作区里的旧文件**。若某个 `.sh` 是在该规则加入之前（`core.autocrlf=true`
+年代）检出的，且此后内容一直没变过，它就会一直保持 CRLF——而 bash 读到
+`set -euo pipefail\r` 会直接报 `invalid option name` 并退 2。
+
+2026-07-27 实测撞到：手动 `bash infra/local-deploy/backup.sh` 即以此失败（同一脚本由计划
+任务的 Git Bash 跑却成功，真因待查）。**这是 `.bat` 那条纪律的镜像**：仅提交正确字节不够，
+规则加得再对也不追溯旧检出。
+
+```powershell
+# 逐个 .sh 数 CR，期望全为 0
+Get-ChildItem -Recurse -Filter *.sh | ForEach-Object {
+  $b = [IO.File]::ReadAllBytes($_.FullName)
+  "{0}  CR={1}" -f $_.FullName, ($b | Where-Object { $_ -eq 13 }).Count
+}
+```
+
+**任一 `CR` 非 0 的修法**（删掉再让 git 重新检出，这次才会应用 `eol=lf`）：
+
+```powershell
+Remove-Item <该文件>
+git checkout -- <该文件>
+```
+
 ## 故障处置速查
 
 | 症状 | 动作 |
