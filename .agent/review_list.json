@@ -514,6 +514,11 @@
     "date": "2026-07-27",
     "kind": "correction",
     "text": "**第三轮审查：上一轮修 F1 引入两处新问题（N1/N2），已一并修掉**。形态值得记——**同一个 commit 里，改码让两处「实跑量得」的数字失效了**，正是本 PR 通篇在治的那类问题换了个位置出现。①**N1**：F1 把 0039 授的码从 `catalog.import_read` 换成 `compliance.import_read`，但给部署机的验收 SQL（`.agent/evidence/PR-37/deploy-verify-0039.md`）IN 列表没跟着换。实测后果已复现：在一个**迁移成功**的库上旧 SQL 返回 团管7/审核员1/维护员1/订单员1、采集员整行不见＝10，与期望 13 对不上——**会把成功判成失败、诱人去回滚一个好的迁移**（方向与 F9 相反）。已改 IN 列表并在**改码之后**重测期望表（`downgrade 0038 → upgrade head` 与整链 `downgrade base → upgrade head` 两种跑法同结果：8/2/1/1/1＝13）。②**N2**：换码之后 0039 的 `_GRANTS` 与 `0010_import_job.py:84-89` 撞了同一对 (团管, `compliance.import_read`)；upgrade 靠 `WHERE NOT EXISTS` 跳过它一行没插，downgrade 却按名无条件删——**单独回滚 0039 会替 0010 把它删了**，团管在合规中心「导入作业」Tab 直接 403，而回滚者以为只撤了 0039。而 N1 恰好会诱发这个回滚动作，两条连着。已加 `_CO_OWNED_NOT_REVOKED` 豁免（方向取「少删好过误删」：团队副本也一并不删，权限没收干净可人工回收，误删是线上功能挂掉）。**CI 现有的 `upgrade → downgrade base → upgrade` 撞不到这条**——降到 base 时 0010 自己的 downgrade 也删那行，两边一起没。故补 `test_0039_downgrade_spares_predecessor_grants`：在事务里跑 `downgrade()` **真正发出的** SQL（monkeypatch `op.execute` 抓，不在测试里照抄拼串逻辑）、查完回滚不改库；配防僵尸 `test_0039_co_owned_exemptions_are_not_zombies`。两条均经证伪：还原成 `_GRANTS` 即红且报出正是那一对，加个 0039 没授的豁免对即红。该门禁**不证明「确实由前序迁移授出」**——静态 grep 给不出出处（`0002_identity.py` 一个文件里既有全部权限码又有全部角色名，拿它当证据等于永远判绿），共有关系由注释注明出处（0010:84-89），此局限已写进 docstring。全量 543 passed / 1 skipped、ruff/mypy 清、evidence-gate 通过、升→降→升三步 0/0/0。"
+   },
+   {
+    "date": "2026-07-27",
+    "kind": "landed",
+    "text": "**PR #37 走完四方闸序并合并（main `31e0828`，squash）**——这是合并前闸序（CI 绿 → 独立审查通读 diff → 部署机真机验证 → Owner 授权）**首次完整走通**。审查侧四轮：首轮十条 F1–F10（九修一裁），第三轮抓出修 F1 带出的 N1/N2 两条连带问题，第四轮通过并确认 `_CO_OWNED_NOT_REVOKED` 恰好一对不多不少。**第三闸真机验证（部署机，验证对象 `042469c`）四项全通过**：`0038 → 0039` 升级退出码 0（升级前留了 271MB `pg_dump` 转储）；模板角色授权 团管8/审核员2/维护员1/订单员1/采集员1＝**13**，与期望表逐行相符；两个用户 `role` 均 NULL（正确状态）；`/healthz` ok。全程未降级、未发渠道请求。**过程中撞出一条真欠账**：给部署机的指令把迁移写成 PowerShell 原生 `alembic`，在中文 Windows 上因 `alembic.ini` 含中文注释 + configparser 用 GBK 本地编码而 `UnicodeDecodeError` ——不是环境问题，是指令偏离了本机既定路径（`make up`，迁移在 Linux 容器里跑）。已改用容器路径重跑并另立 **FX-0727**。**部署机两处主动停手都停对了**（本地分支未对齐远端、本机有业务数据不能 `downgrade base`），指令里预写的那条退路实际用上了。RS-11 仍不关账：子项②③ 待 Owner 批准 / 规划审查 AI 落笔。**本次回写（PR #38）自身的闸序**：CI 四项已绿；**第三闸经 Owner 2026-07-27 豁免**——零代码改动、不含迁移、不碰渠道写路径、后端一行未动，部署机没有可验的东西；其余三闸照走（等审查 AI 通读 diff 后再合）。豁免记在此处以备追溯：闸序是 CLAUDE.md 写死的，逐次偏离都要有出处。"
    }
   ]
  },
@@ -590,9 +595,16 @@
    "specs/007-mvp-completion-plan/README.md",
    ".agent/evidence/R2-07/"
   ],
-  "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)。【开发侧进展 2026-07-16】Owner 点名开工（007 落地前已启动，撞号已按 007 口径调和）：五路考古（archaeology.md）+ ✅ 07a 核心增量完码（PR #18）：0030 三表（channel_return 头/channel_return_line 行/channel_return_event 变更留痕，C6 行级 upsert）+ return_pull beat（BR-AS-001 全量翻页 nextCursor parse_qs、BR-AS-007 骤降告警、店间隔离）+ GET /returns 端点+ openapi 契约 + aftersale.read 权限点；本地 CI 全绿（pytest 411/ruff/mypy strict，新测 8 项）。【开发侧批注（不改 007 正文，走回传）】R-ERP-006 实证的是 erp-core 缺 returns；erpAPI 根另有独立生产脚本 售后订单同步/fetch_walmart_returns.py（台账 §13 AS 全部规则的出处），已用作实现语义与 L1 对拍口径——结论不变（代码确属新建），但『无旧语义可考』不成立。✅ 增量2（07a 收尾，PR#19）：0031 refund_request 图纸原样落库 + record/approval 两档本地闭环（幂等创建/审批/拒绝端点，权限点 refund.request/approve，reason_code 字典校验；auto 档 R2-09 接线前 fail-closed 拒绝不静默降档；approved 驻留待执行接线）；本地 CI 全绿（pytest 418/ruff/mypy strict，新测 7 项）。✅ 验收①真机通过（2026-07-17，evidence/R2-07/a152-recon-20260717.md）：A152 拉回 36 张真实退货单（36 头 36 行 1 页），return_pull_verify 全口径对账一致（RMA 集合/聚合状态/金额/行数/行级退款状态）；部署机 HEAD=176da4c、alembic 0031、migrate 退出码 0。**07a 整片收账（PR #18/#19 均已合并）**。✅ 07b 封店工作流开发面完成（2026-07-17，Workflow：Opus 双实现并行+三镜头评审，fable 终审）：考古修正范围（archaeology-07b.md+raw×5）——store_incident 表/端点/状态联动 0003 早已建成（router:537 留坑），真缺口=brand_assignment 表整仓不存在（图纸预留≠DB 预留）。落地：0033 建表（§03:72-89 逐列+uq_brand_occupied 部分唯一+RLS/touch+权限点 catalog.brand_read/brand_release+schedule 种子 suspension_reminder 每日/remind_days=7）；build 分配 upsert 占用（brand_norm 复用 product 生成列，异店冲突 BRAND_OCCUPIED_OTHER_STORE，match/无品牌豁免，撞唯一复查+重试一次防欠占用窄窗）；suspension 建单批量释放（reason=suspension+incident_id 回链+brand/sku_released_at 回填+notify 仅 count>0）；「listing 停止维护」全覆盖=四对账 beat 门控+outbox pick_next/claim listing 类冻结（order_ack/ship 放行且不被冻结命令挡道——评审 major①）；suspension_reminder 周期判重改无时间窗历史键（评审 major②：notify 24h 窗跨不过周期会隔天刷屏架空 remind_days）；GET /brand-assignments+manual release（AuditWriter 留痕含 notes——评审 minor）；前端店铺事件页（事件登记/流转+品牌占用/手工释放，双权限门控）；erp.tools.run_task 通用单跑工具（根治 runbook run_once 文档-现实缺口，实测入口在档）；契约落笔（brand-assignments 两路径+incidentId/assignmentId 共享参数+修 HEAD 上 RefundRequest.lines 未引号 YAML 阻断）+schema.d.ts codegen 重生成（顺带清偿既往 codegen 欠账）；runbook 封店演练节（occurred_at 需回填≥remind_days 天前）。评审 2 major+4 minor 全修；CI：pytest 457 绿+ruff/format/mypy 干净+前端 lint/build 绿+0033 up/down/re-up 实测。**07b PR #25 已 squash 合并 main bb75790（2026-07-18），0033 已在 main**——07b 开发面收口，止于人工验收点。待：验收②真机封店演练（runbook 有完整步骤，与 R2-12 无依赖可另排时间）→ 07c 邮箱（需 Owner 提供 IMAP 凭证，后置不阻塞）。整单 status 仍 in_progress 的原因=07b 验收② 未收 + 07c 未开工（07a 已随 PR #18/#19 收口）。 【2026-07-27】07c 阻塞解除：Owner 确认已有可接真实邮箱与 IMAP 凭证；07c 为模块7 最后一块，列 MVP 剩余路径第 2 站（R2-09 之后）。",
+  "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)。【开发侧进展 2026-07-16】Owner 点名开工（007 落地前已启动，撞号已按 007 口径调和）：五路考古（archaeology.md）+ ✅ 07a 核心增量完码（PR #18）：0030 三表（channel_return 头/channel_return_line 行/channel_return_event 变更留痕，C6 行级 upsert）+ return_pull beat（BR-AS-001 全量翻页 nextCursor parse_qs、BR-AS-007 骤降告警、店间隔离）+ GET /returns 端点+ openapi 契约 + aftersale.read 权限点；本地 CI 全绿（pytest 411/ruff/mypy strict，新测 8 项）。【开发侧批注（不改 007 正文，走回传）】R-ERP-006 实证的是 erp-core 缺 returns；erpAPI 根另有独立生产脚本 售后订单同步/fetch_walmart_returns.py（台账 §13 AS 全部规则的出处），已用作实现语义与 L1 对拍口径——结论不变（代码确属新建），但『无旧语义可考』不成立。✅ 增量2（07a 收尾，PR#19）：0031 refund_request 图纸原样落库 + record/approval 两档本地闭环（幂等创建/审批/拒绝端点，权限点 refund.request/approve，reason_code 字典校验；auto 档 R2-09 接线前 fail-closed 拒绝不静默降档；approved 驻留待执行接线）；本地 CI 全绿（pytest 418/ruff/mypy strict，新测 7 项）。✅ 验收①真机通过（2026-07-17，evidence/R2-07/a152-recon-20260717.md）：A152 拉回 36 张真实退货单（36 头 36 行 1 页），return_pull_verify 全口径对账一致（RMA 集合/聚合状态/金额/行数/行级退款状态）；部署机 HEAD=176da4c、alembic 0031、migrate 退出码 0。**07a 整片收账（PR #18/#19 均已合并）**。✅ 07b 封店工作流开发面完成（2026-07-17，Workflow：Opus 双实现并行+三镜头评审，fable 终审）：考古修正范围（archaeology-07b.md+raw×5）——store_incident 表/端点/状态联动 0003 早已建成（router:537 留坑），真缺口=brand_assignment 表整仓不存在（图纸预留≠DB 预留）。落地：0033 建表（§03:72-89 逐列+uq_brand_occupied 部分唯一+RLS/touch+权限点 catalog.brand_read/brand_release+schedule 种子 suspension_reminder 每日/remind_days=7）；build 分配 upsert 占用（brand_norm 复用 product 生成列，异店冲突 BRAND_OCCUPIED_OTHER_STORE，match/无品牌豁免，撞唯一复查+重试一次防欠占用窄窗）；suspension 建单批量释放（reason=suspension+incident_id 回链+brand/sku_released_at 回填+notify 仅 count>0）；「listing 停止维护」全覆盖=四对账 beat 门控+outbox pick_next/claim listing 类冻结（order_ack/ship 放行且不被冻结命令挡道——评审 major①）；suspension_reminder 周期判重改无时间窗历史键（评审 major②：notify 24h 窗跨不过周期会隔天刷屏架空 remind_days）；GET /brand-assignments+manual release（AuditWriter 留痕含 notes——评审 minor）；前端店铺事件页（事件登记/流转+品牌占用/手工释放，双权限门控）；erp.tools.run_task 通用单跑工具（根治 runbook run_once 文档-现实缺口，实测入口在档）；契约落笔（brand-assignments 两路径+incidentId/assignmentId 共享参数+修 HEAD 上 RefundRequest.lines 未引号 YAML 阻断）+schema.d.ts codegen 重生成（顺带清偿既往 codegen 欠账）；runbook 封店演练节（occurred_at 需回填≥remind_days 天前）。评审 2 major+4 minor 全修；CI：pytest 457 绿+ruff/format/mypy 干净+前端 lint/build 绿+0033 up/down/re-up 实测。**07b PR #25 已 squash 合并 main bb75790（2026-07-18），0033 已在 main**——07b 开发面收口，止于人工验收点。待：验收②真机封店演练（runbook 有完整步骤，与 R2-12 无依赖可另排时间）→ 07c 邮箱（需 Owner 提供 IMAP 凭证，后置不阻塞）。整单 status 仍 in_progress 的原因=07b 验收② 未收 + 07c 未开工（07a 已随 PR #18/#19 收口）。",
   "last_checked_at": "2026-07-27",
-  "note": "验收：①A152 真实 returns 拉取对账一致 ②封店演练(incident→品牌 released→提醒送达) ③真实邮件→分类→incident 落库"
+  "note": "验收：①A152 真实 returns 拉取对账一致 ②封店演练(incident→品牌 released→提醒送达) ③真实邮件→分类→incident 落库",
+  "updates": [
+   {
+    "date": "2026-07-27",
+    "kind": "ruling",
+    "text": "【2026-07-27】07c 阻塞解除：Owner 确认已有可接真实邮箱与 IMAP 凭证；07c 为模块7 最后一块，列 MVP 剩余路径第 2 站（R2-09 之后）。〔本条原文由审计侧写在 `finding` 尾部（8c50502），因触发膨胀门禁的「祖父条目只准缩不准涨」被移到此处，文字一字未改——门禁的用意就是把这类按日期追加的时间线赶进 `updates`，两边各追加一个元素天然不冲突。〕"
+   }
+  ]
  },
  {
   "id": "R2-08",
@@ -735,6 +747,19 @@
   "finding": "由独立审查 AI 的 F1 逼出。0039 初版把 `catalog.import_read` 授给采集员/审核员/团管，理由写「为合规中心导入作业 Tab 的对账可见性」——**授错了码**：该码全仓零消费点，而那个 Tab 的门控是`CompliancePage.tsx:27` 的 `has('compliance.import_read')`，三个 `/import-jobs*` 端点也都要`compliance.import_read`。仓里早已裁过（契约 `openapi-v0.yaml:574` 注释：「此前契约误标`catalog.import_*`——与路由/种子不符，一并归正」），0039 照着已被判错的旧口径写。**更坏的是副作用**：补授让可达性门禁因「已有模板角色持有」判绿，把缺口盖住，那道闸自设的「不许养僵尸码」用意反被绕开。Owner 2026-07-27 定「代码统一、贴合已裁定的规划」，故 0039 改授`compliance.import_read`（同三角色，且不限 team_id、顺带补上 0010 漏掉的团队副本）。**本单只管删种子行**：删 `app.permission` 要先清 `role_permission`，现网可能有运维手工授予，属数据破坏性操作，需部署机配合确认后再动。在此之前该码已在 `KNOWN_DEAD_CODES` 显式登记，并有两条自证判据钉着（有消费点即红要求摘牌；种子里消失也红）。",
   "last_checked_at": "2026-07-27",
   "acceptance": "删除前先在真机查 `SELECT * FROM app.role_permission WHERE permission_code='catalog.import_read'` 确认无运维手工授予；删除后 `KNOWN_DEAD_CODES` 清空该条且可达性门禁仍绿"
+ },
+ {
+  "id": "FX-0727",
+  "priority": "P2",
+  "dimension": "chore",
+  "check": "alembic.ini 含非 ASCII 导致原生 Windows 调用一律起不来：configparser 读 ini 不指定编码、用系统本地编码（中文 Windows=GBK），撞上第 7 行中文注释即 UnicodeDecodeError。改法二选一：把 alembic.ini 收敛为纯 ASCII（注释挪进 env.py），或在 alembic 入口显式指定 UTF-8 读取",
+  "status": "todo",
+  "evidence": [
+   ".agent/evidence/PR-37/deploy-verify-0039.md"
+  ],
+  "finding": "2026-07-27 部署机真机验证 PR #37 时实撞：`uv run alembic current` 退出码 1，`UnicodeDecodeError: 'gbk' codec can't decode byte 0xb1 in position 129`。云端侧定位：`backend/alembic.ini:7` 是中文注释，文件第一个非 ASCII 字节在 121，「由」的 UTF-8 三字节 e7 94 b1 正落在报错位置。**此前一直没暴露，是因为这台机的既定路径是 `make up`（迁移跑在 Linux 容器里）**，是那次指令写成 PowerShell 原生调用才踩到——即「一条从没被走过的路上的地雷」。危害面：任何人在中文 Windows 上原生跑 alembic（排障、单跑一条迁移、临时查 current）都会当场卡住，且报错信息完全不指向真因。CI 与容器路径不受影响，故非阻塞。",
+  "last_checked_at": "2026-07-27",
+  "acceptance": "中文 Windows（GBK locale）上 `uv run alembic current` 能正常输出版本号；CI 与 `make up` 容器路径不回归"
  },
  {
   "id": "R2-13",

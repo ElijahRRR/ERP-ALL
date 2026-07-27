@@ -115,8 +115,56 @@ curl -s http://127.0.0.1:8000/healthz
 - **不要**给任何用户绑角色——那是 Owner 的决定，不在本次验证范围。
 - **不要**切回 main。PR 尚未合并，切回去会让分支上的运维资产从检出树消失
   （`infra/local-deploy/README.md`「切回 main 前必做」那节讲的就是这个）。
+  〔2026-07-27 PR #37 已合并（`31e0828`），此条解除；切回 main 前仍须过「运维资产在位检查」。〕
 
 ## 与 USPTO 连测的关系
 
 今天 18:00 北京的 **USPTO 连测第 2 日 A 段照常跑，优先级更高**。本文这几步都是分钟级的，
 可以在 A 段之前或之后做，两者互不干扰（不共用数据表、不共用定时任务）。
+
+---
+
+## 回执（2026-07-27，部署机贴回，验证对象 `042469c`）
+
+**四项全通过。** 原文按贴回内容记录，未改写。
+
+| 项 | 结果 |
+|---|---|
+| 分支对齐 | 本地曾落后 27 个提交且有 2 个本地提交（`9fc9711`/`b0d335d`，均为已合并内容的旧副本）；建备份分支 `deploy-local-20260727` + 另存 automation 后 `reset --hard`，对齐到 `042469c` |
+| 升级前基线 | `alembic current` = **`0038 (head)`** |
+| 转储 | `pg_dump -Fc` 退出码 0，**271 669 356 bytes**（只 dump 不 restore） |
+| 迁移 | `migrate` 容器 `Exited (0)`，日志无异常；升级后 `alembic current` = **`0039 (head)`** |
+| 权限第一层 | 团队管理员 8 / 审核员 2 / 维护员 1 / 订单员 1 / 采集员 1 ＝ **13**，与期望表逐行相符 |
+| 权限第二层 | `admin`（is_super=t）与 `pr35_nocompliance` 均 `role = NULL`——正确状态 |
+
+> 上表是**验证当时**的状态，不改。此后（同日）Owner 手工给 `pr35_nocompliance` 绑了 `text` 团队的
+> 团队管理员副本（role_id=14 / 42 权限），核过绑的是**团队副本而非模板**、`user_team = role_team = 1`
+> ——这正是 `identity/router.py:321-329` 要求的形态。连带后果记在 `progress.md`：该账号不再能用于
+> 「无权限即 403」的否定验证。
+| 冒烟 | `/healthz` → `{"status":"ok","version":"0.1.0"}` |
+
+全程未降级、未发渠道请求、未改 `channel.gateway_mode`、未绑定角色、未跑 `git clean`。
+
+### 两条过程记录（都值得留下）
+
+**① 原生 Windows 跑不了 alembic——`alembic.ini` 有中文注释。** 本文第 1 步原写的是
+PowerShell 原生 `alembic upgrade head`，部署机执行即 `UnicodeDecodeError: 'gbk' codec can't
+decode byte 0xb1 in position 129`。成因已定位：`backend/alembic.ini:7` 是中文注释，而
+`configparser` 读 ini 时不指定编码、用系统本地编码（中文 Windows 为 GBK），撞上 UTF-8 的
+「由」（`e7 94 b1`，文件第一个非 ASCII 字节在 121，与报错位置吻合）。
+
+**这不是环境问题，是本文给错了路径**：`infra/local-deploy/README.md` 的增量验证流程本就是
+`make up`，迁移跑在 `migrate` 容器里（Linux/UTF-8），从来碰不到这个坑。已改用容器路径重跑。
+`alembic.ini` 的非 ASCII 属真欠账（原生调用在 GBK 机器上一律起不来），另行清偿。
+
+**② 部署机在两处主动停手，都停对了。** 一是发现本地分支未对齐远端（验证对象不是 PR 最新
+head），二是发现本机 `erp_all` 存有业务数据、不能跑 `downgrade base`。两处都按本文铁律 3
+停在原地等确认，没有自行「修一下再试」——本文第 1 步预写的那条退路（数据不能丢就改简化版）
+正是为此，实际用上了。
+
+### 后续（合并后）
+
+PR #37 已于 2026-07-27 合并进 main（`31e0828`，squash）。部署机切回 main 前须先过
+`infra/local-deploy/README.md`「切回 main 前必做：运维资产在位检查」——期望三行齐全
+（`.gitattributes` / `automation/README.md` / `automation/uspto-daily.bat`），云端侧已核过
+main 上三者都在。切回后 `make up` 不会再动库（main 与本次验证同为 0039）。
