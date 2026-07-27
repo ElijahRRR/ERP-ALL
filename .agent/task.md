@@ -8,20 +8,34 @@
   前置全部解除：考古完成（`.agent/evidence/R2-09/archaeology.md`，1512 行，六路并行 +
   对抗性交叉核对）；四条硬阻塞由 Owner 2026-07-26 四条裁定解除并由审计侧落 001§09/007；
   flow 清单 **v2.1** 冻结（10 条，07-27 补 `purchase_execute`）。
-  - **增量拆分**（沿用考古 §4，按 v2.1 对齐）：①policy 内核 + 10 条 flow Enum + CI 一致性
-    校验 + 两处旧代码回接 + `kinds` 跨域清偿（纯重构，行为零变化，整单地基）②策略读写 API
-    + 权限点 `automation.read/write` + 前端策略面板 ③`audit_to_listing` 三档（含
-    `scrape_to_audit`）④`pricing_watch` 三档 + 第二套档位语义收口 ⑤`refund`/`cancel`
-    auto 档渠道执行链（**本单唯一 L2 片**，不可逆真钱）⑥三档全链验收取证 + runbook +
-    图纸/契约/工单回写。
+  - **增量拆分**（沿用考古 §4，按 v2.1 对齐；**增量2 于 07-27 因 Q2 裁定拆成 2a/2b**）：
+    ①policy 内核 + 10 条 flow Enum + CI 一致性校验 + 两处旧代码回接 + `kinds` 跨域清偿
+    （纯重构，行为零变化，整单地基）**✅ 已完成，PR #41**
+    **②a** 策略读写 API（GET/PUT `/automation-policies`）+ 权限点 `automation.read/write`
+    + 前端策略面板 + **Q3 三条**（面板显性区分「未配置/已停用/manual」三态、`enabled=false`
+    记 warn【增量1 已落】、闸类 flow 停用给显式二次确认）——**无前置，下一个动工**
+    **②b** 平台默认档模板 `automation_policy_template`（Owner 07-27 裁定 Q2）——
+    ⛔ **开不了工，两道前置**：图纸零「模板」概念须审计侧先落 §09（云端侧无权改正文）；
+    两条业务口径待 Owner（模板写权归谁 / 非闸类 flow 能否在模板里设 auto）。
+    方案与判据已备齐于 `.agent/evidence/R2-09/owner-rulings-20260727.md`
+    ③`audit_to_listing` 三档（含 `scrape_to_audit`）④`pricing_watch` 三档 + 第二套档位语义
+    收口 ⑤`refund`/`cancel` auto 档渠道执行链（**本单唯一 L2 片**，不可逆真钱）
+    ⑥三档全链验收取证 + runbook + 图纸/契约/工单回写。
   - **落码三条不能写反的 fail-closed**（v2.1 原文）：`maintenance_run.kinds` 默认空；
     档位**不进** ConfigService/Redis 缓存（config bus 是 fail-open，档位闸必须 fail-closed）；
     `order_block`/`compliance_block` 只有 `{manual, auto}` 两档。
   - **`purchase_execute` 现无消费点**（归 R2-13），属**有意的前置登记**——CI 一致性判据
     只校验「Enum ↔ 表」双向一致，**不得**加「每个 flow 必须有消费点」，否则第一天就红。
-  - **三条待 Owner 裁定**（已批注回传 `.agent/evidence/R2-09/owner-questions-20260727.md`，
-    不阻塞增量1）：验收「同一商品」不可重复执行的处置；新团队档位继承要不要平台默认模板；
-    `enabled=false` 静默退化成 manual（`order_block` 上属 fail-open）。
+  - **三条待 Owner 裁定 → 2026-07-27 全部裁定**（回执 + 落地方案
+    `.agent/evidence/R2-09/owner-rulings-20260727.md`；原提问件 `owner-questions-20260727.md`）：
+    **Q1** 验收判据改「三件同族商品各跑一档」（选 (a)；**不引入状态回退通道**）——台账已改，
+    007:88 正文待审计侧；**Q2** 要平台默认档模板 → 拆出增量2b，方案已定但**开不了工**（见上）；
+    **Q3** 接受三条建议（面板三态 / 停用记 warn【已落】/ 闸类停用二次确认）→ 入增量2a。
+  - **新一轮待 Owner（2 阻塞 + 3 报备，只卡增量2b，不卡 2a）**：B1 模板写权归超管还是新建
+    「平台运营」角色；B2 非闸类 flow 能否在模板里设 auto（= 新团队第 0 秒起全自动，
+    方向上是 D-Q13「前期人工逐批」的反面）；R1 模板行下线用 DELETE（属「删数据」）；
+    R2 平台级审计在 `audit_log` 里无归属（超管 `team_id` 为 None，受影响的团队管理员读不到）；
+    R3 既有团队一律不回填（要回填须另立单，不塞进同一支迁移）。
   前序状态：R2-12 增量 1-5 全部并入 main，**仅剩验收① 三日连测未收账**（07-28 为第 3 日）；
   RS-02a 已整单关账（PR #39/#40，四道闸首次按原序走满）；R2-07 07b 待验收②；
   R2-11 已整单关账（accepted）。
