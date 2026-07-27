@@ -498,6 +498,11 @@
         "date": "2026-07-27",
         "kind": "progress",
         "text": "**D 类欠账清偿完毕：`CODE_AHEAD_OF_CONTRACT` 从 9 条清到 0**。通知中心四端点 + 采集 worker 五端点已补登记进 002 契约。按上轮教训**先看代码不凭通例**，查出两点结构事实：①通知四条**无权限点**（`notify/router.py:1` docstring 即此口径：任何登录用户可用），故不带 x-permission；前端此前是手写响应类型调用（`api.get<{count:number}>`），属 008 禁止的那类 FE-DEBT，补进契约后才能换 codegen 类型。②worker 五条走的是**第三个认证域**——`X-Node-Key` + `X-Node-Token` 双头部（`_node_auth`），既非 JWT 也无权限点，故新增 `nodeKeyAuth`/`nodeTokenAuth` 两个 securityScheme（与既有 bearerAuth/portalAuth 并列）；`register` 用一次性 enroll_token 换长期凭证，本身不带 node 认证，契约里显式 `security: []`。**双版本号路径 `/api/v1/worker/v1/…` 如实登记并在契约里注明成因**（worker_router 自带 prefix 又挂在 /api/v1 下），不是笔误。顶层 tags 13 个（补 Notify/ScrapeWorker），`CODE_ONLY_TAGS` 里那两条随之摘牌——**摘牌是门禁强制的**，不摘会被 stale 断言判红。验证：契约门禁全绿、`pnpm gen:api` 产出 9 条新 path 的类型（+394 行）、前端 lint 与 build 均绿、537 passed。RS-11 仍不能关账（子项②③ 待 Owner 批准 / 规划审查 AI 落笔）。"
+      },
+      {
+        "date": "2026-07-27",
+        "kind": "correction",
+        "text": "**独立审查 AI 的 F3 在我这道四向门禁上查出方向性 fail-open，已修并实证**。A/B 用 `if p` 把 None 滤掉、E 判 `None == None` 相等、C/D 只比 (method, path)、F 只比 tag——**六组判据没一条问「这个 operation 到底有没有保护」**。我按报告描述**实跑复现**（非静态推导）：把 `order/router.py` 的 `require_permission(\"order.ship\")` 换成 `get_current_user`、同时删掉契约里那行 `x-permission: order.ship`，两侧一起归零后**六组全绿通过**——任何登录用户都能对任意订单发货回传，闸说没问题。**把保护删干净反而最容易过闸。**已补 G 组两条：`PERMISSIONLESS_OPS` 登记 15 条合法无权限端点（认证入口 3 / 自我信息与字典 3 / 通知中心 4 / node 认证域 5，逐条写理由）+ 未登记即红；配防僵尸反向不变量（端点后来加了权限点或改了名，登记必须撤）。修完重跑同一攻击 → 判红，抓它的正是 `test_g_no_route_silently_loses_its_permission`。**首次探针我自己写坏了**（`get_current_user` 未导入，红的是 NameError 不是门禁）——判据为错误的原因失败，看起来像生效了，与本会话一直在修的同形；修探针后才拿到真结果。"
       }
     ]
   },
@@ -683,6 +688,11 @@
         "date": "2026-07-27",
         "kind": "progress",
         "text": "**PR #37 走合并前闸序（Owner 2026-07-27 授权「都做了以后再合并」）**。审计侧 `90c7ffd` 把 007 角色分工升为四方并定下闸序：CI 绿 → **审查 AI 通读 diff** → 部署机真机验证 → Owner 授权合并。Owner 初次说「合并 PR37」时我先核实闸位再动：`.agent/evidence/reviews/` 目录全仓不存在、PR 上零 review、迁移 0039 未经真机验证——**四闸只过了第一闸**，故未擅自合并而是回问，Owner 定为两闸补齐再合。云端侧已做三件：①rebase 到 `90c7ffd`（无冲突，main 只动了 007 README，本分支未碰）②备好部署机可整段粘贴的验证指令 `.agent/evidence/PR-37/deploy-verify-0039.md`（自带铁律；含降级演练会清空业务表的**显式预警与退路**；权限验证明写「按用户查会看到 0 是正确的」防误判）③建 `.agent/evidence/reviews/` 空壳并写明**云端 AI 不得自写自己 PR 的审查报告**——独立性正是这条闸的用意，它设立的由头就是云端侧两次 PR 正文失实。**审查报告与真机验证都不由云端侧产出**，等两闸回执。"
+      },
+      {
+        "date": "2026-07-27",
+        "kind": "correction",
+        "text": "**独立审查 AI 出具 PR #37 审查报告（10 条），逐条复核后的两处数字/范围更正**：①**F8：0039 幂等往返数字「re-up 恢复 5 行」是错的**。我实跑 `downgrade 0038 → upgrade head` 量得：**模板角色 13 行**（＝`_GRANTS` 条目数，与报告静态推导一致），本地库另有团队角色副本 49 行，合计 62。报告只能推导干净库的 13，实测补上了「有团队时按同名副本成倍展开」这一半。原来的 5 恰好等于去重角色数，口径串了。②**F4：dry-run 快照归位在全仓 7 条渠道写路径里只覆盖了 3 条**。剩余四处仍写死 `result={\"dry_run\": True}`：`order/ship.py:214`、`:244`、`pricing/service.py:535`、`:793`。发货回传与价格推送同属渠道写路径，A152 真调前仍观测不到将发内容。**本 PR 不做，明确挂单**，别让 PR 正文读起来像已闭环。"
       }
     ]
   },
@@ -697,8 +707,22 @@
       "backend/tests/db/test_contract_permission_consistency.py",
       "specs/002-api-contract/openapi-v0.yaml"
     ],
-    "finding": "**由 RS-11 门禁的反向不变量逼出来的无主欠账**。落 `test_contract_ahead_entries_have_open_owner` 时我把这 7 条挂在 R2-02/R2-03/R2-05 名下，门禁立刻红：那三单分别是 accepted / done / accepted-l2-ship-deferred，已收账的工单不能给未建的端点当归属。复核三单的 `check` 后确认**不是误关账，是我的归属判断错了**——R2-02 是审核弹药灌入、R2-03 是上架真实化、R2-05 是订单履约最小闭环，三单验收口径里从来没有这 7 个端点，代码里也确实一个都没有（`grep` 全仓零命中，不是路径漂移）。故另立本单认领。**7 条都是想要而未建、不是废声明**：`PATCH /products/{productId}` 编辑产品（title/attrs/images，不可改 master_sku/source_ref）；`GET+POST /products/{productId}/sources` 货源录入，契约 summary 明写「confirmed 驱动 product→ready，D-Q25/41」；`GET+PATCH /category-map` 类目映射查询与人工修正（map_source=manual 优先级最高）；`GET+PATCH /listing-errors` 错误分类字典运营可维护（D-Q11）。**与 0039 的关系**：这 7 条消费的 4 个权限码 catalog.product_write / catalog.category_write / catalog.source_write / listing.error_admin 正是 0039 补授的 8 码里的 4 个——权限已授、端点未建，属提前授权，不影响正确性，端点建成即可用。这也是 R2-08 考古阶段一「三码无角色可达」那个发现的另一半解释。**优先级与拆单口径待 Owner 立项时拍**（本单只做登记，不预设范围）；门禁白名单已改指本单，本单一旦收账而端点仍未建，反向不变量会再红。",
+    "finding": "**由 RS-11 门禁的反向不变量逼出来的无主欠账**。落 `test_contract_ahead_entries_have_open_owner` 时我把这 7 条挂在 R2-02/R2-03/R2-05 名下，门禁立刻红：那三单分别是 accepted / done / accepted-l2-ship-deferred，已收账的工单不能给未建的端点当归属。复核三单的 `check` 后确认**不是误关账，是我的归属判断错了**——R2-02 是审核弹药灌入、R2-03 是上架真实化、R2-05 是订单履约最小闭环，三单验收口径里从来没有这 7 个端点，代码里也确实一个都没有（`grep` 全仓零命中，不是路径漂移）。故另立本单认领。**7 条都是想要而未建、不是废声明**：`PATCH /products/{productId}` 编辑产品（title/attrs/images，不可改 master_sku/source_ref）；`GET+POST /products/{productId}/sources` 货源录入，契约 summary 明写「confirmed 驱动 product→ready，D-Q25/41」；`GET+PATCH /category-map` 类目映射查询与人工修正（map_source=manual 优先级最高）；`GET+PATCH /listing-errors` 错误分类字典运营可维护（D-Q11）。**与 0039 的关系**：这 7 条消费的权限码里，catalog.category_write / catalog.source_write / listing.error_admin 三个正是 0039 补授的 8 码之三——权限已授、端点未建，属提前授权，不影响正确性，端点建成即可用。这也是 R2-08 考古阶段一「三码无角色可达」那个发现的另一半解释。**优先级与拆单口径待 Owner 立项时拍**（本单只做登记，不预设范围）；门禁白名单已改指本单，本单一旦收账而端点仍未建，反向不变量会再红。",
     "last_checked_at": "2026-07-27",
-    "acceptance": "7 个 operation 全部建成并通过契约四向一致性门禁（`CONTRACT_AHEAD_OF_CODE` 中本单条目清空）；每个端点带权限点声明且与契约 x-permission 一字不差；货源录入须验证 confirmed→product.status=ready 的驱动（D-Q25/41）"
+    "acceptance": "7 个 operation 全部建成并通过契约四向一致性门禁（`CONTRACT_AHEAD_OF_CODE` 中本单条目清空）；每个端点带权限点声明且与契约 x-permission 一字不差；货源录入须验证 confirmed→product.status=ready 的驱动（D-Q25/41）；**新增待裁（审查 AI 的 F7）**：团队管理员是否需要 `catalog.product_write`——本单原记「已由 0039 授给团管」是错的（该码不在 0039 的 8 码内；0002:306 授的是**审核员**，此后无迁移补授）。若判定团管需要，本单要**自带授权迁移**，别等端点上线后再补 403。"
+  },
+  {
+    "id": "CT-0727-B",
+    "priority": "P2",
+    "dimension": "chore",
+    "check": "清除死码 `catalog.import_read`：与 `compliance.import_read` 同义重复，全仓零消费点；从 `app.permission` 种子删除（须先清 `role_permission` 残留），并从 `KNOWN_DEAD_CODES` 摘牌",
+    "status": "todo",
+    "evidence": [
+      "backend/tests/db/test_permission_reachability.py",
+      "specs/002-api-contract/openapi-v0.yaml"
+    ],
+    "finding": "由独立审查 AI 的 F1 逼出。0039 初版把 `catalog.import_read` 授给采集员/审核员/团管，理由写「为合规中心导入作业 Tab 的对账可见性」——**授错了码**：该码全仓零消费点，而那个 Tab 的门控是`CompliancePage.tsx:27` 的 `has('compliance.import_read')`，三个 `/import-jobs*` 端点也都要`compliance.import_read`。仓里早已裁过（契约 `openapi-v0.yaml:574` 注释：「此前契约误标`catalog.import_*`——与路由/种子不符，一并归正」），0039 照着已被判错的旧口径写。**更坏的是副作用**：补授让可达性门禁因「已有模板角色持有」判绿，把缺口盖住，那道闸自设的「不许养僵尸码」用意反被绕开。Owner 2026-07-27 定「代码统一、贴合已裁定的规划」，故 0039 改授`compliance.import_read`（同三角色，且不限 team_id、顺带补上 0010 漏掉的团队副本）。**本单只管删种子行**：删 `app.permission` 要先清 `role_permission`，现网可能有运维手工授予，属数据破坏性操作，需部署机配合确认后再动。在此之前该码已在 `KNOWN_DEAD_CODES` 显式登记，并有两条自证判据钉着（有消费点即红要求摘牌；种子里消失也红）。",
+    "last_checked_at": "2026-07-27",
+    "acceptance": "删除前先在真机查 `SELECT * FROM app.role_permission WHERE permission_code='catalog.import_read'` 确认无运维手工授予；删除后 `KNOWN_DEAD_CODES` 清空该条且可达性门禁仍绿"
   }
 ]

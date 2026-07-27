@@ -52,8 +52,14 @@ CONTRACT_AHEAD_OF_CODE: dict[tuple[str, str], str] = {
     # 这 7 条首版被我分别挂在 R2-02 / R2-03 / R2-05 名下，下面那条反向不变量当场判红——
     # 三单已 accepted/done，已收账的工单不能给未建端点当归属。复核 `check` 后确认不是误关账，
     # 是归属判断错了（三单验收口径从无这些端点），故另立 **CT-0727** 认领无主欠账。
-    # 对应权限码 catalog.category_write / catalog.source_write / listing.error_admin /
-    # catalog.product_write 已由 0039 提前授给团队管理员——端点建成即可用（RS-11 报告 §3）。
+    # 对应权限码 catalog.category_write / catalog.source_write / listing.error_admin
+    # 已由 0039 提前授给团队管理员——端点建成即可用（RS-11 报告 §3）。
+    # 〔2026-07-27 更正（审查 AI 的 F7）：此处原把 `catalog.product_write` 也算进这一串，
+    #  **两处都错**——它不在 0039 的 8 码内（`_GRANTS` 里只在注释中被提及），且 0002:306
+    #  把它授给的是**审核员**不是团队管理员，此后无任何迁移补授过。按错记去实现
+    #  `PATCH /products/{productId}` 的人会以为团管开箱可用，上线即 403。
+    #  该错记不会被任何门禁抓到：`product_write` 已被审核员持有故可达性判绿，
+    #  `_EXPECTED_0039` 矩阵根本没列这个码。团管是否需要它已挂进 CT-0727 的 acceptance 待裁。〕
     ("GET", f"{API_PREFIX}/category-map"): "CT-0727",
     ("PATCH", f"{API_PREFIX}/category-map/{{}}"): "CT-0727",
     ("GET", f"{API_PREFIX}/products/{{}}/sources"): "CT-0727",
@@ -323,3 +329,76 @@ def test_f_route_tags_match_contract(contract_tags: tuple[set[str], set[str]]) -
     )
     stale = sorted(CODE_ONLY_TAGS.keys() & declared)
     assert not stale, f"以下 tag 已补进契约，请从 CODE_ONLY_TAGS 删除：{stale}"
+
+
+# ── G：保护存在性（2026-07-27 由独立审查 AI 的 F3 逼出）──
+#
+# **这是本门禁自身的方向性 fail-open，实测坐实的**：A/B 用 `if p` 把 None 滤掉、E 判
+# `None == None` 相等、C/D 只比 (method, path) 集合、F 只比 tag——**六组判据没有一条问
+# 「这个 operation 到底有没有保护」**。于是把 `order/router.py` 的
+# `require_permission("order.ship")` 换成 `get_current_user`、同时在契约里删掉那行
+# `x-permission: order.ship`，两侧一起归零后**六组全绿通过**（我按报告描述实跑复现，
+# 非静态推导）。结果是任何登录用户——包括只持 `catalog.product_read` 的采集员——
+# 都能对任意订单发货回传，而门禁说没问题。**把保护删干净反而最容易过闸。**
+#
+# None 在两边都是合法取值（下表 15 条），所以做不成「None 即报警」，只能显式登记。
+PERMISSIONLESS_OPS: dict[tuple[str, str], str] = {
+    # 认证入口：拿不到 token 之前谈不上权限点
+    ("POST", f"{API_PREFIX}/auth/login"): "登录本身是取证入口",
+    ("POST", f"{API_PREFIX}/auth/refresh"): "续期只认 refresh token",
+    ("POST", f"{API_PREFIX}/auth/logout"): "登出只吊销自己的凭证",
+    # 自我信息与静态字典：任何登录用户可读，读的是「我自己」或无租户数据
+    ("GET", f"{API_PREFIX}/me"): "读自己的身份与权限集合",
+    ("GET", f"{API_PREFIX}/permissions"): "权限码字典本身（供角色配置页渲染）",
+    ("GET", f"{API_PREFIX}/dicts/{{}}"): "静态枚举字典，无租户数据",
+    # 通知中心：`notify/router.py:1` docstring 即此口径「任何登录用户可用（无权限点）」，
+    # 可见性由 RLS + notification_target 决定，不由权限点决定
+    ("GET", f"{API_PREFIX}/notifications"): "通知列表，可见性走 RLS 与投递目标",
+    ("GET", f"{API_PREFIX}/notifications/unread-count"): "未读数，同上",
+    ("POST", f"{API_PREFIX}/notifications/read-all"): "标记自己已读",
+    ("POST", f"{API_PREFIX}/notifications/{{}}/read"): "标记自己已读",
+    # 采集节点回调面：走**第三认证域**（X-Node-Key + X-Node-Token 双头部 `_node_auth`），
+    # 不是 JWT 用户，天然没有权限点。**它们不是没保护，是保护在另一条道上。**
+    ("POST", f"{API_PREFIX}/worker/v1/register"): "node 认证域；以一次性 enroll_token 换长期凭证",
+    ("POST", f"{API_PREFIX}/worker/v1/sync"): "node 认证域（_node_auth 双头部）",
+    ("GET", f"{API_PREFIX}/worker/v1/tasks/pull"): "node 认证域",
+    ("POST", f"{API_PREFIX}/worker/v1/tasks/release"): "node 认证域",
+    ("POST", f"{API_PREFIX}/worker/v1/tasks/result"): "node 认证域",
+}
+
+
+def test_g_no_route_silently_loses_its_permission(
+    route_perms: dict[tuple[str, str], str | None],
+) -> None:
+    """**没有权限点的路由必须显式登记**——否则删保护就是静默通过。
+
+    这条是 A/B/C/D/E/F 都不管的那一面：它们保证「两边一致」，本条保证「保护存在」。
+    """
+    unguarded = sorted(k for k, v in route_perms.items() if v is None)
+    unregistered = [k for k in unguarded if k not in PERMISSIONLESS_OPS]
+    assert not unregistered, (
+        "以下路由没有 require_permission 且未登记进 PERMISSIONLESS_OPS：\n  "
+        + "\n  ".join(f"{m} {p}" for m, p in unregistered)
+        + "\n若确属无需权限点（认证入口/自我信息/另一条认证道），请登记并写明理由；"
+        "若是保护被误删，请把 require_permission 加回去。"
+    )
+
+
+def test_g_permissionless_registry_has_no_zombies(
+    route_perms: dict[tuple[str, str], str | None],
+) -> None:
+    """反向不变量：登记表里的条目必须**当前确实无权限点**。
+
+    端点后来加上了权限点、或路径改了名，登记就得撤——否则这张表会慢慢变成
+    「谁都能进的永久豁免名单」。与 `SUPER_ONLY`、C 类白名单是同一条道理。
+    """
+    stale: list[str] = []
+    for key, reason in sorted(PERMISSIONLESS_OPS.items()):
+        m, p = key
+        if key not in route_perms:
+            stale.append(f"{m} {p}: 登记了但该路由已不存在（改名或删除？）——请从表里删")
+        elif route_perms[key] is not None:
+            stale.append(
+                f"{m} {p}: 现已有权限点 {route_perms[key]!r}，登记（{reason}）已过时——请从表里删"
+            )
+    assert not stale, "PERMISSIONLESS_OPS 有陈旧条目：\n  " + "\n  ".join(stale)

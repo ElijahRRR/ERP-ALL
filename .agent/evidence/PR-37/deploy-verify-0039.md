@@ -46,28 +46,34 @@ alembic current
 所以**按用户查会看到 0，那不是迁移失败**——两层要分开验。
 
 ```sql
--- 第一层：授权是否落到角色上（= 0039 是否生效）
-SELECT r.name,
-       count(*) FILTER (WHERE rp.permission_code LIKE 'compliance.%') AS compliance_perms,
-       count(*) AS total_perms
-FROM app.role r JOIN app.role_permission rp ON rp.role_id = r.id
+-- 第一层：0039 授出的 8 个码是否落到角色上（**只查这 8 个码，对 0039 直接敏感**）
+SELECT r.name, count(*) AS granted_by_0039
+FROM app.role_permission rp
+JOIN app.role r ON r.id = rp.role_id AND r.team_id IS NULL   -- 只看模板角色，滤掉团队副本
+WHERE rp.permission_code IN ('procurement.execute','procurement.admin','pricing.write',
+  'catalog.import_read','catalog.import_write','catalog.category_write',
+  'catalog.source_write','listing.error_admin')
 GROUP BY r.name ORDER BY r.name;
 ```
 
-**期望**（云端本地全量迁移实测值，供对拍）：
+**期望**（云端实跑 `downgrade 0038 → upgrade head` 量得，不是推导）：
 
-| name | compliance_perms | total_perms |
-|---|---|---|
-| 团队管理员 | 5 | 43 |
-| 审核员 | 3 | 9 |
-| 上架员 | 0 | 8 |
-| 订单员 | 0 | 8 |
-| 维护员 | 0 | 5 |
-| 采集员 | 0 | 4 |
-| 财务 | 0 | 3 |
+| name | granted_by_0039 |
+|---|---|
+| 团队管理员 | 8 |
+| 审核员 | 2 |
+| 订单员 | 1 |
+| 维护员 | 1 |
+| 采集员 | 1 |
 
-> 本机若已建过团队，会**额外**出现同名的团队角色副本（0039 按角色名匹配、不带 team_id 过滤，
-> 模板与副本都会授到）。行数比上表多属正常，**看数值对不对，不看行数**。
+**模板角色合计 13 行**（＝迁移里 `_GRANTS` 的条目数）。本机若建过团队，库里会**额外**有同名团队
+角色副本各一份（0039 按角色名匹配、不带 `team_id` 过滤，模板与副本都授到）；上面的
+`r.team_id IS NULL` 已把副本滤掉，**所以不管建过几个团队，这张表都该长这样**。
+
+> **为什么换掉了原来那条 SQL**（审查 AI 的 F9）：原判据首列是
+> `count(*) FILTER (WHERE permission_code LIKE 'compliance.%')`，而 **0039 的 8 个码里一个
+> compliance 都没有**——原表里的「团管 5 / 审核员 3」全部来自 0010 与 0035，**跑不跑 0039 都是
+> 这两个数**。拿它判「0039 是否生效」是看错了列。
 
 ```sql
 -- 第二层：有没有用户真拿到（现状预期为空）

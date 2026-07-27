@@ -19,9 +19,28 @@
 | `catalog.source_write` | 货源录入 | 采集员+团管 | **仅团管** | 「货源」属采购/上架前置（D-Q25 找到货源才上架），非采集配置；归属角色图纸未定，先保守 |
 | `catalog.category_write` | 类目映射修正 | 采集员+团管 | **审核员**+团管 | 审核员才是持 `catalog.product_write` 的数据编辑角色；采集员当前仅有 `catalog.product_read`（纯只读），跳到可改类目映射跨度过大 |
 
-其余五条与初版一致，且都有既有映射佐证：订单员已持 `procurement.read` → 补 `execute` 顺理；
-维护员已持 `pricing.read` → 补 `write` 对称；`catalog.import_read` 放宽给采集员/审核员是为了
-合规中心「导入作业」Tab 的对账可见性（不授则运营看不到自己导入的结果）。
+| `catalog.import_read` → `compliance.import_read` | 数据导入历史查看 | 采集员+审核员+团管（用 `catalog.*`） | **同三角色，但改用 `compliance.*`** | 见下 |
+
+其余四条与初版一致，且都有既有映射佐证：订单员已持 `procurement.read` → 补 `execute` 顺理；
+维护员已持 `pricing.read` → 补 `write` 对称。
+
+**导入作业那条换了码（2026-07-27，独立审查 AI 的 F1，Owner 定「代码统一、贴合已裁定的规划」）**：
+本迁移初版授的是 `catalog.import_read`，理由写「为了合规中心「导入作业」Tab 的对账可见性」。
+**授错了码，一点忙没帮上**——实测 `catalog.import_read` **全仓零消费点**（backend/frontend/契约
+都搜不到；同族 `catalog.import_write` 有真消费点 `listing/router.py:569`，可证 grep 有效），
+而那个 Tab 的门控是 `CompliancePage.tsx:27` 的 `has('compliance.import_read')`，三个
+`/import-jobs*` 端点也都要 `compliance.import_read`。**仓里早已裁过这件事**：契约
+`openapi-v0.yaml:574` 的注释原文写着「此前契约误标 `catalog.import_*`/Catalog——与路由/种子
+不符，一并归正」。本迁移当时照着已被判错的旧口径写，等于让那条闸白设。
+
+更坏的是它的副作用：`catalog.import_read` 本是无人消费的死码，补授之后
+`test_every_permission_is_reachable_or_declared_super_only` 因「已有模板角色持有」而判绿，
+**把缺口盖住了**——那道闸自设的「不许养僵尸码」用意反被这次补授绕开。
+
+故改授 `compliance.import_read`（同样三个角色）。顺带修了 0010 的一个窄口：0010 只授给
+**模板**团管一家，本迁移按角色名匹配且不限 `team_id`，既有团队的同名副本一并覆盖。
+`catalog.import_read` 这个死码**不在本迁移里删**（删种子码要先清 `role_permission`，现网可能
+有运维手工授予，属数据破坏性操作），改为在可达性门禁里显式登记为待删死码 + 另立工单。
 """
 
 from alembic import op
@@ -41,9 +60,9 @@ _GRANTS = [
     ("维护员", "pricing.write"),
     ("团队管理员", "pricing.write"),
     # 导入作业：read 放宽保对账可见性，write 收在团管
-    ("采集员", "catalog.import_read"),
-    ("审核员", "catalog.import_read"),
-    ("团队管理员", "catalog.import_read"),
+    ("采集员", "compliance.import_read"),
+    ("审核员", "compliance.import_read"),
+    ("团队管理员", "compliance.import_read"),
     ("团队管理员", "catalog.import_write"),
     # 类目映射修正 → 审核员（持 product_write 的数据编辑角色）
     ("审核员", "catalog.category_write"),

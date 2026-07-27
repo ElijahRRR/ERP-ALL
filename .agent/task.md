@@ -133,7 +133,7 @@
   7 个 operation——catalog 5（`GET /category-map`、`PATCH /category-map/{mapId}`、
   `PATCH /products/{productId}`、`GET`+`POST /products/{productId}/sources`）+ listing 2
   （`GET /listing-errors`、`PATCH /listing-errors/{errorCode}`）。**7 条都是想要而未建、不是废
-  声明**，且正好消费 0039 补授 8 码里的 4 个（权限已授、端点未建＝提前授权）。**优先级与拆单
+  声明**，且其中三码（category_write/source_write/error_admin）正是 0039 补授 8 码之三（权限已授、端点未建＝提前授权）。**更正**：原写「4 个」把 `catalog.product_write` 算了进来，该码不在 0039 内、0002 授的是审核员非团管——团管是否需要它已挂进 CT-0727 待裁。**优先级与拆单
   口径待 Owner 立项时拍**，本单只做登记不预设范围。门禁白名单已改指 CT-0727——本单一旦收账
   而端点仍未建，反向不变量会再红（防「前置声明豁免」退化成永久豁免）。
 - **RS-11 子项① 已落地、本单不能关账**：契约四向一致性门禁已进 CI；子项② `superseded_by` 标注

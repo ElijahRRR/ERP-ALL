@@ -1590,10 +1590,11 @@ async def renew_end_date(
 
     三段式（镜像 delist/item_retire——listing 级直命令、200 即成、不建 feed 行、不走
     feed 状态机）：tx1 锁品/配额/延本地 end_date/落 outbox item_maintenance 命令 →
-    HTTP → tx2 归位（200→degraded 转 live；明确拒→留 degraded+返配额）。
+    HTTP → tx2 归位（200→degraded 转 live；**明确拒→留 degraded，不返配额**）。
 
     只处理 degraded（item_pull 判的 A 过期类）；需 gtin 构 productIdentifiers（无则拒）。
-    endDate 与配额键走配置中心（listing.maintenance / listing_maintenance 配额向）。
+    endDate 走配置中心 `listing.maintenance`；**配额向是 `maintenance`**——曾误写
+    `listing_maintenance`，那是个幻影值（`ck_quota_kind` 只认三个规范向），见下方消费点注释。
     """
     async with ctx_tx(sessions, team_id=team_id, is_super=is_super) as session:
         listing = await _load_listing(session, listing_id)
@@ -1716,10 +1717,15 @@ async def _apply_item_maintenance(  # noqa: PLR0911 归位分支=渠道响应形
     # 此处曾返还 maintenance 配额，构成 fail-open，已于 2026-07-26 删除（Owner 拍板）。删除理由：
     # ① 语义反了——本文件上方「结果未知」分支明写「不返配额、不重发」（可能没消耗都不返），
     #    而本分支拿到了明确的 HTTP 状态码、feed 确已真实送达 Walmart，反倒返还；
-    # ② 闭环无界：item_pull.py:307-309 的去重只排除 status IN ('scheduled','running')，
-    #    被拒任务落 'failed' 不在其内，故下一轮 item_pull 会为同一个仍 degraded 的 listing
-    #    重建任务 → runner 认领 → 再被拒 → 再返还……永久坏品（GTIN 不合规 / 类目被拒 /
-    #    spec 违规）每个周期烧一次真实 feed 提交，而本地日限计数原地不动；
+    # ② 返还与「谁在为它买单」对不上：feed 已真实送达并被拒，配额是**已经花掉的**，
+    #    返还等于让本地计数与真实消耗脱钩。同一店铺的其它 listing 因此多得一次额度。
+    #    〔2026-07-27 更正：此处原写「下一轮 item_pull 会为同一 degraded listing 重建任务 →
+    #    再被拒 → 再返还……每个周期烧一次真实 feed」——**那个循环走不通**。独立审查 AI 的
+    #    F5 指出并经复核：`item_pull.py:114` 的 `_ON_CHANNEL_LOCAL = ("live","published")`
+    #    不含 degraded，`:240` 的 `continue` 在 `_ensure_task`（`:264`）之前，被拒品第二轮
+    #    直接被跳过；全仓也没有把 failed 任务重置回 scheduled 的路径。一个永久坏品总共只烧
+    #    一次 MP_MAINTENANCE。删返还的方向不变（理由①③独立成立），但**别照着这段去堵一个
+    #    不存在的循环**。〕
     # ③ 唯一的刹车是推测值：rate_limiter.py 给 POST /v3/feeds:MP_MAINTENANCE 配的
     #    10/3600 是从 MP_ITEM 实测值类推的——官方 docs/walmart_rate_limits.tsv 根本没列
     #    MP_MAINTENANCE，真实上限可能更低。这种情况下本地闸不该被架空。

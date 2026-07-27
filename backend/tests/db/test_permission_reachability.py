@@ -19,8 +19,12 @@
 显式列入下面的 `SUPER_ONLY`。新增权限时必须二选一，不许沉默。
 """
 
+from pathlib import Path
+
 import psycopg
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # ── 超管专属权限白名单 ──
 #
@@ -33,6 +37,24 @@ SUPER_ONLY = {
     # D-Q65① 方案A + compliance/router.py CLI-only 铁律：全局黑名单/商标 bulk 写入需超管
     # system_tx（大文件不经 HTTP、全局数据跨团队），页面只负责看/核对/纠错，故不授普通角色
     "compliance.import_admin",
+}
+
+# ── 已确认无人消费的死码（2026-07-27，独立审查 AI 的 F1，Owner 定「代码统一」）──
+#
+# 与 SUPER_ONLY 的区别：SUPER_ONLY 是「设计上只给超管」，**这些是「压根没人用、该删」**。
+# 两者都会让码不可达，但性质相反，混在一张表里会把「待清理」伪装成「设计如此」。
+#
+# `catalog.import_read` 的由来：它与 `compliance.import_read`（0010 种子）是同义重复码，
+# 而仓里**早已裁定**导入作业归 Compliance——契约 `openapi-v0.yaml:574` 注释原文「此前契约误标
+# `catalog.import_*`/Catalog——与路由/种子不符，一并归正」。0039 初版曾把它补授给三个角色，
+# 结果是**把死码洗成可达、让本文件的可达性判据判绿，反而盖住了缺口**；已改授
+# `compliance.import_read`（真正管着导入作业 Tab 的那个码）。
+#
+# **不在迁移里删种子行**：删 `app.permission` 的行要先清 `role_permission`，现网可能有运维
+# 手工授予，属数据破坏性操作。故此处显式登记 + 挂工单，由该单决定删除时机与数据处置。
+KNOWN_DEAD_CODES = {
+    # 与 compliance.import_read 同义重复；契约已归正到 compliance.*
+    "catalog.import_read": "CT-0727-B",
 }
 
 
@@ -56,7 +78,7 @@ def test_every_permission_is_reachable_or_declared_super_only(
     perm_rows: list[tuple[str, int]],
 ) -> None:
     orphans = sorted(code for code, n in perm_rows if n == 0)
-    undeclared = [c for c in orphans if c not in SUPER_ONLY]
+    undeclared = [c for c in orphans if c not in SUPER_ONLY and c not in KNOWN_DEAD_CODES]
     assert not undeclared, (
         "以下 permission 码没有任何全局模板角色持有，且未列入 SUPER_ONLY——"
         "新增权限必须二选一（授给模板角色，或显式声明超管专属并写明理由）：\n  "
@@ -106,7 +128,7 @@ _EXPECTED_0039 = {
     "procurement.execute": {"订单员", "团队管理员"},
     "procurement.admin": {"团队管理员"},
     "pricing.write": {"维护员", "团队管理员"},
-    "catalog.import_read": {"采集员", "审核员", "团队管理员"},
+    "compliance.import_read": {"采集员", "审核员", "团队管理员"},
     "catalog.import_write": {"团队管理员"},
     "catalog.category_write": {"审核员", "团队管理员"},
     # 以下两条 Owner 裁定后按实际语义收敛为仅团管（见 0039 头注表格）：
@@ -161,4 +183,58 @@ def test_pricing_read_write_symmetry(migrated_db: str) -> None:
     assert not orphan_writes, (
         "以下 *.write 权限无任何角色持有，而同模块 *.read 已授——与 pricing.write 当初的漏授"
         "形态相同：\n  " + "\n  ".join(sorted(orphan_writes))
+    )
+
+
+def test_dead_codes_really_have_no_consumers() -> None:
+    """**死码登记必须自证**：登记为「没人用」的码，源码里就不许出现消费点。
+
+    这条让 `KNOWN_DEAD_CODES` 无法退化成又一张永久豁免表——一旦有人开始用它，
+    这里立刻红并要求把它从表里摘掉（同 SUPER_ONLY 防僵尸、C 类白名单反向不变量）。
+
+    只搜真正的消费点（`require_permission("x")` / 前端 `has('x')`），不搜注释与本表自身。
+    """
+    roots = [
+        REPO_ROOT / "backend" / "src",
+        REPO_ROOT / "frontend" / "src",
+        REPO_ROOT / "specs" / "002-api-contract",
+    ]
+    problems: list[str] = []
+    for code, owner in sorted(KNOWN_DEAD_CODES.items()):
+        hits: list[str] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for f in root.rglob("*"):
+                if f.suffix not in (".py", ".ts", ".tsx", ".yaml") or not f.is_file():
+                    continue
+                try:
+                    text = f.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                for pat in (
+                    f'require_permission("{code}")',
+                    f"has('{code}')",
+                    f"x-permission: {code}",
+                ):
+                    if pat in text:
+                        hits.append(f"{f.relative_to(REPO_ROOT)}: {pat}")
+        if hits:
+            problems.append(
+                f"{code}（登记为死码，归属 {owner}）竟有消费点——它已不是死码，"
+                "请从 KNOWN_DEAD_CODES 移除并确认它有角色可达：\n      " + "\n      ".join(hits)
+            )
+    assert not problems, "KNOWN_DEAD_CODES 登记与实际不符：\n  " + "\n  ".join(problems)
+
+
+def test_dead_codes_still_exist_in_seed(perm_rows: list[tuple[str, int]]) -> None:
+    """反向：码已从种子删掉的，登记也要撤——否则表里留下指向虚空的条目。
+
+    （首版我把这个函数写成了空壳——有名字、有 docstring、函数体什么都不做，
+    永远绿。跟本会话一直在修的 fail-open 同形：不会失败的判据等于没有判据。）
+    """
+    known = {c for c, _ in perm_rows}
+    ghosts = sorted(set(KNOWN_DEAD_CODES) - known)
+    assert not ghosts, (
+        "KNOWN_DEAD_CODES 含种子里已不存在的码（删除后未同步登记表）：\n  " + "\n  ".join(ghosts)
     )

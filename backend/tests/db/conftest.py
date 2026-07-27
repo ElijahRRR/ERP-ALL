@@ -42,7 +42,12 @@ if not _reachable(MIGRATOR_URL):
     # 本地开发方便：无库时跳过。**但 CI 里必须硬失败**——否则 postgres 服务起不来 / DSN 写错时，
     # 近 400 个 DB 集成测试会无声消失而 CI 照样绿。这是测试基架自身的 fail-open：
     # 2026-07-27 本地实测撞到——簇挂掉后 `uv run pytest` 报「127 passed」，与正常的
-    # 「525 passed」同样是绿的，肉眼分辨不出。ci.yml 三个 job 均设 ERP_REQUIRE_DB=1。
+    # 「525 passed」同样是绿的，肉眼分辨不出。
+    # **ci.yml 里只有 backend job 置了 `ERP_REQUIRE_DB=1`**——四个 job
+    # （evidence-gate / backend / workers / frontend）中只有它 import 本文件。
+    # 〔2026-07-27 更正（审查 AI 的 F10）：原写「三个 job 均设」，数字与范围都不对。
+    #  今天无洞——唯一用到本 conftest 的就是 backend job，方向 fail-closed；
+    #  但将来若拆出新的 DB 测试 job，别照这句以为已全覆盖。〕
     if os.environ.get("ERP_REQUIRE_DB") == "1":
         raise RuntimeError(
             f"ERP_REQUIRE_DB=1 但 PostgreSQL 不可达：{_pg_dsn(MIGRATOR_URL)}。"
