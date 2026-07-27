@@ -22,7 +22,7 @@ from erp.order import checks as order_checks
 from erp.order import procurement
 from erp.order import ship as ship_service
 
-order_router = APIRouter(tags=["order"])
+order_router = APIRouter(tags=["Order"])
 
 # 契约 002 §写操作幂等：Idempotency-Key 必填头（与 listing 三端点同构）
 IdemKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=64)]

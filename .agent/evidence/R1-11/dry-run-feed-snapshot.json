@@ -22,7 +22,7 @@
           }
         },
         "Orderable": {
-          "sku": "M0007744",
+          "sku": "M0000000",
           "brand": "Unbranded",
           "price": 19.99,
           "endDate": "2049-12-31T00:00:00.000Z",
@@ -31,7 +31,7 @@
               "quantity": 5
             }
           ],
-          "startDate": "2026-07-25T05:28:13Z",
+          "startDate": "2026-01-01T00:00:00Z",
           "productName": "Bamboo Cutting Board Large",
           "MustShipAlone": "No",
           "ShippingWeight": 1.0,
@@ -63,5 +63,20 @@
     "WM_CONSUMER.ID",
     "WM_SEC.ACCESS_TOKEN",
     "Accept"
-  ]
+  ],
+  "_normalized": {
+    "why": "以下字段每次跑都不同但无证据价值，落盘前替换为固定占位符，使本文件的 diff 只反映请求形态变化（见 tests/db/_evidence.py 文件头）。断言跑在原始快照上，不受此处影响。",
+    "fields": [
+      {
+        "path": "json_body.MPItem.0.Orderable.sku",
+        "replaced_with": "M0000000",
+        "reason": "master_sku 由库内序号分配，取值随前序测试建了多少产品而变"
+      },
+      {
+        "path": "json_body.MPItem.0.Orderable.startDate",
+        "replaced_with": "2026-01-01T00:00:00Z",
+        "reason": "构包时刻 now()，每次运行必不同"
+      }
+    ]
+  }
 }

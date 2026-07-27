@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""CI 只读门禁③：渠道写路径改动必须带 `.agent/evidence/` 变更（铁律 4 机器化）。
+
+**为什么要这条门禁**——2026-07-26 Owner 审计指出铁律 4 被实质违反：R2-12 增量 1/3/4b
+三个 PR 都在「待分支验证 → 合并」状态下直接合并，验证结果全仓零记录；其中 4b 是渠道
+写路径，而 R2-12 全单**一份 dry-run 快照都没落仓**（对照 R1-07/R1-11/R2-03/R2-06 皆有），
+真机图证据全挂 PR 评论、不在仓内。核实无误。
+
+病根不是「没人看」，而是「把过程写在别处就当成过程有记录」——PR 评论和聊天记录都不是
+仓内证据。这条门禁把它变成机器判据：**PR 若动了会打到真实渠道的代码，就必须同时动
+`.agent/evidence/`**。
+
+判定方式刻意从宽（宁可漏报不误伤）：
+- 只看「本 PR 相对 base 的改动文件清单」；
+- 命中条件 = 改动文件里有**调用网关**的（`gateway.request` / `gateway.request_prepared`
+  / `gateway.prepare`）后端源码文件；
+- 放行条件 = 同一份 diff 里有任何 `.agent/evidence/` 下的文件变更。
+
+`ADVISORY=1` 时只告警不拦（首轮上车用），否则命中即非零退出。
+
+**本闸自己曾有一处 fail-open，2026-07-27 已修（记在此以免复发）**：放行条件是「evidence 有
+文件变更」，而 `evidence/R1-11/dry-run-feed-snapshot.json` 每跑一遍测试就变两行——`sku` 是
+库内序号分配、`startDate` 是构包时刻的 `now()`——**请求形态一个字没变**。于是**跑一遍测试
+就能过闸**，「有 evidence 变更」并不代表真补了证据。已在源头治：证据落盘统一走
+`backend/tests/db/_evidence.py` 的规范化写入器，把这类字段换成固定占位符并在文件内留痕。
+实测两跑逐字节相同；注入一处形态变更则精确产出一行 diff——**既不再被 churn 满足，也没被弄哑**。
+
+残留局限（不掩盖）：规范化只覆盖调用方**显式声明**的字段，新证据写入点漏声明就会重新 churn。
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# 判定「这文件会打到真实渠道」的调用点。故意只认网关入口——绕过 walmart_client / 网关
+# 直连渠道本就是 CLAUDE.md 铁律 5 禁区，另有审计手段，不在本门禁职责内。
+GATEWAY_CALL_MARKERS = (
+    "gateway.request_prepared",
+    "gateway.request(",
+    "gateway.prepare(",
+)
+EVIDENCE_PREFIX = ".agent/evidence/"
+SOURCE_SUFFIXES = (".py",)
+# 只扫真正的应用/测试代码。收紧范围有两个作用：
+# ① 本脚本自身含 GATEWAY_CALL_MARKERS 的字符串字面量，不收紧就会自己命中自己（首次冒烟即踩）；
+# ② 工具脚本、迁移、示例代码不构成渠道写路径。
+# 测试目录**刻意保留在范围内**——dry-run 快照正是由测试产出的，改动那里恰恰该带 evidence。
+SCAN_PREFIXES = ("backend/src/", "backend/tests/", "workers/")
+
+# **无条件命中的路径**（2026-07-27 由独立审查 AI 的 F2 逼出）。
+# 上面那套「文件里出现 `gateway.xxx(` 字面量」的判据有个方向性缺口：**网关实现文件自己
+# 从不这样调自己**。实测三个 marker 在 `channel/gateway/client.py` 里命中数全是 0，而那正是
+# 定义 `prepare`/`request`/`request_prepared`、构造 httpx client、并在 `:291` 做
+# `if mode == "dry_run"` 模式闸的文件——**唯一决定「这包发不发到 Walmart」的地方**。
+# 于是只改 client.py 的 PR（改 dry_run 判定、重试语义、请求头/签名）会打印「均不含网关调用，
+# 跳过」并被放行。头注自称的从宽只覆盖「绕过网关直连」，从未把网关实现本身列为豁免。
+ALWAYS_CHANNEL_PATHS = ("backend/src/erp/channel/gateway/",)
+
+
+def _run(*args: str) -> str:
+    return subprocess.run(
+        args, cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def changed_files(base_ref: str) -> list[str]:
+    """本 PR 相对 base 的改动文件。
+
+    **`merge_base == HEAD` 必须硬失败，不能当成「没改文件」**（2026-07-27 F2 第二处）：
+    `ci.yml` 的触发器含 `push: branches:[main]`，push 到 main 时 `origin/main == HEAD`，
+    `git merge-base` **成功**并返回 HEAD 本身 → diff 为空 → 打印「无改动文件，跳过」。
+    与「真的没改文件」在日志里一模一样，于是 main 侧那次 CI 恒空转。原先写的
+    「base 取不到时退回 HEAD~1」只在 CalledProcessError 时才走，在当前 ci.yml 下是死代码。
+    """
+    try:
+        merge_base = _run("git", "merge-base", base_ref, "HEAD")
+    except subprocess.CalledProcessError:
+        merge_base = _run("git", "rev-parse", "HEAD~1")
+    if merge_base == _run("git", "rev-parse", "HEAD"):
+        # push 到 base 分支本身。用「上一个提交」作比较基准，而不是静默返回空集。
+        merge_base = _run("git", "rev-parse", "HEAD~1")
+    return [f for f in _run("git", "diff", "--name-only", merge_base, "HEAD").splitlines() if f]
+
+
+def touches_channel_write(files: list[str]) -> list[str]:
+    """改动文件里哪些含网关调用（按改动后的内容判定——删掉调用的 PR 不该被拦）。"""
+    hits = []
+    for f in files:
+        if f.startswith(ALWAYS_CHANNEL_PATHS):
+            hits.append(f)  # 网关实现本身，不看字面量
+            continue
+        if not f.endswith(SOURCE_SUFFIXES) or not f.startswith(SCAN_PREFIXES):
+            continue
+        path = REPO_ROOT / f
+        if not path.exists():  # 本 PR 删除的文件
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if any(m in text for m in GATEWAY_CALL_MARKERS):
+            hits.append(f)
+    return hits
+
+
+def main() -> int:
+    base_ref = os.environ.get("GITHUB_BASE_REF") or "origin/main"
+    if not base_ref.startswith("origin/") and "/" not in base_ref:
+        base_ref = f"origin/{base_ref}"
+
+    files = changed_files(base_ref)
+    if not files:
+        print("evidence-gate: 无改动文件，跳过。")
+        return 0
+
+    channel_hits = touches_channel_write(files)
+    if not channel_hits:
+        print(f"evidence-gate: 本次 {len(files)} 个改动文件均不含网关调用，跳过。")
+        return 0
+
+    evidence_hits = [f for f in files if f.startswith(EVIDENCE_PREFIX)]
+    if evidence_hits:
+        print("evidence-gate: 通过。")
+        print(f"  渠道写路径改动 {len(channel_hits)} 个：" + ", ".join(channel_hits[:5]))
+        print(f"  同 diff 内 evidence 变更 {len(evidence_hits)} 个：" + ", ".join(evidence_hits[:5]))
+        return 0
+
+    advisory = os.environ.get("ADVISORY") == "1"
+    label = "警告（advisory）" if advisory else "失败"
+    print(f"evidence-gate: {label}——改了渠道写路径但没有任何 {EVIDENCE_PREFIX} 变更。")
+    print("  命中的渠道写路径文件：")
+    for f in channel_hits:
+        print(f"    {f}")
+    print()
+    print("  铁律 4：渠道写路径的增量必须有 dry-run 证据落仓。仓内已有三处可照抄的范式——")
+    print("    tests/db/test_gateway.py / test_listing_api.py / test_price_push.py")
+    print("  做法：dry_run 模式下断言请求形态，并把快照写进 .agent/evidence/<工单>/。")
+    print("  参考 evidence/R2-12/dryrun-mp-maintenance.json（2026-07-26 补的那份）。")
+    return 0 if advisory else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

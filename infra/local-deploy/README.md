@@ -300,6 +300,14 @@ PSQL="docker compose -f infra/docker-compose.yml exec -T db psql -U postgres -d 
      `docker compose cp/exec`，Docker Desktop 按用户会话跑，SYSTEM 下通常不可用。
    - ⚠ **这个 `.bat` 是整条链的编排定义，必须纳入版本管理**（见
      `infra/local-deploy/automation/`），否则它只存在于那一台机器上，机器一坏链路定义即失传。
+   - 🔒 **已知限制：不配 Windows 自动登录**（2026-07-26 Owner 定案）。自动登录须把口令写进
+     注册表 `DefaultPassword` 或凭据管理器，等于给这台存有全部店铺 API 凭证的机器开一道
+     明文后门，代价不值。**后果**：锁屏 / RDP 断开 / 长期空闲都照跑，但
+     **机器重启到有人手工登录之前，链路完全不跑**（期间每天 18:00 档全部丢失）。
+     故运维约束是长期的、不是待办：**部署机重启后须尽快人工登录桌面**。「无人值守」在本
+     部署下的准确含义 = **无人干预，但需要有人保持登录态**。
+     完整取舍与备选路（containerd 服务化 / WSL2+systemd / TPM 保护的自动登录）见
+     `.agent/evidence/R2-12/uspto-3day-verification.md`「已知限制」节。
 
 ### 日常链路（部署机每日自动）
 

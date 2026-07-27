@@ -1313,3 +1313,594 @@
 103 文件无问题、**pytest 507 passed / 1 skipped**（含本轮新增 6 项：P0-1 三条、P0-2 两条、dry-run 证据一条）、`alembic upgrade head → downgrade base →
 upgrade head` 三步全过。新测试**已证伪**：对回退后的旧码跑，3 条按预期变红
 （含 `assert None == (1,)`——旧码下 `quota_usage` 连行都不建，坐实闸完全空转）。
+
+## 2026-07-26 PR #36 合并（Owner 授权）——P0-3 根治坐实，分支重建
+- **PR #36 squash 合入 main `5b37ded`**。合并前先更正正文三处失真（写着「验收① 0/3」、
+  `pytest 501`、以及把 `maintenance.py:29` 那个 fail-open 记为「本 PR 未修、待 Owner 定」
+  ——三处均已被后续进展取代）。合并后的正文即永久记录，不能留着错的进去。
+  CI 3/3 绿于 head `c58afb9`；`mergeable_state: clean`。
+- **P0-3 根治已实测坐实**：就用 runbook 里那条检查命令核 `origin/main`=`5b37ded`——
+  `.gitattributes` / `automation/README.md` / `automation/uspto-daily.bat` **三行齐全**。
+  至此「切回 main 就丢修复版 bat 与 CRLF 声明」的复发路径关闭，**部署机收账后可安全切回
+  main 常驻**。runbook 的「切回 main 前运维资产在位检查」作为长期 fail-closed 门保留
+  （防将来又有只活在分支上的运维资产）。Owner 明示不必另拆 ops-only PR。
+- **重建前先验内容零丢失**：比对分支 head 树与 main 树，唯一差异是 **main 多**一处
+  `specs/007` 验收④措辞修订（审计侧落笔，不在开发分支上），squash 正确保留；
+  我分支的东西一件没丢。据此 `git checkout -B claude/r2-03-launch-leg5n8 origin/main` 重建。
+- **本条即三档齐写的第一次实践**：今日上午查出「关账回写只做 progress+task、漏
+  review_list.json」（PR #29 实证）。本次合并回写同时落 `progress.md`（本节）、
+  `task.md`（R2-12 状态 + P0-3 挂账清偿）、`review_list.json`（R2-12 / RS-04D 两条），
+  三档齐动，不再重犯。
+- R2-12 剩余：**只差验收① 第 2、3 日**（07-27 / 07-28 各 18:00 的 A 段）。三日齐绿即可
+  与 RS-04D 一并关账。
+
+## 2026-07-26 按 Owner 批准落地四件：删返还 + 快照落库 + 三条 CI 只读门禁 + 自动登录定案
+Owner 对前一轮分析建议全批（「按你建议的做」），并定 **Windows 自动登录不配**。
+
+### ① `service.py` 渠道明确拒绝**不再返还** maintenance 配额（活 fail-open 已清）
+- 三条理由（已写进代码注释）：**语义反了**（同函数「结果未知」分支明写「不返配额、不重发」，
+  可能没消耗都不返；本分支拿到明确 HTTP 码、feed 确已送达，反倒返）；**闭环无界**
+  （`item_pull.py:307-309` 去重只排除 `scheduled`/`running`，被拒任务落 `failed` 不在其内，
+  下轮 item_pull 为同一 degraded listing 重建任务 → 再被拒 → 再返还，永久坏品每周期烧一次
+  真实 feed 提交而本地日限计数原地不动）；**唯一刹车是推测值**（`rate_limiter.py` 给
+  `POST /v3/feeds:MP_MAINTENANCE` 配的 10/3600 是从 MP_ITEM 实测值类推，官方
+  `walmart_rate_limits.tsv` 根本没列 MP_MAINTENANCE，真实上限可能更低）。
+- **前一轮我说「改这个属渠道写路径、按铁律 4 需 dry-run 证据」——那个判断偏保守，已更正**：
+  删返还不改变任何对外请求，只动本地计数器，单元测试即充分证据。
+- 2 条回归测试。其中 `test_repeated_rejects_exhaust_the_daily_gate` 证明的是**店级日限跨 listing 会耗尽**〔2026-07-27 更正（审查 AI 的 F5）：此前称它「闭环收敛的实测证明」不成立——该用例 `for seed in (11,12,13)` 建的是**三个不同 listing**、直调 `renew_end_date`，从不跑 item_pull、也从不对同一 listing 重试；而那个「同一坏品每周期重烧」的循环本身就走不通，见 `service.py` 该处注释〕：
+  日限=2、连续三次被拒 → 期望第三次被闸挡住（`ERP_QUOTA_EXHAUSTED`、零发包）。对回退后的
+  旧码跑，该用例红成 `[REJECTED, REJECTED, REJECTED]`——**「无限重试」不再是推理，是测出来的**；
+  另一条红成 `assert (0,) == (1,)`（旧码把 used 回血到 0）。
+
+### ④ dry_run 请求快照落进 `channel_command.result`
+- 抽 `_dry_run_result(resp)` 统一三处 dry_run 归位（`submit` / `item_retire` / `item_maintenance`
+  ——原先**三处都在丢** `GatewayResponse.request_snapshot`，不只 maintenance 那处）。
+  此前生产 dry_run 态观测不到实际会发什么，只能去读测试代码。
+- 体积守卫 `_DRY_RUN_SNAPSHOT_MAX_BYTES=32768`：超限只把 `json_body` 换成体积标记，保留
+  method/url/endpoint_key/params/headers（MP_ITEM 类整品 spec body 可达数十 KB，不设守卫会
+  撑大 channel_command）。
+- 凭证安全本就成立并加断言锁定：headers 只存字段名单、proxy 已脱敏 `<bound>`；用例断言
+  落库 blob 里不出现 `zedr-secret` / `Bearer` / `access_token`。3 条测试。
+
+### ③ 三条 CI 只读门禁（把今日查出的三类坏账全部机器化）
+1. **`tests/db/test_permission_reachability.py`** —— 每个 permission 码必须要么被至少一个全局
+   模板角色持有、要么显式列入 `SUPER_ONLY`。**并把「0035 授权没发出去」那个误判的更正写进
+   文件头注**：干净库实跑全量迁移证伪——0002 本就种了七个模板角色，0035 按名匹配确实命中
+   （团队管理员 5 条 compliance、审核员 3 条），`identity/router.py` 建团队时复制模板角色连带
+   权限映射，范式自洽；现网 `compliance_perms=0` 的真因是**没有任何用户绑角色**。
+   同一次实测撞出真问题：**10 个权限码无任何角色可达**，已按判断分 A 组（设计上超管专属：
+   `identity.team_admin`/`compliance.import_admin`）与 **B 组「疑似漏授，待 Owner 逐条裁」**
+   （`procurement.execute`/`procurement.admin`——与 D-Q50 双入口的内部权限点相悖、
+   `pricing.write`——read 已授而 write 无人持有、`catalog.source_write`/`category_write`/
+   `import_read`/`import_write`、`listing.error_admin`），每条都写了「为什么像漏的」。
+   另 3 条辅助不变量：白名单不许养僵尸（已授权的码须移出）、白名单不许含幽灵码（防改名后
+   变哑条目把真漏网放过去）、模板角色必须存在（缺则 0031/0033/0035 三个按名授权迁移静默失效）。
+2. **`tests/test_agent_ledger.py`**（不连库）—— 台账结构不变量。**首次跑就抓出两处真问题**：
+   8 条 `evidence` 写成裸字符串而非数组（R1-09/10/11/12、R2-01/03/04/05，已归一化）；
+   字段形状收敛（核对时 47 条竟有 8 种形状，现把必填/可选键都登记，新增字段须先进集合）。
+   另含：id 唯一、status 取值须登记、日期 ISO 合法且不在未来、已收账条目 finding 不得为空占位、
+   文本字段不得以标点开头（**正是 R2-11 那个 `"；改一个产品字段→..."` 坏字段的机器判据**）。
+   关于「`accepted` 的 `last_checked_at` 不得早于关账 PR 合并日」：**PR 合并日不在检出树里、
+   CI 拿不到，做不成硬判据**，故用可机械判定的等价替代，并在文件头注写明这个取舍。
+3. **`scripts/ci_evidence_gate.py` + ci.yml 新 job** —— 改了含网关调用的后端源码，就必须同
+   diff 带 `.agent/evidence/` 变更。判定刻意从宽（宁漏不误伤）：按改动后内容判定（删掉调用的
+   PR 不该被拦）、只认网关入口。**首轮以 `ADVISORY=1` 上车只告警不拦**，观察无误伤后删掉
+   即变硬闸。失败信息直接给出仓内三处可照抄范式与那份新补的快照路径。
+
+### Windows 自动登录：Owner 定案不配，已写成「已知限制」而非待办
+- 理由：自动登录须把口令写进注册表 `DefaultPassword` 或凭据管理器，等于给这台存有全部店铺
+  API 凭证的机器开明文后门，代价不值。
+- 已在 `infra/local-deploy/README.md` 与三日验证协议两处写明**被接受的空档**：锁屏/RDP 断开/
+  长期空闲都照跑，但**机器重启到有人手工登录之前链路完全不跑**（期间每天 18:00 档全部丢失）。
+  故「无人值守」在本部署下的准确含义 = **无人干预，但需要有人保持登录态**；重启后须尽快人工
+  登录是**长期运维约束、不是待办**。三日连测期间若遇此情形，当日按情形 C 判不计入、窗口顺延。
+- 留了三条不需明文口令的备选路（containerd 服务化 / WSL2+systemd / TPM 保护方案），不现在做。
+
+### 本轮验证
+临时 PG16 簇实跑：`ruff check` + `format --check` 全绿、`mypy strict` 103 文件无问题、
+**pytest 523 passed / 1 skipped**（较上轮 507 增 16：① 2 条、④ 3 条、门禁① 4 条、门禁② 7 条）、
+`alembic up→down→up` 三步全过。①④ 的新测试均已对回退后的旧码证伪。
+
+## 2026-07-26 Owner 逐条裁定 8 项：A 组权限补授落码（0039）+ B 组 R2-09 四阻塞裁定
+Owner 表单式逐条确认「决策按你建议的执行」，并批准墙钟窗口开 R2-08 考古 + RS-11。
+
+### A 组 · 8 个漏授权限码补齐（迁移 0039）
+- 起因是昨日上线的 CI 门禁 `test_permission_reachability.py` 实测出 10 个码无任何角色可达
+  （只有超管能行使）。Owner 裁定：2 条设计上超管专属，8 条属漏授。
+- 授予口径沿用 0031/0033/0035 多点范式（按角色名匹配 → 模板角色 + 既有团队同名复制角色
+  一并覆盖；`identity/router.py` 建团队时从模板复制，故此后新团队自动继承）。
+- **三处授予对象与我初版建议不同，原因是我给 Owner 的描述与权限官方名称不符**——Owner 批的
+  是描述，前提不准就不能照批的执行，故按实际语义收敛，方向一律取保守（授窄了好放宽，
+  授宽了要回收就得动已在跑的账号）：
+  | 权限码 | 官方名称 | 我当时说的 | 初版建议 | 实际授予 |
+  |---|---|---|---|---|
+  | `listing.error_admin` | **错误字典维护** | 「上架报错处置，跟黑名单候选闸相关」 | 上架员+团管 | **仅团管**（平台级错误码字典调优，非日常上架动作） |
+  | `catalog.source_write` | **货源录入** | 「改采集源」 | 采集员+团管 | **仅团管**（属采购/上架前置 D-Q25，非采集配置；归属图纸未定，先保守） |
+  | `catalog.category_write` | **类目映射修正** | 「改类目」 | 采集员+团管 | **审核员**+团管（审核员才是持 `catalog.product_write` 的数据编辑角色；采集员当前仅 `product_read` 纯只读，跨度过大） |
+- 其余五条与初版一致，且都有既有映射佐证：订单员已持 `procurement.read` → 补 execute 顺理；
+  维护员已持 `pricing.read` → 补 write 对称；`catalog.import_read` 放宽给采集员/审核员是为
+  合规中心「导入作业」Tab 的对账可见性（不授则运营看不到自己导入的结果）。
+- 实测坐实：0039 生效后无角色可达的码**只剩 A 组那 2 条**；8 个码的持有者集合与裁定逐条一致。
+- 新增 2 条测试：**授予矩阵精确锁定**（上面的可达性不变量只管「至少一个角色持有」，不管
+  持有者是谁——授给错的角色照样能过，故须逐条钉死）；**read/write 对称性检查**（`pricing.write`
+  当初就是「read 授了 write 没授」这么漏的，把这个形态特征做成通用判据）。
+- `SUPER_ONLY` 白名单同步收窄到 2 条（防僵尸不变量会盯着，补授后忘清理就红）。
+- 迁移 down 只回收本迁移授出的 (角色名, 权限码) 组合、不按权限码整列删——整列删会误伤运营
+  在面板上手工授的同码权限，那是 identity 域正常操作、不属本迁移产出。实测 down 后残留 0 行、
+  re-up 恢复 5 行，幂等。
+
+### B 组 · R2-09 开工前四条硬阻塞全部裁定（批注回传，不改 specs 正文）
+- **口径更正**：我此前一直说「R2-09 四条硬阻塞」，核原文后应为**10 条待裁、前 4 条不裁开不了工**；
+  后 6 条（auto 档准入门槛 / guardrail 键与默认值 / 半自动停驻 SLA / refund 端点 / 权限点命名 /
+  面板归属）不阻塞开工，随对应增量逐个提请。
+- 四条裁定（Owner 全按开发侧建议）：①flow 清单 v2 一次性冻结（删 gtin_alert 与
+  suspension_reminder 两行——参数已搬走、留着=双落点「运营改了不生效」；listing_pricing 归一
+  为 pricing_watch；新登记 scrape_to_audit；新登记 D-Q65② 宪法要求的 maintenance runner 档位；
+  match 跳 sourcing 归 audit_to_listing）②验收判据「四环」不下调，补登记
+  scrape_to_audit + listing_dispatch 凑齐③order_block/compliance_block **认二元**（唯一已上线
+  消费点，加 semi 就是改已上线的订单冻结行为，风险不对称）④删掉「吃 R2-04 Redis pubsub」的
+  实现指定，改为「档位每决策直读、不进缓存」——实测那套缓存生产零读者、广播在失效没人读的
+  缓存，且它 fail-open 而档位必须 fail-closed，方向相反。
+- **按纪律走批注回传**：007 与图纸归审计侧，开发侧不直接改正文。已写
+  `.agent/evidence/R2-09/owner-rulings-20260726.md`——每条给出逐字可套用的改动请求 + 冻结后的
+  flow 全集（供 Enum 落码）+ 裁定理由。审计侧落笔后 R2-09 才正式立项。
+- 同时把裁定 4 的两条直接后果写进该文件、落工单时不能漏：**档位读必须与被闸住的写同事务且每条
+  决策读一次**（beat 任务级硬超时 900s，任务级读一次的最坏陈旧 900s+30s，直接击穿原「60s
+  生效」承诺）；**逐 flow 声明「实时求值 vs 创建快照」并做成表**（现状已分化：refund 是创建
+  快照、order_block 是实时求值、另两条未定；且「60s 生效」在快照型 flow 上根本无法定义）。
+
+### 验证
+`ruff check` + `format` 全绿、`mypy strict` 103 文件无问题、**pytest 525 passed / 1 skipped**
+（较上轮 523 增 2）、`alembic up→down→up` 三步全过 + 0039 单独 down/up 幂等实测。
+
+## 2026-07-26 定位更正：三 AI 分工写进 CLAUDE.md（我此前认错了自己是谁）
+- Owner 指出：**云端 AI 就是我**，负责写代码；另有 Win11 上的**部署 AI** 负责部署，还有一个
+  **规划/审查 AI** 负责规划与审查。
+- 我此前把「specs 正文只由云端 AI 落笔（007/图纸归审计侧，批注回传）」读成了「specs 正文由
+  别的 AI 写、我只能写批注」——**把括号里的例外当成了通则**。正解：specs 正文本来就是我的活，
+  唯一例外是 `specs/007-*` 与 `specs/001-domain-model/`（图纸）两处归规划/审查 AI。
+  R2-09 那四条裁定恰好全落在这两处，所以走批注是对的，但**理由错了**；往后 001/007 之外的
+  specs 我直接落笔，不再外推。
+- **连带更正一处更要紧的判断**：我上一轮给的工作排布建议说「瓶颈在 Owner，几乎所有排队项都卡在
+  等你裁或等你上机」——**分类错了**。「上机」类（07b 验收②封店演练 / R2-04 模拟断连 / 注销后
+  容器存活性实测 / 数据导入）是**部署 AI** 的活；「落笔 007 与图纸」是**规划/审查 AI** 的活。
+  Owner 的真瓶颈只剩三类：拍决策、提供只有人能给的东西（IMAP 凭证 / erpAPI PR 授权 / 路由器
+  固定 IP / rclone 异地备份）、授权合并。
+- 另：我上一轮把 Owner 的问题「我现在应该怎么安排部署 ai」理解成了「AI 工作怎么排」，
+  **实际问的是部署 AI 该干什么**，答偏了。本轮补答（见下节）。
+- 根因是文档缺失而非纯粗心：`handoff.md:31-33` 只提了部署机 AI 一句，且是 2026-07-15 的历史
+  文档；规划/审查 AI 全仓零记载。已在 `CLAUDE.md` 顶部加「协作分工（三个 AI，先认清自己是谁）」
+  表——三方共同加载，并写明「凡『上机操作』派部署 AI、『改 007/图纸』派规划审查 AI，
+  **不要默认丢回 Owner**」。
+
+## 2026-07-26 补答：三日连测窗口内该派给部署 AI 什么
+- **窗口内（07-27 / 07-28）只加派一件：07b 验收②「封店工作流演练」**。核过表触点不重叠——
+  连测只碰 `refdata.trademark` / `etl_progress` / `import_job` / `dataset_revision`，07b 碰
+  `brand_assignment` / `store_incident` / `store` / `notification` / `channel_command`。
+  runbook（`infra/local-deploy/README.md:127-187`）五步齐全、SQL 全是只读核对，形态正好符合
+  「可整段粘贴」的要求。
+- **三条注意已随指令给出**：①第 2 步会把 A152 置 `suspended`，07b 的 outbox 封店门控会冻结该店
+  listing 类命令——连测不走渠道写故不受影响，但**演练必须推到第 5 步 resolved**，半途而废会
+  让 A152 卡在 suspended 挡住后续上架；②第 1 步分配产品会真实消耗 GTIN 池与 `listing_create`
+  配额；③`occurred_at` 必须回填 ≥7 天前，否则当日不产生提醒（提醒按「已封天数 ≥ remind_days」
+  触发，这个坑 07b 评审时已踩过一次）。
+- **必须等 07-28 收账后才能做的三件**（现在派下去会打断连测）：R2-04 验收② 模拟断连（动
+  beat/DB）；注销后容器存活性实测（破坏性，直接杀掉连测）；`alembic upgrade head` 应用 0039
+  （尚未并 main）。切回 main 亦在收账后，且须先过「运维资产在位检查」。
+
+## 2026-07-27 规划/审查 AI 已落笔 R2-09 前置（main de3c546）+ 分支 rebase 解冲突
+- 自检发现 PR #37 的 `mergeable_state` 由 `unstable` 变 `dirty`——**不是 CI 问题，是 main 前进了**：
+  规划/审查 AI 合入 `de3c546`「R2-09 开工前置落笔——001§09 flow 清单 v2 冻结（九条+求值语义+
+  二元档位）+ 007 四环映射与直读口径」。**我那份 owner-rulings 批注被采纳并落地，R2-09 立项
+  前置解除。** 它落的内容：新登记 scrape_to_audit / listing_dispatch / maintenance_run，删
+  gtin_alert / suspension_reminder，listing_pricing→pricing_watch 归一；逐 flow 求值语义表；
+  order_block/compliance_block 二元档位；直读不进缓存 + beat 逐条目读档纪律；007 验收四环
+  flow 映射与切档口径同步修订。并注明四条断言已源码复核属实。
+- **冲突面只有 `.agent/review_list.json` 的 R2-09 条**——双方同时改了同一个 `finding`。
+  审计侧是在**我更新前的版本**上追加的（` | 【审计 2026-07-26】…落笔完成…`）并新增了 `gate`
+  字段（「✅ 开工前置已解除」），故两边互补不互斥。**按合并解而非取一边**：保留我的四条裁定
+  详情 + 接上审计侧的落笔段 + 保留它的 `gate` 字段 + 日期取 2026-07-26。合并后 finding 2404 字，
+  JSON 有效、台账门禁自查通过。
+- rebase 到 `de3c546` 后本地全量重验（基线变了不能只信 rebase 前的结果）：ruff + format 全绿、
+  mypy strict 103 文件无问题、**pytest 525 passed / 1 skipped**、迁移 up→down→up 三步全过、
+  evidence 门禁通过（本 diff 有 2 个渠道写路径文件 + 2 个 evidence 变更）。
+- task.md 的「R2-09 立项前置 = 待审计侧落笔」已改为「✅ 前置已解除，可立项开工」。
+- **协作侧观察**：这是三 AI 分工写进 CLAUDE.md 后的第一次跨方协作，链路走通了——云端侧出批注
+  → 规划审查侧核实源码后落笔 main → 云端侧 rebase 吸收。唯一摩擦是**双方同时改同一条台账**
+  造成冲突；若后续频繁，可考虑把「裁定详情」与「落笔回执」分列两个字段，而非都追加进 finding。
+
+## 2026-07-27 R2-08 财务域考古（阶段一）：闸门早已解除 + 幂等自然键错位
+墙钟窗口开工（Owner 已批 R2-08 考古 + RS-11）。只读，未改实现代码，未立项。
+
+- **最要紧的一条：工单写的「硬前置：等图纸」早已解除，台账没跟上。** 图纸 `421f83d`
+  （2026-07-17）已按 immutable event ledger 修订完毕，**commit 标题就叫「§08 财务图纸
+  immutable event ledger 修订(D-Q56 C4)——R2-08 闸门解除」**，正文自注「R2-08 建域前生效」；
+  而 review_list 的 R2-08 停在 07-16 写着「开发等图纸」。**这与 PR #29 那类「解闸/关账不回写
+  review_list」同源**——今日已是本周第三例。已修条目并把日期推到 07-27。
+  注：台账门禁只校验结构、抓不到这类；「finding 声称的前置 vs specs 现状」需自然语言理解，
+  判据不可机械化，**不建议做成门禁**（做出来必然是脆的），只能靠例行核对兜。
+- **现状基线**：财务域**代码与表全仓为零**——`financial_event`/`ledger_entry`/`profit_ledger`/
+  `settlement` 在 `backend/src/` 与 0001~0039 全部迁移零命中，无 `erp/finance` 模块。纯新建、
+  无历史包袱（对照 R2-11 当初「图纸说列亦未建、实际 0007 已建全套 DDL」那种错位，此处不存在）。
+- **⚠️ 幂等自然键错位（阻塞增量2，需裁）**：图纸定
+  `source_ref = store:period:line_kind:order_no:sku:seq`，而渠道实际唯一标识是
+  `transaction_key` + `amount_type`（旧仓 `recon_details` 唯一键 = store/report_date/
+  transaction_key/amount_type）。图纸组成里 `line_kind` 是**我方归类不是渠道字段**、`seq` 渠道
+  无此概念、费用类行 `sku`/`order_no` 为空。照字面实现两头都出错**且都不报错**：归类规则一变
+  → 同一行算出不同 source_ref → **重拉二次过账（重复计收入）**；多条费用行拼出相同 source_ref
+  → **被幂等键静默吞掉（少计费用）**。建议 source_ref 直采渠道自然键
+  `store:report_date:transaction_key:amount_type`（与旧仓同构），`line_kind` 降为派生列、由
+  版本化规则映射、不参与幂等键——让幂等只依赖渠道给的事实，不依赖我方可变口径。
+- **渠道限额**：`payment/statement`=15/min（已列）；但旧仓实际用的 `reconFileJson` 与
+  `availableReconFiles` **未列入官方表**（同族 `reconFile`=100/min 可类推）。**与 MP_MAINTENANCE
+  同类风险**（R2-12 已踩过），处置口径应一致：类推值须在 `rate_limiter.py` 注明「非官方、真实
+  上限未知」+ 必须读 `x-current-token-count` / `X-Next-Replenishment-Time` 自适应退避。
+- **一个正好的验证机会**：现有 `permission` 表**无任何 finance 模块权限码**，R2-08 新增权限码时
+  会撞上 2026-07-26 刚上线的可达性门禁（新增即须授模板角色或声明超管专属，否则 CI 红）——
+  本单是该门禁上线后**第一个会撞上它的工单**，正好实地验证它有没有用。
+- 口径注记：D-Q56 原文说「R4/R5 建域前改图纸」而 007 排成 R2-08，图纸已按 R2-08 口径落笔，
+  实质已对齐，记下来免得将来有人拿原文质疑「财务域为何提前到 R2」。
+- 初判量级**接近 R2-12、明显小于 R2-09**，可拆 6 增量；**最该先裁的是那条 source_ref 组成**
+  ——它是增量2 的地基，且定错是破坏性的（已过账事件要全量重算），不能边做边改。
+- 阶段二待做见 archaeology.md §6（旧仓 820 行全文语义 / settlement_snapshots 字段映射表 /
+  旧 store_kpi_snapshots 与 payout_accounts（本轮 find 未命中，需在 erpAPI 与 T7 备份继续找）/
+  前端 pages-finance.jsx 形态 / 契约与权限点缺口）。
+
+### 同轮补两个基架缺陷（都是自己的门禁/测试基架抓出自己的）
+1. **台账门禁用错时区口径**。`test_agent_ledger.py` 首版用 `dt.date.today()`（容器本地＝UTC）判
+   「日期不得在未来」。北京时间 2026-07-27 写 R2-08 条目时立刻红了——UTC 还是 07-26。台账是人
+   在北京时区写的，判据必须同口径。已改为与 `channel/service.py::_business_date()` 同源的
+   Asia/Shanghai（`00-conventions §quota_usage` 早已把业务日定死为该时区）。
+2. **测试基架自身的 fail-open：库不可达时静默跳过整套 DB 测试**。`tests/db/conftest.py:41-42`
+   在 PG 不可达时 `pytest.skip(allow_module_level=True)`。本轮临时簇挂掉后实测：
+   `uv run pytest` 报 **「127 passed」**，与正常的「525 passed」**同样是绿的，肉眼分辨不出**——
+   近 400 个 DB 集成测试无声消失。CI 若遇 postgres 服务起不来 / DSN 写错，会以同样方式静默变绿。
+   修法：新增 `ERP_REQUIRE_DB=1` 环境开关，置位时把 skip 改为 `RuntimeError` 硬失败；
+   `ci.yml` backend job 已设该变量。本地开发无库时行为不变（仍跳过，方便）。
+   **已证伪**：库停 + 无开关 → 「127 passed」显示绿；库停 + 开关 → 硬错、退出码 2。
+   > 这条与今日其余几处同类——`maintenance.py` 的 kinds fallback、配额闸幻影 kind、
+   > evidence 门禁自命中——共同点都是**失败时表现为「看起来正常」**。
+
+## 2026-07-27 R2-08 考古阶段二：KPI 归属缺口 + settlement 字段映射三处收缩
+- **第二条硬缺口：007 要 KPI，图纸零覆盖。** 007:58 标题写「R2-08 财务域【L1】（结算对账 +
+  利润账 + **KPI**）」，工单 check 也点名「日报 KPI（考古＝旧 store_kpi_snapshots/
+  payout_accounts）」，但 `08-finance.md` 全文 grep `kpi|otd|vtr|payout_account|收款账户|绩效`
+  **零命中**。
+- 已定位那两张旧表：**`store_kpi_snapshots`（erp-core 0003）是店铺健康 KPI、不是财务指标**
+  ——otd/cancellation/vtr/srr/refund_rate/negative_review/return_rate/inr 八项 + 红黄绿综合灯 +
+  raw_payload，全部对应 Insights Performance 系端点（CLAUDE.md 已注「**全部 1/min**」，
+  其中 6 个未列入官方限额表、`refunds/summary` 已被官方标 Deprecated 由 `returns/summary` 取代），
+  与结算/利润/分录三层模型**零数据耦合**，唯一共同点是「都按店按日出报表」；
+  `payout_accounts`（erp-core 0002）是收款账户主数据（账号打码/绑店 JSONB/kyc/月入账/待入账/
+  冻结），图纸只在 `settlement_snapshot.payment_processor` 留了个**标签**，无账户实体、无资金态。
+- **建议把「日报 KPI」拆出 R2-08**，三条理由：①不是财务数据，塞进财务域污染域边界；
+  ②数据源是 Insights 系 22 个端点（全部 1/min，节流与重试自成一套），与结算报告（15/min、
+  100/min）不同量级；③图纸零覆盖 ⇒ 做它要先补图纸，而结算/利润那两块图纸**已就绪可立刻开工**，
+  捆一起会让已就绪的部分陪着等。R2-08 收敛为「结算对账+利润账+收款账户」，KPI 另开或并入 R2-07。
+  **不裁不影响结算/利润开工**，但影响拆单粒度与验收判据，宜立项时一并定。
+- **settlement 字段映射：图纸 5 个聚合数 vs 旧仓约 75 列**（七组：卖家信息/账户摘要/销售汇总/
+  退款汇总/调整项/WFS/合作伙伴 + raw_json）。三处收缩值得裁（**均不阻塞**，增量1 落表时可带）：
+  - **(a) 缺渠道自报的实付锚点**。图纸 `net_payout` 是我方口径净额；旧仓的 `paid_to_you` /
+    `opening_balance` / `closing_balance` 才是渠道自报实付。图纸 §92 要求「headline 与明细求和
+    不平 → 告警」，可**真正该对的那个数（钱到底打了多少）图纸里没有独立字段**。建议保留三列，
+    让「期初 + 本期活动 = 期末 = 实付」成为可机械校验的恒等式。
+  - **(b) WFS 七项费用 + 佣金四项被压进单一 `channel_fee` 科目**。「本月 WFS 费用为什么涨了」
+    在系统里答不出来，只能回去翻 raw_json。建议加 `fee_subtype` 维度列，而非扩
+    `ledger_entry.account` 那个六科目 CHECK 集合——**扩科目会动记账模型，加维度只影响可分析性**。
+  - **(c) 图纸无 `raw_payload` 落点**，而旧仓每张快照都存原始响应。immutable ledger 尤其需要
+    原始凭证（审计复算 / 争议回溯 / 解析规则改了要能重放）。文档层本就「只进不改」，存原文与
+    该层定位一致。
+- 三条都属图纸修订、归规划/审查 AI，本文件即批注素材；但都是「加列/加维度」，不动事件-分录-投影
+  三层骨架，**不阻塞开工**。
+- 截至阶段二共 **6 条待裁**（archaeology §11 汇总表），**其中仅 `source_ref` 一条阻塞增量2**，
+  余五条可边做边带。
+- 仍未做：旧仓 820 行的**行为语义**（本轮只读了 schema 与端点，未读控制流——增量拉取断点续跑、
+  `--force` 全量重拉、脏值处理、headline 平账校验的实际实现）；前端 `pages-finance.jsx` 形态；
+  OpenAPI 契约缺口细目。
+
+## 2026-07-27 跨方协作第二轮：我 §3 的幂等键建议被采纳并落笔，且被改得更好
+- 自检发现 main 又前进（`de3c546` → `b4f286f`）：规划/审查 AI **在一小时内**就处理了我 R2-08
+  考古阶段一 §3 那条——`b4f286f`「§08 幂等自然键修正（渠道 transaction_key+amount_type 替代
+  我方派生键）+ settlement_line 补两列 + R2-08 台账陈旧 finding 清理」。**增量2 的阻塞已解除。**
+- **它比我的建议更进一步，其中一条是我漏的**：
+  - `source_ref` 改为 `{store_id}:{report_date}:{transaction_key}:{amount_type}`（我提的）；
+  - **另发现 `event_kind` 也是派生值、却原本就在唯一键里** —— **这条我没抓到**，一并移出；
+  - 新增 `posting_seq INT`：同一渠道行的第 n 次过账，**仅当前次已被 reversal 冲销后**才允许
+    递增重过（比单纯「不重复过账」更完整——留出了受控重过账的通道）；
+  - 唯一约束改为 `uq_financial_event (source_kind, source_ref, posting_seq)`；
+  - `settlement_line` 补 `transaction_key`/`amount_type` 两列 **NOT NULL** + 写入「建域预检：
+    拉取实现必须原样落库这两列，缺任一即无法构造幂等键」。
+- 考古文档 §3 已同步标为「已裁定并落笔」并保留原分析作依据记录；§0 速览表与 §11 待裁清单
+  同步（6 条待裁 → 剩 5 条，且**再无阻塞项**）。
+- **rebase 过程踩了自己一个坑，记下来**：第一次解冲突时，我的 python 在 `json.loads` 校验处
+  抛错**没写盘**，但同一条命令里后接的 `git add && git rebase --continue` **无条件执行了**，
+  把带冲突标记的文件提交了进去，导致下一个提交也失败。已 `--abort` 重来，改为**分步执行、
+  每步验完再进下一步**。教训与今日几处 fail-open 同源：**失败没有中断后续动作**。
+- 两次冲突都在 `review_list.json` 的 R2-08 条（双方都在清理它）。均按合并解——保留我的
+  阶段一+阶段二详版 + 接上审计侧的落笔回执段。这已是**连续第二次**双方同改一条 finding
+  （上次是 R2-09）。前次记的那个建议现在更值得做了：**把「裁定详情」与「落笔回执」分列两个
+  字段**，别都往 `finding` 里堆——R2-08 这条现在 3061 字，R2-09 那条 2404 字。
+
+## 2026-07-27 RS-11 开工：契约四向一致性首次全量探测
+- RS-11 的 acceptance 头一句就是「**CI 自动四向校验：OpenAPI operation ↔ 实际路由 ↔
+  x-permission ↔ permission seed**」。本轮做探测（只读），门禁代码下轮落。
+- **唯一改动**：`core/authn.py` 给 `require_permission` 返回的依赖函数挂了个
+  `erp_permission` 属性，使权限码可内省，不改行为。**刻意不用 `__closure__` 反查**——
+  那依赖闭包变量顺序，改个形参就静默失效，理由已写进代码注释。
+- 取路由花了点功夫：FastAPI 把 `include_router` 的结果包成内部类 `_IncludedRouter`，
+  **直接遍历 `app.routes` 只能拿到 5 条**（其余 13 条是包装对象），须递归
+  `_IncludedRouter.original_router.routes` 并叠加 `include_context.prefix`。
+- **探测结果：契约 118 operation（106 带 x-permission）/ 实际路由 112（97 带权限）/ 种子权限码 53。**
+  - **A（代码权限码→种子）、B（契约 x-permission→种子）、E（两边权限码一致）三项全清、0 例外。**
+    即 `require_permission` docstring 那句「与 002 契约 x-permission **一字不差**」**经得起全量
+    检验**——此前只是口头约定、从无强制手段，这是第一次被机器验证。
+  - **C 契约有而路由无 15 条，性质分两种**：Portal 6 条是**前置声明不是漂移**（门户 router
+    全仓未挂载，属 R2-10 未开工，D-Q50 双入口的外侧）；Catalog 5 条 + Listing 4 条是端点未建。
+  - **C 的后者解释了 R2-08 考古阶段一那个发现的另一半**：`catalog.source_write` /
+    `catalog.category_write` / `listing.error_admin` 三码之所以曾「无角色可达」，
+    **是因为它们的端点本来就还没建**——契约先声明、代码后实现，权限码随契约种下但功能未上线。
+    0039 已授给团管属**提前授权**，不影响正确性（端点建成即可用）。
+  - **D 路由有而契约无 9 条是真欠账**：通知中心四端点（**前端在用**、契约里没有）+ 采集 worker
+    五端点。
+- 另发现两处小漂移：①契约路径参数用 camelCase（`{teamId}`）而代码用 snake_case（`{team_id}`）
+  ——功能等价，但 codegen 出的前端类型命名与后端日志/错误信息对不上，排查多绕一层；
+  ②`worker_router` 自带 `prefix="/worker/v1"` 又被挂在 `/api/v1` 下，叠成
+  `/api/v1/worker/v1/...` **双版本号**路径。**改路径是破坏性的**（采集 worker 在跑），
+  不建议现在动，但契约补登记时须如实写这个路径，别写成 `/worker/v1/...` 造成新的对不上。
+- **门禁设计要点已写进报告 §6**，其中一条值得单说：**C 的白名单必须配反向不变量——
+  工单一旦 accepted，其白名单条目必须清空**，否则「前置声明豁免」会退化成永久豁免，
+  跟今天上午修的 `SUPER_ONLY` 防僵尸不变量是同一个道理。
+- **子项归属按更正后的三 AI 分工重新划**：①四向校验＝我 ②`superseded_by` 标注与 D-Q 追踪列
+  ＝动 `DECISION-FORM.md` 宪法，**需 Owner 批准**后由规划/审查 AI 落笔 ③NOT VALID→VALIDATE
+  纪律入 `00-conventions`＝图纸，归规划/审查 AI ④001 财务域图纸修＝**已由审计侧 421f83d 完成，
+  可核销**。
+
+### RS-11 门禁落地：契约四向一致性 CI 化，并被自身的反向不变量逼出一条无主欠账（2026-07-27，云端 AI）
+
+- 按探测报告 §6 落 `backend/tests/db/test_contract_permission_consistency.py`（7 条测试）：
+  **A/B/E 设硬断言**（探测已证 0 例外）；**C/D 设「带白名单的硬断言」**——白名单只冻结
+  2026-07-27 的既有状态，新增漂移一律红。路径按 `{anything}` → `{}` 归一化（契约用
+  camelCase、代码用 snake_case，不归一化满屏假阳性）。取路由仍走递归
+  `_IncludedRouter.original_router.routes` + 叠 `include_context.prefix`，并加
+  `assert len(out) > 50` 自检，防哪天 FastAPI 改内部结构后递归静默失效、门禁变成空跑。
+- **第一次跑就红，红在我自己写的那条反向不变量上**（`test_contract_ahead_entries_have_open_owner`：
+  C 类白名单每条的归属工单必须仍未收账）。我把 catalog 5 条 + listing 2 条分别挂在
+  R2-02 / R2-03 / R2-05 名下，而那三单已 accepted / done / accepted-l2-ship-deferred。
+- **查证后确认不是工单误关账，是我的归属判断错了**：三单的 `check` 分别是「审核弹药灌入」
+  「上架真实化」「订单履约最小闭环」，验收口径里从来没有这 7 个端点；`grep` 全仓零命中，
+  **也不是路径漂移**（一开始怀疑是端点建在别的前缀下，先排除了这个可能）。这 7 条是**无主欠账**。
+  故另立 **CT-0727** 认领，白名单改指本单。**7 条都是想要而未建、不是废声明**：编辑产品
+  （不可改 master_sku/source_ref）、货源录入（契约明写「confirmed 驱动 product→ready，
+  D-Q25/41」）、类目映射查询与人工修正、错误分类字典运营可维护（D-Q11）。
+  优先级与拆单口径待 Owner 立项时拍，本单只做登记、不预设范围。
+- **这 7 条正好消费 0039 补授 8 码里的 4 个**（catalog.product_write / category_write /
+  source_write、listing.error_admin）——权限已授、端点未建，属提前授权。合起来把
+  R2-08 考古阶段一「三码无角色可达」那个发现的两半都解释完了。
+- **门禁做了对抗性证伪**（新门禁没见过红＝未经检验）：伪造①加一个契约里没有的路由 →
+  D 红；伪造②把既有路由的权限码改成种子里没有的码 → A 与 E 同时红。B 未响应且**应当不响应**
+  ——B 是契约→种子方向，两处伪造都在代码侧。证伪后原样还原，`git status` 空。
+- 全量：532 passed / 1 skipped（基线 525，+7 为本门禁），ruff check + format 清、mypy（CI 口径
+  `uv run mypy`）0 issue。**注意 backend 的 CI 口径是裸 `uv run mypy`**（配置内限定 src）；
+  `mypy src tests` 是 workers job 的命令，在 backend 下跑会报 818 个既有 test 侧告警，
+  拿它当门禁会误判。
+- 副产物一条运维记录：临时 PG 簇重建后**只有 `erp_app`、没有 `erp_migrator` 角色**，
+  conftest 默认 DSN 连不上而 `ERP_REQUIRE_DB=1` 正确地硬失败（上午刚加的那条防 fail-open
+  今天第二次生效，这次是保护我自己）。本地跑法：migrator DSN 指 `postgres` 超级用户。
+- **顺带记一条门禁③ 自身的弱点**（我建的 evidence-gate，2026-07-27 发现）：跑一遍测试套件会
+  重新生成 `.agent/evidence/R1-11/dry-run-feed-snapshot.json`，diff 出 SKU 序号与 startDate
+  两行——请求**形态**没变，纯 churn。这意味着 evidence-gate 的「同 diff 内有 evidence 变更」
+  信号**可以被纯 churn 满足**：只要跑一遍测试就能过闸，并不保证真补了证据。目前 gate 是
+  `ADVISORY=1` 只告警，危害有限；清偿方向是让判据看**内容语义**而非文件是否变动（例如
+  dry-run 快照落库时把易变字段规范化，或改判「新增/修改的 evidence 文件里须含本次渠道写路径
+  的 feedType」）。本轮已把这次 churn 还原，不混进提交。
+
+### R2-08 考古阶段二收尾：查出图纸两处「沿用原版」实为新设计（2026-07-27，云端 AI）
+
+连测窗口空档做的只读活，把阶段二清单余下三项清完（§12）。
+
+- **最有价值的一条是证伪**：图纸 `08-finance.md` 两处写「与原版一致 / 沿用原版语义 / 原版保留」，
+  实测**原版都没有**——`recon_details` 全仓只在 `fetch_walmart_settlement.py:136` 定义一处，
+  **无 `matched`/`matched_at`/`order_id` 任何一列**（全仓 grep + erp-core 迁移目录都扫过，
+  先排除了「另有一套原版」的可能才下结论）；平账校验全文不存在，只有 `cmd_query` 里
+  `pending_payment = closing - hold` 一处展示算术。**两者都是新设计。**
+  危害不在措辞：「沿用原版」会让实现方以为有现成参照、细节已定而不写规格，可匹配规则
+  （一对多怎么办、部分匹配算什么态）与平账容差**原版根本不存在、全都没定义**。
+  跟本周修的几处 fail-open 同一个形状——**看起来有依据，实际是空的**。属图纸修订，
+  归规划/审查 AI 落笔，考古文档即批注素材。
+- **`INSERT OR IGNORE` 双重吞噬**：`INSERT OR IGNORE` 已吞约束冲突，外层还
+  `except sqlite3.IntegrityError`（因而 `skipped` 恒为 0），调用方还把 `skip` 返回值**直接丢弃**、
+  只打印 `ins`。这把阶段一 §3「多条费用行拼出相同 source_ref → 被静默吞掉」从推测变成
+  **实证机制**。
+- **增量断点续跑的安全是「碰巧成立」**：靠「行是否存在」推断账期是否拉全，当前安全仅因为
+  三个实现细节同时成立（整页累积后才返回 / 每账期一次 commit / sqlite 隐式事务回滚）。
+  改成流式逐页写库就会退化成「部分落库→永久跳过→静默缺数」。R2-08 若沿用这个口径，
+  必须**显式记录账期级完成态**。
+- `--force` 是「重拉但不覆盖」——渠道事后修订的行静默保持旧值。图纸修订②只处理了 snapshot 层
+  重拉版本化，**明细行层的重拉语义没说**，建议一并补。
+- `pages-finance.jsx` 是零 API 调用的设计稿，但它定义了图纸没有的**三方对账**
+  （Walmart 结算 × Amazon 采购 × **支付流水**），第三方在图纸里无对应实体。
+- 契约缺口坐实三条：finance 零覆盖；顶层 `tags` 缺 4 个（Scrape/Audit/Compliance/Aftersale，
+  与 Owner 07-26 报告一致，反向无废声明）；**新发现两处 tag 大小写漂移**——代码
+  `aftersale`/`order` 小写 vs 契约 `Aftersale`/`Order`，codegen 按 tag 分组会产出两套命名。
+- 另记一条既有产品行为图纸未覆盖：`erp-core/.../orders.py` **已上线**用结算数据回填订单佣金真值，
+  带 `commission_source: settlement|estimated` 标记，真值取自 `recon_details` 的
+  `amount_type='Commission on Product'`。是否由 R2-08 承接，列入待裁。
+- 待裁清单 6 → 8 条，**仍无阻塞项**，R2-08 可立项。
+
+### evidence-gate 弱点清偿：证据文件不再被纯 churn 满足（2026-07-27，云端 AI）
+
+昨天自查记下的那条弱点今天清掉了——**那是我自己建的闸上的 fail-open**：放行条件是「同 diff 有
+`.agent/evidence/` 变更」，而 `evidence/R1-11/dry-run-feed-snapshot.json` 每跑一遍测试就变两行
+（`sku` 库内序号分配、`startDate` 构包时刻），**请求形态一个字没变**。等于跑一遍测试就能过闸。
+
+- **在源头治而不是改判据**：新增 `backend/tests/db/_evidence.py` 规范化写入器，落盘前把调用方
+  **显式声明**的易变字段换成固定占位符。不做「按模式自动识别时间戳/序号」——那会在无人察觉时
+  把真正有意义的值也抹掉，用静默的错换静默的错。
+- **替换留痕**：文件里写 `"sku": "M0000000"` 却不说明，读者会以为我们真发这个值，那是拿假象换
+  稳定、比 churn 更坏。故写一个 `_normalized` 块逐条记「哪个路径、换成什么、为什么」。
+  断言仍跑在**原始快照**上。
+- **写完第一版就被自己的两跑对比抓到一个 bug**：首版在 `_normalized` 里记了 `sample_original`
+  （原始取值）——**那玩意本身每跑就变**，等于把要消除的 churn 原样搬了个位置，跟本模块要修的是
+  同一个形状。已删，真实取值改由静态的 `reason` 文字描述。
+- **三向证伪**（一条都不能少，缺任一条这个改动就可能是「把闸弄哑了」）：
+  ① 连跑两遍 → 证据文件 **sha256 逐字节相同**，churn 消除；
+  ② 往 `spec.py` 注入一个 `__falsifyShapeChange` 字段 → 证据文件**精确产出一行 diff**，
+     说明闸仍有信号、没被弄哑；
+  ③ 把声明的路径改名成不存在的 → **硬失败**并给出「字段可能已改名」的提示，
+     不会静默失效让 churn 悄悄回来。三次探针后均原样还原。
+- 闸的 docstring 里如实记了这段历史与**残留局限**（漏声明的新写入点仍会 churn），不写成「已彻底解决」。
+- 全量 532 passed / 1 skipped、ruff 清、mypy 0 issue。
+
+### 台账 `finding` 膨胀治理：查出病根是字段形状不对，不是「写太多」（2026-07-27，云端 AI）
+
+提了三次没做的那条，今天做了。**先看数据再设计**，结果跟我原先的设想不一样：
+
+- 我原本打算拆成「裁定详情」「落笔回执」两个标量字段。**扫了实际数据才发现结构不是那样**——
+  `finding` 里装的是**按日期追加的时间线**（R2-09 两个日期段、RS-11 三个）。时间线该是**数组**，
+  两边各追加一个元素天然不冲突；拆成两个标量只会变成两个会打架的长字符串。
+  这也解释了 R2-08/R2-09 为什么连着两轮成为 rebase 冲突面——**每次都冲在同一个 `finding` 上**，
+  病根是字段形状不对，不是谁写太多。
+- **没有全量重写**：48 条里 7 条超 1200 字，其中 3 条（R2-11/R2-07/RS-04D）连日期分段都没有，
+  另两条带分段的首段仍有 3000 字。手工重排 7 段密集正文，**搞坏的风险高于收益**，且是在 PR
+  待 Owner 合并的当口。改用祖父条款（跟 `SUPER_ONLY`、契约白名单同一套路）：
+  未登记条目 `finding` ≤ 1200 字；**已登记条目只准缩不准涨**——新内容一律进 `updates`，
+  老文本原样留着；缩到上限以下必须从表里删（反向不变量，防豁免变永久）。
+  即刻止血、零重写风险，迁移在下次自然 touch 到该条目时顺手做。
+- **留了 RS-11 当迁移范例**，故意不进祖父表——那三段是我今天自己写的，最清楚内容，
+  门禁跑起来当场判它红，然后按日期切成 3 条 `updates`（正文一字未改，只去掉重复的日期前缀），
+  `finding` 从 2331 字回到 67 字。
+- `updates` 元素形状：`{date, kind, text}`，`kind ∈ {ruling, landed, progress, correction}`，
+  未登记的 kind 即红（防随手造词，与 `KNOWN_STATUS` 同理）。
+- **四向证伪**：①已迁移条目又往 finding 追加超上限 → `test_finding_not_bloated` 红；
+  ②祖父条目 finding 变长 → 同上红；③祖父条目缩短了却没从表里删 →
+  `test_grandfathered_finding_entries_still_oversize` 红；④`updates` 用未登记 kind →
+  `test_updates_shape` 红。四次探针后台账原样还原。
+- 途中踩了个坑值得记：**证伪脚本第一版把 pytest 跑在仓根**（函数里的 `cd` 串了），
+  四条探针全部「无输出」——那不是「没红」，是**根本没执行**。第二版改用退出码判定才拿到真结果。
+  跟我一直在修的 fail-open 同形：**判据本身不会失败，就等于没有判据**。
+- 另：`-q` 模式下本项目 pytest 不打印「N passed」计数行，用 `grep passed` 抓状态会抓空——
+  同样是「看起来没问题」。判成败一律用退出码。
+- 全量 535 passed / 1 skipped（+3 为本轮新门禁）、ruff 清、mypy 0 issue。
+
+### 契约 tag 欠账清偿 + 一条自我更正：「改 tag 会动 codegen」是错的（2026-07-27，云端 AI）
+
+本来按上一轮的判断，这件事要拆两半做：补 4 个漏声明是安全的可以直接做，两处大小写统一
+「会动 codegen 产物命名、先查前端影响面」。**先查了影响面，结果把我自己的判断否掉了。**
+
+- 本项目 codegen 是 `openapi-typescript`（`frontend/package.json:12`），产出的是**按 path
+  键控**的 `schema.d.ts`，**根本不输出 tag**：`Aftersale`/`Catalog`/`Compliance` 在产物里
+  **零命中**，`Order`/`Listing` 那几处命中是 **schema 组件名**不是 tag。
+  改完三处后重跑 `pnpm gen:api`，产物 **逐字节相同**。tag 只影响 Swagger UI 的分组展示。
+- 所以「有影响面的那半」根本不存在，两半一起做完了：顶层 `tags` 7 → 11；代码侧
+  `aftersale`/`order` 两个小写 tag 改成与契约一致的 `Aftersale`/`Order`（契约侧其余 9 个
+  一律首字母大写，代码这两个是异类，所以改代码不改契约）。
+- **这条错判已写进过四处**（考古文档 §12.3、progress、review_list、PR #37 正文），
+  其中 PR 正文那处会影响 Owner 判断——把一个安全改动说成有风险的改动。四处都已更正。
+  错在哪：我按「codegen 一般按 tag 分组」的通例推断，**没去看这个项目实际用的是哪个生成器**。
+- 补 F 组门禁两条防复发：paths 用到的 tag 必须顶层声明且不得有废声明；代码 tag 须与契约
+  一致**含大小写**，未登记者进 `CODE_ONLY_TAGS`。**首跑就抓出第三个我没算到的 tag `ops`**
+  ——`main.py:101` 的 `/healthz`，在 /api/v1 之外，属**合法 code-only 不是欠账**
+  （D 类那条判据只看 /api/v1，它从没露过面）。已分类登记，与那两条真欠账区别标注。
+- 三向证伪：**用「复现刚修掉的那两个缺陷」当探针**——大小写改回小写 → 红；删掉刚补的
+  Compliance 声明 → 红；再加一个废声明 → 红。证明门禁确实能抓到本轮修的东西。
+- **又踩了一次同样的坑**：证伪脚本第一版的备份 `cp` 跑在错误的工作目录上，**备份根本没建**，
+  三次探针叠加执行且每次「还原」都是空操作，把契约文件和 order 路由都改脏了。
+  从 git 恢复重来，第二版改用绝对路径并先验证备份确实建成。教训与上一轮那个「pytest 跑在
+  仓根」同源：**清理/还原动作失败时不出声，后续步骤照跑**。
+- 全量 537 passed / 1 skipped（+2 为 F 组）、ruff 清、mypy 0 issue、前端 lint 绿、codegen 无漂移。
+
+### RS-11 D 类欠账清零：9 条未登记路由补进契约（2026-07-27，云端 AI）
+
+`CODE_AHEAD_OF_CONTRACT` 从 9 条清到 **0**。按上一轮的教训**先看代码、不凭通例推断**，
+读完两组路由后查出两点结构事实，都影响契约怎么写：
+
+- **通知四条无权限点**——`notify/router.py:1` 的 docstring 就写着「任何登录用户可用（无权限点）」。
+  所以这四条**不带 x-permission**，不是漏写。另外前端是**手写响应类型**在调
+  （`api.get<{count:number}>`、`PageOf<Notification>`），正是 008 规范禁止的那类 FE-DEBT；
+  补进契约后它们才有 codegen 类型可换。
+- **worker 五条走第三个认证域**——`X-Node-Key` + `X-Node-Token` 双头部（`_node_auth`），
+  既不是 JWT 也没有权限点。故新增 `nodeKeyAuth` / `nodeTokenAuth` 两个 securityScheme，
+  与既有 `bearerAuth`/`portalAuth` 并列。`register` 是用一次性 `enroll_token` 换长期凭证的，
+  **它本身不带 node 认证**，契约里显式写 `security: []`。
+  **双版本号路径 `/api/v1/worker/v1/…` 如实登记**并在契约注释里写明成因，不是笔误。
+- 顶层 tags 11 → 13（补 `Notify`/`ScrapeWorker`）；`CODE_ONLY_TAGS` 里那两条随之摘牌——
+  **摘牌不是我自觉，是门禁强制的**：F 组那条 `stale` 断言在 tag 进契约后就会要求删白名单条目。
+  实际跑起来也确实先红了一次（我补了 paths 却忘了补顶层声明），门禁当场点名。
+- **codegen 这次应当有漂移，也确实有**：`pnpm gen:api` 产出 9 条新 path 的类型，+394 行。
+  与上一轮 tag 改动「产物逐字节相同」正好构成对照——**说明那次的「零漂移」不是 codegen 没跑，
+  是 tag 真的不进产物**。
+- 途中又栽了一次同类跟头（本会话第三次）：`pnpm lint`/`pnpm build` 跑在了 `backend/` 目录下，
+  报红。不是代码问题，是**工作目录错了**。从 `frontend/` 重跑，lint 与 build 均绿。
+  这三次（pytest 跑仓根 / 备份 cp 跑错目录 / pnpm 跑 backend）是同一个形状：
+  **命令在错误的地方执行，输出看起来像是「结论」，其实是「没执行」或「执行错了对象」。**
+- 全量 537 passed / 1 skipped、ruff 清、mypy 0 issue、前端 lint + build 绿。
+- **补一条部署验收陷阱**（2026-07-27，源自 Owner 重发的 SQL 只读结果）：0039 合并后若仍用**按用户**
+  统计的那条 SQL 查 `compliance_perms`，**结果仍会是 0，但那不是迁移失败**——0039 按**角色**授权，
+  而现网 `user_role` 为空。两层须分开验：①按角色查 `role_permission`（本地全量迁移后实测
+  团队管理员 compliance=5/合计 43、审核员 3/9，其余角色 compliance=0）②按用户查 `user_role`
+  （现状预期为空）。第二层转非空需一次**运维动作**而非改码：`PUT /api/v1/users/{userId}/roles`，
+  且代码明确拒绝把全局模板角色直挂用户（`identity/router.py:321-329`），要绑的是建团队时
+  自动复制的同名团队角色副本。**谁拿哪个角色属 Owner/运维决定，云端侧不代拍。**
+  已写进 PR #37「合并后须做」节，附可整段粘贴的两层 SQL。
+
+### PR #37 走合并前闸序：Owner 授权后仍先核实闸位（2026-07-27，云端 AI）
+
+Owner 说「合并 pr37」。**没有直接合**——先 `git fetch` 发现 main 前进到 `90c7ffd`，审计侧刚把
+007 角色分工升为**四方**并定下**合并前闸序**：CI 绿 → **审查 AI 通读 diff** → 部署机真机验证 →
+Owner 授权合并，且明写「审查 AI 位于 Owner 拍板**之前**，其价值即保护该次授权决策」。
+
+- 核实闸位：`.agent/evidence/reviews/` **目录全仓不存在**、PR #37 上**零 review**、迁移 0039
+  **未经真机验证**（部署机这两天在跑 USPTO 连测）。**四闸只过了第一闸。**
+- 那条规则 35 分钟前才落地，且它设立的**直接由头就是我自己两次 PR 正文失实**
+  （「零代码改动」「零迁移」而实际含迁移）。这种情况下替 Owner 默认豁免不合适，故回问一次。
+  Owner 定：**两闸都补完再合**。
+- 云端侧该做的三件已做完：
+  1. **rebase 到 `90c7ffd`**——无冲突（main 只动 `specs/007-*/README.md`，本分支未碰该文件；
+     动手前先 `git diff --name-only` 比过冲突面）。rebase 后全量复跑：537 passed、ruff 清、mypy 0。
+  2. **备好部署机指令** `.agent/evidence/PR-37/deploy-verify-0039.md`，可整段粘贴、自带铁律。
+     两处刻意设计：①`downgrade base` 会清空业务表，**显式预警并给出退路**（数据不能丢就停下来，
+     我改简化版）②权限验证明写「**按用户查会看到 0，那不是迁移失败**」并给出两层 SQL 与对拍
+     期望值——这正是前一轮把 Owner 绕进去的那个坑，不能让部署机再踩一遍。
+  3. **建 `.agent/evidence/reviews/` 空壳**并在 README 写死：**云端 AI 不得自写自己 PR 的审查
+     报告**。自己审自己等于把闸拆了。目录我建、内容不由我写。
+- 连带把 `CLAUDE.md` 的分工从「三个 AI」同步为四方，并标注「与 007 冲突时以 007 为准」——
+  单一真相在审计侧那份，我这份是索引不是权威。
+- **等两闸回执**：审查 AI 的 `PR-37.md`、部署机的四项贴回。都不由云端侧产出。
+
+### 独立审查 AI 出 PR #37 审查报告（10 条），逐条实证后九修一裁（2026-07-27，云端 AI）
+
+四方闸序第二闸的首次实跑。报告全程静态推导（那台环境无依赖、无 PG），**我这边能真跑，所以逐条
+验证再动手，不照单全收**——结果是十条全部成立，但其中两条我用实跑补上了报告拿不到的部分。
+
+- **F3 是真 fail-open，在我这道四向门禁上**。报告说「把保护两侧删干净则六组全过」。我按描述
+  **实跑复现**：`order.ship` 的 `require_permission` 换成 `get_current_user` + 契约删掉那行
+  `x-permission`，**六组全绿**——任何登录用户可对任意订单发货回传。已补 G 组两条判据
+  （`PERMISSIONLESS_OPS` 登记 15 条合法无权限端点 + 未登记即红 + 防僵尸反向不变量），
+  修完重跑同一攻击 → 判红。
+  **首版探针我自己写坏了**：`get_current_user` 未导入，红的是 NameError 不是门禁——
+  判据为错误的原因失败，看起来像生效。修探针才拿到真结果。
+- **F2 evidence-gate 豁免了网关实现本身**。三个 marker 在 `channel/gateway/client.py` 里命中
+  全为 0，而那正是定义 `prepare`/`request`、做 dry_run 模式闸的文件。**从 main 切干净分支实证**：
+  只改 client.py，旧版门禁打印「均不含网关调用，跳过」、退出 0 放行；换修复版则拦住、退出 1。
+  已加 `ALWAYS_CHANNEL_PATHS` 无条件命中 + `merge_base == HEAD` 不再当成「无改动」。
+- **F8 我实测了报告只能推导的数字**。跑 `downgrade 0038 → upgrade head` 量得：模板角色 **13 行**
+  （与报告推导一致），本地库另有团队副本 49 行、合计 62。台账原写的「5」是去重角色数，口径串了。
+  期间我手打对照表抄错一条（把 `维护员/pricing.write` 写成 `catalog.import_write`），一度以为
+  0039 有缺陷——**读迁移原文才发现是探针抄错，不是代码有问题**，没有据此报假缺陷。
+- **F1 由 Owner 定「代码统一、贴合已裁定的规划」**：0039 初版授的 `catalog.import_read` 全仓零
+  消费点，导入作业 Tab 要的是 `compliance.import_read`，而**仓里早已裁过**（契约 `:574` 注释
+  「此前契约误标 `catalog.import_*`——一并归正」）。故改授 `compliance.import_read`（同三角色，
+  不限 team_id、顺带补 0010 漏掉的团队副本）。**不用补授把死码洗成可达**——那正是审查方指出的
+  「绕开自设的不许养僵尸」。死码改为在 `KNOWN_DEAD_CODES` 显式登记 + 另立 **CT-0727-B** 删除，
+  并配两条自证判据（有消费点即红要求摘牌；种子里消失也红）。删种子行属数据破坏性操作，
+  要部署机先确认无运维手工授予。
+- 其余五条属叙述失实，就地更正：F5（代码注释描述了一个**走不通**的重试闭环——`item_pull.py:240`
+  的 `continue` 在 `_ensure_task` 之前，degraded 品第二轮直接跳过，永久坏品总共只烧一次；
+  连带 `renew_end_date` docstring 与 progress 里「闭环收敛的实测证明」那句）、F6（fail-open 表 5 条
+  里 2 条是 PR #36 的成果）、F7（CT-0727 错记 `catalog.product_write` 由 0039 授给团管——**两处都错**，
+  该码不在 0039 内、0002 授的是审核员）、F9（部署验收 SQL 首列查 `compliance.%` 而 0039 八码里一个
+  compliance 都没有，跑不跑都是那两个数；已换成只查那 8 码且滤掉团队副本的判据）、F10（conftest
+  注释「三个 job」实为四个 job 中只有 backend 置位）。
+- **写死码判据时我又写了一个空壳测试**（有名字有 docstring、函数体什么都不做、永远绿），
+  自查时发现并写实。跟一整天在批的「不会失败的判据」同形。
+- 全量 541 passed / 1 skipped（+4：G 组 2、死码 2）、ruff 清、mypy 0、迁移三步全过。

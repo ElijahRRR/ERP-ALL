@@ -19,6 +19,7 @@ from erp.channel.gateway import gateway
 from erp.core.security import hash_password
 from erp.core.settings import get_settings
 
+from ._evidence import PLACEHOLDER_SEQ_SKU, PLACEHOLDER_TIMESTAMP, write_dry_run_evidence
 from .test_identity_api import PASSWORD, _login
 
 ADMIN = "listing_admin"
@@ -478,8 +479,23 @@ class TestDryRunEvidence:
         assert snap["url"].endswith("/v3/feeds")
         repo_root = Path(__file__).resolve().parents[3]
         out = repo_root / ".agent" / "evidence" / "R1-11" / "dry-run-feed-snapshot.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 落盘走规范化写入器：这两个字段每跑一遍都变（sku 是库里序号分配的 master_sku、
+        # startDate 是构包时刻），请求形态却一个字没变。不规范化的话文件天天有 diff，
+        # 而 evidence-gate 的判据是「同 diff 内有 evidence 变更」——等于跑一遍测试就能过闸。
+        write_dry_run_evidence(
+            out,
+            snap,
+            volatile={
+                ("json_body", "MPItem", 0, "Orderable", "sku"): (
+                    PLACEHOLDER_SEQ_SKU,
+                    "master_sku 由库内序号分配，取值随前序测试建了多少产品而变",
+                ),
+                ("json_body", "MPItem", 0, "Orderable", "startDate"): (
+                    PLACEHOLDER_TIMESTAMP,
+                    "构包时刻 now()，每次运行必不同",
+                ),
+            },
+        )
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             conn.execute(
                 "UPDATE app.system_config SET value = '\"live_test\"'::jsonb"

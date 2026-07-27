@@ -20,7 +20,7 @@ from erp.core.errors import BusinessError
 from erp.core.idempotency import run_idempotent
 from erp.identity.schemas import Page
 
-aftersale_router = APIRouter(tags=["aftersale"])
+aftersale_router = APIRouter(tags=["Aftersale"])
 
 # 契约 002 §写操作幂等：Idempotency-Key 必填头（与 order/listing 写端点同构）
 IdemKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=64)]

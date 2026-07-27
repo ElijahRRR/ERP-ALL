@@ -22,9 +22,14 @@
     误判 / 日志 `>>` 数字吞重定向 / PS 嵌套引号管道）→ `walmart-trademark-sync` PR #1
     （两跳下载修复）验证通过并合并 main `9bc0bbbf` → 彩排发现 ETL 慢如龟爬，根因是一次性
     迁移 `pg_restore -t` 遗漏四张子表二级索引（非 GIN 维护开销，此前误判已更正），补索引
-    后整链首次端到端跑通（EXIT=0，300 倍提速）。**07-26 18:00 起为 A 段（自动触发）实质
-    证据窗口**，待部署机回报填入三日表。docs 收尾 PR #36（草稿，另含 R2-09 考古，待三日
-    连测结束后与 Owner 商定合并范围）。
+    后整链首次端到端跑通（EXIT=0，300 倍提速）。**验收① 第 1 日（07-26）PASS**（首条 A 段
+    实质证据：Last Run 18:00:01 / Result=0 / Next Run 07-27 18:00；无数据日——apc260723
+    429 限流窗内；USPTO 14,216,076 / ERP 4,475,105 / 双侧 newest 2026-07-25 / revision 204 /
+    lag_days=1）。**只差第 2、3 日（07-27 / 07-28 各 18:00 的 A 段）**，三日齐绿即与 RS-04D
+    一并关账。收尾 PR #36 已由 Owner 授权 **squash 合入 main `5b37ded`（2026-07-26）**，
+    含运维路径/三日协议/两处 fail-open 修复/bat 纳入版控/R2-09 考古/台账修正；合并前已
+    更正正文三处失真（合并后正文即永久记录）。分支已按纪律从 main 重建（重建前比对树，
+    唯一差异是 main 多一处 specs/007 验收④措辞修订＝审计侧落笔，本分支内容零丢失）。
   - R2-11 ✅ **accepted（2026-07-23，PR #24/26/27/28 全合并）**：D-Q64 四点全落地——
     实时归组（入库即组，真机 B0DGTYRBZQ 实证）/ 自动路由与散品上架双档 / 批次原子性
     守卫 v2 / live 补挂成组（组 8 真机修复 feed#42 8/8）+ 组 6 子集全 live 成组。
@@ -53,6 +58,33 @@
 - 全局挂账：R2-05 L2 发货补验（等 A152 真实来单）；R2-04 验收②模拟断连；钓鱼黑名单导入；
   erpAPI PR #2 待授权；售后前端页（returns/refund 部分随 07c；店铺事件页 07b 已交付）。
   已清偿：前端 schema.d.ts codegen（07b 随契约重生成，含 R2-05/06/07a/11 既往欠账）。
+- **2026-07-26 Owner 批准落地四件（「按你建议的做」），见 progress 同日末节**：
+  ①`service.py` 渠道明确拒绝**不再返还** maintenance 配额（活 fail-open 已清；闭环无界已由
+  `test_repeated_rejects_exhaust_the_daily_gate` 对旧码实测证明，非推理）②dry_run 请求快照
+  落进 `channel_command.result`（抽 `_dry_run_result` 统一三处，原先三处都在丢快照，带 32KB
+  体积守卫）③三条 CI 只读门禁上车（权限可达性 / 台账结构 / 渠道写路径必带 evidence——第三条
+  首轮 `ADVISORY=1` 只告警，观察无误伤后删掉即变硬闸）④Windows 自动登录**定案不配**。
+  ✅ **8 个漏授权限码已裁定并补齐（迁移 0039，2026-07-26）**：实测坐实 0039 生效后无角色可达
+  的码只剩 `identity.team_admin` + `compliance.import_admin` 两条设计上超管专属；白名单同步
+  收窄。三处授予对象按权限官方名称收敛（我给 Owner 的描述与实际名称不符，故未照批的执行）：
+  `listing.error_admin`=错误字典维护→仅团管；`catalog.source_write`=货源录入→仅团管；
+  `catalog.category_write`=类目映射修正→审核员+团管。新增授予矩阵精确锁定 + read/write
+  对称性两条测试。
+- **R2-09 开工前四条硬阻塞：Owner 2026-07-26 全部裁定，批注已回传待审计侧落笔**
+  （`.agent/evidence/R2-09/owner-rulings-20260726.md`，逐条给出可套用的改动请求）。
+  口径更正：此前说「四条硬阻塞」，核原文应为**10 条待裁、前 4 条不裁开不了工**，后 6 条随
+  对应增量逐个提请、不阻塞开工。裁定：①flow 清单 v2 冻结（删两行双落点 / listing_pricing 归一
+  为 pricing_watch / 新登记 scrape_to_audit / 新登记 D-Q65② 宪法要求的 maintenance runner 档位 /
+  match 跳 sourcing 归 audit_to_listing）②验收判据四环不下调，补登记 scrape_to_audit +
+  listing_dispatch 凑齐③order_block/compliance_block 认二元（唯一已上线消费点，不动）
+  ④删「吃 R2-04 Redis pubsub」实现指定，改「档位每决策直读、不进缓存」（实测那套缓存生产零
+  读者、且 fail-open 与档位必须 fail-closed 方向相反）。
+  ✅ **前置已解除（2026-07-26）**：规划/审查 AI 已按批注落笔并合入 main `de3c546`——001§09
+  flow 清单 v2 冻结（九条：新登记 scrape_to_audit / listing_dispatch / maintenance_run，删
+  gtin_alert / suspension_reminder，listing_pricing→pricing_watch 归一）+ 逐 flow 求值语义表
+  （实时求值 vs 创建快照）+ order_block/compliance_block 二元档位 + 直读不进缓存 + beat 逐条目
+  读档纪律；007 验收四环 flow 映射与切档口径同步修订。审计侧另注明四条断言已源码复核属实。
+  **R2-09 可立项开工**（按考古 §4 的 7 增量拆分；余 §2[5]~[10] 六条随对应增量提请）。
 - **验证纪律挂账（2026-07-26 Owner 查出，铁律 4 实质违反，已认）**：增量 1/3/4b 均在
   「待分支验证」状态下直接合并，验证结果全仓零记录；4b 属渠道写路径而 R2-12 全单无一份
   dry-run 快照落仓（对照 R1-07/R1-11/R2-03/R2-06 皆有）；真机图全在 PR 评论、不在仓内
@@ -65,11 +97,12 @@
   PR 必须带 evidence 变更）④是否让服务层把 `request_snapshot` 落进 `channel_command.result`
   ——现 `_apply_item_maintenance` 在 dry_run 分支只落 `{"dry_run": True}` 把快照丢了，
   致生产 dry_run 态也观测不到请求全貌。
-- **RBAC 挂账（2026-07-26）**：`0035_blacklist_assertion.py:150-167` 按角色名字面
-  （'团队管理员'/'审核员'）发 `compliance.*`，而现网两账号均未绑任何角色——**该种子至今
-  一份权限都没发出去，且静默不报错**。超管走 `is_super` 短路不受影响（authn.py:47），
-  但一旦出现第二个真人非超管账号，合规中心即 403/空。待 Owner 定：是否改为按权限码
-  声明式授权（按角色名字面匹配对改名/多语言/新建团队都会漏）。
+- **RBAC 结论（2026-07-26，前述判断已更正，0035 不改）**：曾判「0035 按角色名字面授权至今
+  一份都没发出去」——**干净库实跑全量迁移已证伪**：0002 本就把七个角色种成全局模板角色，
+  0035 按名匹配确实命中（团队管理员 5 条 compliance、审核员 3 条），且 `identity/router.py`
+  建团队时复制模板角色连带权限映射，范式自洽，无需改造。现网 `compliance_perms=0` 的真因是
+  **没有任何用户绑角色**（user_role 空）——部署数据状态，非代码缺陷。真问题是那 10 个无角色
+  可达的权限码，已由 CI 门禁① 钉住 + B 组 8 条待 Owner 裁（见本文件上方条目）。
 - **次要项挂账（2026-07-26 Owner 提出）**：`rebuild_canonical` 无生产入口（CLI/端点/beat 皆无），
   RS-04D 第四条硬验收只在 pytest 内成立；`item_pull` 第四类差异 `gone_remote` 在 beat 聚合
   （:369-379）被丢弃；契约顶层 tags 块少声明 4 个 tag；`ImportJobsTab.tsx:15` 手写 interface
@@ -90,9 +123,19 @@
   分支 head），通过后 Owner 授权合并 main，合并后重建分支接着开发；部署机验完切回 main
   常驻；含迁移的增量若分支被弃须 alembic downgrade 归位。
   **切回 main 前必做「运维资产在位检查」**（2026-07-26 Owner 查出 P0-3）：只在开发分支上的
-  运维资产会随切换从检出树消失。现 `.gitattributes` + `infra/local-deploy/automation/`
-  （uspto-daily.bat + README）**尚未进 main**（origin/main=5329146 无此二者），一旦执行
-  「切回 main」修复版 bat 与 CRLF 声明同时丢失，07-25 LF-only 事故原样复发。检查命令见
-  infra/local-deploy/README.md「切回 main 前必做」节，三行不齐**不许切**。
-  根治=让这些资产进 main（PR #36 已含，待 Owner 授权合并；或另拆 ops-only PR，需 Owner 允许开新分支）。
+  运维资产会随切换从检出树消失。**该 P0 已根治**——PR #36 合并后 `origin/main`=`5b37ded`
+  已含 `.gitattributes` + `infra/local-deploy/automation/`（uspto-daily.bat + README），
+  实测三行齐全，**部署机收账后可安全切回 main 常驻**。检查命令（见
+  infra/local-deploy/README.md「切回 main 前必做」节）作为长期 fail-closed 门保留，防将来
+  又有只活在分支上的运维资产：三行不齐**不许切**。Owner 明示不必另拆 ops-only PR。
 - 本工作区环境：开发分支 claude/r2-03-launch-leg5n8（PR 按增量推），旧 erpAPI 仓挂载于 /home/user/erpAPI。
+- **CT-0727 新登记（2026-07-27，由 RS-11 门禁的反向不变量逼出）**：002 契约已声明但端点未建的
+  7 个 operation——catalog 5（`GET /category-map`、`PATCH /category-map/{mapId}`、
+  `PATCH /products/{productId}`、`GET`+`POST /products/{productId}/sources`）+ listing 2
+  （`GET /listing-errors`、`PATCH /listing-errors/{errorCode}`）。**7 条都是想要而未建、不是废
+  声明**，且其中三码（category_write/source_write/error_admin）正是 0039 补授 8 码之三（权限已授、端点未建＝提前授权）。**更正**：原写「4 个」把 `catalog.product_write` 算了进来，该码不在 0039 内、0002 授的是审核员非团管——团管是否需要它已挂进 CT-0727 待裁。**优先级与拆单
+  口径待 Owner 立项时拍**，本单只做登记不预设范围。门禁白名单已改指 CT-0727——本单一旦收账
+  而端点仍未建，反向不变量会再红（防「前置声明豁免」退化成永久豁免）。
+- **RS-11 子项① 已落地、本单不能关账**：契约四向一致性门禁已进 CI；子项② `superseded_by` 标注
+  与 D-Q→文档→工单追踪列**需 Owner 批准**（动 DECISION-FORM 宪法）后由规划/审查 AI 落笔；
+  子项③ NOT VALID→VALIDATE 纪律入 `00-conventions` 归规划/审查 AI；子项④ 已由审计侧 421f83d 核销。
