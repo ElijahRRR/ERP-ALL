@@ -642,7 +642,8 @@
     "kind": "correction",
     "text": "**更正阶段二 §12.3 的一条判断**：我当时写「codegen 按 tag 分组生成客户端命名空间，大小写不一致会产出两套命名」，据此把 tag 大小写统一列为「有影响面、需先查前端」。**错的**——本项目 codegen 是 `openapi-typescript`，产出按 path 键控的 `schema.d.ts`，**根本不输出 tag**（Aftersale/Catalog/Compliance 在产物里零命中）。三条 tag 欠账（顶层漏声明 4 个 + 两处大小写）已全部修完，重跑 `pnpm gen:api` 产物**逐字节相同**。tag 只影响 Swagger UI 分组展示。原判断把安全改动说成有风险的改动，属误导。已在 RS-11 契约门禁补 F 组两条判据防复发，并用「复现刚修掉的那两个缺陷」做证伪。"
    }
-  ]
+  ],
+  "acceptance": "A152 真实结算单拉取入库；结算明细与订单对账差异率可解释；利润账三粒度与结算金额闭合(抽10单人工核对)。§08 补强四条：①任取一月 profit_ledger 三粒度全量重建==现存物化值(逐行)；②erp_app 对 financial_event/ledger_entry 执行 UPDATE/DELETE 必被拒(授权+触发器双关,测试化)；③冲销演练：人工造错账→reversal+posting_seq+1 新事件→投影归正且原事件仍在案；④汇率审计：抽10条 purchase_cost 分录按 fx_formula 手工复算==amount_usd。幂等键须为渠道自然键 {store_id}:{report_date}:{transaction_key}:{amount_type}+posting_seq(line_kind/event_kind 不得入唯一键)；同币种分支：USD 采购 fx_rate=1 不折算。"
  },
  {
   "id": "R2-09",
@@ -654,9 +655,10 @@
    "specs/007-mvp-completion-plan/README.md"
   ],
   "finding": "PRD §8 模块9，审计补单(2026-07-16)。是'贯通'不是'建表'(现状已核实)。**2026-07-25 考古完成**（`.agent/evidence/R2-09/archaeology.md`，1512行；R2-12 三日连测墙钟等待期间提前起，只读未立项，未改任何实现代码）：六路并行侦察+对抗性交叉核对，合成阶段推翻两路初判（①不需新增状态列——`product.status`/`listing.status`/`maintenance_task` 已是天然停驻位，真缺是 task 级放行**端点**；②`kinds` fail-closed 断言系读 docstring 非代码）。**四条硬阻塞待 Owner 裁决**（不裁定开不了工但清单不冻结则 CI 第一天就红）：①001§09 flow 清单需冻结v2（`listing_pricing` 图纸真名 `pricing_watch`、`scrape_to_audit` 图纸零出处、两行已被 team_config/schedule 种子取代）②007 验收判据要四环各自可停而 001 只供给两环③007「吃 Redis pubsub」与实测不符（`get_config_service` 全仓仅3处命中且无业务代码调用，应改述为「档位每决策直读SQL」）④refund auto 是不可逆真钱，端点未定（`ck_cc_action` 扩1或3个），建议工单等级改标【L1（refund执行片L2）】。另6条Owner待裁+8条盲区（含**验收本身不可重复执行**——商品状态单向前进）；建议拆7增量（量级约R2-12的1.3~1.5倍）。**顺带实锤一处已上线 fail-open**（本轮未修，属listing域跨界）：`listing/maintenance.py:29` 默认 `kinds=[\"delist\"]` 与同文件docstring/`0037`种子的`[]`不符，schedule config 一旦丢`kinds`键即自动执行真渠道下架，绕过D-Q65②人工闸（种子当前带该键未触发，属潜伏）；——**该 fail-open 已于 2026-07-26 随 PR #36/#37 修复（改空表 fail-closed + 3 条回归测试），不再遗留本单**。**2026-07-26 Owner 裁定开工前四条硬阻塞，批注已回传**（`.agent/evidence/R2-09/owner-rulings-20260726.md`，逐条给出可套用的 specs 改动请求；按纪律 007 与图纸归审计侧、开发侧不改正文）。**口径更正**：此前记「四条硬阻塞」，核考古原文应为 **10 条待裁、前 4 条不裁开不了工**，后 6 条（auto 档准入门槛 / guardrail 键与默认值 / 半自动停驻 SLA / refund 端点 / 权限点命名 / 面板归属）随对应增量逐个提请、不阻塞开工。四条裁定：①flow 清单 v2 一次性冻结（删 gtin_alert 与 suspension_reminder 两行——参数已搬走、留着即双落点致运营改了不生效；listing_pricing 归一为 pricing_watch；新登记 scrape_to_audit；新登记 D-Q65② 宪法级要求的 maintenance runner 人工/半自动档；match 跳 sourcing 归 audit_to_listing）②验收判据四环不下调，补登记 scrape_to_audit + listing_dispatch 凑齐（判据合理、是图纸漏登记）③order_block / compliance_block **认二元**不补 semi（order_block 是唯一已上线消费点，加语义即改已上线的订单冻结行为，风险不对称）④删掉「吃 R2-04 Redis pubsub 配置广播」的实现指定、改为「档位每次决策直读、不进缓存」（实测该缓存生产零读者、广播在失效没人读的缓存，且它 fail-open 而档位必须 fail-closed 方向相反；直读延迟≈0 更准）。另把裁定④的两条直接后果写入批注、落工单不得漏：档位读须与被闸住的写同事务且每决策读一次（beat 任务级硬超时 900s，任务级读一次最坏陈旧 900s+30s，直接击穿原 60s 承诺）；逐 flow 声明实时求值 vs 创建快照并做成表（现状已分化：refund 创建快照 / order_block 实时求值 / 另两条未定，且 60s 生效在快照型 flow 上无法定义）。**立项前置 = 审计侧按批注落笔 001§09 与 007 正文**，落笔后按考古 §4 的 7 增量拆分立项。 | 【审计 2026-07-26】按 owner-rulings-20260726.md 落笔完成：001§09 flow v2 九条冻结（新登记 scrape_to_audit/listing_dispatch/maintenance_run，删 gtin_alert/suspension_reminder，listing_pricing→pricing_watch 归一）+ 逐 flow 求值语义表（实时/创建快照）+ order_block/compliance_block 二元档位 + 直读不进缓存 + beat 逐条目读档纪律；007 验收四环 flow 映射与切档口径同步修订。四条断言已源码核实属实（ConfigService 无业务读者/beat 900s 硬超时/refund 已快照/代码仅 order_block 一码）。余 6 条(§2[5]~[10])随增量提请。",
-  "last_checked_at": "2026-07-26",
+  "last_checked_at": "2026-07-27",
   "note": "验收：同一商品三档各跑一遍采集→审核→上架→定价全链(全自动零人工/半自动定点停/人工每环节停)；切档 60s 生效",
-  "gate": "✅ 开工前置已解除(2026-07-26)：flow 清单 v2 冻结 + 四环补齐 + 二元档位 + 直读口径已落 001§09/007（Owner 四条裁定，审计侧核实源码后落笔）"
+  "gate": "✅ 开工前置已解除(2026-07-26)：flow 清单 v2 冻结 + 四环补齐 + 二元档位 + 直读口径已落 001§09/007（Owner 四条裁定，审计侧核实源码后落笔）",
+  "acceptance": "同一商品在三档下各跑一遍采集→审核→上架→定价全链：全自动零人工介入、半自动在设定环节停、人工档每环节停。四环对应 flow(§09 v2.1)：①scrape_to_audit ②audit_to_listing ③listing_dispatch ④pricing_watch。切档生效口径(替代原「60s内生效」)：实时求值类于下一次决策即生效，含 auto 档 beat 逐条目读档(最坏陈旧=一个条目非一批)；创建快照类(refund/cancel/purchase_execute)对在途请求不生效属正确行为，查新建请求即可。枚举须与 §09 flow 清单 v2.1 九+一条严格对照(CI 校验)。"
  },
  {
   "id": "R2-10",
