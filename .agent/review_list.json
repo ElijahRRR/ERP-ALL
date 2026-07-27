@@ -651,7 +651,7 @@
   "priority": "P0",
   "dimension": "feature",
   "check": "三档自动化贯通【L1】：automation_policy 表已建(0025)仅通 order_block——补 flow 全集接线(audit_to_listing D-Q13/listing_pricing/refund D-Q29/scrape_to_audit, 以 001§09 flow 清单为准)+三档语义统一+前端策略面板+pubsub 即时生效",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md"
   ],
@@ -659,7 +659,14 @@
   "last_checked_at": "2026-07-27",
   "note": "验收：同一商品三档各跑一遍采集→审核→上架→定价全链(全自动零人工/半自动定点停/人工每环节停)；切档 60s 生效",
   "gate": "✅ 开工前置已解除(2026-07-26)：flow 清单 v2 冻结 + 四环补齐 + 二元档位 + 直读口径已落 001§09/007（Owner 四条裁定，审计侧核实源码后落笔）",
-  "acceptance": "同一商品在三档下各跑一遍采集→审核→上架→定价全链：全自动零人工介入、半自动在设定环节停、人工档每环节停。四环对应 flow(§09 v2.1)：①scrape_to_audit ②audit_to_listing ③listing_dispatch ④pricing_watch。切档生效口径(替代原「60s内生效」)：实时求值类于下一次决策即生效，含 auto 档 beat 逐条目读档(最坏陈旧=一个条目非一批)；创建快照类(refund/cancel/purchase_execute)对在途请求不生效属正确行为，查新建请求即可。枚举须与 §09 flow 清单 v2.1 九+一条严格对照(CI 校验)。"
+  "acceptance": "同一商品在三档下各跑一遍采集→审核→上架→定价全链：全自动零人工介入、半自动在设定环节停、人工档每环节停。四环对应 flow(§09 v2.1)：①scrape_to_audit ②audit_to_listing ③listing_dispatch ④pricing_watch。切档生效口径(替代原「60s内生效」)：实时求值类于下一次决策即生效，含 auto 档 beat 逐条目读档(最坏陈旧=一个条目非一批)；创建快照类(refund/cancel/purchase_execute)对在途请求不生效属正确行为，查新建请求即可。枚举须与 §09 flow 清单 v2.1 九+一条严格对照(CI 校验)。",
+  "updates": [
+   {
+    "date": "2026-07-27",
+    "kind": "progress",
+    "text": "【2026-07-27 立项，开工中】前置全部解除后正式立项（考古 2026-07-25 已完成，只读未立项；四条硬阻塞由 Owner 07-26 四条裁定解除并经审计侧落 001§09/007；flow 清单 v2.1 冻结）。**增量拆分**沿用考古 §4 并按 v2.1 对齐：①policy 内核 + 10 条 flow Enum + CI 一致性校验 + 两处旧代码回接 + kinds 跨域清偿（纯重构，行为零变化，整单地基）②策略读写 API + 权限点 automation.read/write + 前端策略面板 ③audit_to_listing 三档（含 scrape_to_audit）④pricing_watch 三档 + 第二套档位语义收口 ⑤refund/cancel auto 档渠道执行链（本单唯一 L2 片，不可逆真钱）⑥三档全链验收取证 + runbook + 回写。**落码三条 fail-closed 不能写反**：maintenance_run.kinds 默认空；档位不进 ConfigService/Redis 缓存（config bus 是 fail-open 而档位闸必须 fail-closed）；order_block/compliance_block 只有两档。**purchase_execute 现无消费点**（归 R2-13），属有意的前置登记——CI 一致性判据只校验「Enum ↔ 表」双向一致，不得加「每个 flow 必须有消费点」否则第一天就红。**三条待 Owner 裁定已批注回传** .agent/evidence/R2-09/owner-questions-20260727.md，均不阻塞增量1：Q1 验收判据「同一商品三档各跑一遍」在单向状态机下物理上跑不通（建议改三件同族商品各跑一档，而非引入状态重置脚本——后者是仅靠 is_test 标志守着的长期通道，收益一次性风险长期）；Q2 新团队档位继承要不要平台默认模板；Q3 enabled=false 静默退化成 manual，在 order_block 上＝误停用即拦截失效且无告警（fail-open）。"
+   }
+  ]
  },
  {
   "id": "R2-10",

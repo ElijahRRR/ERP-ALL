@@ -1,11 +1,30 @@
 # Task Definition
-- Mode: build（R2 后半程——007 计划生效；动工顺序 2026-07-17 更新：
-  **R2-11 → R2-07 → R2-12（与 RS-04D 同窗）→ R2-09 → R2-08 → R2-10**，
-  FE-DESIGN Owner 触发制，R2-10 前置 RS-01/02）
-- Task: **R2-12 合规数据供给持续化【L1】（与 RS-04D 断言账本同窗）——2026-07-23 立项开工
-  （Owner 指令），增量1-5 全部并入 main，仅剩验收① 三日连测未收账（07-26/27/28 窗口内）**；
-  R2-07 07b 开发面完成（PR #25 已合并 2026-07-18）待验收②；R2-11 已整单关账（accepted）；
-  R2-09 考古已完成（2026-07-25，只读未立项）。
+- Mode: build（R2 后半程——007 计划生效；**动工顺序 2026-07-27 按 D-Q66/67/69 更新**：
+  **R2-09 → R2-13（自动采购接入）→ R2-07c（邮箱）→ R2-08（财务域）→ RS-06 → RS-08**；
+  并行收尾 R2-12 验收① / R2-04 beat 实测 / RS-02b。
+  **已移出 MVP，不要做**：R2-10 采购方门户（D-Q66）、R2-05 发货环节、RS-01、
+  RS-05/07/09/10、RS-04C；FE-DESIGN 仍为 Owner 触发制）
+- Task: **R2-09 三档自动化贯通【L1】——2026-07-27 立项，开工中**。
+  前置全部解除：考古完成（`.agent/evidence/R2-09/archaeology.md`，1512 行，六路并行 +
+  对抗性交叉核对）；四条硬阻塞由 Owner 2026-07-26 四条裁定解除并由审计侧落 001§09/007；
+  flow 清单 **v2.1** 冻结（10 条，07-27 补 `purchase_execute`）。
+  - **增量拆分**（沿用考古 §4，按 v2.1 对齐）：①policy 内核 + 10 条 flow Enum + CI 一致性
+    校验 + 两处旧代码回接 + `kinds` 跨域清偿（纯重构，行为零变化，整单地基）②策略读写 API
+    + 权限点 `automation.read/write` + 前端策略面板 ③`audit_to_listing` 三档（含
+    `scrape_to_audit`）④`pricing_watch` 三档 + 第二套档位语义收口 ⑤`refund`/`cancel`
+    auto 档渠道执行链（**本单唯一 L2 片**，不可逆真钱）⑥三档全链验收取证 + runbook +
+    图纸/契约/工单回写。
+  - **落码三条不能写反的 fail-closed**（v2.1 原文）：`maintenance_run.kinds` 默认空；
+    档位**不进** ConfigService/Redis 缓存（config bus 是 fail-open，档位闸必须 fail-closed）；
+    `order_block`/`compliance_block` 只有 `{manual, auto}` 两档。
+  - **`purchase_execute` 现无消费点**（归 R2-13），属**有意的前置登记**——CI 一致性判据
+    只校验「Enum ↔ 表」双向一致，**不得**加「每个 flow 必须有消费点」，否则第一天就红。
+  - **三条待 Owner 裁定**（已批注回传 `.agent/evidence/R2-09/owner-questions-20260727.md`，
+    不阻塞增量1）：验收「同一商品」不可重复执行的处置；新团队档位继承要不要平台默认模板；
+    `enabled=false` 静默退化成 manual（`order_block` 上属 fail-open）。
+  前序状态：R2-12 增量 1-5 全部并入 main，**仅剩验收① 三日连测未收账**（07-28 为第 3 日）；
+  RS-02a 已整单关账（PR #39/#40，四道闸首次按原序走满）；R2-07 07b 待验收②；
+  R2-11 已整单关账（accepted）。
   - R2-12 范围（007 §R2-12 + review_list R2-12/RS-04D）：①RS-04D 断言账本（blacklist
     写路径，硬验收=blacklist_brand 真实跑通非空框架）②USPTO 日度自增量（部署机
     daily_update → RS-04A 通道 → refdata.trademark + revision 失效 + beat/告警）③TRO
