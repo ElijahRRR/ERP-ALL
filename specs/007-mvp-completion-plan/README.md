@@ -183,6 +183,50 @@ system_tx，`compliance/router.py` 既有铁律），页面负责进度/报错�
 登记（`POST /blacklist/assertions`，粒度更合适）。依据=开发侧 PR #35 呈报取舍，
 Owner 合并 #35 即认可；如需 HTTP 批量上传，另起增量（分块+超管门控+临时文件安全）。
 
+### R2-13 自动采购接入【L1→L2】（Amazon 采购插件，D-Q69，**MVP 内**）
+
+**缺口来源**：Owner 2026-07-27 指出。specs 全库此前**零处**提及采购插件——需求源是
+erpAPI 仓考古，而插件在独立仓（`ElijahRRR/AMZ-Purchase-Assistant`）+ 第三方 SaaS
+（`smallbee168.com`），考古照不到。**性质=从厂商 SaaS 迁移，非新建能力**（现产线在跑）。
+
+**现状核实（审计侧解包 v2.5.0 crx + 对比仓内 v2.4.1，2026-07-27）**：
+- 能力=**完整自动采购机器人**：拉待采购任务→清空购物车→加购→填地址（含日本都道府县
+  匹配）→结账下单→等待成功→抓回订单号→回填；另一条链抓运单号/物流事件/预计送达并回填；
+  内置验证码遮罩与等待人工点击的人机接力通道。支持 amazon.com/.ca/.co.jp。
+- **接入契约现成**=插件既有 9 个端点（`getNeedPurchaseOrders` / `getNeedSyncOrders` /
+  `purchaseOrderFinishUpdate` / `updateOrderStatus` / `updateAmzOrderStatus` /
+  `updateTrackingInfo`×2 / `updateBuyerCookie`），与 `procurement_order` 几乎逐字段对应。
+- 两版差异极小（2.5.0 仅多两个日本地址选择函数）；仓内版 `baseUrl` 为占位符。
+
+**路线（D-Q69 定案）**：**fork 插件、baseUrl 指向 ERP、由 ERP 实现该端点组**。
+不保留厂商 SaaS 双向同步（数据裂两半、cookie 暴露照旧），不自建服务端无头浏览器
+（亚马逊风控与封号风险不对称）。
+
+**分片**：
+- **13a 契约端点组 + 实例认证**：实现插件端点组；`plugin_instance` 实例专属 token
+  （**禁全局共享密钥**）；`buyer_account.external_customer_id` ↔ 插件 `customerId` 映射；
+  越权必败（实例只能取到自己账号的任务）。
+- **13b 买家账号池 + 任务路由**：`buyer_account` 建表（§07 图纸）；`procurement_order`
+  增 `buyer_account_id`；按站点+可用性+`daily_cap` 路由；**同一订单只派一个账号**（防重复下单）。
+- **13c 三档接线**：`purchase_execute` flow（§09 v2.1，创建快照型）；**auto 档护栏必备**
+  ——`amount_ceiling` 单单上限、`daily_cap` 账号日限、`price_delta_pct` 较预估涨价超阈值
+  转人工。**花真金白银的自动化，护栏缺失即禁止开 auto**。
+- **13d 回填与异常**：回填 `purchase_order_ref`/`purchase_cost`/`carrier`/`tracking_no`
+  与状态流转；缺货/涨价/账号被风控 → `exception_reason` 并转人工；与渠道订单对账。
+- **13e 迁移切换（本单最高风险片）**：从厂商 SaaS 切换按**买家账号逐个灰度**；
+  **红线：同一浏览器配置内绝不同时启用两个插件——会重复下单，损失真金白银**；
+  每切一个账号先跑一单人工档验证再放开档位；保留回切路径。
+
+**安全要求（随单强制）**：fork 时**收窄 `host_permissions` 至 amazon 域**（现为 `*://*/*`，
+可读取该浏览器访问过的任何站点 cookie，含 Walmart 卖家后台与飞书——防关联风险）；
+**若不启用 `buyer_session` 则一并删除 `cookies` 权限与 `updateBuyerCookie` 调用**；
+ERP 不可达时插件**不得自行决定采购**（fail-closed）。
+
+**验收**：①一张真实订单在人工档由插件完成采购并回填，金额/单号/运单与亚马逊后台一致；
+②三档各跑一遍（人工点采/半自动待确认/全自动），auto 档超 `amount_ceiling` 必须转人工
+且零下单；③越权测试：A 实例取不到 B 账号的任务（必败）；④同一订单不产生两个采购任务
+（并发下发压测）；⑤一个买家账号完成厂商 SaaS→ERP 灰度切换并稳定运行，回切路径演练一次。
+
 ### FE-DESIGN 前端设计打磨（D-Q53，Owner 触发制）
 
 **现状核实**：前端已有 13 个功能页（AntD 功能件，按域随单配套）；视觉基准
@@ -213,7 +257,8 @@ handoff-design 存档作为风格基线输入，新页面视觉由 Claude Design
 | **0** | **RS-02a 端口与口令**（P0 即刻） | 开发 AI 改 compose | **不排队、插队做**：db/redis 绑 127.0.0.1、换 PG 默认口令、Redis `requirepass`、默认密钥硬失败。依据 D-Q68 实测 |
 | 1 | R2-09 三档自动化贯通 | 在推 | 前置已解除（flow v2 冻结） |
 | 2 | R2-07c 邮箱最小闭环 | 小 | IMAP 凭证已具备（D-Q66 轮次确认），模块 7 收官 |
-| 3 | R2-08 财务域 | 大 | 图纸就绪（幂等键 2026-07-26 已修正为渠道自然键） |
+| **2.5** | **R2-13 自动采购接入** | **MVP 内（D-Q69）** | 紧接 R2-09——需要 `purchase_execute` 三档护栏才敢开 auto；每天真实省人力，价值高于报表类。**注意是迁移不是新建**（现跑在厂商 SaaS），13e 灰度切换为最高风险片 |
+| 3 | R2-08 财务域 | 大 | 图纸就绪（幂等键 2026-07-26 已修正为渠道自然键）。**同币种分支**：美亚采购 USD 收支同币，`fx_rate=1` 不折算（§07 修订） |
 | 4 | RS-06 人工复核工作台 | MVP 必做 | needs_review 无承接界面则单子堆积无人处理 |
 | 5 | RS-08 LLM 预算闸 | MVP 必做 | 日 20 万审核量的成本硬护栏（现仅告警版） |
 | 并行 | R2-12 收尾（验收①三日连测）、R2-04 收尾（beat A152 实测）、RS-02b（备份加密+校验+月度恢复演练） | 收尾 | 不占主路径 |

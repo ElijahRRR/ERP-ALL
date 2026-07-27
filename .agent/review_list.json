@@ -735,5 +735,21 @@
   "finding": "由独立审查 AI 的 F1 逼出。0039 初版把 `catalog.import_read` 授给采集员/审核员/团管，理由写「为合规中心导入作业 Tab 的对账可见性」——**授错了码**：该码全仓零消费点，而那个 Tab 的门控是`CompliancePage.tsx:27` 的 `has('compliance.import_read')`，三个 `/import-jobs*` 端点也都要`compliance.import_read`。仓里早已裁过（契约 `openapi-v0.yaml:574` 注释：「此前契约误标`catalog.import_*`——与路由/种子不符，一并归正」），0039 照着已被判错的旧口径写。**更坏的是副作用**：补授让可达性门禁因「已有模板角色持有」判绿，把缺口盖住，那道闸自设的「不许养僵尸码」用意反被绕开。Owner 2026-07-27 定「代码统一、贴合已裁定的规划」，故 0039 改授`compliance.import_read`（同三角色，且不限 team_id、顺带补上 0010 漏掉的团队副本）。**本单只管删种子行**：删 `app.permission` 要先清 `role_permission`，现网可能有运维手工授予，属数据破坏性操作，需部署机配合确认后再动。在此之前该码已在 `KNOWN_DEAD_CODES` 显式登记，并有两条自证判据钉着（有消费点即红要求摘牌；种子里消失也红）。",
   "last_checked_at": "2026-07-27",
   "acceptance": "删除前先在真机查 `SELECT * FROM app.role_permission WHERE permission_code='catalog.import_read'` 确认无运维手工授予；删除后 `KNOWN_DEAD_CODES` 清空该条且可达性门禁仍绿"
+ },
+ {
+  "id": "R2-13",
+  "priority": "P0",
+  "dimension": "product",
+  "status": "todo",
+  "check": "自动采购接入(Amazon 采购插件, D-Q69, MVP内)：fork 插件指向 ERP + 实现插件端点组(getNeedPurchaseOrders/purchaseOrderFinishUpdate/updateTrackingInfo 等9个)+buyer_account 账号池与任务路由+plugin_instance 实例令牌+purchase_execute 三档护栏(amount_ceiling/daily_cap/price_delta_pct)+回填对账+厂商SaaS逐账号灰度切换",
+  "evidence": [
+   "specs/007-mvp-completion-plan/README.md",
+   "specs/001-domain-model/07-order-sourcing-aftersale.md",
+   "specs/001-domain-model/09-platform.md"
+  ],
+  "gate": "排 R2-09 之后（需 purchase_execute 三档护栏才敢开 auto）；13e 灰度切换红线=同一浏览器配置内绝不同时启用两个插件(会重复下单)",
+  "acceptance": "①真实订单人工档由插件完成采购并回填,金额/单号/运单与亚马逊后台一致;②三档各跑一遍,auto 超 amount_ceiling 必转人工且零下单;③越权:A实例取不到B账号任务(必败);④并发下发同一订单不产生两个采购任务;⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练",
+  "finding": "审计侧解包 v2.5.0 crx 并对比仓内 v2.4.1(2026-07-27)：实为完整自动采购机器人(加购→填址→结账→抓单号→回填 + 物流回填链 + 验证码人机接力),支持 com/ca/co.jp,两版差异仅日本地址选择两函数。安全实测：host_permissions=*://*/* + cookies 权限可读该浏览器任何站点 cookie(含 Walmart 后台/飞书)；updateBuyerCookie 将买家 cookie 上传厂商服务器。fork 时须收窄权限。性质=迁移非新建(现产线跑在 smallbee168.com)",
+  "last_checked_at": "2026-07-27"
  }
 ]

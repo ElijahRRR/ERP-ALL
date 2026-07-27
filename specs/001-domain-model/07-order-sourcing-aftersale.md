@@ -117,6 +117,72 @@
 | 内部界面 | 含 `procurement.execute` 权限的成员 | 内部 JWT | 本团队全部执行单 | 领单/处理/回填全字段 |
 | 订单页代填 | 任意订单员 | 内部 JWT | 本团队订单 | 创建 assignee_kind=none 单并直接回填（backfill_actor_kind=op_direct） |
 | 采购方门户 | portal_account | portal JWT | **仅 purchaser_id=自己 且 status IN (assigned, claimed, purchased, shipped)** | claim + 回填受限列 |
+| **采购插件**（R2-13，2026-07-27 新增） | `plugin_instance`（一浏览器一实例） | **实例专属 token**（非共享密钥，可单独吊销） | **仅 buyer_account_id=本实例绑定账号 且 status IN (assigned, claimed)** 的任务 | 回填 `purchase_order_ref`/`purchase_cost`/`carrier`/`tracking_no`/状态流转 |
+
+### 采购平台与币种口径（2026-07-27 修订）
+
+- `purchase_platform` 明确含 **`amazon`**（美亚搬运是主业务线，插件即为其自动化）；
+  原注释"1688/拼多多/其他"系考古期偏向国内货源，**不完整**；
+- **同币种分支（D-Q32 补充）**：`purchase_currency = 'USD'` 时（美亚采购）收入与成本
+  同币种，`exchange_rate_locked` 记 1.0 且**不做折算**；财务域（§08）过账时按
+  `fx_source=settlement_native`、`fx_rate=1` 处理，**不得走采购方锁定汇率路径**
+  ——否则 R2-08 会对同币种金额做一次无谓换算并引入舍入误差。
+
+## buyer_account 亚马逊买家账号池（R2-13，2026-07-27）
+
+> 现状（Owner 2026-07-27）：数十个买家账号，**各自登录在一个独立指纹浏览器内**；
+> 代理与指纹由外部浏览器管理，**ERP 不管代理**（区别于店铺侧 proxy 绑定）。
+
+| 列 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| id | BIGINT | PK identity | |
+| team_id | BIGINT | NOT NULL | |
+| label | TEXT | NOT NULL | 运营可读名（对应哪个指纹浏览器） |
+| site | TEXT | NOT NULL CHECK IN (amazon_com, amazon_ca, amazon_co_jp) | 插件支持三站 |
+| external_customer_id | TEXT | NOT NULL | **插件侧 `customerId`**，任务路由主键 |
+| status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, paused, blocked, retired) | blocked=账号异常/风控 |
+| daily_cap | INT | NULL | 单日采购上限（风控，null=不限） |
+| last_seen_at | timestamptz | NULL | 该账号插件实例最近一次拉任务时间（掉线可见） |
+| note / +公共列 | | | |
+
+约束：`uq_buyer_account (team_id, external_customer_id)`、`uq_buyer_account_label (team_id, label)`。
+`procurement_order` 增列 `buyer_account_id BIGINT NULL REFERENCES buyer_account`
+（插件路径必填；人工/门户路径可空），索引 `(buyer_account_id, status)`。
+
+**任务路由**：采购任务按 `site` 与账号可用性（active + 未超 daily_cap）分配到具体
+buyer_account；**同一订单的任务只能派给一个账号**（防重复下单）。分配策略 v1 = 轮转 +
+容量约束；策略参数进配置中心，不写死。
+
+## plugin_instance 插件实例（R2-13）
+
+| 列 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| id | BIGINT | PK identity | |
+| team_id / buyer_account_id | BIGINT | NOT NULL | 一实例绑定一买家账号 |
+| token_hash | TEXT | NOT NULL | **实例专属令牌哈希**（明文只在签发时出现一次） |
+| status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, revoked) | 单实例可独立吊销 |
+| version | TEXT | NULL | 插件版本（便于灰度与排障） |
+| last_seen_at / created_by / created_at / revoked_at | | | |
+
+**不得使用全局共享密钥**——一台机器被盗即全量失守；实例级令牌让吊销粒度=单个浏览器。
+
+## buyer_session 买家会话凭证（R2-13，**默认不启用**）
+
+> Owner 2026-07-27 已同意 cookie 可落自有库。但**审计侧建议默认关**：插件在浏览器内
+> 执行采购，用的是该浏览器自身的登录态，**下单链路并不需要服务端持有 cookie**；
+> 厂商 SaaS 收集 cookie 是为其服务端能力，不是我们的需求。**先不收=零风险**。
+
+启用条件（任一成立才建此表）：需服务端在浏览器关闭时查订单状态 / 需集中监测会话健康。
+
+| 列 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| buyer_account_id | BIGINT | PK REFERENCES buyer_account | |
+| cookie_cipher | BYTEA | NOT NULL | **加密存储**（应用层密钥，密钥不入库） |
+| expires_at / updated_at | timestamptz | | |
+
+纪律：**永不入日志、永不进 API 响应体、永不进 dry_run 快照**（沿 R2-03 `request_snapshot`
+的凭证断言同款）；`erp_app` 无明文读取路径；每次解密访问写 `audit_log`。
+若最终不启用，则**插件 fork 一并删除 `cookies` 权限与 `updateBuyerCookie` 调用**。
 
 ### portal_procurement_v 门户视图（portal_app 角色唯一入口）
 

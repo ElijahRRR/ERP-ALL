@@ -153,7 +153,13 @@
 | updated_by / updated_at / created_at | | | |
 
 约束：`uq_automation_policy (team_id, flow_code)`。
-flow_code 注册清单（**v2，2026-07-26 冻结**；代码 Enum 对照 + CI 校验）：
+flow_code 注册清单（**v2.1，2026-07-26 冻结 / 2026-07-27 补 `purchase_execute`**；
+代码 Enum 对照 + CI 校验）：
+
+> **v2.1 补录说明**：`purchase_execute` 因 R2-13（Amazon 自动采购插件接入）于冻结次日补入
+> ——该能力此前不在任何工单内（考古源为 erpAPI 仓，而插件在独立仓 + 第三方 SaaS，
+> 考古照不到），Owner 2026-07-27 指出缺口并裁定进 MVP。**趁 R2-09 尚未把枚举写死进代码
+> 时补入，避免上线后改枚举与消费点**。
 
 > **v2 冻结依据**：Owner 2026-07-26 裁定四条（开发侧考古 `.agent/evidence/R2-09/`
 > `archaeology.md` §2[1]~[4] + `owner-rulings-20260726.md`；审计侧核实源码后落笔）。
@@ -169,6 +175,7 @@ flow_code 注册清单（**v2，2026-07-26 冻结**；代码 Enum 对照 + CI �
 | compliance_block | 合规闸 | **manual/auto（无 semi）** | 实时 | manual=纯软标记 / auto=block 拦截（D-Q14） | 按 severity 分档 |
 | refund | 退款 | manual/semi/auto | **创建快照** | 记录 / 审批 / 自动执行（D-Q29） | amount_ceiling（auto 档金额上限） |
 | cancel | 取消 | manual/semi/auto | **创建快照** | 同 refund（D-Q29） | amount_ceiling |
+| purchase_execute | 采购执行 | manual/semi/auto | **创建快照** | **采购任务下发给采购插件**：人工点采 / 半自动（待确认后下发）/ 全自动下发（R2-13，2026-07-27 补入 v2.1）。**auto 档花的是真金白银**，必须带护栏 | amount_ceiling（单单金额上限）、daily_cap（单账号日采购上限）、price_delta_pct（较预估涨价超阈值即转人工） |
 | maintenance_run | 维护执行 | manual/semi/auto | 实时 | maintenance_task runner 认领档位：人工点跑 / 半自动按 kind 白名单 / 自动执行。**D-Q65② 宪法级要求**：报错回收的 DELETE/republish 必须有人工闸 | kinds（**默认空=最保守**，不得 fail-open） |
 
 **四环映射**（007 R2-09 验收判据「采集→审核→上架→定价四环各自可停」的 flow 对应）：
@@ -183,8 +190,10 @@ semi 语义 = 改动正在工作的订单冻结行为，风险与收益不对称
 
 **求值语义声明（裁定 4 的直接后果，逐 flow 定死，不留"未定"）**：
 - **实时求值**：每次决策直读 `automation_policy`，切档对**下一次决策**即生效；
-- **创建快照**：档位在请求创建时固化进 `mode_applied`（refund/cancel 已如此实现），
-  切档**不影响在途请求**——这是正确行为，验收时不得判为"未生效"；
+- **创建快照**：档位在请求创建时固化进 `mode_applied`（refund/cancel 已如此实现；
+  `purchase_execute` 同理——任务下发时固化，**避免执行途中切档导致同一批采购半自动
+  半人工、或已下发任务行为不一致**），切档**不影响在途请求**——这是正确行为，验收时
+  不得判为"未生效"；
 - **不进缓存**：档位**不走 ConfigService / Redis 广播**。实测该缓存无业务读者
   （`get_config_service` 仅用于启动失效订阅器，`main.py:39`/`beat.py:155`；
   `pricing/service.py:134` 注明业务侧一律经请求会话直读），且 config bus 是
