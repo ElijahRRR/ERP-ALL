@@ -81,6 +81,9 @@ def test_repo_shipped_defaults_are_refused() -> None:
             "ERP_DATABASE_URL",
         ),
         ("redis_url", "redis://redis:6379/0", "ERP_REDIS_URL"),  # 无 requirepass
+        # 〔审查 AI 的 S3〕这两个此前判成安全——同样的值在库 DSN 里却会被抓
+        ("redis_url", "redis://:@redis:6379/0", "ERP_REDIS_URL"),  # 空口令
+        ("redis_url", "redis://:changeme@redis:6379/0", "ERP_REDIS_URL"),  # 弱口令
     ],
 )
 def test_each_weak_value_is_caught(field: str, value: str, needle: str) -> None:
@@ -89,16 +92,37 @@ def test_each_weak_value_is_caught(field: str, value: str, needle: str) -> None:
     assert needle in str(e.value)
 
 
-def test_allow_flag_permits_outside_prod() -> None:
-    s = Settings(_env_file=None, allow_insecure_defaults=True, env="dev")  # type: ignore[call-arg]
+@pytest.mark.parametrize("env", ["dev", "test"])
+def test_allow_flag_permits_only_whitelisted_envs(env: str) -> None:
+    s = Settings(_env_file=None, allow_insecure_defaults=True, env=env)  # type: ignore[call-arg]
     assert s.insecure_findings(), "夹具前提没了：默认值应当仍是弱值"
 
 
-def test_allow_flag_is_void_in_prod() -> None:
-    """prod 下放行开关无效——否则「加个环境变量就能重新开门」，门禁等于没有。"""
+@pytest.mark.parametrize("env", ["prod", "production", "Prod", "PROD", "staging", ""])
+def test_allow_flag_is_void_outside_whitelist(env: str) -> None:
+    """白名单之外一律拒绝放行——**包括拼写变体**。
+
+    〔2026-07-27 审查 AI 的 S1〕判据原写 `self.env != "prod"`，是精确、大小写敏感的
+    黑名单：`production` / `Prod` / `PROD` 任一写法都让保护完全失效，而 `env: str`
+    没有任何取值约束。改白名单后未知取值一律 fail-closed。
+    """
     with pytest.raises(ValidationError) as e:
-        Settings(_env_file=None, allow_insecure_defaults=True, env="prod")  # type: ignore[call-arg]
-    assert "prod" in str(e.value)
+        Settings(_env_file=None, allow_insecure_defaults=True, env=env)  # type: ignore[call-arg]
+    assert "必须换成真实密钥" in str(e.value)
+
+
+def test_refusal_hint_does_not_teach_bypass_outside_whitelist() -> None:
+    """白名单之外的报错**不许**提「设个开关就能放行」。
+
+    〔同 S1〕原提示语写「ERP_ENV=prod 下无效」，而部署机当时 env 恰好是 dev——
+    半夜起不来的人读到那句，合理推论就是「我这台不是 prod，那我能用」。
+    报错出现的场合恰恰是唯一绝不该走这条路的机器上，措辞不能反过来教人绕过。
+    """
+    with pytest.raises(ValidationError) as e:
+        Settings(_env_file=None, allow_insecure_defaults=False, env="prod")  # type: ignore[call-arg]
+    msg = str(e.value)
+    assert "必须换成真实密钥" in msg
+    assert "=1 可放行" not in msg, "白名单之外的报错不该给出放行姿势"
 
 
 def test_findings_are_specific_not_boolean() -> None:

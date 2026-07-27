@@ -34,7 +34,10 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # $$ 转义 → 交给容器内的 sh 展开，口令不出现在宿主机进程表/compose 渲染结果里
+    # $$ 转义 → 交给容器内的 sh 展开，口令不出现在 compose 的渲染结果里。
+    # 〔2026-07-27 审查 AI 的 S4〕**不要以为它也躲开了进程表**：sh 展开后真正跑的是
+    # `redis-server --requirepass <明文>`，容器进程就是宿主机进程，`ps aux` 与
+    # `docker inspect` 都看得到。要那个性质得改挂 redis.conf，本单不做。
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?infra/.env 缺 REDIS_PASSWORD}
@@ -54,6 +57,10 @@ services:
     build: ../backend
     command: ["alembic", "upgrade", "head"]
     environment: &backend_env
+      # 缺省即 prod（2026-07-27 审查 AI 的 S1）：此前压根没注入 ERP_ENV，部署机上
+      # Settings.env 恒为默认的 "dev"，于是「prod 下不许放行弱密钥」那层保护从未生效。
+      # 本机确实要跑开发档时才在 infra/.env 里显式写 ERP_ENV=dev。
+      ERP_ENV: ${ERP_ENV:-prod}
       ERP_DATABASE_URL: postgresql+psycopg://erp_app:${ERP_APP_DB_PASSWORD:?infra/.env 缺 ERP_APP_DB_PASSWORD}@db:5432/erp_all
       ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://erp_migrator:${ERP_MIGRATOR_DB_PASSWORD:?infra/.env 缺 ERP_MIGRATOR_DB_PASSWORD}@db:5432/erp_all
       ERP_REDIS_URL: redis://:${REDIS_PASSWORD:?infra/.env 缺 REDIS_PASSWORD}@redis:6379/0

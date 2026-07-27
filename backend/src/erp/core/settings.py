@@ -9,9 +9,14 @@
 **认出已知默认值就拒绝构造 Settings**，任何入口（api / beat / migrate / 各 tools）
 一视同仁起不来，而不是打条日志继续跑。
 
-放行必须显式声明 `ERP_ALLOW_INSECURE_DEFAULTS=1`（CI 与本地开发用），
-且 `ERP_ENV=prod` 下**声明也无效**。方向是「默认拒绝、放行留痕」——
+放行必须显式声明 `ERP_ALLOW_INSECURE_DEFAULTS=1`，**且仅在 `ERP_ENV ∈ {dev, test}`
+时该声明才有效**（白名单，见 `_ALLOW_ENV_VALUES`）。方向是「默认拒绝、放行留痕」——
 反过来做（默认放行、危险时告警）就是这条门禁想根治的那个形态。
+
+〔2026-07-27 审查 AI 的 S1 修正〕首版写的是「`ERP_ENV=prod` 下声明无效」的**黑名单**，
+两层都虚：compose 那时根本没注入 `ERP_ENV`，部署机上 `env` 恒为 `"dev"`，那层保护从未
+生效过；判据又是精确匹配，`production`/`Prod` 任一写法即失效。现在 compose 注入
+`ERP_ENV: ${ERP_ENV:-prod}`（缺省即 prod）＋ 代码侧改白名单，两层才都是活的。
 """
 
 from functools import lru_cache
@@ -22,6 +27,11 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ALLOW_ENV = "ERP_ALLOW_INSECURE_DEFAULTS"
+
+# 只有这两种环境允许带着弱密钥跑（一次性的 CI 容器与本地开发库）。**白名单**：
+# 取值不在表里——包括拼错的 "production"、大小写变体、以及部署机默认的 "prod"
+# ——一律拒绝放行。见 `_refuse_known_insecure_defaults` 的注释。
+_ALLOW_ENV_VALUES = frozenset({"dev", "test"})
 
 # 已知弱值。判据是**值本身**，不是「等于本文件的默认值」——后者会被「把默认值改成
 # 另一个人人皆知的串」绕开。
@@ -102,8 +112,14 @@ class Settings(BaseSettings):
             pw = _dsn_password(dsn)
             if pw is None or pw.lower() in _INSECURE_DB_PASSWORDS:
                 found.append(f"{label} 里的库口令仍是默认值/为空")
-        if _dsn_password(self.redis_url) is None:
-            found.append("ERP_REDIS_URL 无口令——Redis 未设 requirepass")
+        # 与上面两条库 DSN 同判据：既查「有没有」也查「是不是弱值」。
+        # 〔2026-07-27 审查 AI 的 S3〕原来只查 `is None`，于是 `redis://:@host` 与
+        # `redis://:changeme@host` 都判成安全——同样两个值出现在库 DSN 里却会被抓。
+        # compose 侧 `${REDIS_PASSWORD:?}` 对未设与空值都报错，但 ERP_REDIS_URL
+        # 可以被直接导出（tools / 本地 / 部署机手工），那条口子是开的。
+        redis_pw = _dsn_password(self.redis_url)
+        if redis_pw is None or redis_pw.lower() in _INSECURE_DB_PASSWORDS:
+            found.append("ERP_REDIS_URL 无口令或口令为已知弱值——Redis 未设 requirepass")
         return found
 
     @model_validator(mode="after")
@@ -111,18 +127,28 @@ class Settings(BaseSettings):
         found = self.insecure_findings()
         if not found:
             return self
-        allowed = self.allow_insecure_defaults and self.env != "prod"
+        # 白名单而非黑名单（2026-07-27 审查 AI 的 S1）。原写 `self.env != "prod"`，
+        # 两个洞：①`ERP_ENV=production`/`Prod`/`PROD` 任一写法都让 prod 保护失效；
+        # ②compose 当时**根本没注入 ERP_ENV**，部署机上 env 恒为 "dev"，那层保护
+        # 从未生效过。现在未知/拼错的取值一律拒绝，方向是 fail-closed。
+        allowed = self.allow_insecure_defaults and self.env in _ALLOW_ENV_VALUES
         if allowed:
             # 放行也要留痕：这行日志是「谁在带着弱口令跑」的唯一线索
             structlog.get_logger().warning(
                 "insecure_defaults_allowed", findings=found, env=self.env
             )
             return self
-        hint = (
-            f"设 {_ALLOW_ENV}=1 可放行（仅限 CI/本地开发；ERP_ENV=prod 下无效）"
-            if self.env != "prod"
-            else f"ERP_ENV=prod 下 {_ALLOW_ENV} 无效，必须换掉真实密钥"
-        )
+        # 提示语不能反过来教人绕过（同 S1）。原文写「ERP_ENV=prod 下无效」，而部署机
+        # 那时恰好 env=dev——半夜 `make up` 起不来的人读到那句，合理推论就是「我这台
+        # 不是 prod，那我能用」，于是门禁在唯一绝不该放行的机器上教操作员关掉自己。
+        # 现在只在**确实可放行的环境**里才提这个开关。
+        if self.env in _ALLOW_ENV_VALUES:
+            hint = f"设 {_ALLOW_ENV}=1 可放行——仅限 CI 与本地开发的一次性环境"
+        else:
+            hint = (
+                f"当前 ERP_ENV={self.env!r}，{_ALLOW_ENV} 在此无效，必须换成真实密钥"
+                f"（放行仅在 ERP_ENV ∈ {sorted(_ALLOW_ENV_VALUES)} 时可用）"
+            )
         raise ValueError(
             "拒绝启动：检出已知默认/弱密钥 —— " + "；".join(found) + f"。{hint}。"
             "部署机换密钥的执行顺序见 .agent/evidence/RS-02a/deploy-rotate-secrets.md"

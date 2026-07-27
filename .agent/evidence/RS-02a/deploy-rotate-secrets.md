@@ -80,6 +80,12 @@ Get-Item infra\.env | Select-Object Name, Length
 >
 > `infra/.env` 已被 `.gitignore` 挡住，不会进版本库；**它是这台机器上唯一的一份，
 > 丢了库就打不开了**（尤其 `ERP_CREDENTIAL_KEY`）。请按 Owner 的凭证保管方式另存一份。
+>
+> 生成的七个变量里**没有 `ERP_ENV`，这是有意的**：compose 写的是 `${ERP_ENV:-prod}`，
+> 不设即 prod，而 prod 下放行开关 `ERP_ALLOW_INSECURE_DEFAULTS` 一律无效——本机将
+> **没有任何办法**带着弱密钥启动。若某一步报「拒绝启动：检出已知默认/弱密钥」，
+> 那是真的有一项没换到位，**不要**去设那个开关（在这台机上它也不起作用），
+> 把报错原文贴回来即可，它会逐项点名是哪个变量。
 
 ## 第 2.5 步：切到 PR 分支（**.env 已就位才切**）
 
