@@ -51,7 +51,16 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="ERP-ALL API",
         version=__version__,
-        docs_url="/api/docs" if settings.env != "prod" else None,
+        # 独立开关，不从 env 派生（审查 AI 的 N1）——否则「想看接口文档」与
+        # 「重开弱密钥放行」会是同一个动作。默认关：8000 内网可达而这些页面无鉴权。
+        #
+        # **三条一起关**（审查 AI 的 S2）：首版只传了 `docs_url`，而 FastAPI 的
+        # `redoc_url` / `openapi_url` 有默认值，于是 `/redoc` 与 `/openapi.json` 原样
+        # 开着——「关掉接口文档」只做到三分之一，换个路径照样把全部端点、参数、
+        # schema 端给内网任一设备。
+        docs_url="/api/docs" if settings.docs_enabled else None,
+        redoc_url="/api/redoc" if settings.docs_enabled else None,
+        openapi_url="/api/openapi.json" if settings.docs_enabled else None,
         lifespan=_lifespan,
     )
 

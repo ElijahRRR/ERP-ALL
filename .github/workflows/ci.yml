@@ -48,6 +48,11 @@ jobs:
       # 库不可达时 tests/db/conftest.py 默认静默跳过（本地开发方便）；CI 必须硬失败，
       # 否则 postgres 服务起不来 / DSN 写错时近 400 个 DB 集成测试无声消失而 CI 照样绿。
       ERP_REQUIRE_DB: "1"
+      # RS-02a：Settings 自检会拒绝已知默认密钥。CI 的 postgres/redis 是一次性服务容器、
+      # 用的正是那些弱口令 → 在此**显式声明放行**。这一行本身就是那份声明（部署侧的
+      # compose 里没有它，故部署机拿不到这个豁免）。pytest 侧另有 tests/conftest.py，
+      # 这里主要覆盖直接跑 alembic 的那一步。
+      ERP_ALLOW_INSECURE_DEFAULTS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

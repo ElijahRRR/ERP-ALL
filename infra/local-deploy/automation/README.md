@@ -101,6 +101,13 @@ if /i not "!USPTO_RUNNING!"=="true" ( ... )
 
 `DB_CONN` 由 `.bat` 自行拼装（**空格分隔 kv，非 URI**），无须在文件里给。
 
+> ⚠ **RS-02a 起 `ERP_COMPOSE` 指向的那个 compose 需要 `infra/.env` 才解析得动**
+> （口令改为 `${VAR:?}` 注入，无默认回退）。本 `.bat` 的第 134/163/173/179 行都是
+> `docker compose -f "%COMPOSE%" …`，**该文件缺失时四步全部失败**，报的是
+> `required variable ... is missing a value`——与密钥文件本身无关，别照着 10/11/12
+> 那几个退出码去查。`infra/.env` 与 compose 同目录、不进版本库、切分支不受影响，
+> 建好一次即可（生成方式见 `.agent/evidence/RS-02a/deploy-rotate-secrets.md` 第 2 步）。
+
 > ⚠ 连接自检要连**宿主机**映射端口。容器内 PostgreSQL 监听 `5432`，`5433` 是宿主机映射；
 > 在容器内用 `host=127.0.0.1 port=5433` 自检必然 `Connection refused`——那是自检姿势错，
 > 不是配置错。

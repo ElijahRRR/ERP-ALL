@@ -1910,3 +1910,150 @@ Owner 授权合并，且明写「审查 AI 位于 Owner 拍板**之前**，其�
 - **写死码判据时我又写了一个空壳测试**（有名字有 docstring、函数体什么都不做、永远绿），
   自查时发现并写实。跟一整天在批的「不会失败的判据」同形。
 - 全量 541 passed / 1 skipped（+4：G 组 2、死码 2）、ruff 清、mypy 0、迁移三步全过。
+
+## 2026-07-27 RS-02a：端口收敛 + 默认口令清除 + 默认密钥硬失败（P0 插队，D-Q68）
+
+审计侧实测「门现在开着」：compose 把 5432/6379/8000 都绑 0.0.0.0，`POSTGRES_PASSWORD`
+是镜像默认 `postgres`，redis 无 `requirepass`，应用 DSN 是 `erp_app:erp_app`——内网任一
+设备可直连库，**绕过登录/权限/RLS/审计四层**，而库里存着全部店铺的 Walmart 凭证。
+本轮做代码侧那一半（机器侧指令另出，见下）。
+
+- **端口**：db/redis 的宿主机映射改绑 `127.0.0.1`（保留映射是为部署机本机 psql 取证）。
+  **8000/5173 不动**——D-Q68 明确划在范围外，且它们背后有那四层；HTTPS 反代归 RS-02b。
+- **口令**：全部改 `${VAR:?...}` 注入，**没有默认回退**。实测确认 fail-closed：缺一个变量
+  `docker compose config` 退出码 1，缺整个 `.env` 同样退 1。
+  顺带修了 pg-init——三业务角色的口令此前**写死成角色名**，`.sql` 拿不到环境变量，故拆出
+  `02-roles.sh` 用 psql 变量 + `format(%L)` 转义建号（不做字符串拼接）。
+- **启动自检**：`Settings` 认出已知弱密钥即拒绝构造，任何入口（api/beat/migrate/tools）
+  一视同仁起不来。放行须显式 `ERP_ALLOW_INSECURE_DEFAULTS`，**且 `ERP_ENV=prod` 下无效**。
+  判据锚在**值本身**而非「等于本文件的默认值」——后者会被「把默认值换成另一个人人皆知的
+  串」绕开。CI 与 `tests/conftest.py` 各写一处显式声明，compose 里没有这个开关。
+- **凭证密钥不能裸换**：`store_credential.client_secret_encrypted` 与
+  `proxy.password_encrypted` 靠它打开，直接换＝全部店铺 client_secret 与代理口令一起变砖，
+  且没有「解错了」的信号，只表现为渠道 401。故配 `erp.tools.rotate_credential_key`：单事务
+  内旧解新加 + **回读逐行比对摘要**，不一致整体回滚。四条实测覆盖，其中一条专验「旧密钥
+  给错时库一行未改」。
+- **反向不变量** `tests/test_infra_hardening.py`：端口挪回全网、口令写死、密钥变量带 `:-`
+  兜底、豁免表养僵尸——任一发生即 CI 红。写完当场被它抓出两条真问题（注释里的
+  `dev-only-change-me` 属误报，已改为只扫去注释后的正文；`ERP_WORKER_NODE_KEY` 名字带 KEY
+  但不是凭证，进豁免表并配反僵尸判据）。
+
+### 两处「先证伪再落笔」
+
+- **Makefile 一度加了 `--env-file infra/.env`**，理由写的是「compose 的项目目录随 `-f` 写法
+  漂移」。实测三种跑法（仓库根 / infra 内 / 任意目录带绝对路径）compose 都按 compose 文件
+  所在目录找到 `.env`，**理由不成立**，已撤回；加了反而把命令绑死在某个 cwd 上。
+- 连带发现 `backup.sh` 跑的是不带 `--env-file` 的裸 compose——上面这条实测同时证明它不受
+  影响。但缺 `infra/.env` 时它会报一句难懂的 interpolation 错，而每日备份是 D-Q52 红线，
+  故加了前置检查换成可照做的提示。
+
+### 未验之处（据实记）
+
+本容器只有 docker CLI、**无守护进程**，容器起不来，故以下三点只能由部署机验：
+redis `--requirepass` 的 `$$` 转义在容器内的实际展开、healthcheck 在认证开启后是否仍判健康、
+`make up` 全链。`$$` 那条有间接证据：`REDIS_PASSWORD` 在 env 里有值时 `docker compose config`
+渲染出的仍是 `$$REDIS_PASSWORD` 而非值本身，说明它按字面 `$` 传给容器内 shell、未被提前展开。
+机器侧执行顺序（备份 → 生成 .env → 停服 → `ALTER ROLE` → 重加密 → `make up` → 验收）
+写在 `.agent/evidence/RS-02a/deploy-rotate-secrets.md`，**顺序不可换**：
+`POSTGRES_PASSWORD` 只在空卷首次 initdb 生效，不单独 `ALTER ROLE` 就会落进
+「配置写着新口令、库里认的还是旧口令」这种最坏状态——看着改完了，门其实还开着。
+
+### RS-02a 第一轮独立审查（2026-07-27，PR #39，审查对象 `6f7c389`）
+
+**五条全部成立，全部修了，无一条辩解。** 审查侧核过通过的部分（`02-roles.sh` 的注入面、
+rotate 工具的事务与回读比对、healthcheck 验回显、`.gitignore` 三行、测试自身的死角处理）
+与我的自述一致，此处不重复；只记被抓住的。
+
+- **S1（medium，最要紧的一条）——我在防 fail-open 的门禁里写了一处 fail-open。**
+  代码侧写着「`ERP_ENV=prod` 下放行开关无效」，而 **compose 压根没注入 `ERP_ENV`**，
+  部署机上 `Settings.env` 恒为默认的 `"dev"`——那层保护**从未生效过**。
+  `test_allow_flag_is_void_in_prod` 一直是绿的，但它验的是一个**在生产中不存在的状态**。
+  更糟的是错误提示：「ERP_ENV=prod 下无效」这句在部署机上**是准确的、且照做真能绕过**
+  ——半夜 `make up` 起不来的人读到它，合理推论就是「我这台不是 prod，那我能用」。
+  **门禁在唯一绝不该放行的机器上教操作员怎么关掉自己。**
+  另有独立一处：`self.env != "prod"` 是精确匹配，`production`/`Prod`/`PROD` 任一写法即失效。
+  修法：compose 注入 `ERP_ENV: ${ERP_ENV:-prod}`（缺省即 prod）＋ 代码侧黑名单改**白名单**
+  `env in {"dev","test"}`＋ 提示语只在确实可放行的环境里才提那个开关。
+- **S2（low-medium）——反向不变量自己有两个静默失效面。** `_PORT_LINE` 强制带引号，
+  写成 `- 5432:5432`（合法）或长语法就 `m is None → continue`，**判据静默跳过、测试照绿**；
+  而「本地调试临时放开 5432」恰恰最可能顺手改写法。另一处：`banned` 是四个固定字面量，
+  只挡得住「退回旧的那几个弱值」，**挡不住新写死一个**。修法照审查建议：正则放宽引号
+  ＋ 数量自检（认出的行必须恰好 2 条）＋ 长语法前提判据 ＋ 一条**正向判据**（密钥类的值
+  必须来自 `${...}`，含 DSN 口令位）。
+- **S3（low）** redis 口令只查 `is None`，`redis://:@` 与 `redis://:changeme@` 都判成安全，
+  而同样两个值在库 DSN 里会被抓。三条 DSN 判据两严一松，改成同一套。
+- **S4（low）** compose 注释称口令「不出现在宿主机进程表」——**不成立**。`sh -c` 展开后
+  跑的是 `redis-server --requirepass <明文>`，容器进程就是宿主进程，`ps aux` 直接可见。
+  渲染结果那半是对的，删掉不实的那半。
+- **S5（low）** `.env.example` 里还写着「Makefile 用 --env-file 指定」，是我撤回那次改动时
+  漏改的残留，与 Makefile 直接打架。
+
+**修完这五条时我又犯了一次同类错，记下来。** 写 falsify 脚本逐条验证新判据真会红，
+八条全报「判据没反应」——脚本自己是空壳：`out=$(pytest ... | tail -1); rc=$?` 取的是**管道
+末端 `tail`** 的退出码，恒为 0。「判成败一律用退出码」这条纪律我遵守了，但**取错了对象**，
+与部署机那次「命令在错误的地方执行」同形。同一个脚本还用 `git checkout -- <file>` 还原，
+把未提交的改动一起抹了，重做了一遍。改用文件备份还原 + `( cd backend && pytest )` 子壳取码
+之后，八条逐条验过：删 `ERP_ENV`、缺省值落进白名单、不带引号的端口写法、长语法（前提判据
+与数量自检都兜住）、新写死密钥、DSN 口令位写死——全部按预期红；**对照组**（黑名单对新写死
+的密钥）如预期抓不到，那正是补正向判据的理由。
+
+### RS-02a 第二轮复审（`cf52cbc`）：S1–S5 判「全部修对」，但修复带出 N1
+
+**N1 [medium] —— S1 的修复顺带关掉了 Swagger，而把它找回来的唯一动作会重开弱密钥放行。**
+`main.py:54` 原写 `docs_url="/api/docs" if settings.env != "prod" else None`。S1 把部署机的
+`env` 从 `"dev"` 翻成 `"prod"` 之后接口文档随之消失——**问题不在「关」**（8000 内网可达而
+该页无鉴权，关掉是净收益），在于**恢复它的唯一杠杆**：想要文档就得设 `ERP_ENV=dev`，
+而那同时让 `ERP_ALLOW_INSECURE_DEFAULTS` 重新生效。一个良性动机「我要看接口文档」
+会静默重开本单的核心防护缺口，而且 `.env.example` 新写的那段**正好在教这个动作**。
+按建议 (a) 解耦：新增独立字段 `docs_enabled`（默认关），compose 加
+`ERP_DOCS_ENABLED: ${ERP_DOCS_ENABLED:-false}`，三处文档改成「要文档改这一个、别动 ERP_ENV」。
+
+**这条我上一轮自查时漏了，而且是漏在搜索姿势上。** 改 S1 之前我确实 grep 过 `settings.env`
+的消费点，用的模式是 `settings\(\)\.env|\.env ==|env == "prod"`——而现场是局部变量
+`settings.env != "prod"`，三个模式一个都不匹配，于是我据一次**不完整的搜索**得出「无其他
+消费点」并据此认定改 env 无副作用。与今天早些时候「判成败取错了退出码对象」同形：
+执行了正确的动作，但作用在错误的对象上。故补一条反向不变量
+`test_env_has_no_consumers_outside_settings`——`Settings.env` 在 `backend/src` 下只许
+`settings.py` 自己引用，谁再把功能开关挂上去就红，被迫先想清楚耦合。
+
+两条 nit 也照办：判据改 `findall` 逐条校验（避免「后面追加一条 `ERP_ENV: dev` 覆盖掉」
+看不见）；并接受**更硬的字面量写法** `ERP_ENV: prod`（原判据只认 `${ERP_ENV:-...}`，
+把更安全的写法判红了）。四条 falsify 逐条验过：把开关挂回 `settings.env`→红、追加第二条
+`ERP_ENV: dev`→红、字面量 `prod`→如预期绿、字面量 `dev`→红。581 passed。
+
+### RS-02a 第三轮独立审查（`2aee4fb`）：六条，全部成立、全部已修
+
+审查侧这轮做了**变异测试**（把判据改回旧写法看会不会红），并在离线环境实测了
+`docker compose config` 渲染、`Settings` 构造、FastAPI 路由。三块高风险改动逐条验过。
+
+- **S1 [中] 少打一个冒号就能把门重新打开。** `_SECRETISH` 只认 `${VAR:-兜底}`，而 compose
+  同样支持 `${VAR-兜底}`（无冒号，仅「未设」时兜底）——对「变量缺失」这个场景与 `:-`
+  语义完全一样，正是本单要根治的形态。审查侧实测：改成 `${POSTGRES_PASSWORD-postgres}`
+  且 `.env` 不给该变量 → `config` 渲染出 `POSTGRES_PASSWORD: postgres`、退出码 0，
+  而 34 条门禁全绿。四条判据各有各的漏法（黑名单找字面子串、正向判据只看值以 `${` 开头）。
+  一字符修：`(:-)` → `(:?-)`。第二个出口：`--requirepass hunter2` 写在 command 里也没人管，
+  补了一条。
+- **S2 [中] 我断言了开关，没断言效果。** `create_app()` 只传 `docs_url`，FastAPI 的
+  `redoc_url` / `openapi_url` 有默认值——`/redoc` 与 `/openapi.json` 原样开着，
+  「关掉接口文档」只做到三分之一。而 `test_docs_are_off_by_default` 断言的是
+  `settings.docs_enabled is False`，**两扇门开着它照样绿**。三条一起挂开关，用例改成
+  用 TestClient 断言三条路径真的 404（并钉住 FastAPI 的两个默认路径不另开门）。
+- **S3 [中] PR 正文与实际 diff 漂移五处，且都在 Owner 据以授权的段落上。** 正文写于
+  `23077c5`，此后三个提交（改白名单、拆 Swagger、补 redis 预演）没回写正文——尤其第 3、4 条
+  展示的是**本 PR 自己判定为「从未生效过」的旧机制**与已被删掉的旧报错原文。
+  **这正是审查闸设立的直接由头**（云端侧两次 PR 正文失实），本轮同款再犯。正文与 ledger
+  已同步到实际状态。
+- **S4 [低-中] `parametrize` 空集静默变 skip。** 把 `infra/pg-init` 改个名 → 33 passed /
+  1 skipped，没有一条红。补一条前提判据（`02-roles.sh` 必须扫得到）。
+- **S5 [低] 拒绝启动的报错把某个密钥的尾部约 22 字符带进日志。** `ValidationError` 的
+  字符串表示带 `input_value=`，pydantic 截断中段但**保留首尾**。而这条报错正是部署指令
+  让人整段贴回的那一条（铁律 2「不输出密钥」），还会进容器日志、CI 日志、聊天记录。
+  `get_settings()` 改抛 `SystemExit`，只放校验器写的那句人读消息。
+- **S6 [低] rotate 无表锁。** READ COMMITTED 下，`after` 读完之后、`COMMIT` 之前落地的
+  一行新密文既不在 `before` 也不在 `after`，UPDATE 也早跑过 → 带着旧密钥静默存活，
+  而工具打印「N 行已重加密」退出码 0。补 `LOCK TABLE ... IN EXCLUSIVE MODE`。
+
+五条 falsify 逐条验过（无冒号兜底 / `--requirepass` 字面量 / 只关一扇门 / pg-init 挪走 /
+报错原样抛 ValidationError）全部按预期红，**对照组**「只断言布尔量的那条用例在两扇门
+开着时照样绿」如预期通过——那正是 S2 的病根。S6 属并发窗口，无法用单元测试证伪，
+据实记：只验了加锁后功能不受影响（四条 rotate 用例仍绿），没有构造竞态。
