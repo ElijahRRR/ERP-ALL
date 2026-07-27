@@ -198,7 +198,7 @@ handoff-design 存档作为风格基线输入，新页面视觉由 Claude Design
 
 | 角色 | 职责 | 写权限边界 |
 |---|---|---|
-| **云端 AI**（开发） | 写代码、写 `.agent/` 台账、开 PR、写批注回传 | 代码 + `.agent/`；**不写** `specs/007-*` 与 `specs/001-domain-model/` 正文 |
+| **云端 AI**（开发） | 写代码、写 `.agent/` 台账、开 PR、写批注回传 | 代码 + `.agent/` + **其余 specs（含 002 契约：openapi 随端点同 PR 维护）**；**不写** `specs/007-*` 与 `specs/001-domain-model/` 图纸正文——该两处只可**追加"已落地"实现附注**，设计变更走批注回传 |
 | **部署 AI**（Win11 部署机） | 真机验证、数据迁移、定时任务、取证 | **不改码、不 push**；指令须可整段粘贴且自带铁律 |
 | **审查 AI**（独立评审，2026-07-26 新设） | **逐 PR 通读实际 diff** 出审查报告 | **只读**——只写 `.agent/evidence/reviews/PR-<n>.md` 或 PR 评论；**不写** specs、不写 `review_list.json`、不改代码、不 push 分支 |
 | **规划/审查 AI**（本文作者，审计侧） | specs/007 与 001 图纸正文落笔、跨域架构、验收判定、给 Owner 打包决策 | `specs/**` + `review_list.json` 的 gate/验收字段 |
