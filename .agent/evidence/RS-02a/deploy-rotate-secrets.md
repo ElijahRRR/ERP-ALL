@@ -81,6 +81,11 @@ Get-Item infra\.env | Select-Object Name, Length
 > `infra/.env` 已被 `.gitignore` 挡住，不会进版本库；**它是这台机器上唯一的一份，
 > 丢了库就打不开了**（尤其 `ERP_CREDENTIAL_KEY`）。请按 Owner 的凭证保管方式另存一份。
 >
+> **Swagger UI（`/api/docs`）在本次部署后是关的**，这也是有意的：8000 内网可达而该页
+> 无鉴权。要接口文档就在 `infra/.env` 里加一行 `ERP_DOCS_ENABLED=true` 再 `make up`
+> ——**不要为此去改 `ERP_ENV`**。这两件事已经拆开（原本是同一个开关），改 `ERP_ENV`
+> 会连带把弱密钥放行重新打开。
+>
 > 生成的七个变量里**没有 `ERP_ENV`，这是有意的**：compose 写的是 `${ERP_ENV:-prod}`，
 > 不设即 prod，而 prod 下放行开关 `ERP_ALLOW_INSECURE_DEFAULTS` 一律无效——本机将
 > **没有任何办法**带着弱密钥启动。若某一步报「拒绝启动：检出已知默认/弱密钥」，

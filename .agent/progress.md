@@ -1996,3 +1996,27 @@ rotate 工具的事务与回读比对、healthcheck 验回显、`.gitignore` 三
 之后，八条逐条验过：删 `ERP_ENV`、缺省值落进白名单、不带引号的端口写法、长语法（前提判据
 与数量自检都兜住）、新写死密钥、DSN 口令位写死——全部按预期红；**对照组**（黑名单对新写死
 的密钥）如预期抓不到，那正是补正向判据的理由。
+
+### RS-02a 第二轮复审（`cf52cbc`）：S1–S5 判「全部修对」，但修复带出 N1
+
+**N1 [medium] —— S1 的修复顺带关掉了 Swagger，而把它找回来的唯一动作会重开弱密钥放行。**
+`main.py:54` 原写 `docs_url="/api/docs" if settings.env != "prod" else None`。S1 把部署机的
+`env` 从 `"dev"` 翻成 `"prod"` 之后接口文档随之消失——**问题不在「关」**（8000 内网可达而
+该页无鉴权，关掉是净收益），在于**恢复它的唯一杠杆**：想要文档就得设 `ERP_ENV=dev`，
+而那同时让 `ERP_ALLOW_INSECURE_DEFAULTS` 重新生效。一个良性动机「我要看接口文档」
+会静默重开本单的核心防护缺口，而且 `.env.example` 新写的那段**正好在教这个动作**。
+按建议 (a) 解耦：新增独立字段 `docs_enabled`（默认关），compose 加
+`ERP_DOCS_ENABLED: ${ERP_DOCS_ENABLED:-false}`，三处文档改成「要文档改这一个、别动 ERP_ENV」。
+
+**这条我上一轮自查时漏了，而且是漏在搜索姿势上。** 改 S1 之前我确实 grep 过 `settings.env`
+的消费点，用的模式是 `settings\(\)\.env|\.env ==|env == "prod"`——而现场是局部变量
+`settings.env != "prod"`，三个模式一个都不匹配，于是我据一次**不完整的搜索**得出「无其他
+消费点」并据此认定改 env 无副作用。与今天早些时候「判成败取错了退出码对象」同形：
+执行了正确的动作，但作用在错误的对象上。故补一条反向不变量
+`test_env_has_no_consumers_outside_settings`——`Settings.env` 在 `backend/src` 下只许
+`settings.py` 自己引用，谁再把功能开关挂上去就红，被迫先想清楚耦合。
+
+两条 nit 也照办：判据改 `findall` 逐条校验（避免「后面追加一条 `ERP_ENV: dev` 覆盖掉」
+看不见）；并接受**更硬的字面量写法** `ERP_ENV: prod`（原判据只认 `${ERP_ENV:-...}`，
+把更安全的写法判红了）。四条 falsify 逐条验过：把开关挂回 `settings.env`→红、追加第二条
+`ERP_ENV: dev`→红、字面量 `prod`→如预期绿、字面量 `dev`→红。581 passed。

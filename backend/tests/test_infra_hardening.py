@@ -181,17 +181,21 @@ def test_compose_pins_erp_env_to_a_non_permissive_default() -> None:
     `Settings.env` 恒为默认的 `"dev"`——正好落在白名单里。两处各自看都对，合起来是空的。
     判据直接引用 `_ALLOW_ENV_VALUES`，两侧再改也不会各说各话。
     """
-    m = re.search(r"^\s*ERP_ENV\s*:\s*(?P<val>\S+)", _compose_code(), re.M)
-    assert m is not None, (
+    vals = re.findall(r"^\s*ERP_ENV\s*:\s*(\S+)", _compose_code(), re.M)
+    assert vals, (
         "compose 的 backend_env 没注入 ERP_ENV —— 代码侧的环境白名单会因此永远看到 "
         '默认值 "dev"，即「放行开关在部署机上一直可用」'
     )
-    default = re.fullmatch(r"\$\{ERP_ENV:-(?P<d>[^}]*)\}", m.group("val"))
-    assert default is not None, f"ERP_ENV 应写成 ${{ERP_ENV:-<缺省>}}，实为 {m.group('val')}"
-    assert default.group("d") not in _ALLOW_ENV_VALUES, (
-        f"ERP_ENV 的缺省值 {default.group('d')!r} 落在放行白名单 "
-        f"{sorted(_ALLOW_ENV_VALUES)} 里——不设变量就等于默认允许弱密钥"
-    )
+    # 逐条校验而非只看第一条（审查 AI 的 nit）：将来某个服务追加一条 `ERP_ENV: dev`
+    # 覆盖掉锚点里的值，只查 re.search 就看不见。
+    for val in vals:
+        # 两种写法都收：`${ERP_ENV:-<缺省>}` 与直接的字面量（后者更硬，没道理判红）。
+        m = re.fullmatch(r"\$\{ERP_ENV:-(?P<d>[^}]*)\}", val)
+        effective = m.group("d") if m else val.strip("\"'")
+        assert effective not in _ALLOW_ENV_VALUES, (
+            f"ERP_ENV 取值 {effective!r}（原文 {val}）落在放行白名单 "
+            f"{sorted(_ALLOW_ENV_VALUES)} 里——等于默认允许带弱密钥启动"
+        )
 
 
 @pytest.mark.parametrize("path", sorted((_ROOT / "infra" / "pg-init").glob("*")))

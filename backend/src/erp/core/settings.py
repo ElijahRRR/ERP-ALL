@@ -63,11 +63,24 @@ def _dsn_password(dsn: str) -> str | None:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ERP_", env_file=".env", extra="ignore")
 
+    # **只用于弱密钥放行的环境判定**（见 `_ALLOW_ENV_VALUES`）。别拿它承载别的开关：
+    # 那会把「切换那个功能」和「开关弱密钥放行」绑成同一个动作——`docs_enabled`
+    # 就是从这里拆出去的，原委见它的注释。`tests/test_infra_hardening.py` 里有一条
+    # 判据钉着「`settings.env` 在 backend/src 下只有 settings.py 自己引用」。
     env: str = "dev"  # dev / test / prod
     debug: bool = False
 
-    # 放行开关：见模块头注。prod 下无效。
+    # 放行开关：见模块头注。仅 `env ∈ _ALLOW_ENV_VALUES` 时有效。
     allow_insecure_defaults: bool = False
+
+    # Swagger UI（`/api/docs`）。默认关——8000 是内网可达的，而该页无鉴权。
+    #
+    # 〔2026-07-27 审查 AI 的 N1〕此前它是 `settings.env != "prod"` 派生的。S1 把部署机的
+    # `env` 从 "dev" 翻成 "prod" 之后，接口文档跟着消失，而**把它找回来的唯一动作**
+    # （设 `ERP_ENV=dev`）会同时让 `allow_insecure_defaults` 重新生效——一个良性动机
+    # 「我想看接口文档」会静默重开本单要堵的那个缺口。故拆成独立开关：想要文档就设
+    # `ERP_DOCS_ENABLED=true`，与密钥放行再无关系。
+    docs_enabled: bool = False
 
     # 数据库（同库三角色，应用默认 erp_app；alembic 用 migrator URL）
     database_url: str = "postgresql+psycopg://erp_app:erp_app@localhost:5432/erp_all"

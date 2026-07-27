@@ -51,7 +51,9 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="ERP-ALL API",
         version=__version__,
-        docs_url="/api/docs" if settings.env != "prod" else None,
+        # 独立开关，不从 env 派生（审查 AI 的 N1）——否则「想看接口文档」与
+        # 「重开弱密钥放行」会是同一个动作。默认关：8000 内网可达而本页无鉴权。
+        docs_url="/api/docs" if settings.docs_enabled else None,
         lifespan=_lifespan,
     )
 

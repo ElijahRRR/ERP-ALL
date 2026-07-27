@@ -4,6 +4,9 @@
 环境变量），否则「全局放行」会让被测的门禁在测试里永远不触发——即门禁自己没人验。
 """
 
+import re
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -123,6 +126,38 @@ def test_refusal_hint_does_not_teach_bypass_outside_whitelist() -> None:
     msg = str(e.value)
     assert "必须换成真实密钥" in msg
     assert "=1 可放行" not in msg, "白名单之外的报错不该给出放行姿势"
+
+
+def test_env_has_no_consumers_outside_settings() -> None:
+    """`Settings.env` 只许用于弱密钥放行的环境判定，不许再承载别的开关。
+
+    〔2026-07-27 审查 AI 的 N1〕`main.py` 曾用 `settings.env != "prod"` 决定要不要挂
+    Swagger UI。S1 把部署机的 `env` 从 `"dev"` 翻成 `"prod"` 之后接口文档随之消失，
+    而**唯一能把它找回来的动作**（设 `ERP_ENV=dev`）会同时让放行开关重新生效——
+    一个良性动机会静默重开安全缺口。`docs_enabled` 已拆成独立开关。
+
+    这条判据管的是**下一次**：谁再把功能开关挂到 `env` 上，就会在这里红，
+    从而被迫先想清楚「它会不会跟弱密钥放行绑成同一个动作」。
+    """
+    src = Path(__file__).resolve().parents[1] / "src" / "erp"
+    pattern = re.compile(r"\b(?:settings|get_settings\(\))\.env\b")
+    offenders = [
+        f"{p.relative_to(src)}:{i}"
+        for p in sorted(src.rglob("*.py"))
+        if p.name != "settings.py"
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if pattern.search(line)
+    ]
+    assert not offenders, (
+        f"这些地方从 Settings.env 派生行为：{offenders}。"
+        "env 只用于弱密钥放行的环境判定——挂别的开关上去，就等于把那个功能的"
+        "开关与「弱密钥放行」绑成同一个动作（N1 即如此）。请另立独立字段。"
+    )
+
+
+def test_docs_are_off_by_default() -> None:
+    """Swagger 默认关：8000 内网可达而 `/api/docs` 无鉴权。"""
+    assert Settings(_env_file=None, **_SAFE_KWARGS).docs_enabled is False  # type: ignore[arg-type]
 
 
 def test_findings_are_specific_not_boolean() -> None:
