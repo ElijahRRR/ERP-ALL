@@ -106,6 +106,43 @@ git log --oneline -1
 > 本机不改码、无自产提交，`reset --hard` 零丢失（分支惯例，见
 > `infra/local-deploy/README.md`「增量验证流程」）。
 
+## 第 2.8 步：redis 预演（**把唯一没法在云端验的东西，挪到不可逆步骤之前**）
+
+云端没有 docker 守护进程，以下三件事只能在这台机上第一次见真章：容器内 `$$` 的实际
+展开、加了 `requirepass` 之后 healthcheck 还判不判健康、镜像里有没有 `grep`。
+它们要是错了，`make up` 起不来——**而如果等到第 4 步改完库口令才发现，那时旧 compose
+也连不上库了（口令已变），两头都动不了**。所以先单起 redis 探一次：这一步**不碰任何
+口令、不碰库、不碰数据**，退路只有一行。
+
+```powershell
+docker compose -f infra/docker-compose.yml up -d redis
+"REDIS_UP_EXIT=$LASTEXITCODE"
+Start-Sleep -Seconds 12
+docker compose -f infra/docker-compose.yml ps redis
+# 未认证应被拒（期望看到 NOAUTH）
+docker exec erp-all-redis-1 redis-cli --no-auth-warning -a "" ping
+# 认证后应 PONG（口令由容器内的 REDISCLI_AUTH 提供，命令行里不出现口令）
+docker exec erp-all-redis-1 sh -c 'redis-cli ping'
+```
+
+**贴回③″**：`REDIS_UP_EXIT`、`ps` 那行的 STATUS（**期望 `Up ... (healthy)`**，不是
+`(unhealthy)` 也不是 `(health: starting)` 一直不变）、两条 `redis-cli` 的输出。
+
+**期望**：未认证那条报 `NOAUTH`/`ERR ... without any password`，认证那条回 `PONG`，
+容器 12 秒左右转 `healthy`。
+
+> ⚠️ **不健康或起不来就停在这里**，把 `docker compose logs redis` 的尾部贴回。
+> 退路一行，且**此刻还没有任何不可逆改动**：
+>
+> ```powershell
+> git checkout main
+> docker compose -f infra/docker-compose.yml up -d redis   # 回到无口令的旧 redis
+> ```
+>
+> 顺带说明：这一步之后到第 6 步之间，**还在跑的 api/beat 连 redis 会认证失败**。
+> 那条通道只用于配置广播（`config_service`，设计上 fail-open），失败不影响业务读写，
+> 日志里会有几条告警，属预期。
+
 ## 第 3 步：停应用容器（db / redis 继续跑）
 
 ```powershell
@@ -252,6 +289,7 @@ docker compose -f infra/docker-compose.yml logs --tail=30 beat
 
 | 卡在哪 | 回退动作 |
 |---|---|
+| 第 2.8 步（redis 预演）失败 | **此刻还没有任何不可逆改动**：`git checkout main` + `docker compose ... up -d redis` 即回到无口令的旧 redis，口令、库、数据一律未动 |
 | 第 4 步之后、第 5 步之前 | 把四个角色的口令 `ALTER ROLE` 回原值（`postgres`/`erp_app`/`erp_migrator`/`portal_app`），再 `git checkout main && make up` |
 | 第 5 步失败 | 工具已自行回滚，库未改动；照上一行处理即可 |
 | 第 6 步起不来 | 先贴回 `docker compose logs migrate api` 的尾部再说，**不要**先删卷重来——卷里是唯一的业务数据 |
