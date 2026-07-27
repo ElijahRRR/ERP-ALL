@@ -342,7 +342,9 @@ adjustment/purchase_cost/freight_cost），要么扩科目集合，要么在 `le
 
 1. **finance 零覆盖**：契约无 `Finance` tag，无任何 settlement/profit 路径（grep 零命中）。与阶段一记的「`permission` 表无任何 finance 权限码」构成同一个空白面——R2-08 建端点时**契约、权限码、tag 三样都要新建**。
 2. **顶层 `tags` 块缺 4 个**（坐实 Owner 2026-07-26 的次要项报告）：已声明 7 个 `[Auth, Identity, Channel, Catalog, Listing, Order, Portal]`，而 paths 实际用到 11 个，缺 **`Scrape`(5) / `Audit`(3) / `Compliance`(11) / `Aftersale`(6)**。反向无废声明（声明了却无 operation 使用的为 0）。
-3. **两处 tag 大小写漂移**（本轮新发现）：代码 `aftersale/router.py:23` 用 `tags=["aftersale"]`、`order/router.py:25` 用 `tags=["order"]`，**均为小写**，而契约写 `Aftersale` / `Order`。codegen 按 tag 分组生成客户端命名空间，大小写不一致会产出两套命名。另 `Notify` 与 `ScrapeWorker` 两个 tag 只存在于代码、契约完全没有——与 RS-11 D 类欠账 9 条同源。
+3. **两处 tag 大小写漂移**（本轮新发现）：代码 `aftersale/router.py:23` 用 `tags=["aftersale"]`、`order/router.py:25` 用 `tags=["order"]`，**均为小写**，而契约写 `Aftersale` / `Order`。另 `Notify` 与 `ScrapeWorker` 两个 tag 只存在于代码、契约完全没有——与 RS-11 D 类欠账 9 条同源。
+
+> **更正（2026-07-27 同日）**：上面这条初版还写了「codegen 按 tag 分组生成客户端命名空间，大小写不一致会产出两套命名」——**错的**。本项目 codegen 是 `openapi-typescript`（`frontend/package.json:12`），产出按 **path 键控**的 `schema.d.ts`，**根本不输出 tag**（`Aftersale`/`Catalog`/`Compliance` 在产物里零命中；`Order`/`Listing` 那几处命中是 schema 组件名）。三条 tag 欠账已全部修完并重跑 `pnpm gen:api`，产物**逐字节相同**。tag 只影响 Swagger UI 的分组展示。原判断把一个安全改动说成了有影响面的改动，据此还建议「先查前端影响面再动」，属误导。
 
 ### 12.4 一条既有产品行为，图纸未覆盖（供拆单参考）
 

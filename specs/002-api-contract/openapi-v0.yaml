@@ -19,6 +19,10 @@ tags:
   - {name: Catalog}
   - {name: Listing}
   - {name: Order}
+  - {name: Aftersale, description: 退货与退款（R2-07）}
+  - {name: Compliance, description: 合规数据供给：黑名单/商标/TRO/导入作业（R2-12）}
+  - {name: Audit, description: 商品审核（L0/L2/L3 分层判定）}
+  - {name: Scrape, description: 采集工单与采集端 worker}
   - {name: Portal, description: 采购方门户（独立认证域，白名单最小面）}
 
 security:

@@ -261,3 +261,78 @@ def test_contract_ahead_entries_have_open_owner() -> None:
                 "但该 operation 仍无对应路由——工单误关账，或契约声明是废的"
             )
     assert not problems, "C 类白名单的归属工单状态不合规：\n  " + "\n  ".join(problems)
+
+
+# ── F：tag 一致性（2026-07-27 补）──
+#
+# 起因是 R2-08 考古坐实的两笔欠账：契约顶层 `tags` 只声明 7 个而 paths 实际用了 11 个；
+# 代码里 `aftersale`/`order` 用小写而契约用 `Aftersale`/`Order`。两处都已修，加这组判据防复发。
+#
+# **一条更正记在这里**：当时我判「改 tag 会动 codegen 产物命名」，据此把大小写统一列为
+# 「有影响面、需先查前端」。**错的**——本项目 codegen 是 `openapi-typescript`，产出的是
+# 按 path 键控的 `schema.d.ts`，**根本不输出 tag**（`Aftersale`/`Catalog`/`Compliance`
+# 在产物里零命中）。改完重跑 `pnpm gen:api`，产物**逐字节相同**。tag 只影响 Swagger UI
+# 的分组展示。原判断把一个安全改动说成了有风险的改动。
+CODE_ONLY_TAGS = {
+    # ① 设计上就不进契约，**不是欠账**：探活端点在 /api/v1 之外，不属业务 API 面。
+    #    （本条是这组判据首跑抓出来的——D 类那条判据只看 /api/v1，`/healthz` 从没露过面。）
+    "ops": "设计如此：`main.py:101` 的 `/healthz` 探活端点，在 /api/v1 之外，不属业务契约面",
+    # ② 与 CODE_AHEAD_OF_CONTRACT 同源的**真欠账**：端点本就没登记进契约。
+    #    契约补登记那批端点时，这两条要一并删。
+    "Notify": "RS-11 欠账：通知中心四端点未登记契约",
+    "ScrapeWorker": "RS-11 欠账：采集 worker 五端点未登记契约",
+}
+
+
+@pytest.fixture(scope="module")
+def contract_tags() -> tuple[set[str], set[str]]:
+    """(顶层已声明的 tag, paths 里实际用到的 tag)。"""
+    import yaml
+
+    spec = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    declared = {t["name"] for t in (spec.get("tags") or [])}
+    used: set[str] = set()
+    for ops in (spec.get("paths") or {}).values():
+        for method, op in (ops or {}).items():
+            if method.lower() in HTTP_METHODS:
+                used.update((op or {}).get("tags") or [])
+    assert declared and used, "契约 tag 没解析出来——解析逻辑有问题"
+    return declared, used
+
+
+def test_f_contract_tags_all_declared(contract_tags: tuple[set[str], set[str]]) -> None:
+    """paths 用到的 tag 必须在顶层声明，且顶层不得有无人使用的废声明。"""
+    declared, used = contract_tags
+    assert not (used - declared), (
+        f"以下 tag 在 paths 里用了却未在顶层 `tags` 声明：{sorted(used - declared)}"
+    )
+    assert not (declared - used), (
+        f"以下 tag 顶层声明了却没有任何 operation 使用（废声明，请删）：{sorted(declared - used)}"
+    )
+
+
+def test_f_route_tags_match_contract(contract_tags: tuple[set[str], set[str]]) -> None:
+    """代码路由用的 tag 必须与契约一致——**含大小写**，否则 Swagger 分组会裂成两半。
+
+    未登记进契约的 tag 须显式列入 `CODE_ONLY_TAGS`，不许默默存在。
+    """
+    declared, _ = contract_tags
+
+    def walk(routes: list[Any]) -> Any:
+        for r in routes:
+            if type(r).__name__ == "_IncludedRouter":
+                yield from walk(r.original_router.routes)
+            elif hasattr(r, "dependant") and hasattr(r, "methods"):
+                yield r
+
+    route_tags = {t for r in walk(create_app().routes) for t in (getattr(r, "tags", None) or [])}
+    assert route_tags, "没取到任何路由 tag——遍历逻辑可能失效"
+
+    unknown = sorted(route_tags - declared - CODE_ONLY_TAGS.keys())
+    assert not unknown, (
+        f"以下 tag 只存在于代码、契约未声明：{unknown}。"
+        "若属未登记端点请补进 CODE_ONLY_TAGS 并写明归属；若是大小写写错了请改代码"
+        "（契约侧 9 个 tag 一律首字母大写）"
+    )
+    stale = sorted(CODE_ONLY_TAGS.keys() & declared)
+    assert not stale, f"以下 tag 已补进契约，请从 CODE_ONLY_TAGS 删除：{stale}"
