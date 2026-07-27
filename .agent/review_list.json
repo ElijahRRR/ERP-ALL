@@ -302,6 +302,16 @@
     "date": "2026-07-27",
     "kind": "progress",
     "text": "【2026-07-27】RS-02a 代码侧落地（PR #39）：compose 中 db/redis 的宿主机端口改绑 127.0.0.1（8000/5173 按 D-Q68 保持内网可达不动）；七个密钥变量全部改 ${VAR:?} 注入、无默认回退，缺变量即拒起；pg-init 的角色口令从写死（＝角色名）改为 02-roles.sh 读环境变量、format(%L) 转义；Settings 加启动自检，认出已知弱值即拒绝构造，放行须显式 ERP_ALLOW_INSECURE_DEFAULTS **且仅在 ERP_ENV ∈ {dev,test} 时有效**（白名单，compose 注入 ERP_ENV: ${ERP_ENV:-prod} 缺省即 prod），报错不再给出绕过姿势且不带任何取值；Swagger/redoc/openapi 三条路径拆到独立开关 docs_enabled（默认关），与 ERP_ENV 解耦。反向不变量 tests/test_infra_hardening.py + test_settings_guard.py：端口挪回全网/口令写死/密钥变量带 :- 或 - 兜底/豁免表养僵尸/compose 不注入 ERP_ENV/功能开关挂回 Settings.env/pg-init 判据静默 skip，任一发生即 CI 红。凭证密钥不能裸换——store_credential 与 proxy 的密文靠它打开，故配 erp.tools.rotate_credential_key：单事务 LOCK TABLE + 旧解新加 + 回读逐行比对，不一致即整体回滚，四条实测覆盖。**独立审查三轮共 12 条（S1-S5 / N1+2nit / S1-S6）全部处置**，其中两条是我在防 fail-open 的门禁里写的 fail-open（ERP_ENV 从未注入致 prod 保护从未生效；判据只认 :- 而漏掉等价的 - 变体）。**机器侧尚未执行**：POSTGRES_PASSWORD 只在空卷 initdb 生效，现网必须在运行库上 ALTER ROLE 并按序重加密，指令见 .agent/evidence/RS-02a/deploy-rotate-secrets.md（含不可逆步骤之前的 redis 预演）。RS-02b（HTTPS 反代/备份加密/月度恢复演练）未动。"
+   },
+   {
+    "date": "2026-07-27",
+    "kind": "landed",
+    "text": "【2026-07-27】RS-02a 关账：代码侧 PR #39 合并（`1986bb1`），机器侧同日在部署机执行完毕，**四道闸全部走完**（CI 四项绿 / 独立审查三轮共 12 条全处置 / 部署机真机验证全项 PASS，验证对象 `3d5178d` / Owner 授权）。真机实测：db+redis 端口收在 127.0.0.1、8000+5173 按 D-Q68 保持内网可达；库四角色口令已换；凭证密文重加密 1/1 且复核可解开；`/api/docs`+`/api/redoc`+`/api/openapi.json`+`/openapi.json` 四条全 404；`0039 (head)`；两条负向验证尤其关键——喂弱密钥 `GUARD_EXIT=1`，再加放行开关 `HATCH_EXIT=1` 且**报错一字不差**，证明 ERP_ENV=prod 下该开关根本没进入判定路径。**一项据实说明**：验收判据里「从内网另一台机器连 5432/6379 必须失败」因现场无第二台机器**未做端到端实测**，以 netstat 绑定证据（只绑 127.0.0.1）替代——是推断不是实测，将来补跑收口。**过程中 dry-run 拦下一次真事故**：旧凭证密钥并非代码默认值，而是被 `COPY . .`（无 .dockerignore）烤进镜像 /app/.env 的 64 位 hex；工具整体回滚、库一行未改，换真实旧密钥后一次通过。剩 RS-02b（HTTPS 反代 / 备份加密 / 每日校验 / 月度恢复演练 / 迁云演练）未动。"
+   },
+   {
+    "date": "2026-07-27",
+    "kind": "correction",
+    "text": "【2026-07-27，警报证伪】RS-02a 执行中我从一条 CRLF 报错（手动 `bash backup.sh` 报 `set: pipefail\\r`）外推出「每日备份可能一直静默失效」，并按 D-Q52 红线紧急核查。**该推断错误**：备份一直正常——16 份 dump、计划任务 `\\ERP-ALL-backup` 每日 02:30、`Last Result: 0`、07-27 02:30 那份 271.6MB，RS-02a 执行前又按需触发成功一份。记此以免错误结论留在台账里。**手动执行失败的真因仍未定**（同一脚本由计划任务的 Git Bash 跑却成功），两条只读探查命令已附在部署指令文末，不影响任何结论。顺带教训已落 `infra/local-deploy/README.md`：`.gitattributes` 的 `*.sh text eol=lf` 只在检出该文件时生效，**不追溯已在工作区里的旧文件**——这是 `.bat` 那条纪律的镜像。"
    }
   ]
  },
@@ -767,6 +777,19 @@
   "finding": "2026-07-27 部署机真机验证 PR #37 时实撞：`uv run alembic current` 退出码 1，`UnicodeDecodeError: 'gbk' codec can't decode byte 0xb1 in position 129`。云端侧定位：`backend/alembic.ini:7` 是中文注释，文件第一个非 ASCII 字节在 121，「由」的 UTF-8 三字节 e7 94 b1 正落在报错位置。**此前一直没暴露，是因为这台机的既定路径是 `make up`（迁移跑在 Linux 容器里）**，是那次指令写成 PowerShell 原生调用才踩到——即「一条从没被走过的路上的地雷」。危害面：任何人在中文 Windows 上原生跑 alembic（排障、单跑一条迁移、临时查 current）都会当场卡住，且报错信息完全不指向真因。CI 与容器路径不受影响，故非阻塞。",
   "last_checked_at": "2026-07-27",
   "acceptance": "中文 Windows（GBK locale）上 `uv run alembic current` 能正常输出版本号；CI 与 `make up` 容器路径不回归"
+ },
+ {
+  "id": "FX-0727-B",
+  "priority": "P2",
+  "dimension": "security",
+  "check": "backend 缺 .dockerignore：COPY . . 把宿主机 backend/.env 烤进镜像 /app/.env",
+  "status": "todo",
+  "evidence": [
+   ".agent/evidence/RS-02a/deploy-rotate-secrets.md"
+  ],
+  "finding": "【2026-07-27，独立审查第三轮发现 + RS-02a 真机实证】`backend/Dockerfile` 为 `WORKDIR /app` + `COPY . .`，全仓无 `.dockerignore`，故构建机上的 `backend/.env` 被打进镜像 `/app/.env`，而 `SettingsConfigDict(env_file=\".env\")` 读得到。**当前不构成绕过**：环境变量优先级高于 dotenv，compose 注入了全部被守的值，且 `ERP_ENV=prod` 让镜像里那句 `ERP_ALLOW_INSECURE_DEFAULTS=true` 失效——RS-02a 的白名单修正正好是挡住这条路的那一层，换回黑名单会同时打开这个口子。**但它已经造成过一次实际后果**：RS-02a 轮换凭证密钥时，真正在用的旧密钥就藏在这个 `/app/.env` 里，指令按代码默认值写导致 dry-run 失败、部署机被挡一轮。另有连带：该机 `backend/.env` 里那个 `ERP_CREDENTIAL_KEY` 现已是死值（密文已换新密钥），宿主机上直接跑后端会拿到一把打不开任何东西的钥匙。落地：加 `.dockerignore`（至少挡 `.env`/`.venv`/`__pycache__`/`.git`），并清理部署机上那份已失效的 `backend/.env`。",
+  "last_checked_at": "2026-07-27",
+  "gate": "无闸门；镜像瘦身与密钥卫生，随下一次 infra 改动捎带"
  },
  {
   "id": "R2-13",

@@ -42,17 +42,25 @@ docker ps --format "{{.Names}}`t{{.Status}}"
 
 ## 第 1 步：先备份（**做任何改动之前**）
 
+**走计划任务，不要手动跑 `backup.sh`**〔2026-07-27 实测修正〕：手动
+`bash infra/local-deploy/backup.sh` 在这台机上报 `set: pipefail\r: invalid option name`
+（真因未定，见文末附录），而计划任务 `\ERP-ALL-backup` 用的是 Git Bash、每日 02:30
+稳定成功。走已被证明好使的那条路：
+
 ```powershell
-bash infra/local-deploy/backup.sh
-"BACKUP_EXIT=$LASTEXITCODE"
+schtasks /run /tn "\ERP-ALL-backup"
+"RUN_EXIT=$LASTEXITCODE"
+Start-Sleep -Seconds 150
+schtasks /query /tn "\ERP-ALL-backup" /fo LIST /v | Select-String "Last Run Time|Last Result"
 Get-ChildItem $HOME\erp-backups\*.dump | Sort-Object LastWriteTime -Descending |
   Select-Object -First 1 Name, Length, LastWriteTime
 ```
 
-**贴回②**：`BACKUP_EXIT` + 最新那个 dump 的文件名/大小/时间。
+**贴回②**：`RUN_EXIT`、`Last Result`、最新那个 dump 的文件名/大小/时间。
 
-> `BACKUP_EXIT` 必须是 `0`，且**必须真的看到文件**——脚本里的 10KB 下限只挡得住空文件，
-> 挡不住「压根没生成」。这一步不过就别往下走。
+> `Last Result` 必须是 `0`，且最新一份的时间戳**必须是刚刚**（不是当天 02:30 那份）。
+> 现成的旧备份不算数：它可能早于最近一次迁移，schema 对不上的转储真要用时很难受。
+> **这一步不过就别往下走**——它是整套流程最后一道保险。
 
 ## 第 2 步：生成 `infra/.env`（强随机，不回显）
 
@@ -82,7 +90,7 @@ Get-Item infra\.env | Select-Object Name, Length
 > 丢了库就打不开了**（尤其 `ERP_CREDENTIAL_KEY`）。请按 Owner 的凭证保管方式另存一份。
 >
 > **Swagger UI（`/api/docs`）在本次部署后是关的**，这也是有意的：8000 内网可达而该页
-> 无鉴权。要接口文档就在 `infra/.env` 里加一行 `ERP_DOCS_ENABLED=true` 再 `make up`
+> 无鉴权。要接口文档就在 `infra/.env` 里加一行 `ERP_DOCS_ENABLED=true` 再重起（第 6 步那条 compose 命令）
 > ——**不要为此去改 `ERP_ENV`**。这两件事已经拆开（原本是同一个开关），改 `ERP_ENV`
 > 会连带把弱密钥放行重新打开。
 >
@@ -119,8 +127,10 @@ docker compose -f infra/docker-compose.yml up -d redis
 "REDIS_UP_EXIT=$LASTEXITCODE"
 Start-Sleep -Seconds 12
 docker compose -f infra/docker-compose.yml ps redis
-# 未认证应被拒（期望看到 NOAUTH）
-docker exec erp-all-redis-1 redis-cli --no-auth-warning -a "" ping
+# 未认证应被拒。**必须 unset REDISCLI_AUTH**〔2026-07-27 修正〕——首版写的是
+# `redis-cli -a "" ping`，那是「拿空口令去认证」，返回 WRONGPASS 而不是 NOAUTH，
+# 期望值与实际对不上，把部署机白挡了一轮。
+docker exec erp-all-redis-1 sh -c 'unset REDISCLI_AUTH; redis-cli ping'
 # 认证后应 PONG（口令由容器内的 REDISCLI_AUTH 提供，命令行里不出现口令）
 docker exec erp-all-redis-1 sh -c 'redis-cli ping'
 ```
@@ -193,9 +203,20 @@ $sql | docker exec -i erp-all-db-1 psql -v ON_ERROR_STOP=1 -U postgres -d erp_al
 docker compose -f infra/docker-compose.yml build migrate
 "BUILD_EXIT=$LASTEXITCODE"
 
-# 旧密钥：合并前 compose 没注入过 ERP_CREDENTIAL_KEY，容器一直用的是代码里的默认值
-docker compose -f infra/docker-compose.yml run --rm `
-  -e ERP_CREDENTIAL_KEY_OLD=dev-only-change-me `
+# **旧密钥要探，不许假定**〔2026-07-27 实测修正〕。首版直接写死
+# `ERP_CREDENTIAL_KEY_OLD=dev-only-change-me`（代码默认值），真机上当场
+# `Wrong key or corrupt data`——真正在用的旧密钥被 `COPY . .`（backend 无
+# `.dockerignore`）烤进了镜像的 `/app/.env`，是个 64 位 hex。先探再用：
+docker compose -f infra/docker-compose.yml run --rm -T --no-deps migrate `
+  sh -c 'if [ -f /app/.env ]; then grep -c "^ERP_CREDENTIAL_KEY=" /app/.env; else echo NOFILE; fi'
+# 上行为 1 才继续；为 0 或 NOFILE 则停手上报——旧密钥另有来源。
+
+$old = (docker compose -f infra/docker-compose.yml run --rm -T --no-deps migrate `
+  sh -c 'sed -n "s/^ERP_CREDENTIAL_KEY=//p" /app/.env' | Out-String).Trim()
+"OLD_KEY_LEN=$($old.Length)"   # 只报长度，绝不打印值
+
+docker compose -f infra/docker-compose.yml run --rm -T `
+  -e ERP_CREDENTIAL_KEY_OLD="$old" `
   migrate python -m erp.tools.rotate_credential_key --dry-run
 "DRYRUN_EXIT=$LASTEXITCODE"
 ```
@@ -226,8 +247,12 @@ docker compose -f infra/docker-compose.yml run --rm `
 
 ## 第 6 步：起全栈（新配置生效）
 
+**不要写 `make up`**〔2026-07-27 实测修正〕：`make` 是 Unix 工具，这台机的 PowerShell
+里没有（`CommandNotFoundException`）。`Makefile` 里 `up` 那条目标展开即下面这句，
+**服务名一个不能少、`--build` 不能省**（`--build` 才把新代码打进 api/beat/frontend 镜像）：
+
 ```powershell
-make up
+docker compose -f infra/docker-compose.yml up -d --build db redis migrate api beat frontend
 "UP_EXIT=$LASTEXITCODE"
 docker compose -f infra/docker-compose.yml ps
 ```
@@ -304,3 +329,66 @@ docker compose -f infra/docker-compose.yml logs --tail=30 beat
 - **不要**给用户绑角色。
 - **不要**为了「省事」跳过第 5 步的 dry-run——那是整套流程里唯一能在写库之前
   发现「旧密钥不对」的地方。
+
+---
+
+## 回执（2026-07-27，部署机贴回，验证对象 `3d5178d`，合并前第③闸）
+
+**全项 PASS。** 原文按贴回内容记录，未改写。PR #39 于 Owner 授权后合并（`1986bb1`，squash）。
+
+| 项 | 结果 |
+|---|---|
+| 新鲜备份 | 计划任务 `\ERP-ALL-backup` 触发，`Last Result: 0`，`erp_all_20260727_203614.dump` 271 760 137 bytes |
+| `infra/.env` | 7 变量 597 bytes，内容未读取未输出 |
+| 分支 | `3d5178d`（与被审查的 commit 一致） |
+| redis 预演 | `Up 15 seconds (healthy)`，`127.0.0.1:6379->6379/tcp`；未认证被拒、认证 `PONG` |
+| 库四角色口令 | `ALTER ROLE` ×4，`ALTER_EXIT=0` |
+| 凭证重加密 | dry-run 1/1 → 轮换 1/1 → 复核 1/1，退出码全 0 |
+| 端口 | `127.0.0.1:5432` / `127.0.0.1:6379`；`0.0.0.0:8000` / `0.0.0.0:5173`（有意保留） |
+| 服务 | `/healthz` ok；`0039 (head)`；`beat.tick executed=11 failed=0`；新日志无 `NOAUTH/WRONGPASS` |
+| 接口文档 | `/api/docs`、`/api/redoc`、`/api/openapi.json`、`/openapi.json` **四条全 404** |
+| 前端 | 重新登录成功进首页（JWT 换了，旧登录态失效属预期） |
+| **弱密钥拒绝启动** | `GUARD_EXIT=1`，点名 `ERP_CREDENTIAL_KEY` |
+| **放行开关在 prod 下无效** | `HATCH_EXIT=1`，**报错与上一条一字不差**——该开关根本没进入判定路径 |
+
+### 一项据实说明：LAN 侧未做端到端实测
+
+验收判据原文要求「从内网**另一台机器**连 5432/6379 必须失败」。**现场没有第二台机器，
+该项未实测**，此处以绑定证据（`netstat` 显示只绑 `127.0.0.1`）替代。这在操作系统层面
+决定了远端连不上，但**那是推断不是实测**，不粉饰。将来有第二台机时补跑三条
+`Test-NetConnection` 即可收口。
+
+### 过程中被拦下的一次真事故
+
+第 7 步 dry-run 报 `Wrong key or corrupt data` —— **旧凭证密钥不是代码默认的
+`dev-only-change-me`**，而是被 `COPY . .`（backend 无 `.dockerignore`）烤进镜像
+`/app/.env` 的那个 64 位 hex。工具当场整体回滚、库一行未改，部署机按铁律停手上报，
+换用真实旧密钥后一次通过。
+
+**这正是那个 dry-run 存在的理由**：若当时凭猜测试几个值再往下跑，密文可能被写成一半新
+一半旧——那是本工具头注里写的、最难查的那种状态（没有信号，只表现为该店渠道 401）。
+
+### 三处指令缺陷（均已在上文就地修正）
+
+都是**我给的期望值或命令与这台机器的实际不符**，而非部署机操作有误；三次它都按
+「期望值不符也停手」停下并上报，没有自行改法重试：
+
+1. **`make up` 在 PowerShell 里不存在**——`Makefile` 是文档里的规范入口，但那是给有
+   `make` 的环境写的，抄进 PowerShell 指令前没验证过。
+2. **`redis-cli -a "" ping` 送的是「空口令认证」**，返回 `WRONGPASS` 而非我写的期望值
+   `NOAUTH`。要真正的未认证得 `unset REDISCLI_AUTH`。
+3. **旧凭证密钥被假定成代码默认值**——第三轮审查其实已经把 `/app/.env` 会被烤进镜像
+   这个事实递到面前，我归档成「安全上不构成绕过」就过去了，**没有接着问「那现在真正
+   在用的密钥是哪一个」**。
+
+另有两处同类：给 runbook 文件设的**字节数期望**是在 Linux（LF）上量的，Windows 检出
+CRLF 后必然对不上（行数才是跨平台不变量）；以及 `git show --output=` 对 blob 不生效、
+只留下零字节文件（改用 `git restore --source=` 让 git 自己写文件，不经 shell 编码）。
+
+### 遗留
+
+- 这台机的 `backend/.env` 里那个 `ERP_CREDENTIAL_KEY` **现已是死值**（密文已换新密钥）。
+  容器不受影响——compose 注入的环境变量优先级高于 dotenv——但宿主机上直接跑后端会
+  拿到一把打不开任何东西的钥匙。连同 `.dockerignore` 缺失一并立账。
+- 手动 `bash backup.sh` 报 `pipefail\r` 的真因未定（计划任务同一脚本却成功）。两条只读
+  探查命令见文末附录，不影响任何结论。
