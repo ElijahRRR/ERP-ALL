@@ -84,6 +84,38 @@ def entries() -> list[dict[str, Any]]:
     return data
 
 
+def test_serialization_style_pinned(entries: list[dict[str, Any]]) -> None:
+    """序列化风格钉死：`indent=1`、`ensure_ascii=False`、**无尾换行**。
+
+    这不是洁癖，是冲突面治理。台账被审计侧与云端侧两边高频追加，而**任何全局重排都会
+    把整个文件变成冲突面**：2026-07-27 一天之内因此撞了两次 rebase 冲突，两次都是
+    700+ 行的整文件 diff，而实际语义增量只有几条。
+
+    病根是我这侧用 python 重写台账时带成了 `indent=2` + 尾换行（`31e0828`），与仓里
+    自 `5b37ded` 起的既有风格不一致——两侧各自「格式化一遍」就互相翻烙饼。
+    风格本身选哪个无所谓，**钉住不动才有意义**，所以这里锚的是仓内既成事实。
+
+    改台账请用：`json.dumps(items, ensure_ascii=False, indent=1)` 写入，不补 `\\n`。
+    """
+    raw = LEDGER.read_text(encoding="utf-8")
+    expected = json.dumps(entries, ensure_ascii=False, indent=1)
+    if raw == expected:
+        return
+    hints: list[str] = []
+    if raw.endswith("\n"):
+        hints.append("文件尾多了换行")
+    if raw.startswith("[\n  "):
+        hints.append("缩进疑似 indent=2（仓内风格是 indent=1）")
+    if "\\u" in raw:
+        hints.append("非 ASCII 被转义（应 ensure_ascii=False）")
+    raise AssertionError(
+        "台账序列化风格与仓内既有风格不一致"
+        + ("：" + "；".join(hints) if hints else "")
+        + "。请用 json.dumps(items, ensure_ascii=False, indent=1) 重写且不补尾换行"
+        "——风格漂移会让整个文件变成 rebase 冲突面（2026-07-27 已因此撞两次）。"
+    )
+
+
 def test_ids_unique(entries: list[dict[str, Any]]) -> None:
     ids = [e.get("id") for e in entries]
     dupes = sorted({i for i in ids if ids.count(i) > 1})
