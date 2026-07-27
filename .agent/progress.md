@@ -2020,3 +2020,40 @@ rotate 工具的事务与回读比对、healthcheck 验回显、`.gitignore` 三
 看不见）；并接受**更硬的字面量写法** `ERP_ENV: prod`（原判据只认 `${ERP_ENV:-...}`，
 把更安全的写法判红了）。四条 falsify 逐条验过：把开关挂回 `settings.env`→红、追加第二条
 `ERP_ENV: dev`→红、字面量 `prod`→如预期绿、字面量 `dev`→红。581 passed。
+
+### RS-02a 第三轮独立审查（`2aee4fb`）：六条，全部成立、全部已修
+
+审查侧这轮做了**变异测试**（把判据改回旧写法看会不会红），并在离线环境实测了
+`docker compose config` 渲染、`Settings` 构造、FastAPI 路由。三块高风险改动逐条验过。
+
+- **S1 [中] 少打一个冒号就能把门重新打开。** `_SECRETISH` 只认 `${VAR:-兜底}`，而 compose
+  同样支持 `${VAR-兜底}`（无冒号，仅「未设」时兜底）——对「变量缺失」这个场景与 `:-`
+  语义完全一样，正是本单要根治的形态。审查侧实测：改成 `${POSTGRES_PASSWORD-postgres}`
+  且 `.env` 不给该变量 → `config` 渲染出 `POSTGRES_PASSWORD: postgres`、退出码 0，
+  而 34 条门禁全绿。四条判据各有各的漏法（黑名单找字面子串、正向判据只看值以 `${` 开头）。
+  一字符修：`(:-)` → `(:?-)`。第二个出口：`--requirepass hunter2` 写在 command 里也没人管，
+  补了一条。
+- **S2 [中] 我断言了开关，没断言效果。** `create_app()` 只传 `docs_url`，FastAPI 的
+  `redoc_url` / `openapi_url` 有默认值——`/redoc` 与 `/openapi.json` 原样开着，
+  「关掉接口文档」只做到三分之一。而 `test_docs_are_off_by_default` 断言的是
+  `settings.docs_enabled is False`，**两扇门开着它照样绿**。三条一起挂开关，用例改成
+  用 TestClient 断言三条路径真的 404（并钉住 FastAPI 的两个默认路径不另开门）。
+- **S3 [中] PR 正文与实际 diff 漂移五处，且都在 Owner 据以授权的段落上。** 正文写于
+  `23077c5`，此后三个提交（改白名单、拆 Swagger、补 redis 预演）没回写正文——尤其第 3、4 条
+  展示的是**本 PR 自己判定为「从未生效过」的旧机制**与已被删掉的旧报错原文。
+  **这正是审查闸设立的直接由头**（云端侧两次 PR 正文失实），本轮同款再犯。正文与 ledger
+  已同步到实际状态。
+- **S4 [低-中] `parametrize` 空集静默变 skip。** 把 `infra/pg-init` 改个名 → 33 passed /
+  1 skipped，没有一条红。补一条前提判据（`02-roles.sh` 必须扫得到）。
+- **S5 [低] 拒绝启动的报错把某个密钥的尾部约 22 字符带进日志。** `ValidationError` 的
+  字符串表示带 `input_value=`，pydantic 截断中段但**保留首尾**。而这条报错正是部署指令
+  让人整段贴回的那一条（铁律 2「不输出密钥」），还会进容器日志、CI 日志、聊天记录。
+  `get_settings()` 改抛 `SystemExit`，只放校验器写的那句人读消息。
+- **S6 [低] rotate 无表锁。** READ COMMITTED 下，`after` 读完之后、`COMMIT` 之前落地的
+  一行新密文既不在 `before` 也不在 `after`，UPDATE 也早跑过 → 带着旧密钥静默存活，
+  而工具打印「N 行已重加密」退出码 0。补 `LOCK TABLE ... IN EXCLUSIVE MODE`。
+
+五条 falsify 逐条验过（无冒号兜底 / `--requirepass` 字面量 / 只关一扇门 / pg-init 挪走 /
+报错原样抛 ValidationError）全部按预期红，**对照组**「只断言布尔量的那条用例在两扇门
+开着时照样绿」如预期通过——那正是 S2 的病根。S6 属并发窗口，无法用单元测试证伪，
+据实记：只验了加锁后功能不受影响（四条 rotate 用例仍绿），没有构造竞态。

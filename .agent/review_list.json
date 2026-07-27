@@ -301,7 +301,7 @@
    {
     "date": "2026-07-27",
     "kind": "progress",
-    "text": "【2026-07-27】RS-02a 代码侧落地（本 PR）：compose 中 db/redis 的宿主机端口改绑 127.0.0.1（8000/5173 按 D-Q68 保持内网可达不动）；PG 四角色口令与 Redis requirepass 全部改 ${VAR:?} 注入、无默认回退，缺变量即拒起；pg-init 的角色口令从写死（＝角色名）改为 02-roles.sh 读环境变量、format(%L) 转义；Settings 加启动自检，认出已知弱密钥即拒绝构造，放行须显式 ERP_ALLOW_INSECURE_DEFAULTS 且 prod 下无效。另立 tests/test_infra_hardening.py 作反向不变量（端口挪回全网/口令写死/密钥变量带 :- 兜底/豁免表养僵尸，任一发生即 CI 红）。凭证密钥不能裸换——store_credential 与 proxy 的密文靠它打开，故配 erp.tools.rotate_credential_key：单事务内旧解新加 + 回读逐行比对，不一致即整体回滚，四条实测覆盖（含错误旧密钥必须回滚、库一行未改）。**机器侧尚未执行**：POSTGRES_PASSWORD 只在空卷 initdb 生效，现网必须在运行库上 ALTER ROLE 并按序重加密，指令见 .agent/evidence/RS-02a/deploy-rotate-secrets.md。RS-02b（HTTPS 反代/备份加密/月度恢复演练）未动。"
+    "text": "【2026-07-27】RS-02a 代码侧落地（PR #39）：compose 中 db/redis 的宿主机端口改绑 127.0.0.1（8000/5173 按 D-Q68 保持内网可达不动）；七个密钥变量全部改 ${VAR:?} 注入、无默认回退，缺变量即拒起；pg-init 的角色口令从写死（＝角色名）改为 02-roles.sh 读环境变量、format(%L) 转义；Settings 加启动自检，认出已知弱值即拒绝构造，放行须显式 ERP_ALLOW_INSECURE_DEFAULTS **且仅在 ERP_ENV ∈ {dev,test} 时有效**（白名单，compose 注入 ERP_ENV: ${ERP_ENV:-prod} 缺省即 prod），报错不再给出绕过姿势且不带任何取值；Swagger/redoc/openapi 三条路径拆到独立开关 docs_enabled（默认关），与 ERP_ENV 解耦。反向不变量 tests/test_infra_hardening.py + test_settings_guard.py：端口挪回全网/口令写死/密钥变量带 :- 或 - 兜底/豁免表养僵尸/compose 不注入 ERP_ENV/功能开关挂回 Settings.env/pg-init 判据静默 skip，任一发生即 CI 红。凭证密钥不能裸换——store_credential 与 proxy 的密文靠它打开，故配 erp.tools.rotate_credential_key：单事务 LOCK TABLE + 旧解新加 + 回读逐行比对，不一致即整体回滚，四条实测覆盖。**独立审查三轮共 12 条（S1-S5 / N1+2nit / S1-S6）全部处置**，其中两条是我在防 fail-open 的门禁里写的 fail-open（ERP_ENV 从未注入致 prod 保护从未生效；判据只认 :- 而漏掉等价的 - 变体）。**机器侧尚未执行**：POSTGRES_PASSWORD 只在空卷 initdb 生效，现网必须在运行库上 ALTER ROLE 并按序重加密，指令见 .agent/evidence/RS-02a/deploy-rotate-secrets.md（含不可逆步骤之前的 redis 预演）。RS-02b（HTTPS 反代/备份加密/月度恢复演练）未动。"
    }
   ]
  },

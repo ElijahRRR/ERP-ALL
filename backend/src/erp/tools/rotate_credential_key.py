@@ -67,6 +67,14 @@ async def rotate(*, old_key: str, new_key: str, dry_run: bool) -> dict[str, int]
     sessions = get_session_factory()
     stats: dict[str, int] = {}
     async with system_tx(sessions) as s:
+        if not dry_run:
+            # 〔2026-07-27 审查 AI 的 S6〕事务是 READ COMMITTED 且原先不加锁：`after`
+            # 读完之后、`COMMIT` 之前落地的一行新密文（仍在跑的 api 用旧 env 写入），
+            # 既不在 `before` 也不在 `after`，UPDATE 也早跑过——于是它带着**旧密钥**
+            # 静默留在库里，而工具打印「N 行已重加密」、退出码 0。正是本工具存在的
+            # 理由所描述的那个失败形态：没有信号，只表现为该店渠道 401。
+            # EXCLUSIVE 挡写不挡读；窗口本就只有一次提交那么长，但不是零。
+            await s.execute(text("LOCK TABLE app.store_credential, app.proxy IN EXCLUSIVE MODE"))
         for table, pk, col in _TARGETS:
             before = await _digests(s, table, pk, col, old_key)
             stats[table] = len(before)

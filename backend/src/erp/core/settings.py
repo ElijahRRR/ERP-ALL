@@ -23,7 +23,7 @@ from functools import lru_cache
 from urllib.parse import urlsplit
 
 import structlog
-from pydantic import model_validator
+from pydantic import ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ALLOW_ENV = "ERP_ALLOW_INSECURE_DEFAULTS"
@@ -170,4 +170,16 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    """进程入口统一从这里取配置。
+
+    自检不通过时抛 `SystemExit` 而不是让 `ValidationError` 冒出去
+    （2026-07-27 审查 AI 的 S5）：pydantic 的字符串表示带 `input_value=`，中段截断但
+    **保留首尾**，实测会把某个强随机密钥的尾部约 22 字符带进报错。而这条报错正是
+    部署指令让人**整段贴回**的那一条（铁律 2「不输出密钥」），它还会进容器日志、
+    CI 日志、聊天记录。这里只把校验器写的那句人读消息放出去，不带任何取值。
+    """
+    try:
+        return Settings()
+    except ValidationError as exc:
+        msgs = [str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors()]
+        raise SystemExit("\n".join(m for m in msgs if m)) from None

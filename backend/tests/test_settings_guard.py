@@ -5,12 +5,14 @@
 """
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from erp.core.settings import Settings
+from erp.core.settings import Settings, get_settings
 
 _STRONG = "9f2c1ab47d3e5068bb90cf1e2a4d7c3f9f2c1ab47d3e5068bb90cf1e2a4d7c3f"
 
@@ -24,12 +26,16 @@ _SAFE_KWARGS = {
 
 
 @pytest.fixture(autouse=True)
-def _no_erp_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_erp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """清掉进程里所有 ERP_* 变量：CI 给的是弱口令 DSN，会污染判据。"""
     import os
 
     for name in [k for k in os.environ if k.startswith("ERP_")]:
         monkeypatch.delenv(name, raising=False)
+    # 本文件里有用例经 get_settings() 走真实入口，别把结果留给别人
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _build(**overrides: object) -> Settings:
@@ -156,8 +162,68 @@ def test_env_has_no_consumers_outside_settings() -> None:
 
 
 def test_docs_are_off_by_default() -> None:
-    """Swagger 默认关：8000 内网可达而 `/api/docs` 无鉴权。"""
+    """Swagger 默认关：8000 内网可达而这些页面无鉴权。"""
     assert Settings(_env_file=None, **_SAFE_KWARGS).docs_enabled is False  # type: ignore[arg-type]
+
+
+def _strong_env(monkeypatch: pytest.MonkeyPatch, *, docs: bool) -> None:
+    for key, val in {
+        "ERP_ENV": "prod",  # 部署机合并后的实际形态
+        "ERP_DATABASE_URL": str(_SAFE_KWARGS["database_url"]),
+        "ERP_MIGRATOR_DATABASE_URL": str(_SAFE_KWARGS["migrator_database_url"]),
+        "ERP_REDIS_URL": str(_SAFE_KWARGS["redis_url"]),
+        "ERP_JWT_SECRET": _STRONG,
+        "ERP_CREDENTIAL_KEY": _STRONG,
+        "ERP_DOCS_ENABLED": "true" if docs else "false",
+    }.items():
+        monkeypatch.setenv(key, val)
+    get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("docs", [False, True])
+def test_all_three_doc_endpoints_follow_the_switch(
+    monkeypatch: pytest.MonkeyPatch, docs: bool
+) -> None:
+    """断言**端点真的没了**，不是断言那个布尔量。
+
+    〔2026-07-27 审查 AI 的 S2〕首版只传了 `docs_url`，而 FastAPI 的 `redoc_url` /
+    `openapi_url` 有默认值——`/redoc` 与 `/openapi.json` 原样开着，「关掉接口文档」
+    只做到三分之一，换个路径照样把全部端点、参数、schema 端出去。
+    而当时那条用例断言的是 `settings.docs_enabled is False`，**两扇门开着它照样绿**：
+    判据盯的是开关，不是效果。这条改成盯效果。
+    """
+    _strong_env(monkeypatch, docs=docs)
+    from erp.main import create_app  # 延迟导入：要先把环境摆好
+
+    client = TestClient(create_app())
+    expected = 200 if docs else 404
+    for path in ("/api/docs", "/api/redoc", "/api/openapi.json"):
+        assert client.get(path).status_code == expected, f"{path} 与开关不一致"
+    # 顺带钉住 FastAPI 的两个默认路径不会另开一扇门
+    for legacy in ("/redoc", "/openapi.json"):
+        assert client.get(legacy).status_code == 404, f"{legacy} 仍可访问"
+
+
+def test_startup_refusal_leaks_no_secret_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """拒绝启动的报错里不许出现任何密钥取值。
+
+    〔2026-07-27 审查 AI 的 S5〕`ValidationError` 的字符串表示带 `input_value=`，
+    pydantic 截断中段但**保留首尾**，实测把某个强随机密钥的尾部约 22 字符带了出来。
+    而这条报错正是部署指令让人**整段贴回**的那一条（铁律 2「不输出密钥」），
+    它还会进容器日志、CI 日志、聊天记录。故 `get_settings()` 改抛 `SystemExit`，
+    只放出校验器写的那句人读消息。
+    """
+    _strong_env(monkeypatch, docs=False)
+    monkeypatch.setenv("ERP_CREDENTIAL_KEY", "dev-only-change-me")  # 只坏这一项
+    get_settings.cache_clear()
+
+    with pytest.raises(SystemExit) as excinfo:
+        get_settings()
+    msg = str(excinfo.value)
+    assert "ERP_CREDENTIAL_KEY" in msg, "报错要点名是哪一项，否则运维无从下手"
+    assert _STRONG not in msg, "报错里出现了强密钥全文"
+    assert _STRONG[-22:] not in msg, "报错里出现了强密钥尾部（pydantic 截断保留首尾）"
+    assert "input_value" not in msg, "pydantic 的原始表示不该冒出来"
 
 
 def test_findings_are_specific_not_boolean() -> None:

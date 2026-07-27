@@ -36,7 +36,12 @@ _EXPECTED_LOOPBACK_LINES = 2
 
 # `${VAR:-兜底}` 形态在密钥上等于 fail-open。按变量名模式扫，故意扫得宽——
 # 下面的豁免表是唯一出口，新增密钥变量想漏掉判据必须先在这里留名。
-_SECRETISH = re.compile(r"\$\{([A-Z_]*(?:PASSWORD|SECRET|KEY)[A-Z_]*)(:-)")
+#
+# 〔2026-07-27 审查 AI 的 S1〕`:?` 里那个冒号**必须是可选的**：compose 同时支持
+# `${VAR-兜底}`（无冒号，仅「未设」时兜底），对「变量缺失」这个场景与 `:-` 语义完全
+# 一样，而那正是本单要根治的形态。首版只认 `:-`，少打一个冒号即可把门重新打开，
+# 且四条判据全部放过（黑名单找的是字面子串、正向判据只看值以 `${` 开头）。
+_SECRETISH = re.compile(r"\$\{([A-Z_]*(?:PASSWORD|SECRET|KEY)[A-Z_]*)(:?-)")
 
 # 环境变量里的密钥类键：值必须是 `${...}` 注入，不许字面量。
 # 这是**正向判据**——黑名单只挡得住「退回到旧的那几个弱值」，挡不住「新写死一个」。
@@ -166,6 +171,10 @@ def test_redis_requires_auth() -> None:
     # 未认证的 PING 返回 NOAUTH 但退出码为 0 → 只跑 `redis-cli ping` 的 healthcheck
     # 会把「认证没配对」判成健康。必须验回显。
     assert "grep -q PONG" in code, "redis healthcheck 没验回显，认证配错时仍会判健康"
+    # 〔审查 AI 的 S1 第二个出口〕`--requirepass` 后面跟字面量口令，上面几条判据都抓不到
+    # （`_SECRET_ENV_LINE` 只认 `KEY: value`，`_DSN_CRED` 只认 `://user:pw@`）。
+    for arg in re.findall(r"--requirepass\s+(\S+)", code):
+        assert "$" in arg, f"redis 口令写死在 command 里：--requirepass {arg}"
 
 
 def test_compose_does_not_grant_the_insecure_escape_hatch() -> None:
@@ -198,7 +207,25 @@ def test_compose_pins_erp_env_to_a_non_permissive_default() -> None:
         )
 
 
-@pytest.mark.parametrize("path", sorted((_ROOT / "infra" / "pg-init").glob("*")))
+_PG_INIT = sorted((_ROOT / "infra" / "pg-init").glob("*"))
+
+
+def test_pg_init_scripts_are_actually_found() -> None:
+    """下面那条 parametrize 的**前提**：glob 得真的扫到东西。
+
+    〔2026-07-27 审查 AI 的 S4〕glob 空集时 pytest 把整条 parametrize 记为 **skip**，
+    套件照绿——实测把 `infra/pg-init` 改个名，33 passed / 1 skipped，没有一条红。
+    触发面：目录改名、脚本拆进子目录、`_ROOT` 解析方式变化。之后「pg-init 里没有
+    写死口令」这件事就再没人验，而本文件头注防的正是「判据静默失效比判据不存在更糟」。
+    """
+    names = {p.name for p in _PG_INIT}
+    assert "02-roles.sh" in names, (
+        f"没在 infra/pg-init 下找到 02-roles.sh（扫到的是 {sorted(names)}）"
+        "——下面那条口令判据会静默变成 skip"
+    )
+
+
+@pytest.mark.parametrize("path", _PG_INIT)
 def test_pg_init_has_no_literal_role_passwords(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert not re.search(r"PASSWORD\s+'", text), (
