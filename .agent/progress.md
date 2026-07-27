@@ -2114,3 +2114,52 @@ PR #39 合并（`1986bb1`），机器侧同日执行完毕。**这是新闸序�
 
 教训另落 `infra/local-deploy/README.md`：`.gitattributes` 的 `*.sh text eol=lf`
 **只在检出该文件时生效，不追溯已在工作区里的旧文件**——这是 `.bat` 那条纪律的镜像。
+
+## 2026-07-27 R2-09 增量1：三档内核 + flow 契约门禁（纯重构，行为零变化）
+
+新建 `core/automation.py`：`AutomationFlow`（§09 v2.1 十条）+ `Mode` + `Evaluation` +
+`FLOWS`（合法档位与求值语义）+ `resolve_mode()`。两处旧读点
+（`order/procurement.py::_order_block_gate`、`aftersale/refund.py::_resolve_mode`）
+回接内核，各自的 inline SQL 删除。**616 passed**，既有测试一条没改——这是行为零变化的证据。
+
+### 内核只解决一件事：三条边角此前无人对账
+
+「无行 / `enabled=false` / 档位对本 flow 非法」——两处读点各写各的 SQL，各自隐含处理。
+三档要铺到 10 条 flow 上，再复制 8 遍就不可能保持一致。收成一处后逐条钉了真库判据。
+
+### 差点写成行为变更的一处，记下来
+
+初版内核把「档位对本 flow 非法」也归 manual（看着最 fail-closed）。**这对闸类 flow 是反的**：
+`order_block` 的 `auto` 才是「拦截 flagged 单」，`manual` 是「只软标记不冻结」。而 DB 的
+`ck_automation_mode` 只约束 `mode ∈ {manual,semi,auto}`、**不区分 flow**，所以
+「`order_block` 存着 semi」在库层完全合法、现网可能真有——现行代码
+（`mode in ("semi","auto")`）是**拦截**的，归 manual 会让那个团队**静默失去订单拦截**。
+
+改成**只告警不改写**。「非法档位该怎么处理」与 Q3 同族，属语义变更归 Owner 裁定
+（批注回传已提）。**「最保守 = manual」这条直觉对闸类 flow 不成立**，是本增量最该记住的一点。
+
+### 契约门禁：判据锚在图纸上，不维护第二份清单
+
+`tests/test_automation_flow_contract.py` 直接解析 §09 的 markdown 表与枚举双向比对
+（flow 集合、逐条合法档位、逐条求值语义）。§09 原文写着「本表即枚举的唯一权威」，
+这条判据就是那句话的机器化。
+
+**判据自己有过一个 bug，被它自己抓出来**：首版正则在 `**manual/auto（无 semi）**` 里
+把否定语中的 `semi` 读成了合法档位，还把另一张 DDL 说明表的 `mode` 行当成 flow 行读了进来。
+已改为「先切掉括号补注、再要求档位单元格是纯斜杠清单」，并配 `test_spec_table_is_parseable`
+——**图纸表一改格式解析出空集时，「空 ⊆ 空」处处成立，判据会在什么都没校验的情况下全绿**。
+
+**故意没加**「每个 flow 必须有消费点」：`purchase_execute` 现无消费点（归 R2-13），
+属 §09 明写的有意前置登记，加那条会让它第一天就红而红的原因不是缺陷。
+
+### 五条 falsify 逐条验过
+
+改 `order_block` 合法档位为三档 → 红；从枚举删 `purchase_execute` → 红；改 `refund` 求值
+语义 → 红；图纸表改格式致解析不出行 → 红（前提自检兜住）；让内核把非法档位改写成 manual
+→ 红（行为零变化的反例）。
+
+### 顺带纠正一处考古已过时的清单项
+
+考古 §4 把「`listing/maintenance.py:29` 的 `kinds=["delist"]` fail-open」列进增量1 的范围。
+**该处已在本会话早些时候的 P0-1 修复中清偿**，现码为 `config.get("kinds", [])` 且带完整
+注释。差点按过时清单再干一遍——考古写于某时点，落码前要核当下事实。
