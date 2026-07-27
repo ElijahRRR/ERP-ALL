@@ -9,9 +9,15 @@
 2. 克隆仓库并配置环境：
    ```bash
    git clone https://github.com/ElijahRRR/ERP-ALL.git && cd ERP-ALL
-   cp backend/.env.example backend/.env
-   # 编辑 backend/.env：把两个 dev-only-change-me 换成强随机串（生成：openssl rand -hex 32）
+   cp infra/.env.example infra/.env
+   # 编辑 infra/.env：七个变量全部填强随机值（生成：openssl rand -hex 32，一个一串）
    ```
+   **容器化部署只看 `infra/.env`**（`backend/.env` 是宿主机直跑后端时才用的，
+   compose 不读它）。七个变量一个都不能空：RS-02a 起 compose 用 `${VAR:?}` 取值，
+   缺任何一个都直接拒起——**不会**退回到默认口令。
+   已有数据的库换口令**不是改这个文件就完事**（`POSTGRES_PASSWORD` 只在空卷首次
+   initdb 时生效，凭证密钥换了还要重加密），照
+   `.agent/evidence/RS-02a/deploy-rotate-secrets.md` 的顺序走。
 3. 起全栈：
    ```bash
    make up          # db + redis + migrate + api
@@ -82,6 +88,13 @@ Windows 侧同时确认（切完再核一次，防 CRLF 被规范化掉）：
 ```bat
 git -C <仓库根> check-attr text eol -- infra/local-deploy/automation/uspto-daily.bat
 :: 期望 eol: crlf；若为 unset/lf，则 .gitattributes 未生效，bat 会重演 LF-only 事故
+```
+
+再确认 `infra/.env` 在位（**RS-02a 起任何 compose 命令都要它**，`make up`、`backup.sh`、
+`uspto-daily.bat` 一律受影响；该文件不进版本库，切分支不会动它，故一般只需确认存在）：
+
+```bash
+test -f infra/.env && echo "ENV_OK" || echo "缺 infra/.env —— 见 .agent/evidence/RS-02a/deploy-rotate-secrets.md"
 ```
 
 ## 故障处置速查

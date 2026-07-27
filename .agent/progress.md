@@ -1910,3 +1910,50 @@ Owner 授权合并，且明写「审查 AI 位于 Owner 拍板**之前**，其�
 - **写死码判据时我又写了一个空壳测试**（有名字有 docstring、函数体什么都不做、永远绿），
   自查时发现并写实。跟一整天在批的「不会失败的判据」同形。
 - 全量 541 passed / 1 skipped（+4：G 组 2、死码 2）、ruff 清、mypy 0、迁移三步全过。
+
+## 2026-07-27 RS-02a：端口收敛 + 默认口令清除 + 默认密钥硬失败（P0 插队，D-Q68）
+
+审计侧实测「门现在开着」：compose 把 5432/6379/8000 都绑 0.0.0.0，`POSTGRES_PASSWORD`
+是镜像默认 `postgres`，redis 无 `requirepass`，应用 DSN 是 `erp_app:erp_app`——内网任一
+设备可直连库，**绕过登录/权限/RLS/审计四层**，而库里存着全部店铺的 Walmart 凭证。
+本轮做代码侧那一半（机器侧指令另出，见下）。
+
+- **端口**：db/redis 的宿主机映射改绑 `127.0.0.1`（保留映射是为部署机本机 psql 取证）。
+  **8000/5173 不动**——D-Q68 明确划在范围外，且它们背后有那四层；HTTPS 反代归 RS-02b。
+- **口令**：全部改 `${VAR:?...}` 注入，**没有默认回退**。实测确认 fail-closed：缺一个变量
+  `docker compose config` 退出码 1，缺整个 `.env` 同样退 1。
+  顺带修了 pg-init——三业务角色的口令此前**写死成角色名**，`.sql` 拿不到环境变量，故拆出
+  `02-roles.sh` 用 psql 变量 + `format(%L)` 转义建号（不做字符串拼接）。
+- **启动自检**：`Settings` 认出已知弱密钥即拒绝构造，任何入口（api/beat/migrate/tools）
+  一视同仁起不来。放行须显式 `ERP_ALLOW_INSECURE_DEFAULTS`，**且 `ERP_ENV=prod` 下无效**。
+  判据锚在**值本身**而非「等于本文件的默认值」——后者会被「把默认值换成另一个人人皆知的
+  串」绕开。CI 与 `tests/conftest.py` 各写一处显式声明，compose 里没有这个开关。
+- **凭证密钥不能裸换**：`store_credential.client_secret_encrypted` 与
+  `proxy.password_encrypted` 靠它打开，直接换＝全部店铺 client_secret 与代理口令一起变砖，
+  且没有「解错了」的信号，只表现为渠道 401。故配 `erp.tools.rotate_credential_key`：单事务
+  内旧解新加 + **回读逐行比对摘要**，不一致整体回滚。四条实测覆盖，其中一条专验「旧密钥
+  给错时库一行未改」。
+- **反向不变量** `tests/test_infra_hardening.py`：端口挪回全网、口令写死、密钥变量带 `:-`
+  兜底、豁免表养僵尸——任一发生即 CI 红。写完当场被它抓出两条真问题（注释里的
+  `dev-only-change-me` 属误报，已改为只扫去注释后的正文；`ERP_WORKER_NODE_KEY` 名字带 KEY
+  但不是凭证，进豁免表并配反僵尸判据）。
+
+### 两处「先证伪再落笔」
+
+- **Makefile 一度加了 `--env-file infra/.env`**，理由写的是「compose 的项目目录随 `-f` 写法
+  漂移」。实测三种跑法（仓库根 / infra 内 / 任意目录带绝对路径）compose 都按 compose 文件
+  所在目录找到 `.env`，**理由不成立**，已撤回；加了反而把命令绑死在某个 cwd 上。
+- 连带发现 `backup.sh` 跑的是不带 `--env-file` 的裸 compose——上面这条实测同时证明它不受
+  影响。但缺 `infra/.env` 时它会报一句难懂的 interpolation 错，而每日备份是 D-Q52 红线，
+  故加了前置检查换成可照做的提示。
+
+### 未验之处（据实记）
+
+本容器只有 docker CLI、**无守护进程**，容器起不来，故以下三点只能由部署机验：
+redis `--requirepass` 的 `$$` 转义在容器内的实际展开、healthcheck 在认证开启后是否仍判健康、
+`make up` 全链。`$$` 那条有间接证据：`REDIS_PASSWORD` 在 env 里有值时 `docker compose config`
+渲染出的仍是 `$$REDIS_PASSWORD` 而非值本身，说明它按字面 `$` 传给容器内 shell、未被提前展开。
+机器侧执行顺序（备份 → 生成 .env → 停服 → `ALTER ROLE` → 重加密 → `make up` → 验收）
+写在 `.agent/evidence/RS-02a/deploy-rotate-secrets.md`，**顺序不可换**：
+`POSTGRES_PASSWORD` 只在空卷首次 initdb 生效，不单独 `ALTER ROLE` 就会落进
+「配置写着新口令、库里认的还是旧口令」这种最坏状态——看着改完了，门其实还开着。

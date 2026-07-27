@@ -1,5 +1,8 @@
-# 本地全栈：docker compose -f infra/docker-compose.yml up
-# （仓库根 Makefile 提供快捷方式 make up）
+# 本地全栈：make up（＝ docker compose -f infra/docker-compose.yml up）
+#
+# ⚠️ 起之前必须有 infra/.env（从 infra/.env.example 复制后填强随机值）。所有口令一律
+# `${VAR:?...}` 取——**没有默认回退**：变量缺失时 compose 直接报错拒起，而不是悄悄用
+# 一个人人皆知的口令把库开在网上（RS-02a / D-Q68，2026-07-27）。
 name: erp-all
 
 services:
@@ -9,9 +12,16 @@ services:
     environment:
       POSTGRES_DB: erp_all
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?infra/.env 缺 POSTGRES_PASSWORD}
+      # 三业务角色的口令：只在**空卷首次 initdb** 时被 pg-init/02-roles.sh 读取。
+      # 卷已存在时改这里不会真的改密——见 infra/.env.example 的「换库口令」一节。
+      ERP_APP_DB_PASSWORD: ${ERP_APP_DB_PASSWORD:?infra/.env 缺 ERP_APP_DB_PASSWORD}
+      ERP_MIGRATOR_DB_PASSWORD: ${ERP_MIGRATOR_DB_PASSWORD:?infra/.env 缺 ERP_MIGRATOR_DB_PASSWORD}
+      PORTAL_APP_DB_PASSWORD: ${PORTAL_APP_DB_PASSWORD:?infra/.env 缺 PORTAL_APP_DB_PASSWORD}
+    # 只绑 loopback：容器间走 compose 内部网络（服务名 db），本不需要暴露给内网。
+    # 保留宿主机映射是为了部署机本机 psql 取证；内网其他设备连不上即本单验收标准。
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./pg-init:/docker-entrypoint-initdb.d:ro
@@ -24,10 +34,18 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # $$ 转义 → 交给容器内的 sh 展开，口令不出现在宿主机进程表/compose 渲染结果里
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?infra/.env 缺 REDIS_PASSWORD}
+      # redis-cli 自动读该变量 → healthcheck 不必把口令写进命令行
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?infra/.env 缺 REDIS_PASSWORD}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # 加了 requirepass 之后未认证的 PING 返回 NOAUTH 而**退出码仍为 0**，
+      # 原来的 ["CMD","redis-cli","ping"] 会把「认证没配对」判成健康 → 必须验回显。
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -36,9 +54,12 @@ services:
     build: ../backend
     command: ["alembic", "upgrade", "head"]
     environment: &backend_env
-      ERP_DATABASE_URL: postgresql+psycopg://erp_app:erp_app@db:5432/erp_all
-      ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://erp_migrator:erp_migrator@db:5432/erp_all
-      ERP_REDIS_URL: redis://redis:6379/0
+      ERP_DATABASE_URL: postgresql+psycopg://erp_app:${ERP_APP_DB_PASSWORD:?infra/.env 缺 ERP_APP_DB_PASSWORD}@db:5432/erp_all
+      ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://erp_migrator:${ERP_MIGRATOR_DB_PASSWORD:?infra/.env 缺 ERP_MIGRATOR_DB_PASSWORD}@db:5432/erp_all
+      ERP_REDIS_URL: redis://:${REDIS_PASSWORD:?infra/.env 缺 REDIS_PASSWORD}@redis:6379/0
+      # 应用密钥：默认值是 dev-only-change-me，留着即被 Settings 的启动自检拒起
+      ERP_JWT_SECRET: ${ERP_JWT_SECRET:?infra/.env 缺 ERP_JWT_SECRET}
+      ERP_CREDENTIAL_KEY: ${ERP_CREDENTIAL_KEY:?infra/.env 缺 ERP_CREDENTIAL_KEY}
     depends_on:
       db: {condition: service_healthy}
 
@@ -47,6 +68,9 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "erp.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: *backend_env
+    # 8000 保持内网可达（D-Q68 明确划在 RS-02a 范围外）：前端与团队成员要用，且它背后
+    # 有登录/权限/RLS/审计四层。db、redis 那两个口不同——直连即完全绕过这四层。
+    # 明文 HTTP、无反代 → RS-02b（HTTPS 反代）承接。
     ports:
       - "8000:8000"
     depends_on:

@@ -4,22 +4,6 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- 三角色（本地开发口令即角色名，仅限本地；生产口令走环境/Secrets）
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'erp_migrator') THEN
-    CREATE ROLE erp_migrator LOGIN PASSWORD 'erp_migrator';
-  END IF;
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'erp_app') THEN
-    CREATE ROLE erp_app LOGIN PASSWORD 'erp_app';
-  END IF;
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'portal_app') THEN
-    CREATE ROLE portal_app LOGIN PASSWORD 'portal_app';
-  END IF;
-END
-$$;
-
-GRANT ALL ON DATABASE erp_all TO erp_migrator;
-GRANT CREATE, USAGE ON SCHEMA public TO erp_migrator;
--- erp_app/portal_app 的对象级授权由 migration 逐表下发（R1-03），此处不放权
-GRANT USAGE ON SCHEMA public TO erp_app, portal_app;
+-- 三业务角色的建号与授权见同目录 02-roles.sh：口令要从环境变量取，而
+-- docker-entrypoint-initdb.d 下的 *.sql 是 psql 直接喂的、拿不到环境变量，
+-- 故那段迁到 .sh（RS-02a，2026-07-27；此前口令写死＝角色名）。

@@ -289,14 +289,21 @@
   "priority": "P0",
   "dimension": "security",
   "check": "部署与灾备加固【拆两段 D-Q68】RS-02a(P0即刻)：compose 端口收敛(db/redis 绑 127.0.0.1)+更换 PG 默认口令+Redis requirepass+默认密钥硬失败；RS-02b：HTTPS反代+生产构建+备份加密/校验/月度恢复演练+迁云演练 [评审 A3+C5]",
-  "status": "todo",
+  "status": "in_progress",
   "evidence": [
    "specs/external-review-round-1.md"
   ],
   "finding": "【审计实测 2026-07-27，P0】infra/docker-compose.yml 中 5432/6379/8000 均绑 0.0.0.0，POSTGRES_PASSWORD 为默认值 postgres，redis 无 requirepass → 内网任一设备可直连数据库，绕过登录/权限/RLS/审计日志，而库内存有全部店铺 Walmart API 凭证（防关联红线资产）。属\"现在开着的门\"非待排期项。归属=开发 AI（改仓库内配置即改代码），部署 AI 只负责随后重新部署。【RS-02b 备份口径】backup.sh 已有 pg_dump+本地14天+rclone 通道，缺：异地未配/定时任务未确认/恢复演练零次/dump 未加密。落地要求：异地副本排除 refdata schema(1400万商标行可从 USPTO 重建)；rclone crypt 加密后上传；每日 pg_restore --list 轻量校验+每月真恢复演练比对5张关键表行数；失败告警。Owner 侧唯一动作=选云+给密钥。",
   "last_checked_at": "2026-07-27",
   "gate": "RS-02a 无闸门，立即执行（D-Q68）；RS-02b 随 MVP 收尾",
-  "acceptance": "默认JWT/DB密钥prod硬失败；DB/Redis不发布或仅127.0.0.1；HTTPS反代+前端生产构建；refresh token→HttpOnly Secure cookie+CSP/CSRF；备份=PG+非DB文件(payload_ref/邮件/导入报告)+密钥角色配置，加密+校验+月度恢复演练(目标RTO内起服务)；本地→云→回切演练"
+  "acceptance": "默认JWT/DB密钥prod硬失败；DB/Redis不发布或仅127.0.0.1；HTTPS反代+前端生产构建；refresh token→HttpOnly Secure cookie+CSP/CSRF；备份=PG+非DB文件(payload_ref/邮件/导入报告)+密钥角色配置，加密+校验+月度恢复演练(目标RTO内起服务)；本地→云→回切演练",
+  "updates": [
+   {
+    "date": "2026-07-27",
+    "kind": "progress",
+    "text": "【2026-07-27】RS-02a 代码侧落地（本 PR）：compose 中 db/redis 的宿主机端口改绑 127.0.0.1（8000/5173 按 D-Q68 保持内网可达不动）；PG 四角色口令与 Redis requirepass 全部改 ${VAR:?} 注入、无默认回退，缺变量即拒起；pg-init 的角色口令从写死（＝角色名）改为 02-roles.sh 读环境变量、format(%L) 转义；Settings 加启动自检，认出已知弱密钥即拒绝构造，放行须显式 ERP_ALLOW_INSECURE_DEFAULTS 且 prod 下无效。另立 tests/test_infra_hardening.py 作反向不变量（端口挪回全网/口令写死/密钥变量带 :- 兜底/豁免表养僵尸，任一发生即 CI 红）。凭证密钥不能裸换——store_credential 与 proxy 的密文靠它打开，故配 erp.tools.rotate_credential_key：单事务内旧解新加 + 回读逐行比对，不一致即整体回滚，四条实测覆盖（含错误旧密钥必须回滚、库一行未改）。**机器侧尚未执行**：POSTGRES_PASSWORD 只在空卷 initdb 生效，现网必须在运行库上 ALTER ROLE 并按序重加密，指令见 .agent/evidence/RS-02a/deploy-rotate-secrets.md。RS-02b（HTTPS 反代/备份加密/月度恢复演练）未动。"
+   }
+  ]
  },
  {
   "id": "RS-03",
