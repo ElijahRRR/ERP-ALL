@@ -465,9 +465,31 @@
       "backend/tests/db/test_contract_permission_consistency.py",
       "specs/external-review-round-1.md"
     ],
-    "finding": "原记「Fable 本周，specs 单一编辑权」——按 2026-07-26 更正的三 AI 分工，本单四个子项分属不同角色（见下）。**2026-07-27 云端侧完成「契约四向一致性」首次全量探测**（`.agent/evidence/RS-11/four-way-probe-20260727.md`，只读；唯一改动是 `core/authn.py` 加一行把权限码挂到依赖函数上使其可内省，不改行为）。四个面：契约 118 operation（106 带 x-permission）/ 实际路由 112（97 带权限）/ 种子权限码 53。**A 代码权限码→种子、B 契约 x-permission→种子、E 两边权限码一致 —— 三项全清 0 例外**，即 `require_permission` docstring 那句「与 002 契约 x-permission 一字不差」经得起全量检验（此前只是口头约定、从无强制手段）。**C 契约有而路由无 15 条，须分两种性质**：Portal 6 条是**前置声明非漂移**（门户 router 全仓未挂载，属 R2-10 未开工）；Catalog 5 条（category-map / products sources）与 Listing 4 条（listing-errors / maintenance-tasks）为端点未建。**后者解释了 R2-08 考古阶段一那个发现的另一半**——`catalog.source_write`/`catalog.category_write`/`listing.error_admin` 三码之所以曾「无角色可达」，是因为端点本就还没建，属契约先声明、代码后实现；0039 已授给团管属提前授权，不影响正确性。**D 路由有而契约无 9 条是真欠账**：通知中心四端点（前端在用、契约无）+ 采集 worker 五端点。另发现两处小漂移：契约路径参数用 camelCase 而代码用 snake_case（codegen 类型与后端日志命名对不上）；`worker_router` 自带 prefix=/worker/v1 又挂在 /api/v1 下叠成 `/api/v1/worker/v1/...` **双版本号**（改路径是破坏性的，采集 worker 在跑，不建议现在动，但契约补登记时须如实写该路径）。**门禁设计要点已写入报告 §6**：A/B/E 设硬断言；C 需「前置声明白名单」并加反向不变量——工单一旦 accepted 其白名单条目必须清空，否则白名单会变成永久豁免；D 设硬断言（现状 9 条先入白名单登记为欠账）；路径须归一化占位符否则满屏假阳性。**子项归属**：①契约四向校验＝云端 AI（探测已完成，门禁代码待落）②`superseded_by` 标注与 D-Q→文档→工单追踪列＝动 DECISION-FORM 宪法，**需 Owner 批准**后由规划/审查 AI 落笔 ③NOT VALID→VALIDATE 大表 CHECK 纪律入 00-conventions＝图纸，归规划/审查 AI ④001 财务域 immutable ledger 图纸修＝**已由审计侧 421f83d 完成，可核销**。\n\n**2026-07-27 子项① 已落地**：门禁代码 `backend/tests/db/test_contract_permission_consistency.py`（7 条测试）——A/B/E 硬断言，C/D 带白名单硬断言（只冻结 07-27 既有状态，新增漂移即红）。**首跑即红在我自己写的反向不变量上**：C 类 catalog 5 + listing 2 条被我误挂在已收账的R2-02/R2-03/R2-05 名下。查证确认**不是工单误关账、也不是路径漂移**（三单验收口径从无这些端点，`grep` 全仓零命中），是无主欠账——已另立 **CT-0727** 认领，白名单改指本单。门禁经对抗性证伪：伪造未登记路由→D 红；伪造种子外权限码→A 与 E 同红（B 不响应且应当不响应，方向在契约侧）。全量 532 passed（基线 525）、ruff 清、mypy 0 issue。**子项②③ 仍待 Owner 批准 / 规划审查 AI 落笔，④ 已核销；本单不能因① 完成而关账。**\n\n**2026-07-27 附带清偿 evidence-gate 自身弱点**（与本单四向门禁同批 CI 只读门禁）：该闸放行条件「同 diff 有 evidence 变更」可被**纯 churn 满足**——`evidence/R1-11/` 那份 dry-run 快照每跑一遍测试就变两行（sku 库内序号、startDate 构包时刻），请求形态却没变，跑一遍测试即可过闸。已在源头治：新增 `backend/tests/db/_evidence.py` 规范化写入器，把**显式声明**的易变字段换固定占位符并在文件内 `_normalized` 块留痕（不留痕＝拿假象换稳定，比 churn 更坏）。首版在留痕里记了 `sample_original` 原值，**它自己每跑就变**，等于把 churn 搬了个位置——被两跑对比当场抓到，已删。三向证伪：两跑 sha256 逐字节相同 / 注入形态变更精确产出一行 diff（没把闸弄哑）/ 声明路径改名即硬失败（不会静默失效）。闸的 docstring 如实记了残留局限：规范化只覆盖显式声明字段，新写入点漏声明仍会 churn。",
+    "finding": "原记「Fable 本周，specs 单一编辑权」——按 2026-07-26 更正的三 AI 分工，本单四个子项分属不同角色（见下）。",
     "last_checked_at": "2026-07-27",
-    "acceptance": "CI自动四向校验：OpenAPI operation↔实际路由↔x-permission↔permission seed；superseded_by标注；NOT VALID→VALIDATE大表CHECK纪律入00-conventions；前端调用覆盖先做静态清单"
+    "acceptance": "CI自动四向校验：OpenAPI operation↔实际路由↔x-permission↔permission seed；superseded_by标注；NOT VALID→VALIDATE大表CHECK纪律入00-conventions；前端调用覆盖先做静态清单",
+    "updates": [
+      {
+        "date": "2026-07-27",
+        "kind": "progress",
+        "text": "**云端侧完成「契约四向一致性」首次全量探测**（`.agent/evidence/RS-11/four-way-probe-20260727.md`，只读；唯一改动是 `core/authn.py` 加一行把权限码挂到依赖函数上使其可内省，不改行为）。四个面：契约 118 operation（106 带 x-permission）/ 实际路由 112（97 带权限）/ 种子权限码 53。**A 代码权限码→种子、B 契约 x-permission→种子、E 两边权限码一致 —— 三项全清 0 例外**，即 `require_permission` docstring 那句「与 002 契约 x-permission 一字不差」经得起全量检验（此前只是口头约定、从无强制手段）。**C 契约有而路由无 15 条，须分两种性质**：Portal 6 条是**前置声明非漂移**（门户 router 全仓未挂载，属 R2-10 未开工）；Catalog 5 条（category-map / products sources）与 Listing 4 条（listing-errors / maintenance-tasks）为端点未建。**后者解释了 R2-08 考古阶段一那个发现的另一半**——`catalog.source_write`/`catalog.category_write`/`listing.error_admin` 三码之所以曾「无角色可达」，是因为端点本就还没建，属契约先声明、代码后实现；0039 已授给团管属提前授权，不影响正确性。**D 路由有而契约无 9 条是真欠账**：通知中心四端点（前端在用、契约无）+ 采集 worker 五端点。另发现两处小漂移：契约路径参数用 camelCase 而代码用 snake_case（codegen 类型与后端日志命名对不上）；`worker_router` 自带 prefix=/worker/v1 又挂在 /api/v1 下叠成 `/api/v1/worker/v1/...` **双版本号**（改路径是破坏性的，采集 worker 在跑，不建议现在动，但契约补登记时须如实写该路径）。**门禁设计要点已写入报告 §6**：A/B/E 设硬断言；C 需「前置声明白名单」并加反向不变量——工单一旦 accepted 其白名单条目必须清空，否则白名单会变成永久豁免；D 设硬断言（现状 9 条先入白名单登记为欠账）；路径须归一化占位符否则满屏假阳性。**子项归属**：①契约四向校验＝云端 AI（探测已完成，门禁代码待落）②`superseded_by` 标注与 D-Q→文档→工单追踪列＝动 DECISION-FORM 宪法，**需 Owner 批准**后由规划/审查 AI 落笔 ③NOT VALID→VALIDATE 大表 CHECK 纪律入 00-conventions＝图纸，归规划/审查 AI ④001 财务域 immutable ledger 图纸修＝**已由审计侧 421f83d 完成，可核销**。"
+      },
+      {
+        "date": "2026-07-27",
+        "kind": "progress",
+        "text": "**子项① 已落地**：门禁代码 `backend/tests/db/test_contract_permission_consistency.py`（7 条测试）——A/B/E 硬断言，C/D 带白名单硬断言（只冻结 07-27 既有状态，新增漂移即红）。**首跑即红在我自己写的反向不变量上**：C 类 catalog 5 + listing 2 条被我误挂在已收账的R2-02/R2-03/R2-05 名下。查证确认**不是工单误关账、也不是路径漂移**（三单验收口径从无这些端点，`grep` 全仓零命中），是无主欠账——已另立 **CT-0727** 认领，白名单改指本单。门禁经对抗性证伪：伪造未登记路由→D 红；伪造种子外权限码→A 与 E 同红（B 不响应且应当不响应，方向在契约侧）。全量 532 passed（基线 525）、ruff 清、mypy 0 issue。**子项②③ 仍待 Owner 批准 / 规划审查 AI 落笔，④ 已核销；本单不能因① 完成而关账。**"
+      },
+      {
+        "date": "2026-07-27",
+        "kind": "progress",
+        "text": "**附带清偿 evidence-gate 自身弱点**（与本单四向门禁同批 CI 只读门禁）：该闸放行条件「同 diff 有 evidence 变更」可被**纯 churn 满足**——`evidence/R1-11/` 那份 dry-run 快照每跑一遍测试就变两行（sku 库内序号、startDate 构包时刻），请求形态却没变，跑一遍测试即可过闸。已在源头治：新增 `backend/tests/db/_evidence.py` 规范化写入器，把**显式声明**的易变字段换固定占位符并在文件内 `_normalized` 块留痕（不留痕＝拿假象换稳定，比 churn 更坏）。首版在留痕里记了 `sample_original` 原值，**它自己每跑就变**，等于把 churn 搬了个位置——被两跑对比当场抓到，已删。三向证伪：两跑 sha256 逐字节相同 / 注入形态变更精确产出一行 diff（没把闸弄哑）/ 声明路径改名即硬失败（不会静默失效）。闸的 docstring 如实记了残留局限：规范化只覆盖显式声明字段，新写入点漏声明仍会 churn。"
+      },
+      {
+        "date": "2026-07-27",
+        "kind": "progress",
+        "text": "**台账 `finding` 膨胀治理**（本条目自身即首个迁移范例）：查数据发现 R2-08/R2-09 连续两轮成为 rebase 冲突面的病根是**字段形状不对**——`finding` 里装的是按日期追加的时间线，却塞在标量里，两边追加必冲。原设想「拆成裁定/落笔回执两个标量」被数据否掉：那只会变成两个会打架的长字符串；时间线该是数组。门禁②新增三条判据：`finding` ≤ 1200 字（7 条超限者入祖父表、**只准缩不准涨**、缩到线下必须摘牌）+ `updates` 数组形状与 kind 白名单。本条目故意不进祖父表，被门禁当场判红后按日期切成 3 条 updates，finding 2331 → 67 字。四向证伪均按预期变红。"
+      }
+    ]
   },
   {
     "id": "HF-0716",
