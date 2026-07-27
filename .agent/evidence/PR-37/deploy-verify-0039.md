@@ -46,34 +46,45 @@ alembic current
 所以**按用户查会看到 0，那不是迁移失败**——两层要分开验。
 
 ```sql
--- 第一层：0039 授出的 8 个码是否落到角色上（**只查这 8 个码，对 0039 直接敏感**）
-SELECT r.name, count(*) AS granted_by_0039
+-- 第一层：0039 涉及的 8 个码是否落到角色上（**只查这 8 个码，对 0039 直接敏感**）
+SELECT r.name, count(*) AS granted
 FROM app.role_permission rp
 JOIN app.role r ON r.id = rp.role_id AND r.team_id IS NULL   -- 只看模板角色，滤掉团队副本
 WHERE rp.permission_code IN ('procurement.execute','procurement.admin','pricing.write',
-  'catalog.import_read','catalog.import_write','catalog.category_write',
+  'compliance.import_read','catalog.import_write','catalog.category_write',
   'catalog.source_write','listing.error_admin')
 GROUP BY r.name ORDER BY r.name;
 ```
 
-**期望**（云端实跑 `downgrade 0038 → upgrade head` 量得，不是推导）：
+**期望**（云端 2026-07-27 在**改完码之后**实跑量得，按 psql 输出原样抄、含行序，不是推导；
+`downgrade 0038 → upgrade head` 与整链 `downgrade base → upgrade head`（即你上一步跑的那个）
+两种跑法结果相同）：
 
-| name | granted_by_0039 |
+| name | granted |
 |---|---|
 | 团队管理员 | 8 |
 | 审核员 | 2 |
-| 订单员 | 1 |
 | 维护员 | 1 |
+| 订单员 | 1 |
 | 采集员 | 1 |
 
 **模板角色合计 13 行**（＝迁移里 `_GRANTS` 的条目数）。本机若建过团队，库里会**额外**有同名团队
 角色副本各一份（0039 按角色名匹配、不带 `team_id` 过滤，模板与副本都授到）；上面的
 `r.team_id IS NULL` 已把副本滤掉，**所以不管建过几个团队，这张表都该长这样**。
 
-> **为什么换掉了原来那条 SQL**（审查 AI 的 F9）：原判据首列是
-> `count(*) FILTER (WHERE permission_code LIKE 'compliance.%')`，而 **0039 的 8 个码里一个
-> compliance 都没有**——原表里的「团管 5 / 审核员 3」全部来自 0010 与 0035，**跑不跑 0039 都是
-> 这两个数**。拿它判「0039 是否生效」是看错了列。
+> 团管那 8 行里有一行（`compliance.import_read`）其实是 `0010_import_job.py` 的产出，0039 的
+> `WHERE NOT EXISTS` 会跳过它。这张表锁的是**跑完全链后应有的终态**，不是「0039 这一步插了几行」
+> ——终态才是这台机上要验的东西。
+
+> **这条 SQL 被改过两次，都是同一类错：判据和被判对象对不上。**
+> 1. 审查 AI 的 F9：原判据首列是 `count(*) FILTER (WHERE permission_code LIKE 'compliance.%')`，
+>    而当时 0039 的 8 个码里一个 compliance 都没有——原表里的「团管 5 / 审核员 3」全部来自
+>    0010 与 0035，**跑不跑 0039 都是这两个数**。拿它判「0039 是否生效」是看错了列。
+> 2. 审查 AI 的 N1：F1 把 0039 授的码从 `catalog.import_read` 改成了 `compliance.import_read`，
+>    这条 SQL 的 IN 列表**没跟着改**。云端实测过后果：在一个**迁移成功**的库上，旧 IN 列表
+>    返回的是「团管 7 / 审核员 1 / 维护员 1 / 订单员 1，采集员整行不见」＝10，与期望的 13 对不上，
+>    **会把成功判成失败、诱使人去回滚一个好的迁移**（而回滚这个动作本身还踩着 N2 那个坑）。
+>    ——本轮已改 IN 列表，并在改码**之后**重测了上面那张表。
 
 ```sql
 -- 第二层：有没有用户真拿到（现状预期为空）

@@ -503,6 +503,11 @@
         "date": "2026-07-27",
         "kind": "correction",
         "text": "**独立审查 AI 的 F3 在我这道四向门禁上查出方向性 fail-open，已修并实证**。A/B 用 `if p` 把 None 滤掉、E 判 `None == None` 相等、C/D 只比 (method, path)、F 只比 tag——**六组判据没一条问「这个 operation 到底有没有保护」**。我按报告描述**实跑复现**（非静态推导）：把 `order/router.py` 的 `require_permission(\"order.ship\")` 换成 `get_current_user`、同时删掉契约里那行 `x-permission: order.ship`，两侧一起归零后**六组全绿通过**——任何登录用户都能对任意订单发货回传，闸说没问题。**把保护删干净反而最容易过闸。**已补 G 组两条：`PERMISSIONLESS_OPS` 登记 15 条合法无权限端点（认证入口 3 / 自我信息与字典 3 / 通知中心 4 / node 认证域 5，逐条写理由）+ 未登记即红；配防僵尸反向不变量（端点后来加了权限点或改了名，登记必须撤）。修完重跑同一攻击 → 判红，抓它的正是 `test_g_no_route_silently_loses_its_permission`。**首次探针我自己写坏了**（`get_current_user` 未导入，红的是 NameError 不是门禁）——判据为错误的原因失败，看起来像生效了，与本会话一直在修的同形；修探针后才拿到真结果。"
+      },
+      {
+        "date": "2026-07-27",
+        "kind": "correction",
+        "text": "**第三轮审查：上一轮修 F1 引入两处新问题（N1/N2），已一并修掉**。形态值得记——**同一个 commit 里，改码让两处「实跑量得」的数字失效了**，正是本 PR 通篇在治的那类问题换了个位置出现。①**N1**：F1 把 0039 授的码从 `catalog.import_read` 换成 `compliance.import_read`，但给部署机的验收 SQL（`.agent/evidence/PR-37/deploy-verify-0039.md`）IN 列表没跟着换。实测后果已复现：在一个**迁移成功**的库上旧 SQL 返回 团管7/审核员1/维护员1/订单员1、采集员整行不见＝10，与期望 13 对不上——**会把成功判成失败、诱人去回滚一个好的迁移**（方向与 F9 相反）。已改 IN 列表并在**改码之后**重测期望表（`downgrade 0038 → upgrade head` 与整链 `downgrade base → upgrade head` 两种跑法同结果：8/2/1/1/1＝13）。②**N2**：换码之后 0039 的 `_GRANTS` 与 `0010_import_job.py:84-89` 撞了同一对 (团管, `compliance.import_read`)；upgrade 靠 `WHERE NOT EXISTS` 跳过它一行没插，downgrade 却按名无条件删——**单独回滚 0039 会替 0010 把它删了**，团管在合规中心「导入作业」Tab 直接 403，而回滚者以为只撤了 0039。而 N1 恰好会诱发这个回滚动作，两条连着。已加 `_CO_OWNED_NOT_REVOKED` 豁免（方向取「少删好过误删」：团队副本也一并不删，权限没收干净可人工回收，误删是线上功能挂掉）。**CI 现有的 `upgrade → downgrade base → upgrade` 撞不到这条**——降到 base 时 0010 自己的 downgrade 也删那行，两边一起没。故补 `test_0039_downgrade_spares_predecessor_grants`：在事务里跑 `downgrade()` **真正发出的** SQL（monkeypatch `op.execute` 抓，不在测试里照抄拼串逻辑）、查完回滚不改库；配防僵尸 `test_0039_co_owned_exemptions_are_not_zombies`。两条均经证伪：还原成 `_GRANTS` 即红且报出正是那一对，加个 0039 没授的豁免对即红。该门禁**不证明「确实由前序迁移授出」**——静态 grep 给不出出处（`0002_identity.py` 一个文件里既有全部权限码又有全部角色名，拿它当证据等于永远判绿），共有关系由注释注明出处（0010:84-89），此局限已写进 docstring。全量 543 passed / 1 skipped、ruff/mypy 清、evidence-gate 通过、升→降→升三步 0/0/0。"
       }
     ]
   },

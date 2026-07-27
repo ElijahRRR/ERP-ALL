@@ -39,6 +39,8 @@
 
 故改授 `compliance.import_read`（同样三个角色）。顺带修了 0010 的一个窄口：0010 只授给
 **模板**团管一家，本迁移按角色名匹配且不限 `team_id`，既有团队的同名副本一并覆盖。
+**但这个重叠也带来了回滚风险**——(团管, `compliance.import_read`) 这一对是 0010 的产出、
+本迁移只是「跳过」它，downgrade 若照删就会替 0010 把它删了；见下方 `_CO_OWNED_NOT_REVOKED`。
 `catalog.import_read` 这个死码**不在本迁移里删**（删种子码要先清 `role_permission`，现网可能
 有运维手工授予，属数据破坏性操作），改为在可达性门禁里显式登记为待删死码 + 另立工单。
 """
@@ -74,6 +76,28 @@ _GRANTS = [
 
 _CODES = sorted({code for _, code in _GRANTS})
 
+# ── downgrade 不回收的「共有对」（2026-07-27，独立审查 AI 的 N2）──
+#
+# 这些 (角色, 码) 组合**不是本迁移的产出**：`0010_import_job.py:84-89` 已经把
+# `compliance.import_read` 授给了模板团队管理员。本迁移的 upgrade 靠 `WHERE NOT EXISTS`
+# 跳过它（模板那行一条都没插），downgrade 却按 (角色名, 码) 无条件删——**单独回滚 0039
+# 会连带抹掉 0010 的产出**：模板团管失去 `compliance.import_read`，合规中心「导入作业」
+# Tab（`CompliancePage.tsx:27` 的 `has('compliance.import_read')`）与三个 `/import-jobs*`
+# 端点直接 403，而回滚的人只以为自己撤了 0039。
+#
+# **这个重叠正是 F1 那次改码造成的**——初版授的是 `catalog.import_read`（与 0010 不同码，
+# 无重叠），改授 `compliance.import_read` 之后才与 0010 撞上。
+#
+# 方向取「少删好过误删」：团队副本那几行确实是本迁移插的（0010 只授模板、不带团队副本），
+# 这里也**一并不删**。留着的后果只是权限没收干净，可由运维在面板上人工回收；误删的后果是
+# 线上功能直接挂掉，且没有任何信号。CI 的 `upgrade → downgrade base → upgrade` 撞不到这条
+# ——降到 base 时 0010 自己的 downgrade 也会删掉那行，两边一起没，看不出是谁删的。
+_CO_OWNED_NOT_REVOKED = {
+    ("团队管理员", "compliance.import_read"),  # 0010:84-89 已授模板团管
+}
+
+_REVOKES = [pair for pair in _GRANTS if pair not in _CO_OWNED_NOT_REVOKED]
+
 
 def upgrade() -> None:
     values = ",".join(f"('{role}','{code}')" for role, code in _GRANTS)
@@ -92,8 +116,9 @@ def downgrade() -> None:
     """只回收本迁移授出的 (角色名, 权限码) 组合，不按权限码整列删。
 
     整列删会误伤运营在面板上手工授的同码权限——那是 identity 域的正常操作，不属本迁移产出。
+    同理，`_CO_OWNED_NOT_REVOKED` 里那些前序迁移已授的组合也不回收（见该表注释）。
     """
-    pairs = ",".join(f"('{role}','{code}')" for role, code in _GRANTS)
+    pairs = ",".join(f"('{role}','{code}')" for role, code in _REVOKES)
     op.execute(
         f"""
         DELETE FROM app.role_permission rp

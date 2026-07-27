@@ -19,10 +19,14 @@
 显式列入下面的 `SUPER_ONLY`。新增权限时必须二选一，不许沉默。
 """
 
+import importlib.util
 from pathlib import Path
+from types import ModuleType
+from unittest import mock
 
 import psycopg
 import pytest
+from alembic import op as alembic_op
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -124,6 +128,10 @@ def test_template_roles_seeded(migrated_db: str) -> None:
 #
 # 逐条钉死「哪个角色拿到哪个码」。没有这层，将来谁动了 0039 的 _GRANTS 不会有任何信号——
 # 上面的可达性不变量只管「至少一个角色持有」，不管持有者是谁；授给错的角色照样能过。
+#
+# 锁的是**跑完全链后应有的终态**，不是「0039 这一步新插了哪些行」：
+# (团管, `compliance.import_read`) 那一行是 `0010_import_job.py:84-89` 的产出，0039 的
+# `WHERE NOT EXISTS` 会跳过它（另两个角色才是 0039 新授的）。
 _EXPECTED_0039 = {
     "procurement.execute": {"订单员", "团队管理员"},
     "procurement.admin": {"团队管理员"},
@@ -139,7 +147,7 @@ _EXPECTED_0039 = {
 
 
 def test_0039_grant_matrix_exact(migrated_db: str) -> None:
-    """0039 补授的 8 个码，其模板角色持有者集合必须与裁定完全一致（多一个少一个都红）。"""
+    """0039 涉及的 8 个码，其模板角色持有者集合必须与裁定完全一致（多一个少一个都红）。"""
     with psycopg.connect(migrated_db) as conn:
         rows = conn.execute(
             "SELECT rp.permission_code, r.name FROM app.role_permission rp"
@@ -156,6 +164,85 @@ def test_0039_grant_matrix_exact(migrated_db: str) -> None:
         if actual[code] != want
     ]
     assert not diffs, "0039 授予矩阵与裁定不符：\n  " + "\n  ".join(diffs)
+
+
+# ── 0039 回滚不许替前序迁移删东西（2026-07-27，独立审查 AI 的 N2）──
+
+
+def _load_0039() -> ModuleType:
+    path = REPO_ROOT / "backend" / "alembic" / "versions" / "0039_permission_grants_backfill.py"
+    spec = importlib.util.spec_from_file_location("_mig_0039", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _downgrade_sql(mod: ModuleType) -> list[str]:
+    """抓 `downgrade()` 真正发出的 SQL，而不是在测试里照抄一遍它的拼串逻辑。
+
+    照抄等于测试自己的副本，改了迁移不改副本就测不出来。
+    """
+    stmts: list[str] = []
+    with mock.patch.object(
+        alembic_op, "execute", side_effect=lambda sql, *a, **k: stmts.append(str(sql))
+    ):
+        mod.downgrade()
+    return stmts
+
+
+def test_0039_downgrade_spares_predecessor_grants(migrated_db: str) -> None:
+    """单独回滚 0039，不许把 0010 授给模板团管的 `compliance.import_read` 一并删掉。
+
+    形态：0039 的 `_GRANTS` 与 0010 的授权撞了同一对 (团管, compliance.import_read)。
+    upgrade 靠 `WHERE NOT EXISTS` 跳过（一行没插），downgrade 却按名删（把 0010 的删了）。
+    后果是回滚 0039 之后合规中心「导入作业」Tab 对团管 403，而回滚的人以为只撤了 0039。
+
+    做法：在事务里跑 `downgrade()` **真正发出的** SQL，查完立即回滚，不改库。
+    CI 现有的 `upgrade → downgrade base → upgrade` 撞不到这条——降到 base 时 0010 自己的
+    downgrade 也删那行，两边一起没，看不出是谁删的。
+    """
+    mod = _load_0039()
+    stmts = _downgrade_sql(mod)
+    assert stmts, "downgrade() 一条 SQL 都没发——判据会永远绿"
+
+    query = (
+        "SELECT r.name, rp.permission_code FROM app.role_permission rp"
+        " JOIN app.role r ON r.id = rp.role_id AND r.team_id IS NULL"
+    )
+    with psycopg.connect(migrated_db) as conn:
+        try:
+            before = {(str(a), str(b)) for a, b in conn.execute(query).fetchall()}
+            for sql in stmts:
+                conn.execute(sql)  # type: ignore[arg-type]
+            survived = {(str(a), str(b)) for a, b in conn.execute(query).fetchall()}
+        finally:
+            conn.rollback()
+
+    # 只看降级前真在库里的对：压根不存在的对归 `..._are_not_zombies` 管，别在这里报成「被删了」
+    killed = sorted(p for p in mod._CO_OWNED_NOT_REVOKED if p in before and p not in survived)
+    assert not killed, (
+        "0039 的 downgrade 删掉了前序迁移的授权（这些对声明为共有、本迁移只是跳过未插）：\n  "
+        + "\n  ".join(f"{role} / {code}" for role, code in killed)
+    )
+
+
+def test_0039_co_owned_exemptions_are_not_zombies() -> None:
+    """豁免表不许养僵尸：声明为共有的对必须真在 `_GRANTS` 里，否则是指向虚空的条目。
+
+    **这条不证明「确实由前序迁移授出」**——那需要「0039 跑之前库里有没有这行」的出处信息，
+    而静态 grep 给不出：`0002_identity.py` 一个文件里既种了全部权限码、又有全部角色名和
+    role_permission 授权，任何 (角色, 码) 组合都能在它里面搜到，拿它当证据等于永远判绿。
+    要真查出处得在 0038 那个版本的库上看，须另起一个库跑完整迁移链，代价不值。
+    故这里只挡「豁免了一个本迁移根本没授的对」，共有关系本身由 `_CO_OWNED_NOT_REVOKED`
+    的注释注明出处（0010:84-89），新增豁免时须同样注明。
+    """
+    mod = _load_0039()
+    stale = sorted(set(mod._CO_OWNED_NOT_REVOKED) - set(mod._GRANTS))
+    assert not stale, (
+        "以下豁免对不在 _GRANTS 里（0039 压根没授它，豁免无意义——多半是改码后忘了同步）：\n  "
+        + "\n  ".join(f"{role} / {code}" for role, code in stale)
+    )
 
 
 def test_pricing_read_write_symmetry(migrated_db: str) -> None:
