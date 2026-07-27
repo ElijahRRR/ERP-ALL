@@ -85,8 +85,14 @@
   Redis pubsub 配置广播"的实现指定作废——该缓存无业务读者且方向为 fail-open，
   与档位闸必须 fail-closed 相悖；直读延迟≈0）。即时生效的**目标**保留。
 
-**验收**：同一商品在三档下各跑一遍采集→审核→上架→定价全链：全自动零人工介入、
-半自动在设定环节停、人工档每环节停。**四环对应 flow**（裁定 2 补齐，判据不下调）：
+**验收（Owner 2026-07-27 裁定 Q1 改判据，替代原"同一商品三档各跑一遍"）**：
+**同一 SKU 家族取 A/B/C 三件，分别在 manual / semi / auto 下各跑一档**采集→审核→
+上架→定价全链：全自动零人工介入、半自动在设定环节停、人工档每环节停。
+> 改判据理由：商品状态**单向前进**（`ingested → audit_passed → listing draft → live`），
+> 跑完 auto 档回不到 manual 档，全仓无状态回退工具——**原判据在当前状态机下物理上
+> 无法执行**，会在验收当天卡住。判据的真实目的是"三档在同一条流水线上都走得通"，
+> 三件等价输入同样证明。**明确不做**为验收引入状态回退能力（含 `is_test` 专用重置
+> 脚本）：收益一次性、风险长期。**四环对应 flow**（裁定 2 补齐，判据不下调）：
 ①`scrape_to_audit` ②`audit_to_listing` ③`listing_dispatch` ④`pricing_watch`。
 **切档生效口径（裁定 4 修订，替代原"60s 内生效"）**：实时求值类 flow 于**下一次
 决策**即生效（含 auto 档 beat 逐条目读档，最坏陈旧=一个条目，非一批）；创建快照类
@@ -211,6 +217,10 @@ erpAPI 仓考古，而插件在独立仓（`ElijahRRR/AMZ-Purchase-Assistant`）
 - **13c 三档接线**：`purchase_execute` flow（§09 v2.1，创建快照型）；**auto 档护栏必备**
   ——`amount_ceiling` 单单上限、`daily_cap` 账号日限、`price_delta_pct` 较预估涨价超阈值
   转人工。**花真金白银的自动化，护栏缺失即禁止开 auto**。
+  ⚠️ **护栏消费点须从零建（2026-07-27 核实）**：`automation_policy.config` 目前**全仓零
+  读者**——内核只 `SELECT mode, enabled`，四个护栏键在 `backend/src` 零命中。
+  **不得假设"config 里配上就生效"**；13c 必须同时交付读取与执行护栏的代码，并以
+  "超 `amount_ceiling` 必转人工且零下单"的测试证伪之（判据已在本单验收②）。
 - **13d 回填与异常**：回填 `purchase_order_ref`/`purchase_cost`/`carrier`/`tracking_no`
   与状态流转；缺货/涨价/账号被风控 → `exception_reason` 并转人工；与渠道订单对账。
 - **13e 迁移切换（本单最高风险片）**：从厂商 SaaS 切换按**买家账号逐个灰度**；
