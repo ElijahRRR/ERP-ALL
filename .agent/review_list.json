@@ -791,8 +791,9 @@
    ".agent/evidence/RS-02a/deploy-rotate-secrets.md"
   ],
   "finding": "【2026-07-27，独立审查第三轮发现 + RS-02a 真机实证】`backend/Dockerfile` 为 `WORKDIR /app` + `COPY . .`，全仓无 `.dockerignore`，故构建机上的 `backend/.env` 被打进镜像 `/app/.env`，而 `SettingsConfigDict(env_file=\".env\")` 读得到。**当前不构成绕过**：环境变量优先级高于 dotenv，compose 注入了全部被守的值，且 `ERP_ENV=prod` 让镜像里那句 `ERP_ALLOW_INSECURE_DEFAULTS=true` 失效——RS-02a 的白名单修正正好是挡住这条路的那一层，换回黑名单会同时打开这个口子。**但它已经造成过一次实际后果**：RS-02a 轮换凭证密钥时，真正在用的旧密钥就藏在这个 `/app/.env` 里，指令按代码默认值写导致 dry-run 失败、部署机被挡一轮。另有连带：该机 `backend/.env` 里那个 `ERP_CREDENTIAL_KEY` 现已是死值（密文已换新密钥），宿主机上直接跑后端会拿到一把打不开任何东西的钥匙。落地：加 `.dockerignore`（至少挡 `.env`/`.venv`/`__pycache__`/`.git`），并清理部署机上那份已失效的 `backend/.env`。",
-  "last_checked_at": "2026-07-27",
-  "gate": "无闸门；镜像瘦身与密钥卫生，随下一次 infra 改动捎带"
+  "last_checked_at": "2026-07-28",
+  "gate": "无闸门；镜像瘦身与密钥卫生，随下一次 infra 改动捎带",
+  "acceptance": "①`backend/.dockerignore` 存在且至少挡 `.env`/`.venv`/`__pycache__`/`.git`；②重建镜像后容器内 `/app/.env` 不存在（测试化断言，非目视）；③部署机上那份已失效的 `backend/.env` 已清理（其 ERP_CREDENTIAL_KEY 在密钥轮换后为死值，留着会让宿主机直跑后端拿到打不开任何密文的钥匙）；④CI 与 `make up` 容器路径不回归；⑤回归守卫：`.dockerignore` 被删或漏掉 `.env` 即红。"
  },
  {
   "id": "R2-13",
