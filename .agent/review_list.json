@@ -750,6 +750,11 @@
     "date": "2026-07-28",
     "kind": "progress",
     "text": "【增量2 部署诊断定论：team 2 = R2-02 对拍验证残留】五条只读诊断回执（DIAG_EXIT=0）：team 2 名即「R2-02对拍」（2026-07-14 建）、audit_log 无其建团行（仅 team 1 有 identity.team_create）、模板 7 角色全缺、team 1 则七副本齐全（团管 42 码）——四特征齐指「绕过 API 直插 SQL 建团」的验证残留，非真团队。顺带发现待查（不阻塞）：team 2 唯一用户有 user_role 绑定但本团队零角色，绑定必指向他团队或模板角色（跨团队绑定，RLS 杂音候选）。定性闭环：0040/0039 按名回填漏过它属预期语义；「既有真团队看不到面板」的风险场景在本机不存在（唯一真团队 team 1 两码齐全）。待 Owner 三岔口拍板（改验收判据与数据处置均在必停清单）：(a) 判残留、验证判据改为「API 建团且有副本的团队全中」重发（推荐，不写数据）；(b) 补副本把 team 2 转正后重验；(c) 删除 team 2（另行指令）。team 2 本体处置不挂 PR #42 闸序。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "ruling",
+    "text": "【Owner 裁定 (c)：删除 team 2 后重验】三岔口拍板为删除（验证残留彻底清掉）。删除指令落仓 .agent/evidence/R2-09/deploy-cleanup-team2-pr42.md：单事务双硬闸——闸 1 身份核对（id=2 必须名为 R2-02对拍）；闸 2 由 pg_constraint 动态清点全部 28 张 FK 表（含 shared_resource 双列），除 app_user 恰 1 行外任何非 0 即 RAISE 中止整体回滚（防残留团队名下挂业务数据、超授权删除）；三删固定顺序 user_role→app_user→team 全带 RETURNING 取证，user_role 的 role_id 顺带回答跨团队绑定疑点；audit 三族无 team FK 一行不删。删除后重验 = 直接重跑 deploy-verify-pr42.md 原文，判据零修改（1 团队时 C 段 = 模板+team1 = 团队数+1 自然成立）。"
    }
   ]
  },
