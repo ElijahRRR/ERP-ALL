@@ -760,6 +760,11 @@
     "date": "2026-07-28",
     "kind": "ruling",
     "text": "【v1 闸 2 中止（product=400）→ Owner 扩权删净】v1 单事务按设计中止整体回滚（CLEANUP_TEAM2_EXIT=3，team 2 名下 400 行产品超授权范围，部署 AI 未扩删未重试——处置正确）。沙箱同构 schema 复核：product 仅被 variant_member/listing/listing_spec 三表引用（全 NO ACTION），而 v1 闸 2 已证 28 张 team FK 表中仅 product 非零（listing/variant_group 等 team 2 下全 0）→ 400 行是无下游挂载的裸产品行（R2-02 对拍导入后未走到上架）。Owner 追加裁定：扩权删净含 400 行产品。v2 指令追加至 deploy-cleanup-team2-pr42.md：闸 2 例外集扩为 {app_user=1, product=恰400}（行数不符即中止——与授权时状态漂移的自检）；新增闸 3 三张引用表对 team 2 产品必须 0 行（裸产品定性的机器复核，非 0 中止）；四删顺序 product→user_role→app_user→team，产品段用 WITH del RETURNING 计数取证；仍单事务任一异常整体回滚；audit 三族不动。删除成功后直接重跑 deploy-verify-pr42.md 原文，判据零修改。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【v2 闸 3 中止（listing_spec=4）→ 发现清点盲区，转全量只读清点】v2 回执：闸 3 拦下 4 行 listing_spec 挂载（variant_member=0 listing=0），单事务整体回滚分毫未动，部署 AI 未扩删未重试。沙箱复核两点：①listing_spec 有 team_id 列但无 team FK——按 FK 枚举的 28 表清点天然照不到它，这 4 行即 R2-03 规格构建器时期对 team 2 产品的构建产物（offer_mode/wpt/payload/build_hash 列形），且无任何表引用 listing_spec，删除是终点无连锁；②同型盲区共 19 张父表（有 team_id 无 team FK，除审计三族）：scrape_task/scrape_result（对拍原始采集数据的最可能落点）、feed_item、listing_state_history、llm_usage_log、notification、order/return/price/procurement/refund/shipment/task_run 族——不挡删团队但属「team 2 名下数据」，删净语义是否覆盖需 Owner 见数拍板。改策略：不再按闸逐次挤——先发全量只读清点（19 父表 team_id=2 行数全打出含 0、4 行 listing_spec 预览不含 payload），拿完整数字后一次定 v3 终版。审计三族无论如何不动（留痕铁律）。"
    }
   ]
  },
