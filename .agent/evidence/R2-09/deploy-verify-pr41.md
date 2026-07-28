@@ -51,15 +51,6 @@ echo "TRACKED_DIRTY_EXIT=$LASTEXITCODE"
 - **期望后者为空**。为空 = 没有已跟踪文件被改动，**可以安全切分支**（未跟踪文件不影响）。
 - **非空才停**：那说明有人在这台机上直接改过仓库里的文件，停下贴回，不要继续。
 
-```powershell
-# 未跟踪文件是否会与目标分支撞名（撞名 checkout 会被 git 拒绝）
-git checkout --no-overlay claude/r2-03-launch-leg5n8 --dry-run 2>&1
-echo "CHECKOUT_DRYRUN_EXIT=$LASTEXITCODE"
-```
-
-若你的 git 版本不支持 `--dry-run`，跳过这条直接做下一步的 `git checkout`——**真撞名时
-git 会自己拒绝并列出文件名**，那时停下贴回即可，不会造成损坏。
-
 > **本机已知的未跟踪文件（2026-07-28 回执）**：`.codex/`、`AGENTS.md`、`RS-02a-runbook.md`、
 > `erp_all-before-0039.dump`、`frontend/.pnpm-store/`。云端侧已逐个核过：**这五个在 `main`
 > 与验证分支上都不存在同名已跟踪文件**，所以 checkout 不会碰它们，也不会被拒绝。
@@ -70,12 +61,37 @@ git 会自己拒绝并列出文件名**，那时停下贴回即可，不会造�
 > 你不要删它、也不要打开看它的内容。**
 
 ```powershell
-git checkout claude/r2-03-launch-leg5n8
+# ⚠️ 必须用 -B：git fetch 只更新 origin/<分支>，**不会**动已存在的同名本地分支。
+# 直接 `git checkout <分支>` 检出的是这台机上的陈旧本地副本（2026-07-28 实际踩到）。
+git checkout -B claude/r2-03-launch-leg5n8 origin/claude/r2-03-launch-leg5n8
+echo "CHECKOUT_EXIT=$LASTEXITCODE"
+git rev-parse --short HEAD
+git rev-parse --short origin/claude/r2-03-launch-leg5n8
+git status -sb
 git log --oneline -3
 ```
 
-**贴回②**：`git log` 三行。**期望最上面一行是 `28769e8`**（若不是，说明我又推了新提交，
-停下告诉我实际看到的 sha，我核对后再让你继续）。
+**贴回②**：`CHECKOUT_EXIT` + 两个 `rev-parse` 的输出 + `git status -sb` 那一行 + 三行 log。
+
+**判据（自校验，不依赖我写死的 sha）**：
+- `CHECKOUT_EXIT=0`；
+- **两个 `rev-parse` 输出必须完全相同**——这就是「检出的确实是远端最新」的全部判据；
+- `git status -sb` **不得出现 `ahead` / `behind` / `diverged`**（应形如
+  `## claude/r2-03-launch-leg5n8...origin/claude/r2-03-launch-leg5n8`，后面没有计数）。
+
+> **为什么改成自校验**：初版让你比对我写死的 sha（`8dac51e` → `28769e8` → …）。
+> 但这个分支在 main 每次推进后都会 rebase，**sha 一直在变，我写进指令的那一刻就开始过期**。
+> 「本地 HEAD == 远端分支尖端」是不会过期的不变量。**这个毛病在 PR 正文里已经犯过四次**，
+> 不该再带到给你的指令里。
+
+> **`-B` 会丢弃本地分支上的独有提交，这里是安全的**：2026-07-28 回执显示这台机的本地副本
+> 停在 RS-02a 时期（`3d5178d` / `2aee4fb` / `23c8ede` 等 6 个）。云端侧已实证——
+> 那些提交改的文件在 `main` 上**已是最终态**（逐文件 diff 为空，引入的标识符都在），
+> `1986bb1` 是 PR #39 的 **squash 合并**（单亲），内容早已并入 `main`。
+> 所以丢的是**已合并内容的陈旧副本**，零损失；且 git reflog 90 天内仍可恢复。
+>
+> 若 `git log --oneline origin/claude/r2-03-launch-leg5n8..HEAD@{1}` 里出现**不是我写的提交**
+> （作者非 Claude、或消息与 R2-09/RS-02a 无关），**停下贴回**——那说明这台机上有人提交过东西。
 
 ---
 
@@ -283,11 +299,12 @@ echo "ROLLBACK_HEALTH_EXIT=$LASTEXITCODE"
 
 ## 汇总：一共 11 条贴回
 
-①仓库 head 与 `git status --untracked-files=no` ②分支三行 log ③`UP_EXIT`+`ps` ④内核 import+`KERNEL_EXIT`
+①仓库 head 与 `git status --untracked-files=no` ②`CHECKOUT_EXIT`+两个 rev-parse（**必须相同**）+`status -sb`+三行 log ③`UP_EXIT`+`ps` ④内核 import+`KERNEL_EXIT`
 ⑤健康码 ⑥A/B/C/D 四段 + `CENSUS_EXIT` ⑦两个 count + `PROBE_EXIT` ⑧日志匹配（无则写「无匹配」）
 ⑨切回 main 的 log + `ROLLBACK_UP_EXIT` ⑩**必须失败**的 import + `ROLLBACK_KERNEL_EXIT` ⑪切回后健康码
 
 **一票否决项**（命中任一即停，不要继续）：
+- 前置 ② 两个 `rev-parse` **不相同**，或 `status -sb` 出现 ahead/behind/diverged
 - 第 1 步 migrate 执行了新迁移（与「零迁移」矛盾）
 - 第 2 步 `FLOWS` 不是 10 或 import 失败
 - 第 3 步 `divergent_gate` / `divergent_mode` 不是 0

@@ -695,6 +695,11 @@
     "date": "2026-07-28",
     "kind": "correction",
     "text": "【2026-07-28 部署机前置回执 → 修我自己写宽的一条判据 + 两条真机侧发现】部署机按指令停在前置检查，**停得对，错在指令**。**更正 1（判据写宽）**：我写的是「`git status --porcelain` 期望为空，非空就停」，但回执里 5 项全是**未跟踪文件**（`??`）：`.codex/`、`AGENTS.md`、`RS-02a-runbook.md`、`erp_all-before-0039.dump`、`frontend/.pnpm-store/`。**未跟踪文件对切分支无害**——git 只在「未跟踪文件与目标分支的已跟踪文件同名」时才拒绝 checkout。已逐个核过：这 5 个在 main 与验证分支上**都不存在同名已跟踪文件**，checkout 安全。指令已改为 `git status --porcelain --untracked-files=no`（只拦已跟踪文件的未提交改动）+ 撞名 dry-run。**更正 2（措辞不准）**：第 6 步原写「回滚到 main」，但回执显示部署机 HEAD 是 **`1986bb1`**（RS-02a 那次合并），**比 main 落后 5 个提交**——所以那一步对这台机是**前进**不是回滚。已核 `1986bb1..1f09edf` 在 backend/frontend/workers/infra 下**唯一改动是 `infra/local-deploy/README.md`（+26 行文档）**，其余全是 .agent/ 与 specs/ 正文，**即运行代码与当前 main 逐字相同、无功能漂移**。指令已改措辞并给出两个可接受终态（main 或 1986bb1）。**顺带结清一条悬账**：RS-02a 之后那次「部署机切回 main 回执」始终未回——本回执给出答案：**没切，机器一直停在 1986bb1**。**真机侧发现（需 Owner 定）**：`erp_all-before-0039.dump` 是一份**生产库转储**，躺在仓库根且**此前未被 .gitignore 忽略**——一次 `git add -A` 就会把生产转储提交进仓库。已把 `*.dump` / `*.dump.gz` / `*.sql.gz` / `.pnpm-store/` 加进 `.gitignore` 堵死误提交路径（仓库内无已跟踪的同类文件，加忽略零影响）。**转储文件本身留不留、何时删归 Owner 定**，云端侧不动它、也未让部署机删或打开它。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【2026-07-28 部署机第二次停手 → 又是我的指令错：checkout 拿到陈旧本地分支】部署机执行 v2 前置后停在提交核验点：检出的三行 log 是 RS-02a 时期的 `3d5178d`/`2aee4fb`/`23c8ede`，本地与远端分叉（本地 6、远端 17 个独有提交）。**根因是我的指令写错**：`git fetch origin <分支>` 只更新 `origin/<分支>`，**不会动已存在的同名本地分支**；这台机上有 RS-02a 时期留下的本地副本，`git checkout <分支>` 检出的是那个陈旧副本。**修法**：改用 `git checkout -B <分支> origin/<分支>`。**安全性已实证**：本地那 6 个独有提交改的文件在 main 上**已是最终态**（逐文件 diff 为空；`_ALLOW_ENV_VALUES`/`docs_enabled` 等引入的标识符在 main 上都在），且 `1986bb1` 是 PR #39 的 **squash 合并（单亲）**，内容早已并入 main——丢的是已合并内容的陈旧副本，零损失，reflog 90 天可恢复。**同时改掉一个更根本的毛病**：初版判据是「比对我写死的 sha」，而本分支随 main 每次推进都会 rebase，**sha 写进指令那一刻就开始过期**（已从 8dac51e→28769e8→d9f8ab5 变了三次）。改为**自校验不变量**：`git rev-parse HEAD` 必须等于 `git rev-parse origin/<分支>`，且 `git status -sb` 不得出现 ahead/behind/diverged。一票否决项同步加这一条。**这与 PR 正文失准四次是同一个病根——快照 vs 移动的 head**，不该再带进给部署机的指令。另删掉前置里那段现已多余且写的是旧命令的 `--dry-run` 撞名探测（`-B` 已覆盖，留着会误导）。"
    }
   ]
  },
