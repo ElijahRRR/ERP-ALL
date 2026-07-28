@@ -858,6 +858,11 @@
     "date": "2026-07-27",
     "kind": "correction",
     "text": "**独立审查 AI 出具 PR #37 审查报告（10 条），逐条复核后的两处数字/范围更正**：①**F8：0039 幂等往返数字「re-up 恢复 5 行」是错的**。我实跑 `downgrade 0038 → upgrade head` 量得：**模板角色 13 行**（＝`_GRANTS` 条目数，与报告静态推导一致），本地库另有团队角色副本 49 行，合计 62。报告只能推导干净库的 13，实测补上了「有团队时按同名副本成倍展开」这一半。原来的 5 恰好等于去重角色数，口径串了。②**F4：dry-run 快照归位在全仓 7 条渠道写路径里只覆盖了 3 条**。剩余四处仍写死 `result={\"dry_run\": True}`：`order/ship.py:214`、`:244`、`pricing/service.py:535`、`:793`。发货回传与价格推送同属渠道写路径，A152 真调前仍观测不到将发内容。**本 PR 不做，明确挂单**，别让 PR 正文读起来像已闭环。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "landed",
+    "text": "【验收① 结清：USPTO 三日连测 3/3 PASS】07-26（无数据日）+ 07-27 + 07-28 全 PASS，证据回填 .agent/evidence/R2-12/uspto-3day-verification.md 三日记录表。交叉校验自洽：completed_files 232→233→234 每日恰 +1 且与 latest_file 逐日前推一致；total 增量小于 records_inserted 属正常（ON CONFLICT DO UPDATE 更新不涨行数）；revision 204→206→210 逐日递增。**两处如实标注、不含糊**：①07-27 无 schtasks 直证（只保留最近一次运行，已被 07-28 覆盖），判定改由两个独立机器时间戳互证——日志文件名精确落在 18:00:01、etl_progress.completed_at=10:00:21 UTC（＝北京 18:00:21，DB 自写与日志无关）；已记为间接证据并留改进项：下轮窗口前让 .bat 收尾把 schtasks 四项写进当日日志，直证逐日留痕。②判据第三句「审核检索可见新商标」**本轮无真机操作**，改由三段代码事实闭合：检索出口可用（验收④ 已实测 nike+LIVE 208 条 / 无权限 403）；新行 mark_norm 必非空（bulk_import_trademark.py:110 与 import_service.py:392 逐字同式派生，且缺 mark_text 的行计 err，两日 err=0 ⇒ 全部派生成功——这正是该子句要防的「只填 mark_text 不填 mark_norm 则行数全对但搜不到」）；检索 router.py:394 直查 refdata.trademark 无缓存无物化视图。残余=无人真在搜索框搜过新商标，风险已压极低故不阻塞，下次上机顺手补一次实搜。**观察项两条**（不阻塞）：revision 步长 2/4 与行数不成比例、口径未明；[DELTA] rows=65184 vs 逻辑 65177 的 7 行差有两种解释（部署侧称 CSV 内嵌换行、仓内判据写的是「无 mark 文本行」），err=0 且 merged==total 已证未丢数。收账后按 runbook 处置：部署机可切回 main（含 9bc0bbbf 两跳修复），远端分支 claude/fix-uspto-json-download 可删。"
    }
   ]
  },

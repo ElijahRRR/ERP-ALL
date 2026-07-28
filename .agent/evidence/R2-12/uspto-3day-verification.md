@@ -237,8 +237,54 @@ docker compose -f infra/docker-compose.yml exec api \
 |---|---|---|---|---|
 | ~~2026-07-25~~ | 已触发 18:00，**Last Result=10** | **报错**：`local secret file missing`（假象，真因 bat LF-only） | 跳过 | **FAIL（情形 A）·不计入** |
 | **2026-07-26** | **PASS**：`Last Run 18:00:01` / `Last Result=0` / `Ready` / `Enabled` / `Next Run 07-27 18:00` | **PASS（无数据日）**：新下载 0、新导入 0（`apc260723` HTTP 429 仍在限流窗内）；完整性检查全过、ETL 错误 0、孤儿检查通过；`ETL_PROCESS=NONE`；日志正常收尾 `USPTO daily chain done` | USPTO 14,216,076 / newest `2026-07-25` / completed 232 · ERP 4,475,105 / newest `2026-07-25` / **revision 204** | **PASS（第 1/3 日，情形「无数据日」）** |
-| 2026-07-27 | 待回报（Next Run 07-27 18:00） | — | — | — |
-| 2026-07-28 | — | — | — | — |
+| **2026-07-27** | **PASS（间接双时间戳互证，非 schtasks 直证——见下方判定依据）**：自动日志 `uspto-daily-20260727-180001.log`，启动 `18:00:01`，收尾 `USPTO daily chain done` | **PASS**：候选 2 → `apc260723` HTTP 429 跳过、`apc260726.zip` 下载 3.9 MB；导入 `4,901/4,901`、0 错误、7.6 秒；完整性检查全过、孤儿检查通过、ETL 总错误 0 | USPTO 14,217,597 / newest `2026-07-26` / completed 233 · ERP 4,476,727 / newest `2026-07-26` / **revision 206**（↑204）· 导入 4,753/4,753/err 0 | **PASS（第 2/3 日）** |
+| **2026-07-28** | **PASS（直证）**：`Last Run 2026/7/28 18:00:01` / `Last Result=0` / `Next Run 07-29 18:00` / `Logon Mode Interactive only` / `Ready` / `Enabled` | **PASS**：候选 2 → `apc260723` HTTP 429 跳过、`apc260727.zip` 下载 55.0 MB；导入 `67,120/67,120`、0 错误、57.6 秒；完整性检查全过、孤儿检查通过；收尾 `USPTO daily chain done` | USPTO 14,220,248 / newest `2026-07-27` / completed 234 · ERP 4,483,613 / newest `2026-07-27` / **revision 210**（↑206）· 导入 65,177/65,177/err 0 | **PASS（第 3/3 日）** |
+
+### 三日收账（2026-07-28）：**3/3 PASS，验收① 结清**
+
+窗口 07-26（无数据日）+ 07-27 + 07-28 全 PASS。`completed_files` 232→233→234 每日恰 +1，
+与 `latest_file` 逐日前推一致；`total` 增量小于 `records_inserted` 属正常
+（`insert_batch` 对已有 serial 走 `ON CONFLICT DO UPDATE`，更新不涨行数）。
+
+#### 第 2 日（07-27）判定依据：为什么无 schtasks 直证也算 PASS
+
+`schtasks` 只保留最近一次运行，07-27 四项已被 07-28 覆盖，Windows 任务历史亦未留事件。
+判定改由**两个相互独立的机器时间戳互证**：
+
+1. 自动日志文件名 `uspto-daily-20260727-180001` —— 精确落在计划时刻那一秒；
+2. `etl_progress.completed_at = 2026-07-27 10:00:21 UTC`（＝北京 18:00:21，触发后 20 秒）
+   —— 这是**数据库自己写的**，与日志文件无关。
+
+人工在同一秒同时造出这两条记录不现实，故判 PASS。**但如实标注为间接证据**：
+以后复查时这个区别是重要的。**改进项（下轮窗口前做）**：`.bat` 收尾时把 `schtasks /query`
+四项追加进当日日志，直证即可逐日留痕，不再依赖「最近一次」这个会被覆盖的窗口。
+
+#### 判据第三句「审核检索可见新商标」的闭合方式（**代码事实，非本轮真机操作**）
+
+三日回执全部止于库表层（count / newest / revision），**没有一次走过 ERP 检索出口**。
+该子句改由三段可复核的事实接上：
+
+1. **检索出口本身可用** —— 验收④ 已真机实测（`nike` + 仅 LIVE 208 条、`nice_classes` 208/208、
+   无 `compliance.*` 账号访问 `/api/v1/trademarks` 得 403）；
+2. **新行 `mark_norm` 必非空** —— `tools/bulk_import_trademark.py:110` 与
+   `compliance/import_service.py:392` 逐字一致：`mark_norm = _norm(provided_norm) if provided_norm
+   else _norm(mark_text)`；而**缺 `mark_text` 的行会计入 `err`**（`import_service.py:385-389`）。
+   两日 **`err = 0`** ⇒ 所有导入行都有 `mark_text` ⇒ `mark_norm` 全部派生成功。
+   这一条正是该子句要防的失败面：**只填 `mark_text` 不填 `mark_norm` 时，行数/newest 全对但搜不到**；
+3. **检索直读该表无中间层** —— `compliance/router.py:394` 用 `mark_norm ILIKE` 直查
+   `refdata.trademark`，无缓存、无物化视图（trgm GIN 只影响性能不影响可见性）。
+
+**残余**：无人真的在搜索框里键入过一个 07-27 新导入的商标。风险已由上述三段压到极低，
+**故不阻塞收账**；下次部署机上线时顺手补一次实搜即可（取 `filed_date='2026-07-27'` 的
+样本 → 合规页商标查询 → 应命中同一 `serial_no`）。
+
+#### 两条观察项（不阻塞，留待口径确认）
+
+- **`revision` 步长与行数不成比例**：4,753 行 → +2；65,177 行 → +4。判据只要求「递增」且已满足，
+  但步长规律未明（疑与导入分步而非行数相关）。
+- **`[DELTA] rows=65184` vs 逻辑 65,177 的 7 行差**：部署侧解释为 CSV 字段内嵌换行使物理行数偏高；
+  仓内判据写的允许差值口径是「无 mark 文本行」。两种解释都指向**没丢数**
+  （`err=0` 且 `merged==total` 已证导入侧无丢弃），但口径不同，记此备查。
 
 #### 第 1 日（2026-07-26）判定依据
 
