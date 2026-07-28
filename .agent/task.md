@@ -10,10 +10,10 @@
   flow 清单 **v2.1** 冻结（10 条，07-27 补 `purchase_execute`）。
   - **增量拆分**（沿用考古 §4，按 v2.1 对齐）：
     ①policy 内核 + 10 条 flow Enum + CI 一致性校验 + 两处旧代码回接 + `kinds` 跨域清偿
-    （纯重构，行为零变化，整单地基）**✅ 已完成，PR #41**
+    （纯重构，行为零变化，整单地基）**✅ 已关账——PR #41 squash 合入 main `4b668e4`，四道闸走满**
     ②策略读写 API（GET/PUT `/automation-policies`）+ 权限点 `automation.read/write`
     + 前端策略面板 + **Q3 三条**（面板显性区分「未配置/已停用/manual」三态、`enabled=false`
-    记 warn【增量1 已落】、闸类 flow 停用给显式二次确认）——**无前置，下一个动工**。
+    记 warn【增量1 已落】、闸类 flow 停用给显式二次确认）——**无前置，当前在推**（分支已从 `4b668e4` 重建）。
     **面板不做「应用默认模板」按钮**（Q2 终裁不加模板）；新团队仍是零策略行 = 全 manual
     ③`audit_to_listing` 三档（含 `scrape_to_audit`）④`pricing_watch` 三档 + 第二套档位语义
     收口 ⑤`refund`/`cancel` auto 档渠道执行链（**本单唯一 L2 片**，不可逆真钱）
