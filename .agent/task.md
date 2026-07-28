@@ -90,7 +90,9 @@
   合并缺口修复 + 空维度 broken 判定增补）。余观察项：维度值过 coerce enum 改写
   （A152 实测关注）；spec 版本 5.0.20260304 换版窗口在线核实 per-PT variantAttributeNames。
 - 全局挂账：R2-05 L2 发货补验（等 A152 真实来单）；R2-04 验收②模拟断连；钓鱼黑名单导入；
-  erpAPI PR #2 待授权；售后前端页（returns/refund 部分随 07c；店铺事件页 07b 已交付）。
+  erpAPI PR #2 待授权；售后前端页（returns/refund 部分随 07c；店铺事件页 07b 已交付）；
+  **部署机删 `erp_all-before-0039.dump`（Owner 2026-07-28 裁定「删」，指令已下发，等回执
+  ——判据 `Test-Path` 必须 False；误提交路径已先行用 .gitignore 堵死）**。
   已清偿：前端 schema.d.ts codegen（07b 随契约重生成，含 R2-05/06/07a/11 既往欠账）。
 - **2026-07-26 Owner 批准落地四件（「按你建议的做」），见 progress 同日末节**：
   ①`service.py` 渠道明确拒绝**不再返还** maintenance 配额（活 fail-open 已清；闭环无界已由
