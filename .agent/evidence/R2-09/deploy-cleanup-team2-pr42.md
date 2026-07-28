@@ -165,3 +165,111 @@ echo "CLEANUP_TEAM2_V2_EXIT=$LASTEXITCODE"
 
 **删除成功后**：直接重跑 `.agent/evidence/R2-09/deploy-verify-pr42.md` 全文（前置→⑫），
 判据一字不改。
+
+---
+
+# v3 终版（Owner 2026-07-28 全量清点后终裁）：产品 400 + 规格产物 4 + 流水 1580 + 用户/绑定/团队
+
+> 全量清点（FULL_CENSUS_EXIT=0）后 Owner 终裁：4 行 listing_spec（删产品前置依赖，已预览）
+> 与 1580 行 llm_usage_log（费用流水）**一并删**；审计三族（audit_run 2400 / audit_hit 6098 /
+> audit_log 0）**铁律保留**，孤儿化无害。除审计外 team 2 彻底无痕。
+>
+> 闸设计：每一项行数**钉死在清点值**（400/4/1580/1）——任何一项与授权时不符即中止整体回滚。
+> 仍单事务。铁律同 v1（只跑本段、不扩范围、报错即停、不输出密钥、机器保持 main）。
+
+```powershell
+$sql = @'
+\pset pager off
+-- 闸 1：身份核对
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app.team WHERE id = 2 AND name = 'R2-02对拍') THEN
+    RAISE EXCEPTION 'team 2 身份核对失败（不是 R2-02对拍），中止';
+  END IF;
+END $$;
+
+-- 闸 2：28 张 team FK 表清点——例外仅 app_user=1、product=400，其余非 0 即中止
+DO $$
+DECLARE r record; n bigint; bad text := '';
+BEGIN
+  FOR r IN
+    SELECT DISTINCT c.conrelid::regclass::text AS tbl, a.attname AS col
+    FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+    WHERE c.confrelid = 'app.team'::regclass AND c.contype = 'f'
+  LOOP
+    EXECUTE format('SELECT count(*) FROM %s WHERE %I = 2', r.tbl, r.col) INTO n;
+    IF r.tbl = 'app.app_user' AND r.col = 'team_id' THEN
+      IF n <> 1 THEN bad := bad || format(' [%s=%s 期望1]', r.tbl, n); END IF;
+    ELSIF r.tbl = 'app.product' AND r.col = 'team_id' THEN
+      IF n <> 400 THEN bad := bad || format(' [%s=%s 期望400]', r.tbl, n); END IF;
+    ELSIF n <> 0 THEN
+      bad := bad || format(' [%s.%s=%s]', r.tbl, r.col, n);
+    END IF;
+  END LOOP;
+  IF bad <> '' THEN
+    RAISE EXCEPTION 'team 2 清点与授权范围不符，中止:%', bad;
+  END IF;
+END $$;
+
+-- 闸 3：产品引用表——variant_member=0、listing=0、listing_spec=恰 4，否则中止
+DO $$
+DECLARE n1 bigint; n2 bigint; n3 bigint;
+BEGIN
+  SELECT count(*) INTO n1 FROM app.variant_member
+   WHERE product_id IN (SELECT id FROM app.product WHERE team_id = 2);
+  SELECT count(*) INTO n2 FROM app.listing
+   WHERE product_id IN (SELECT id FROM app.product WHERE team_id = 2);
+  SELECT count(*) INTO n3 FROM app.listing_spec
+   WHERE product_id IN (SELECT id FROM app.product WHERE team_id = 2);
+  IF n1 <> 0 OR n2 <> 0 OR n3 <> 4 THEN
+    RAISE EXCEPTION '挂载与授权不符（variant_member=% listing=% listing_spec=%，期望 0/0/4），中止', n1, n2, n3;
+  END IF;
+END $$;
+
+-- 闸 4：流水行数钉死——llm_usage_log 恰 1580，否则中止
+DO $$
+DECLARE n bigint;
+BEGIN
+  SELECT count(*) INTO n FROM app.llm_usage_log WHERE team_id = 2;
+  IF n <> 1580 THEN
+    RAISE EXCEPTION 'llm_usage_log=% 与授权时 1580 不符，中止', n;
+  END IF;
+END $$;
+
+-- 六删，顺序固定；计数即取证
+WITH del AS (
+  DELETE FROM app.listing_spec
+   WHERE product_id IN (SELECT id FROM app.product WHERE team_id = 2) RETURNING id)
+SELECT count(*) AS deleted_listing_specs FROM del;
+WITH del AS (DELETE FROM app.product WHERE team_id = 2 RETURNING id)
+SELECT count(*) AS deleted_products FROM del;
+WITH del AS (DELETE FROM app.llm_usage_log WHERE team_id = 2 RETURNING id)
+SELECT count(*) AS deleted_llm_usage FROM del;
+DELETE FROM app.user_role
+ WHERE user_id IN (SELECT id FROM app.app_user WHERE team_id = 2)
+ RETURNING user_id, role_id;
+DELETE FROM app.app_user WHERE team_id = 2 RETURNING id, username, is_super;
+DELETE FROM app.team WHERE id = 2 RETURNING id, name;
+
+-- 终检：删净 + 审计三族纹丝不动
+SELECT count(*) AS remaining_teams FROM app.team;
+SELECT count(*) AS t2_products FROM app.product WHERE team_id = 2;
+SELECT count(*) AS t2_specs FROM app.listing_spec WHERE team_id = 2;
+SELECT count(*) AS t2_llm FROM app.llm_usage_log WHERE team_id = 2;
+SELECT 'audit_run' AS tbl, count(*) AS rows FROM app.audit_run WHERE team_id = 2
+UNION ALL SELECT 'audit_hit', count(*) FROM app.audit_hit WHERE team_id = 2;
+'@
+$sql | docker exec -i erp-all-db-1 psql -v ON_ERROR_STOP=1 -1 -U postgres -d erp_all
+echo "CLEANUP_TEAM2_V3_EXIT=$LASTEXITCODE"
+```
+
+**贴回**：全部输出 + `CLEANUP_TEAM2_V3_EXIT`。
+
+**判据**：`CLEANUP_TEAM2_V3_EXIT=0`；`deleted_listing_specs=4`、`deleted_products=400`、
+`deleted_llm_usage=1580`；三段 DELETE RETURNING（绑定 ≥1 / 用户 1 / 团队 1）；
+终检 `remaining_teams=1`、`t2_products=0`、`t2_specs=0`、`t2_llm=0`、
+审计两行仍为 `2400` / `6098`（**纹丝不动**——变了即报）。
+若报「中止」= 分毫未动，异常整段贴回。
+
+**删除成功后**：直接重跑 `.agent/evidence/R2-09/deploy-verify-pr42.md` 全文（前置→⑫），
+判据一字不改。
