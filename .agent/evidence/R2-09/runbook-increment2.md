@@ -140,10 +140,13 @@ WHERE team_id=<团队id> AND flow_code='order_block';
 
 2. **该团队的「团队管理员」副本拿到两个码了吗**
    ```sql
-   SELECT rp.permission_code FROM app.role_permission rp
-   JOIN app.role r ON r.id = rp.role_id
-   WHERE r.team_id = <团队id> AND r.name = '团队管理员'
-     AND rp.permission_code LIKE 'automation.%';
+   -- ⚠️ 不写中文字面量（PowerShell 管道进 psql 会匹配不上，2026-07-28 实测踩过，
+   --    表现是「0 行」被误读成「角色没了」）。全量列出、人读哪行是团管。
+   SELECT r.name AS role_name,
+          count(*) FILTER (WHERE rp.permission_code LIKE 'automation.%') AS automation_codes
+   FROM app.role r LEFT JOIN app.role_permission rp ON rp.role_id = r.id
+   WHERE r.team_id = <团队id>
+   GROUP BY r.name ORDER BY r.name;
    ```
    应返回 `automation.read` 与 `automation.write` 两行。
    **少于两行说明 0040 的回填没覆盖到这个团队**——注意模板角色（`team_id IS NULL`）的授权

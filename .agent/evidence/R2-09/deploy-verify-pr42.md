@@ -124,13 +124,15 @@ SELECT version_num FROM alembic_version;
 -- B. 权限码种进来了吗（应恰好 2 行，module=automation）
 SELECT code, module FROM app.permission WHERE code LIKE 'automation.%' ORDER BY code;
 
--- C. 模板 + 每个团队的「团队管理员」副本都拿到 2 个码了吗（T11 回填判据的真机版）
-SELECT coalesce(r.team_id::text, '(模板)') AS role_scope,
+-- C. 模板 + 每个团队的各角色拿到几个 automation 码（T11 回填判据的真机版）
+--    ⚠️ **SQL 里不写中文字面量**：2026-07-28 实测，含中文的 WHERE 经 PowerShell 管道
+--    进 psql 后匹配不上任何行（全篇唯一含中文的查询恰是唯一返回 0 行的），被误判成
+--    「角色全没了」而停手。改为不带谓词全量列出，由人读哪一行是团管——更不易出错也更信息量足。
+SELECT coalesce(r.team_id::text, '(模板)') AS role_scope, r.name AS role_name,
        count(*) FILTER (WHERE rp.permission_code LIKE 'automation.%') AS automation_codes
 FROM app.role r
 LEFT JOIN app.role_permission rp ON rp.role_id = r.id
-WHERE r.name = '团队管理员'
-GROUP BY r.team_id ORDER BY r.team_id NULLS FIRST;
+GROUP BY r.team_id, r.name ORDER BY r.team_id NULLS FIRST, r.name;
 
 -- D. 档位表现状（第 6 步清理判据要用，原样贴回）
 SELECT count(*) AS policy_rows FROM app.automation_policy;
@@ -147,8 +149,10 @@ echo "CENSUS_EXIT=$LASTEXITCODE"
 
 **期望**：
 - `CENSUS_EXIT=0`；A 段 = `0040`；B 段恰好 2 行；
-- **C 段每一行 `automation_codes` 都必须是 `2`**，且 C 段行数 = E 段 `total_teams` + 1（模板）。
-  **本轮 team 2 已清除，故期望恰好 2 行：`(模板)` 与 `1`，`total_teams = 1`。**
+- **C 段：`role_name` 为团队管理员的那些行，`automation_codes` 必须都是 `2`**；其余角色为 `0` 属正常
+  （0040 只授团管）。**本轮 team 2 已清除，故团管应恰好 2 行：`(模板)` 与 `1`；`total_teams = 1`。**
+  若团管行的 `automation_codes` < 2 → **停下贴回**（回填缺口）；若整张表**一个角色都没有**
+  → 那才是真异常（角色由 0002 种子 + 建团复制而来）。
   任何一行是 0 或 1 → **停下贴回**：要么该团队把「团队管理员」改过名（0040 按名匹配，
   匹配不上静默跳过），要么回填有缺口——这正是「既有团队看不到面板且无任何报错」的成因。
 - D 段预期 0 行（增量1 对拍时该表为空）。**非 0 不是失败**，但把行贴回——第 6 步只清理
