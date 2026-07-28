@@ -130,7 +130,13 @@ class AutomationPolicyIn(BaseModel):
     # 空串、超长串、"bogus" 全走同一条路（审查 F2：此前 min/max_length 把
     # 自己声称要规避的那个信封又请了回来）。
     mode: str
-    enabled: bool = True
+    # 必填，无默认：PUT 是「mode + enabled 整对提交」的全量置态，schema 必须与这句话
+    # 一致。此前可省略且默认 true——对一条 enabled=false 的行只发 {"mode": ...} 会
+    # 静默复启，落在 refund/cancel 上就是自动退款恢复（D-Q29 真钱，不可逆）。面板
+    # 两条写路径本就整对提交，暴露面是直接调 API 的消费方；「openapi 里写了后果」
+    # 不等于「schema 挡了」（审查 N2）。缺字段走 FastAPI 结构性 422（{"detail"} 信封，
+    # 全仓既有缺口，已另行提单）——宁可信封不统一，不可静默复启。
+    enabled: bool
     # 显式接住再拒绝（422 AUTOMATION_CONFIG_NOT_WRITABLE，统一信封），见模块头注。
     config: dict[str, Any] | None = None
 

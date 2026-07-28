@@ -104,9 +104,12 @@ FLOWS: dict[AutomationFlow, FlowSpec] = {
 
 # **已接消费点**的 flow——真的有代码在读 `resolve_mode` 并据此改变行为。
 # 这是**代码事实**不是图纸事实（图纸把 10 条都登记了，接线随增量3-5 逐步来），
-# 所以只能维护在这里，并靠纪律：**新增消费点的那个 PR 必须同步把 flow 加进本表**。
+# 所以只能维护在这里。「接了线忘登记」**不靠纪律**：`tests/test_wired_flows_census.py`
+# 钉死 `resolve_mode(` 的全部调用点，新增一处即红，逼接线 PR 当场同步本表
+# （PR #42 审查 F1 二抓：T1 只能挡「改表忘改测试」，挡不住「接线忘改表」——后者
+# 才是要防的方向，且落在闸类 flow 上就是「危险确认被跳过 + 面板说假话」）。
 # 面板据此决定敢不敢说「拦截生效/不生效」——对没接线的 flow 说这两句话都是假话
-# （审查 2026-07-28 F1：compliance_block 零消费点却被面板断言「拦截生效」，
+# （审查 2026-07-28 F1 首抓：compliance_block 零消费点却被面板断言「拦截生效」，
 # 与「compose 从未注入 ERP_ENV 而判据全绿」同形）。
 # 当前三条：order_block（order/procurement.py:38）、refund/cancel（aftersale/refund.py:41）。
 WIRED_FLOWS: frozenset[AutomationFlow] = frozenset(

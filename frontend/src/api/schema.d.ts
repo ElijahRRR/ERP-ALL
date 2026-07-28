@@ -4269,11 +4269,8 @@ export interface paths {
                     "application/json": {
                         /** @description 必须是 manual/semi/auto 之一；enabled=true 时还须属于该 flow 的 legal_modes（闸类只有 manual/auto），否则 422 AUTOMATION_MODE_ILLEGAL。enabled=false 时放宽到三档任一——停用一条已存非法档位的行必须走得通（停用是收紧） */
                         mode: string;
-                        /**
-                         * @description 全量置态——只发 mode 会把停用行连带复启（default true）
-                         * @default true
-                         */
-                        enabled?: boolean;
+                        /** @description 必填（审查 N2）——此前可省略且默认 true，对停用行只发 mode 会静默复启，落在 refund/cancel 上是真钱不可逆；schema 必须与「全量置态整对提交」一致 */
+                        enabled: boolean;
                         /** @description 恒拒绝（422 AUTOMATION_CONFIG_NOT_WRITABLE）——全仓零消费点，写入只会造成「护栏已配」的错觉；显式接住再拒绝以走统一错误信封 */
                         config?: {
                             [key: string]: unknown;
@@ -4293,7 +4290,7 @@ export interface paths {
                 };
                 /** @description flow_code 不在 §09 注册表（AUTOMATION_FLOW_UNKNOWN） */
                 404: components["responses"]["Error"];
-                /** @description 档位取值或对该 flow 非法（AUTOMATION_MODE_ILLEGAL）/ 带 config（AUTOMATION_CONFIG_NOT_WRITABLE）/ 超管未带 X-Act-Team（AUTOMATION_TEAM_REQUIRED）。注：缺 mode 字段等请求体结构违例走 FastAPI 默认 detail 信封，全仓皆然（002 既有缺口，另行提单） */
+                /** @description 档位取值或对该 flow 非法（AUTOMATION_MODE_ILLEGAL）/ 带 config（AUTOMATION_CONFIG_NOT_WRITABLE）/ 超管未带 X-Act-Team（AUTOMATION_TEAM_REQUIRED）。注：缺 mode/enabled 字段等请求体结构违例走 FastAPI 默认 detail 信封，全仓皆然（002 既有缺口，另行提单） */
                 422: components["responses"]["Error"];
             };
         };

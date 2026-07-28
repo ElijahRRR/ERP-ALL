@@ -189,7 +189,9 @@ def test_zero_row_team_gets_all_ten_and_can_put(
     # gate/wired 由服务端派生（前端不许硬编码闸类清单——审查 F4）
     assert {f for f, r in rows.items() if r["gate"]} == {"order_block", "compliance_block"}
     # wired 是代码事实：当前只有 order_block/refund/cancel 真有消费点（审查 F1）。
-    # 增量3-5 接线时此断言随 WIRED_FLOWS 同步扩——它红了就说明接线 PR 忘了更新注册表。
+    # 本断言只守一个方向：改了 WIRED_FLOWS 必须同步改这里。「接了线忘改 WIRED_FLOWS」
+    # 它抓不到（wired=false 照样相等）——那一路由 test_wired_flows_census.py 钉
+    # resolve_mode 调用点来拦（审查二轮 F1：方向恰好相反，不能只靠这一条）。
     assert {f for f, r in rows.items() if r["wired"]} == {"order_block", "refund", "cancel"}
     assert rows["refund"]["evaluation"] == "snapshot"
     assert rows["pricing_watch"]["evaluation"] == "realtime"
@@ -207,7 +209,11 @@ def test_semi_on_gate_flow_is_422_with_legal_list(
 ) -> None:
     """T2：闸类 flow 置 semi → 422，报文列出合法档位。"""
     h = _login(client, ADMIN_A, PASSWORD)
-    r = client.put("/api/v1/automation-policies/order_block", json={"mode": "semi"}, headers=h)
+    r = client.put(
+        "/api/v1/automation-policies/order_block",
+        json={"mode": "semi", "enabled": True},
+        headers=h,
+    )
     assert r.status_code == 422, r.text
     err = r.json()["error"]
     assert err["code"] == "AUTOMATION_MODE_ILLEGAL"
@@ -216,7 +222,11 @@ def test_semi_on_gate_flow_is_422_with_legal_list(
     # 空串与任意坏串走**同一个码、同一个统一信封**——不落 FastAPI 默认 {"detail":[...]}
     # （审查 F2：初版的 min/max_length 恰好把要规避的那个信封请了回来）
     for bad in ("", "x" * 30, "bogus"):
-        r = client.put("/api/v1/automation-policies/pricing_watch", json={"mode": bad}, headers=h)
+        r = client.put(
+            "/api/v1/automation-policies/pricing_watch",
+            json={"mode": bad, "enabled": True},
+            headers=h,
+        )
         assert r.status_code == 422, r.text
         assert r.json()["error"]["code"] == "AUTOMATION_MODE_ILLEGAL", r.text
 
@@ -228,7 +238,11 @@ def test_put_legal_then_get_reflects_configured(
     _clear(migrated_db, seeded["team_a"])
     h = _login(client, ADMIN_A, PASSWORD)
     for flow, mode in (("order_block", "auto"), ("pricing_watch", "semi")):
-        r = client.put(f"/api/v1/automation-policies/{flow}", json={"mode": mode}, headers=h)
+        r = client.put(
+            f"/api/v1/automation-policies/{flow}",
+            json={"mode": mode, "enabled": True},
+            headers=h,
+        )
         assert r.status_code == 200, r.text
         assert r.json()["state"] == "configured"
     rows = _get(client, h)
@@ -278,7 +292,9 @@ def test_permission_gates(client: TestClient, seeded: dict[str, int]) -> None:
     reader_h = _login(client, READER_A, PASSWORD)
     assert client.get("/api/v1/automation-policies", headers=reader_h).status_code == 200
     r = client.put(
-        "/api/v1/automation-policies/pricing_watch", json={"mode": "manual"}, headers=reader_h
+        "/api/v1/automation-policies/pricing_watch",
+        json={"mode": "manual", "enabled": True},
+        headers=reader_h,
     )
     assert r.status_code == 403
     assert r.json()["error"]["detail"]["permission"] == "automation.write"
@@ -299,7 +315,9 @@ def test_audit_records_before_and_after(
     with psycopg.connect(migrated_db) as conn:
         watermark = conn.execute("SELECT coalesce(max(id), 0) FROM app.audit_log").fetchone()[0]
     h = _login(client, ADMIN_A, PASSWORD)
-    client.put("/api/v1/automation-policies/cancel", json={"mode": "semi"}, headers=h)
+    client.put(
+        "/api/v1/automation-policies/cancel", json={"mode": "semi", "enabled": True}, headers=h
+    )
     client.put(
         "/api/v1/automation-policies/cancel", json={"mode": "auto", "enabled": False}, headers=h
     )
@@ -323,7 +341,7 @@ def test_cross_team_isolation(client: TestClient, seeded: dict[str, int], migrat
     _clear(migrated_db, seeded["team_b"])
     r = client.put(
         "/api/v1/automation-policies/listing_dispatch",
-        json={"mode": "auto"},
+        json={"mode": "auto", "enabled": True},
         headers=_login(client, ADMIN_A, PASSWORD),
     )
     assert r.status_code == 200, r.text
@@ -335,7 +353,7 @@ def test_unknown_flow_code_is_404(client: TestClient, seeded: dict[str, int]) ->
     """T9：flow_code 不在枚举 → 404 AUTOMATION_FLOW_UNKNOWN。"""
     r = client.put(
         "/api/v1/automation-policies/no_such_flow",
-        json={"mode": "manual"},
+        json={"mode": "manual", "enabled": True},
         headers=_login(client, ADMIN_A, PASSWORD),
     )
     assert r.status_code == 404
@@ -358,7 +376,7 @@ def test_config_in_body_is_rejected_not_silently_dropped(
     h = _login(client, ADMIN_A, PASSWORD)
     r = client.put(
         "/api/v1/automation-policies/purchase_execute",
-        json={"mode": "auto", "config": {"amount_ceiling": 100}},
+        json={"mode": "auto", "enabled": True, "config": {"amount_ceiling": 100}},
         headers=h,
     )
     assert r.status_code == 422, r.text
@@ -370,6 +388,29 @@ def test_config_in_body_is_rejected_not_silently_dropped(
             (seeded["team_a"],),
         ).fetchone()[0]
     assert n == 0  # 连行都不该建
+
+
+def test_put_without_enabled_is_rejected_not_silently_reenabled(
+    client: TestClient, seeded: dict[str, int], migrated_db: str
+) -> None:
+    """T15：PUT 缺 enabled → 422，且**不许**把一条停用行静默复启（审查 N2）。
+
+    此前 `enabled: bool = True` 可省略：对一条 enabled=false 的 refund 行只发
+    `{"mode": "auto"}`，行会变成 enabled=true → 自动退款恢复（D-Q29 真钱）。面板
+    两条写路径都整对提交所以安全，暴露面是直接调 API 的消费方——schema 必须与
+    「全量置态」这句话一致。缺字段属结构性违例，走 FastAPI `{"detail"}` 信封
+    （全仓既有缺口、已另行提单），这里只断言状态码与「库没被动」。
+    """
+    _set_policy(migrated_db, seeded["team_a"], "refund", "auto", enabled=False)
+    h = _login(client, ADMIN_A, PASSWORD)
+    r = client.put("/api/v1/automation-policies/refund", json={"mode": "auto"}, headers=h)
+    assert r.status_code == 422, r.text
+    with psycopg.connect(migrated_db) as conn:
+        enabled = conn.execute(
+            "SELECT enabled FROM app.automation_policy WHERE team_id = %s AND flow_code = 'refund'",
+            (seeded["team_a"],),
+        ).fetchone()[0]
+    assert enabled is False, "缺 enabled 的 PUT 不许把停用行复启"
 
 
 def test_disable_row_with_illegal_stored_mode_succeeds(
