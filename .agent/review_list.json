@@ -720,6 +720,11 @@
     "date": "2026-07-28",
     "kind": "landed",
     "text": "【2026-07-28 增量1 关账：PR #41 squash 合入 main `4b668e4`，四道闸首次为本单走满】Owner 裁定「收口合并」。闸序留痕：①CI 四项全绿（@ c36f6f1）②独立审查通过（临时 PG 簇差分实测 3 flow × 11 组库状态 = 33 条零分歧、四种图纸漂移变异全红、事务边界核过、全仓 automation_policy SQL 只剩内核一处；唯一低级问题 F1 正文自相矛盾已修）③部署机真机验证 **4 项实证 + 1 项无覆盖**——实证：容器跑的确实是分支代码（FLOWS=10，该模块 main 上不存在）/ 切换真实生效（切回后负向 import 如期失败 exit 1）/ 零迁移属实（migrate Exited(0)）/ 服务健康可回正常态（HEALTH_CODE=200）；**无覆盖：现网数据新旧对拍因 automation_policy 空表而为空真，明确不计通过**，等价性由 ①② 承担④Owner 授权。**「1 项无覆盖」已写进 PR 正文与合并提交信息**，不埋在四个 ✅ 里。**增量1 交付物**：`core/automation.py`（10 条 flow 的 Mode/Evaluation/FlowSpec + resolve_mode）、`test_automation_flow_contract.py`（直解 §09 注册表，双向一致 + 合法档位集 + 求值语义，带前提自检）、`test_automation_resolve.py`（8 条真库判据）、两处旧读点回接内核。**下一步：增量2**（策略读写 API GET/PUT `/automation-policies` + 权限点 `automation.read/write` + 前端策略面板 + Q3 三条：面板显性区分「未配置/已停用/manual」三态、`enabled=false` 记 warn【增量1 已落】、闸类 flow 停用给显式二次确认；**面板不做模板按钮**——Q2 终裁不加模板）。无前置，分支已从 `4b668e4` 重建。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【2026-07-28 合并后发现一处正文失实（第五次）+ 其载体是一个流程漏洞】stop-hook 报 dirty 牵出：**PR #41 squash 进 main 实际 12 个文件，正文声称 10 个**。多出的两个都在 `.agent/`：①`evidence/R2-09/deploy-verify-pr41.md`（真机指令，正当新增，但正文的文件清单停在它诞生之前没更新）②`evidence/R1-11/dry-run-feed-snapshot.json`——**测试漂移被 `git add -A .agent` 扫进提交**。该快照由测试每次运行重写（R1-11 时代的「测试写证据」机制），EAN 随沙箱库池状态在池号 2/3 摆动（`…0021`↔`…0038`，CI fresh DB 恒为 `0021`=canonical）；漂移在多个 add -A 提交间来回翻转，`4fd76ae` 又把它翻回 0021。**「代码改动只在一个 commit/5 个文件」的不变量仍为真**（多的两个均为 .agent 文档），但文件数失实成立，且漂移文件未经审查侧过目（审查审的 a2cdda7 是 10 文件版）。**流程修正两条**：①提交一律**显式列文件**，弃用 `git add -A .agent`——它会把测试重写的 evidence 连带扫进来；②跑完全量 pytest 后、提交前，先 `git checkout -- .agent/evidence/R1-11/dry-run-feed-snapshot.json` 还原漂移（canonical=0021）。**根治**（让该测试对池状态确定化）属改既有测试语义，另行提单不混进 R2-09。erpAPI 仓核过：干净。"
    }
   ]
  },
