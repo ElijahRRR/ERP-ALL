@@ -972,5 +972,20 @@
   "acceptance": "①删从未上架产品→物理行消失、无墓碑、列表不再出现；②删上过架产品→实体消失但重采同 ASIN 不再入库(墓碑保去重)；③删操作过的用户→其 audit_log 仍在且操作人显示「XX（已删除）」而非裸 id；④删除动作在 audit_log 可查(谁/何时/删了什么/before 快照)；⑤订单、审计三族、财务表在任何删除路径下行数不变；⑥列表默认不显示已停用项且开关可切",
   "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类",
   "last_checked_at": "2026-07-28"
+ },
+ {
+  "id": "FX-0728",
+  "priority": "P2",
+  "dimension": "contract",
+  "status": "todo",
+  "check": "契约完整性补齐（清偿 FE-DEBT-01 残留）：openapi Product schema 补必填语义与缺失字段(latest_audit_run_id/price_snapshot/updated_at)+给 GET /audit-runs/{runId} 立响应 schema，之后 frontend/src/pages/products/types.ts 四个手写 interface 换成 codegen 类型并删除该文件",
+  "evidence": [
+   "frontend/src/pages/products/types.ts",
+   "specs/008-frontend-conventions/README.md"
+  ],
+  "gate": "无闸门；牵动 catalog 域响应形状与多个消费页，须独立成单做，不塞进功能单",
+  "acceptance": "①openapi 中 Product 关键字段 required 且含前端在用的三字段；②GET /audit-runs/{runId} 有完整响应 schema；③pages/products/types.ts 删除，四处改用 Schemas[...] codegen 类型且 tsc 全绿；④008§2「零手写响应类型」在产品域达成",
+  "finding": "【2026-07-28 低频体检发现】R2-09 增量3a 新增 pages/products/types.ts(70行,四个手写 interface)。核实非偷懒：契约侧 Product 全字段可选(id?)当行类型用会抹掉必填语义、且缺 latest_audit_run_id/price_snapshot/updated_at 三个本页在用字段；GET /audit-runs/{runId} 在契约里只有 200 描述无任何 schema，AuditRunDetail 无从生成。开发侧已在文件头完整交底并声明新增的批量送审四形状全部来自 codegen(新代码零手写已守住)。此债此前只活在代码注释里、无工单承接，故登记",
+  "last_checked_at": "2026-07-28"
  }
 ]
