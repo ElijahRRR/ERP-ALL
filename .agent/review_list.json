@@ -755,6 +755,11 @@
     "date": "2026-07-28",
     "kind": "ruling",
     "text": "【Owner 裁定 (c)：删除 team 2 后重验】三岔口拍板为删除（验证残留彻底清掉）。删除指令落仓 .agent/evidence/R2-09/deploy-cleanup-team2-pr42.md：单事务双硬闸——闸 1 身份核对（id=2 必须名为 R2-02对拍）；闸 2 由 pg_constraint 动态清点全部 28 张 FK 表（含 shared_resource 双列），除 app_user 恰 1 行外任何非 0 即 RAISE 中止整体回滚（防残留团队名下挂业务数据、超授权删除）；三删固定顺序 user_role→app_user→team 全带 RETURNING 取证，user_role 的 role_id 顺带回答跨团队绑定疑点；audit 三族无 team FK 一行不删。删除后重验 = 直接重跑 deploy-verify-pr42.md 原文，判据零修改（1 团队时 C 段 = 模板+team1 = 团队数+1 自然成立）。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "ruling",
+    "text": "【v1 闸 2 中止（product=400）→ Owner 扩权删净】v1 单事务按设计中止整体回滚（CLEANUP_TEAM2_EXIT=3，team 2 名下 400 行产品超授权范围，部署 AI 未扩删未重试——处置正确）。沙箱同构 schema 复核：product 仅被 variant_member/listing/listing_spec 三表引用（全 NO ACTION），而 v1 闸 2 已证 28 张 team FK 表中仅 product 非零（listing/variant_group 等 team 2 下全 0）→ 400 行是无下游挂载的裸产品行（R2-02 对拍导入后未走到上架）。Owner 追加裁定：扩权删净含 400 行产品。v2 指令追加至 deploy-cleanup-team2-pr42.md：闸 2 例外集扩为 {app_user=1, product=恰400}（行数不符即中止——与授权时状态漂移的自检）；新增闸 3 三张引用表对 team 2 产品必须 0 行（裸产品定性的机器复核，非 0 中止）；四删顺序 product→user_role→app_user→team，产品段用 WITH del RETURNING 计数取证；仍单事务任一异常整体回滚；audit 三族不动。删除成功后直接重跑 deploy-verify-pr42.md 原文，判据零修改。"
    }
   ]
  },

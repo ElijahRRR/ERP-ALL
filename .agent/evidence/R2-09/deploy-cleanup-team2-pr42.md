@@ -77,3 +77,91 @@ echo "CLEANUP_TEAM2_EXIT=$LASTEXITCODE"
 **直接重跑 `.agent/evidence/R2-09/deploy-verify-pr42.md` 全文（前置→⑫）**，判据一字不改：
 删除后本机 1 个团队，C 段应「(模板) + team 1」共 2 行、全为 2，E 段 total_teams=1，
 行数关系「团队数 + 1」自然成立。UI 四项（第 4 步）用 team 1 的非超管团管账号做。
+
+---
+
+# v2（Owner 2026-07-28 扩权后）：连 400 行对拍产品一起删净
+
+> v1 闸 2 按设计中止：`app.product.team_id=2` 有 **400 行**（R2-02 对拍导入的测试产品）。
+> Owner 追加授权：**扩权删净，含 400 行产品**。
+>
+> v2 变化：闸 2 的例外集从 {app_user=1} 扩为 {app_user=1, **product=恰 400**}（行数变了
+> 说明机上状态与授权时不同，中止）；新增**闸 3**：product 的三张引用表
+> （variant_member / listing / listing_spec）对 team 2 产品必须 0 行——非 0 即中止回滚
+> （那说明「裸产品行」的定性不成立，须再回报）。删除顺序：产品 → 绑定 → 用户 → 团队。
+> 仍单事务，任一异常整体回滚。铁律同 v1。
+
+```powershell
+$sql = @'
+\pset pager off
+-- 闸 1：身份核对
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app.team WHERE id = 2 AND name = 'R2-02对拍') THEN
+    RAISE EXCEPTION 'team 2 身份核对失败（不是 R2-02对拍），中止';
+  END IF;
+END $$;
+
+-- 闸 2：28 张 team FK 表清点——例外仅 app_user=1、product=400，其余非 0 即中止
+DO $$
+DECLARE r record; n bigint; bad text := '';
+BEGIN
+  FOR r IN
+    SELECT DISTINCT c.conrelid::regclass::text AS tbl, a.attname AS col
+    FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+    WHERE c.confrelid = 'app.team'::regclass AND c.contype = 'f'
+  LOOP
+    EXECUTE format('SELECT count(*) FROM %s WHERE %I = 2', r.tbl, r.col) INTO n;
+    IF r.tbl = 'app.app_user' AND r.col = 'team_id' THEN
+      IF n <> 1 THEN bad := bad || format(' [%s=%s 期望1]', r.tbl, n); END IF;
+    ELSIF r.tbl = 'app.product' AND r.col = 'team_id' THEN
+      IF n <> 400 THEN bad := bad || format(' [%s=%s 期望400，与授权时不符]', r.tbl, n); END IF;
+    ELSIF n <> 0 THEN
+      bad := bad || format(' [%s.%s=%s]', r.tbl, r.col, n);
+    END IF;
+  END LOOP;
+  IF bad <> '' THEN
+    RAISE EXCEPTION 'team 2 清点与授权范围不符，中止:%', bad;
+  END IF;
+END $$;
+
+-- 闸 3：三张产品引用表对 team 2 产品必须 0 行（「裸产品行」定性的机器复核）
+DO $$
+DECLARE n1 bigint; n2 bigint; n3 bigint;
+BEGIN
+  SELECT count(*) INTO n1 FROM app.variant_member
+   WHERE product_id IN (SELECT id FROM app.product WHERE team_id = 2);
+  SELECT count(*) INTO n2 FROM app.listing
+   WHERE product_id IN (SELECT id FROM app.product WHERE team_id = 2);
+  SELECT count(*) INTO n3 FROM app.listing_spec
+   WHERE product_id IN (SELECT id FROM app.product WHERE team_id = 2);
+  IF n1 <> 0 OR n2 <> 0 OR n3 <> 0 THEN
+    RAISE EXCEPTION '产品有下游挂载（variant_member=% listing=% listing_spec=%），中止', n1, n2, n3;
+  END IF;
+END $$;
+
+-- 四删，顺序固定；计数即取证
+WITH del AS (DELETE FROM app.product WHERE team_id = 2 RETURNING id)
+SELECT count(*) AS deleted_products FROM del;
+DELETE FROM app.user_role
+ WHERE user_id IN (SELECT id FROM app.app_user WHERE team_id = 2)
+ RETURNING user_id, role_id;
+DELETE FROM app.app_user WHERE team_id = 2 RETURNING id, username, is_super;
+DELETE FROM app.team WHERE id = 2 RETURNING id, name;
+
+-- 终检
+SELECT count(*) AS remaining_teams FROM app.team;
+SELECT count(*) AS remaining_t2_products FROM app.product WHERE team_id = 2;
+'@
+$sql | docker exec -i erp-all-db-1 psql -v ON_ERROR_STOP=1 -1 -U postgres -d erp_all
+echo "CLEANUP_TEAM2_V2_EXIT=$LASTEXITCODE"
+```
+
+**贴回**：全部输出 + `CLEANUP_TEAM2_V2_EXIT`。
+
+**判据**：`CLEANUP_TEAM2_V2_EXIT=0`；`deleted_products = 400`；三段 DELETE RETURNING
+（绑定 ≥1 / 用户 1 / 团队 1）；`remaining_teams = 1`、`remaining_t2_products = 0`。
+若报「中止」= 分毫未动，异常整段贴回。
+
+**删除成功后**：直接重跑 `.agent/evidence/R2-09/deploy-verify-pr42.md` 全文（前置→⑫），
+判据一字不改。
