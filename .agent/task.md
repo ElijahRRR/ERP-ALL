@@ -1,11 +1,45 @@
 # Task Definition
-- Mode: build（R2 后半程——007 计划生效；动工顺序 2026-07-17 更新：
-  **R2-11 → R2-07 → R2-12（与 RS-04D 同窗）→ R2-09 → R2-08 → R2-10**，
-  FE-DESIGN Owner 触发制，R2-10 前置 RS-01/02）
-- Task: **R2-12 合规数据供给持续化【L1】（与 RS-04D 断言账本同窗）——2026-07-23 立项开工
-  （Owner 指令），增量1-5 全部并入 main，仅剩验收① 三日连测未收账（07-26/27/28 窗口内）**；
-  R2-07 07b 开发面完成（PR #25 已合并 2026-07-18）待验收②；R2-11 已整单关账（accepted）；
-  R2-09 考古已完成（2026-07-25，只读未立项）。
+- Mode: build（R2 后半程——007 计划生效；**动工顺序 2026-07-27 按 D-Q66/67/69 更新**：
+  **R2-09 → R2-13（自动采购接入）→ R2-07c（邮箱）→ R2-08（财务域）→ RS-06 → RS-08**；
+  并行收尾 R2-12 验收① / R2-04 beat 实测 / RS-02b。
+  **已移出 MVP，不要做**：R2-10 采购方门户（D-Q66）、R2-05 发货环节、RS-01、
+  RS-05/07/09/10、RS-04C；FE-DESIGN 仍为 Owner 触发制）
+- Task: **R2-09 三档自动化贯通【L1】——2026-07-27 立项，开工中**。
+  前置全部解除：考古完成（`.agent/evidence/R2-09/archaeology.md`，1512 行，六路并行 +
+  对抗性交叉核对）；四条硬阻塞由 Owner 2026-07-26 四条裁定解除并由审计侧落 001§09/007；
+  flow 清单 **v2.1** 冻结（10 条，07-27 补 `purchase_execute`）。
+  - **增量拆分**（沿用考古 §4，按 v2.1 对齐）：
+    ①policy 内核 + 10 条 flow Enum + CI 一致性校验 + 两处旧代码回接 + `kinds` 跨域清偿
+    （纯重构，行为零变化，整单地基）**✅ 已完成，PR #41**
+    ②策略读写 API（GET/PUT `/automation-policies`）+ 权限点 `automation.read/write`
+    + 前端策略面板 + **Q3 三条**（面板显性区分「未配置/已停用/manual」三态、`enabled=false`
+    记 warn【增量1 已落】、闸类 flow 停用给显式二次确认）——**无前置，下一个动工**。
+    **面板不做「应用默认模板」按钮**（Q2 终裁不加模板）；新团队仍是零策略行 = 全 manual
+    ③`audit_to_listing` 三档（含 `scrape_to_audit`）④`pricing_watch` 三档 + 第二套档位语义
+    收口 ⑤`refund`/`cancel` auto 档渠道执行链（**本单唯一 L2 片**，不可逆真钱）
+    ⑥三档全链验收取证 + runbook + 图纸/契约/工单回写。
+  - **落码三条不能写反的 fail-closed**（v2.1 原文）：`maintenance_run.kinds` 默认空；
+    档位**不进** ConfigService/Redis 缓存（config bus 是 fail-open，档位闸必须 fail-closed）；
+    `order_block`/`compliance_block` 只有 `{manual, auto}` 两档。
+  - **`purchase_execute` 现无消费点**（归 R2-13），属**有意的前置登记**——CI 一致性判据
+    只校验「Enum ↔ 表」双向一致，**不得**加「每个 flow 必须有消费点」，否则第一天就红。
+  - **三条待 Owner 裁定 → 2026-07-27 全部裁定并结清**（回执
+    `.agent/evidence/R2-09/owner-rulings-20260727.md`；原提问件 `owner-questions-20260727.md`）：
+    **Q1** 验收判据改「三件同族商品各跑一档」（选 (a)；**不引入状态回退通道**）——台账已改，
+    007:88 正文**已由审计侧 `6e4b7d4` 同步**（连同 R2-13 13c 护栏留痕、§09 契约门禁解析
+    约束提醒——三条批注回传全部落地，此项挂账已销）；**Q2 终裁不做模板**（同日两次裁定，第二次推翻第一次：「既然规划里
+    没有模板，那就不加了，按现状实现，面板不做模板按钮，以后想要了以后再说」）——增量2 不再
+    拆分，无需改图纸，未采纳方案降格备查；**Q3** 接受三条建议 → 入增量2。
+  - **R2-09 当前零条待 Owner**（原随 Q2 提出的 B1/B2 两条阻塞与 R1/R2/R3 三条报备
+    **随 Q2 终裁一并撤回**，不再需要裁定）。
+  - **跨单留痕（未采纳方案里唯一仍成立且有用的一条）**：`automation_policy.config`
+    **全仓零消费点**——`core/automation.py:114` 只 `SELECT mode, enabled`，四个护栏键
+    `amount_ceiling`/`daily_cap`/`price_delta_pct`/`check_kinds` 在 `backend/src` 零命中。
+    **R2-13 13c 开 `purchase_execute` auto 档时，护栏消费点得从零建**，不能假设
+    「config 里配上就生效」。
+  前序状态：R2-12 增量 1-5 全部并入 main，**仅剩验收① 三日连测未收账**（07-28 为第 3 日）；
+  RS-02a 已整单关账（PR #39/#40，四道闸首次按原序走满）；R2-07 07b 待验收②；
+  R2-11 已整单关账（accepted）。
   - R2-12 范围（007 §R2-12 + review_list R2-12/RS-04D）：①RS-04D 断言账本（blacklist
     写路径，硬验收=blacklist_brand 真实跑通非空框架）②USPTO 日度自增量（部署机
     daily_update → RS-04A 通道 → refdata.trademark + revision 失效 + beat/告警）③TRO

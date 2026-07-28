@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.core.automation import AutomationFlow, Mode, resolve_mode
 from erp.core.errors import BusinessError
 
 BACKFILL_FIELDS = (
@@ -30,16 +31,12 @@ BACKFILL_FIELDS = (
 
 async def _order_block_gate(session: AsyncSession, *, team_id: int, order_id: int) -> None:
     """semi/auto 档 + 未放行 flagged → 冻结（409）。manual（默认）纯软标记放行。"""
-    mode = (
-        await session.execute(
-            text(
-                "SELECT mode FROM app.automation_policy WHERE team_id = :t"
-                " AND flow_code = 'order_block' AND enabled"
-            ),
-            {"t": team_id},
-        )
-    ).scalar_one_or_none()
-    if mode not in ("semi", "auto"):
+    # R2-09 增量1：改走三档内核，不再各写各的 SQL。**行为逐条对齐**——
+    # 内核对「无行 / enabled=false / 取值不是三档之一」一律回 manual，与原来
+    # `AND enabled` + `scalar_one_or_none()` + `not in ("semi","auto")` 的结果相同；
+    # 非法档位（如本 flow 不该有的 semi）内核只告警不改写，故此处仍会拦截。
+    mode = await resolve_mode(session, team_id=team_id, flow=AutomationFlow.ORDER_BLOCK)
+    if mode not in (Mode.SEMI, Mode.AUTO):
         return
     flagged = (
         await session.execute(

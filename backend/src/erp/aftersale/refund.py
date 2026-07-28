@@ -19,6 +19,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.core.automation import AutomationFlow, resolve_mode
 from erp.core.errors import BusinessError
 
 log = structlog.get_logger()
@@ -30,16 +31,15 @@ _INITIAL_STATUS = {"record": "recorded", "approval": "pending_approval"}
 
 
 async def _resolve_mode(session: AsyncSession, *, team_id: int, kind: str) -> str:
-    row = (
-        await session.execute(
-            text(
-                "SELECT mode FROM app.automation_policy"
-                " WHERE team_id = :t AND flow_code = :f AND enabled"
-            ),
-            {"t": team_id, "f": kind},
-        )
-    ).scalar_one_or_none()
-    return _MODE_MAP.get(row or "manual", "record")
+    """→ refund_request 图纸词表的档位（record/approval/auto）。
+
+    R2-09 增量1：档位读取改走三档内核（`core.automation.resolve_mode`），
+    本函数只保留「automation_policy 词表 → refund_request 词表」的映射。
+    **行为逐条对齐**：内核对无行 / `enabled=false` / 非三档取值一律回 `manual`，
+    与原来 `AND enabled` + `scalar_one_or_none()` + `or "manual"` 的结果相同。
+    """
+    mode = await resolve_mode(session, team_id=team_id, flow=AutomationFlow(kind))
+    return _MODE_MAP.get(mode.value, "record")
 
 
 async def create_request(
