@@ -126,11 +126,16 @@ echo "KERNEL_EXIT=$LASTEXITCODE"
 > 这条同时是第 6 步的判据——切回 main 后同一条命令**必须失败**。
 
 ```powershell
-curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/api/health
+curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/healthz
 echo "HEALTH_EXIT=$LASTEXITCODE"
 ```
 
 **贴回⑤**：HTTP 状态码 + `HEALTH_EXIT`（期望 `200` 与 `0`）。
+
+> **v3 修订（2026-07-28）**：初版这里写的是 `/api/health`，**那个路径不存在，是我凭记忆编的**。
+> 真实端点是 **`/healthz`**（`backend/src/erp/main.py:110`，`@app.get("/healthz")`，**无 `/api` 前缀**，
+> 业务路由才挂 `/api/v1`）。部署机如实报回「分支与 main 都是 404」——**两边都 404 恰好证明
+> 这不是回归而是我路径写错**，它没有自行改试其他路径，处理得对。
 
 ---
 
@@ -266,14 +271,18 @@ echo "LOG_SCAN_DONE=1"
 
 ```powershell
 cd <ERP-ALL 仓库根>
-git checkout main
-git log --oneline -1
+# ⚠️ 同样必须用 -B：`git fetch origin main` 只更新 origin/main，**不会动本地 main**。
+# 2026-07-28 实际踩到：直接 `git checkout main` 落在陈旧的本地 main（1986bb1）而非远端最新。
+git checkout -B main origin/main
+git rev-parse --short HEAD
+git rev-parse --short origin/main
 cd infra
 docker compose up -d --build
 echo "ROLLBACK_UP_EXIT=$LASTEXITCODE"
 ```
 
-**贴回⑨**：`git log` 那一行 + `ROLLBACK_UP_EXIT`（期望 `0`）。
+**贴回⑨**：两个 `rev-parse` 的输出 + `ROLLBACK_UP_EXIT`。
+**判据**：两个 `rev-parse` **必须完全相同**（自校验，同前置②的写法），`ROLLBACK_UP_EXIT=0`。
 
 ```powershell
 docker compose exec -T api python -c "import erp.core.automation" 2>&1
@@ -289,7 +298,7 @@ echo "ROLLBACK_KERNEL_EXIT=$LASTEXITCODE"
 > **停下贴回**，这台机还跑在未合并的分支上。
 
 ```powershell
-curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/api/health
+curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/healthz
 echo "ROLLBACK_HEALTH_EXIT=$LASTEXITCODE"
 ```
 

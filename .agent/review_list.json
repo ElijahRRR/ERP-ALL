@@ -700,6 +700,11 @@
     "date": "2026-07-28",
     "kind": "correction",
     "text": "【2026-07-28 部署机第二次停手 → 又是我的指令错：checkout 拿到陈旧本地分支】部署机执行 v2 前置后停在提交核验点：检出的三行 log 是 RS-02a 时期的 `3d5178d`/`2aee4fb`/`23c8ede`，本地与远端分叉（本地 6、远端 17 个独有提交）。**根因是我的指令写错**：`git fetch origin <分支>` 只更新 `origin/<分支>`，**不会动已存在的同名本地分支**；这台机上有 RS-02a 时期留下的本地副本，`git checkout <分支>` 检出的是那个陈旧副本。**修法**：改用 `git checkout -B <分支> origin/<分支>`。**安全性已实证**：本地那 6 个独有提交改的文件在 main 上**已是最终态**（逐文件 diff 为空；`_ALLOW_ENV_VALUES`/`docs_enabled` 等引入的标识符在 main 上都在），且 `1986bb1` 是 PR #39 的 **squash 合并（单亲）**，内容早已并入 main——丢的是已合并内容的陈旧副本，零损失，reflog 90 天可恢复。**同时改掉一个更根本的毛病**：初版判据是「比对我写死的 sha」，而本分支随 main 每次推进都会 rebase，**sha 写进指令那一刻就开始过期**（已从 8dac51e→28769e8→d9f8ab5 变了三次）。改为**自校验不变量**：`git rev-parse HEAD` 必须等于 `git rev-parse origin/<分支>`，且 `git status -sb` 不得出现 ahead/behind/diverged。一票否决项同步加这一条。**这与 PR 正文失准四次是同一个病根——快照 vs 移动的 head**，不该再带进给部署机的指令。另删掉前置里那段现已多余且写的是旧命令的 `--dry-run` 撞名探测（`-B` 已覆盖，留着会误导）。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【2026-07-28 真机验证第一轮：6 项 PASS，卡在我编错的健康路径】部署机执行 v3 指令，**前置②③④⑨⑩⑪ 全部通过**：分支对齐自校验 LOCAL=REMOTE=7608533、无 ahead/behind/diverged、被丢弃提交检查无输出；`UP_EXIT=0`，migrate `Exited (0)` 且**未执行新迁移**（与「零迁移」相符）；**`FLOWS= 10` / `KERNEL_EXIT=0`——证明容器跑的确实是分支代码，不是旧镜像缓存**；切回后**负向判据如期失败** `ModuleNotFoundError: No module named 'erp.core.automation'`、`ROLLBACK_KERNEL_EXIT=1`，证明切换真实生效。**卡点是我的第三处指令错**：健康检查我写的 `/api/health` **根本不存在，是凭记忆编的**；真实端点是 **`/healthz`**（`backend/src/erp/main.py:110`，无 `/api` 前缀，业务路由才挂 `/api/v1`）。部署机报回「分支与 main 都是 404」——**两边都 404 恰好证明这不是回归而是路径写错**，且它没有自行改试其他路径，处理得对。已改 v3。**同时发现第四处**：第 6 步 `git checkout main` 与前置那个 bug**同源**——`git fetch origin main` 只更新 `origin/main`，不动本地 main，故它落在陈旧的本地 main `1986bb1` 而非远端 `1f09edf`，而我第 6 步的判据只看 `git log -1`、**没有比对 origin/main**，所以没抓住。已改为 `git checkout -B main origin/main` + 两个 rev-parse 自校验。**剩余未跑**：步骤 3（现网数据新旧判定对拍）、4（判据自检）、5（日志扫 automation.* 告警）。**关键简化**：步骤 3/4 是**纯只读 DB 查询、与部署哪个分支无关**，可直接在当前 main 上跑，不必为它们重挂分支；步骤 5 需要分支代码在跑，但若步骤 3 的 C 段返回 0 行则它必然无匹配、可省。"
    }
   ]
  },
