@@ -135,3 +135,8 @@ jobs:
           done
           [ "$code" = "200" ] || { echo "preview 未就绪（最终 $code）"; ss -lntp || true; exit 1; }
           node e2e/automation-panel.mjs
+          # 批量送审（R2-09 增量3a）。**必须接在这里**：该脚本守的三条语义（幂等键
+          # 跨两次点击的稳定性、nonce 生命周期、504 无信封归 NO_RESULT 兜底）tsc /
+          # eslint / 后端测试全看不见，改坏了直接就是同一批产品付两遍 LLM 的钱。
+          # 不接 CI 的测试文件比没有更糟——它会让后来的审查者误以为这块有覆盖。
+          node e2e/products-batch.mjs

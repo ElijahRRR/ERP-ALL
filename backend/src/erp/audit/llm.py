@@ -24,6 +24,14 @@ from erp.core.settings import get_settings
 
 log = structlog.get_logger()
 
+# 单次 provider HTTP 调用的超时与最大尝试次数。**提成常量是为了让下游的时间预算
+# 可以从这里派生而不是抄写**：`audit/batch.py::_WORST_ITEM_SECONDS` 用
+# `HTTP_TIMEOUT_SECONDS * MAX_ATTEMPTS` 算单条最坏耗时，进而钉住「墙钟预算 + 最坏
+# 单条 ≤ 幂等占位失效阈值」这条不变量。若这两个值在这里被调大而下游写的是字面量，
+# 那条不变量就会静默失真（审查 2026-07-28 N2：断言自己刚写进去的数不是判据）。
+HTTP_TIMEOUT_SECONDS = 120
+MAX_ATTEMPTS = 2
+
 
 def cache_key(
     model: str, messages: list[dict[str, Any]], temperature: float, max_tokens: int
@@ -208,12 +216,12 @@ class LlmClient:
         async with httpx.AsyncClient(
             base_url=settings.llm_api_base,
             headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-            timeout=120,
+            timeout=HTTP_TIMEOUT_SECONDS,
             transport=transport,
         ) as client:
             # 空响应重试一次（R2-02 round-3 实测：5 条 NR 中 3 条为 provider 空响应，
             # 属瞬时抖动——重试一次能自愈；仍空则抛错走 fail-closed）
-            for attempt in (0, 1):
+            for attempt in range(MAX_ATTEMPTS):
                 resp = await client.post(
                     "/chat/completions",
                     json={

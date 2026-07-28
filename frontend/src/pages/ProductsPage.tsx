@@ -1,145 +1,30 @@
-import {
-  Button,
-  Descriptions,
-  Divider,
-  Drawer,
-  Empty,
-  Form,
-  Image,
-  List,
-  Modal,
-  Select,
-  Space,
-  Spin,
-  Table,
-  Tag,
-  Typography,
-  message,
-} from 'antd'
+import { Button, Form, Modal, Select, Space, Table, Tag, Typography, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, api, type PageOf } from '@/api/client'
+import { ApiError, api, type AuditResult, type PageOf } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
+import AuditRunDrawer from '@/pages/products/AuditRunDrawer'
+import BatchAuditModal from '@/pages/products/BatchAuditModal'
+import ProductDetailDrawer from '@/pages/products/ProductDetailDrawer'
+import { STATUS_COLOR, STATUS_LABEL, isAuditEligible, statusText } from '@/pages/products/labels'
+import type { AuditRunDetail, Product, ProductDetail, StoreOpt } from '@/pages/products/types'
 
-interface Product {
-  id: number
-  master_sku: string
-  source_ref: string
-  title: string
-  brand: string | null
-  status: string
-  latest_audit_run_id: number | null
-}
-
-interface AuditHit {
-  level: string
-  rule_code: string
-  is_hard: boolean
-  evidence: Record<string, unknown>
-}
-
-interface AuditRunDetail {
-  id: number
-  verdict: string | null
-  reject_level: string | null
-  llm_cost_usd: number
-  cache_hit_rate: number | null
-  duration_ms: number | null
-  hits: AuditHit[]
-}
-
-interface Store {
-  id: number
-  code: string
-  name: string
-}
-
-interface ProductDetail {
-  id: number
-  master_sku: string
-  source_channel: string
-  source_ref: string
-  title: string
-  brand: string | null
-  category_path: string | null
-  images: string[] | null
-  attrs: Record<string, unknown> | null
-  price_snapshot: Record<string, unknown> | null
-  status: string
-  created_at: string
-  updated_at: string
-}
-
-// price_snapshot 字段中文名（采集自 Amazon）
-const PRICE_LABELS: Record<string, string> = {
-  current_price: '当前价',
-  buybox_price: 'BuyBox 价',
-  original_price: '原价',
-  buybox_shipping: '运费',
-  is_fba: 'FBA 发货',
-  total_price: '总价',
-}
-
-// attrs 字段中文名（bullets 单独渲染，其余按此表；未列出的原样显示 key）
-const ATTR_LABELS: Record<string, string> = {
-  model_number: '型号',
-  manufacturer: '制造商',
-  part_number: '部件号',
-  country_of_origin: '原产国',
-  is_customized: '是否定制',
-  product_type: '商品类型',
-  stock_status: '库存状态',
-  stock_count: '库存数',
-  delivery_date: '配送日期',
-  delivery_time: '配送时长',
-  rating: '评分',
-  review_count: '评论数',
-  seller_name: '卖家',
-  seller_id: '卖家 ID',
-  best_sellers_rank: '畅销排名',
-  first_available_date: '上架日期',
-  package_dimensions: '包装尺寸',
-  package_weight: '包装重量',
-  item_dimensions: '商品尺寸',
-  item_weight: '商品重量',
-  upc_list: 'UPC',
-  ean_list: 'EAN',
-  variation_asins: '变体 ASIN',
-  parent_asin: '父体 ASIN',
-  long_description: '长描述',
-  crawl_time: '采集时间',
-  product_url: '商品链接',
-  zip_code: '配送邮编',
-  site: '站点',
-}
-
-function attrText(v: unknown): string {
-  if (Array.isArray(v)) return v.join('、')
-  return String(v ?? '')
-}
-
-const STATUS_COLOR: Record<string, string> = {
-  ingested: 'default',
-  auditing: 'processing',
-  audit_passed: 'green',
-  audit_rejected: 'red',
-  needs_review: 'orange',
-  sourcing: 'gold',
-  ready: 'cyan',
-  listed: 'blue',
-  retired: 'default',
-}
+/** 可批量分配上架的状态（与行内「分配上架」按钮同集合） */
+const ALLOCATE_ELIGIBLE = ['audit_passed', 'ready']
 
 export default function ProductsPage() {
   const { has } = useAuth()
+  const canAudit = has('audit.run')
+  const canAllocate = has('listing.allocate')
   const [data, setData] = useState<PageOf<Product> | null>(null)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<string | undefined>()
   const [auditDetail, setAuditDetail] = useState<AuditRunDetail | null>(null)
   const [allocate, setAllocate] = useState<{ ids: number[]; label: string } | null>(null)
+  const [batch, setBatch] = useState<{ ids: number[]; excluded: number } | null>(null)
   const [selected, setSelected] = useState<number[]>([])
-  const [stores, setStores] = useState<Store[]>([])
+  const [stores, setStores] = useState<StoreOpt[]>([])
   const [detail, setDetail] = useState<ProductDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
@@ -159,9 +44,28 @@ export default function ProductsPage() {
     void load()
   }, [load])
 
+  // 切页 / 切筛选清空勾选。**不是洁癖**：勾选只存 id，跨页攒下来的 id 在当前页拿不到
+  // 状态行，「有效数」和确认文案就会按不完整的信息算，用户会对着一个算错的数字掏钱。
+  useEffect(() => {
+    setSelected([])
+  }, [page, status])
+
+  // 勾选框现在对两种批量动作放行（见下方 rowSelection），所以**两个批量按钮都必须
+  // 各自算自己的有效数**：否则拿了「送审合格但不可分配」的行去点分配，按钮上的数字
+  // 与实际下发件数对不上，后端逐条拒绝后用户只会以为系统丢件。
+  const rows = data?.items ?? []
+  const selectedRows = rows.filter((p) => selected.includes(p.id))
+  const auditableIds = selectedRows.filter((p) => isAuditEligible(p.status)).map((p) => p.id)
+  const allocatableIds = selectedRows
+    .filter((p) => ALLOCATE_ELIGIBLE.includes(p.status))
+    .map((p) => p.id)
+
   async function onAudit(p: Product) {
     try {
-      const r = await api.post<{ verdict: string; run_id: number }>(`/products/${p.id}/audit`, {
+      // 类型取自 codegen（008§5.4）：单品送审 201 的 schema 本单已补进 002 契约，
+      // 手写的 `{verdict, run_id}` 就地清偿——契约将来加/改字段时这里会编译报错，
+      // 而不是静默漂移。
+      const r = await api.post<AuditResult>(`/products/${p.id}/audit`, {
         trigger_kind: p.status === 'ingested' ? 'manual' : 're_audit',
       })
       const verdictText =
@@ -196,7 +100,7 @@ export default function ProductsPage() {
   async function openAllocate(ids: number[], label: string) {
     setAllocate({ ids, label })
     try {
-      const r = await api.get<PageOf<Store>>(`/stores?page=1&size=100`)
+      const r = await api.get<PageOf<StoreOpt>>(`/stores?page=1&size=100`)
       setStores(r.items)
     } catch {
       /* 列表失败时下拉为空 */
@@ -228,37 +132,61 @@ export default function ProductsPage() {
 
   return (
     <>
-      <Space style={{ marginBottom: 16 }}>
+      <Space style={{ marginBottom: 16 }} wrap>
         <Select
           allowClear
           placeholder="按状态筛选"
           style={{ width: 160 }}
           value={status}
-          onChange={setStatus}
-          options={Object.keys(STATUS_COLOR).map((s) => ({ value: s, label: s }))}
+          onChange={(v) => {
+            setPage(1)
+            setStatus(v)
+          }}
+          options={Object.keys(STATUS_COLOR).map((s) => ({ value: s, label: STATUS_LABEL[s] ?? s }))}
         />
         <Button onClick={() => void load()}>刷新</Button>
-        {has('listing.allocate') && (
+        {canAudit && (
           <Button
             type="primary"
-            disabled={!selected.length}
-            onClick={() => void openAllocate(selected, `已选 ${selected.length} 个产品`)}
+            disabled={!auditableIds.length}
+            onClick={() =>
+              setBatch({ ids: auditableIds, excluded: selected.length - auditableIds.length })
+            }
           >
-            批量分配上架{selected.length ? `（${selected.length}）` : ''}
+            批量送审
+            {selected.length ? `（${auditableIds.length}/已选 ${selected.length}）` : ''}
+          </Button>
+        )}
+        {canAllocate && (
+          <Button
+            type="primary"
+            disabled={!allocatableIds.length}
+            onClick={() =>
+              void openAllocate(allocatableIds, `${allocatableIds.length} 个产品（已选 ${selected.length}）`)
+            }
+          >
+            批量分配上架
+            {selected.length ? `（${allocatableIds.length}/已选 ${selected.length}）` : ''}
           </Button>
         )}
       </Space>
       <Table<Product>
         rowKey="id"
         loading={loading}
-        dataSource={data?.items}
+        dataSource={rows}
         rowSelection={
-          has('listing.allocate')
+          // 复选框对**任一**批量动作有权限就要给：此前只认 listing.allocate，
+          // 只有 audit.run 的审核员连勾选框都看不见，批量送审等于不存在。
+          canAllocate || canAudit
             ? {
                 selectedRowKeys: selected,
                 onChange: (keys) => setSelected(keys as number[]),
                 getCheckboxProps: (p) => ({
-                  disabled: !['audit_passed', 'ready'].includes(p.status),
+                  // 一件都不能对它做的行才禁用；能送审的与能分配的各按自己的合格态判。
+                  disabled: !(
+                    (canAllocate && ALLOCATE_ELIGIBLE.includes(p.status)) ||
+                    (canAudit && isAuditEligible(p.status))
+                  ),
                 }),
               }
             : undefined
@@ -280,7 +208,7 @@ export default function ProductsPage() {
             title: '状态',
             dataIndex: 'status',
             width: 130,
-            render: (s: string) => <Tag color={STATUS_COLOR[s]}>{s}</Tag>,
+            render: (s: string) => <Tag color={STATUS_COLOR[s]}>{statusText(s)}</Tag>,
           },
           {
             title: '操作',
@@ -291,20 +219,17 @@ export default function ProductsPage() {
                 <Button size="small" onClick={() => void showDetail(p.id)}>
                   详情
                 </Button>
-                {has('audit.run') &&
-                  ['ingested', 'audit_rejected', 'audit_passed', 'needs_review'].includes(
-                    p.status,
-                  ) && (
-                    <Button size="small" type="primary" onClick={() => void onAudit(p)}>
-                      {p.status === 'ingested' ? '审核' : '重审'}
-                    </Button>
-                  )}
+                {canAudit && isAuditEligible(p.status) && (
+                  <Button size="small" type="primary" onClick={() => void onAudit(p)}>
+                    {p.status === 'ingested' ? '审核' : '重审'}
+                  </Button>
+                )}
                 {has('audit.read') && p.latest_audit_run_id && (
                   <Button size="small" onClick={() => void showAudit(p.latest_audit_run_id!)}>
                     审核详情
                   </Button>
                 )}
-                {has('listing.allocate') && ['audit_passed', 'ready'].includes(p.status) && (
+                {canAllocate && ALLOCATE_ELIGIBLE.includes(p.status) && (
                   <Button size="small" onClick={() => void openAllocate([p.id], p.master_sku)}>
                     分配上架
                   </Button>
@@ -314,149 +239,23 @@ export default function ProductsPage() {
           },
         ]}
       />
-      <Drawer
-        title={`审核运行 #${auditDetail?.id ?? ''}`}
-        open={!!auditDetail}
-        onClose={() => setAuditDetail(null)}
-        width={560}
-      >
-        {auditDetail && (
-          <>
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="判定">
-                <Tag
-                  color={
-                    auditDetail.verdict === 'pass'
-                      ? 'green'
-                      : auditDetail.verdict === 'reject'
-                        ? 'red'
-                        : 'orange'
-                  }
-                >
-                  {auditDetail.verdict === 'needs_review' ? '待人工复核' : auditDetail.verdict}
-                </Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="否决层">
-                {auditDetail.reject_level ?? '—'}
-              </Descriptions.Item>
-              <Descriptions.Item label="LLM 成本">
-                ${Number(auditDetail.llm_cost_usd).toFixed(6)}
-              </Descriptions.Item>
-              <Descriptions.Item label="缓存命中率">
-                {auditDetail.cache_hit_rate ?? '—'}
-              </Descriptions.Item>
-            </Descriptions>
-            <Table<AuditHit>
-              rowKey={(h) => `${h.level}-${h.rule_code}`}
-              size="small"
-              dataSource={auditDetail.hits}
-              pagination={false}
-              columns={[
-                { title: '层', dataIndex: 'level', width: 60 },
-                { title: '规则', dataIndex: 'rule_code' },
-                {
-                  title: '硬拒',
-                  dataIndex: 'is_hard',
-                  width: 70,
-                  render: (v: boolean) => (v ? <Tag color="red">是</Tag> : <Tag>否</Tag>),
-                },
-                {
-                  title: '证据',
-                  dataIndex: 'evidence',
-                  ellipsis: true,
-                  render: (e: Record<string, unknown>) => JSON.stringify(e),
-                },
-              ]}
-            />
-          </>
-        )}
-      </Drawer>
-      <Drawer
-        title={`产品详情 ${detail?.master_sku ?? ''}`}
-        open={detailLoading || !!detail}
+      <AuditRunDrawer run={auditDetail} onClose={() => setAuditDetail(null)} />
+      <ProductDetailDrawer
+        detail={detail}
+        loading={detailLoading}
         onClose={() => setDetail(null)}
-        width={640}
-      >
-        {detailLoading && <Spin />}
-        {detail && (
-          <>
-            {detail.images && detail.images.length > 0 ? (
-              <Image.PreviewGroup>
-                <Space wrap size={8} style={{ marginBottom: 16 }}>
-                  {detail.images.map((src) => (
-                    <Image key={src} src={src} width={96} height={96} style={{ objectFit: 'contain' }} />
-                  ))}
-                </Space>
-              </Image.PreviewGroup>
-            ) : (
-              <Empty description="无图片" style={{ marginBottom: 16 }} />
-            )}
-
-            <Descriptions column={1} size="small" bordered>
-              <Descriptions.Item label="标题">{detail.title}</Descriptions.Item>
-              <Descriptions.Item label="品牌">{detail.brand ?? '—'}</Descriptions.Item>
-              <Descriptions.Item label="类目">{detail.category_path ?? '—'}</Descriptions.Item>
-              <Descriptions.Item label="ASIN">
-                {detail.source_channel === 'amazon' ? (
-                  <a
-                    href={`https://www.amazon.com/dp/${detail.source_ref}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {detail.source_ref}
-                  </a>
-                ) : (
-                  detail.source_ref
-                )}
-              </Descriptions.Item>
-              <Descriptions.Item label="状态">
-                <Tag color={STATUS_COLOR[detail.status]}>{detail.status}</Tag>
-              </Descriptions.Item>
-            </Descriptions>
-
-            {detail.price_snapshot && Object.keys(detail.price_snapshot).length > 0 && (
-              <>
-                <Divider orientation="left">价格</Divider>
-                <Descriptions column={2} size="small" bordered>
-                  {Object.entries(detail.price_snapshot).map(([k, v]) => (
-                    <Descriptions.Item key={k} label={PRICE_LABELS[k] ?? k}>
-                      {attrText(v)}
-                    </Descriptions.Item>
-                  ))}
-                </Descriptions>
-              </>
-            )}
-
-            {Array.isArray(detail.attrs?.bullets) &&
-              (detail.attrs!.bullets as string[]).length > 0 && (
-                <>
-                  <Divider orientation="left">五点描述</Divider>
-                  <List
-                    size="small"
-                    dataSource={detail.attrs!.bullets as string[]}
-                    renderItem={(b) => <List.Item>{b}</List.Item>}
-                  />
-                </>
-              )}
-
-            {detail.attrs &&
-              Object.keys(detail.attrs).filter((k) => k !== 'bullets').length > 0 && (
-                <>
-                  <Divider orientation="left">其他采集字段</Divider>
-                  <Descriptions column={1} size="small" bordered>
-                    {Object.entries(detail.attrs)
-                      .filter(([k]) => k !== 'bullets')
-                      .map(([k, v]) => (
-                        <Descriptions.Item key={k} label={ATTR_LABELS[k] ?? k}>
-                          {attrText(v)}
-                        </Descriptions.Item>
-                      ))}
-                  </Descriptions>
-                </>
-              )}
-          </>
-        )}
-      </Drawer>
+      />
+      {batch && (
+        <BatchAuditModal
+          productIds={batch.ids}
+          excludedCount={batch.excluded}
+          onBatchDone={() => {
+            setSelected([])
+            void load()
+          }}
+          onClose={() => setBatch(null)}
+        />
+      )}
       <Modal
         title={`分配上架：${allocate?.label ?? ''}`}
         open={!!allocate}
@@ -466,9 +265,7 @@ export default function ProductsPage() {
       >
         <Form layout="vertical" onFinish={onAllocate} initialValues={{ offer_mode: 'build' }}>
           <Form.Item name="store_id" label="店铺" rules={[{ required: true }]}>
-            <Select
-              options={stores.map((s) => ({ value: s.id, label: `${s.code} ${s.name}` }))}
-            />
+            <Select options={stores.map((s) => ({ value: s.id, label: `${s.code} ${s.name}` }))} />
           </Form.Item>
           <Form.Item name="offer_mode" label="模式" rules={[{ required: true }]}>
             <Select
