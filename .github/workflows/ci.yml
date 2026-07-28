@@ -104,6 +104,12 @@ jobs:
         with: {node-version: 22, cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml}
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
+      - name: 契约 codegen 新鲜度（schema.d.ts 必须与 openapi 同 PR 更新）
+        # 008 §5.1 此前纯靠人审——改了 002 契约忘跑 gen:api，类型与契约就静默漂移
+        # （审查 2026-07-28 R10）。openapi-typescript 版本锁在 lockfile，产物确定。
+        run: |
+          pnpm gen:api
+          git diff --exit-code -- src/api/schema.d.ts
       - name: Lint（eslint）
         run: pnpm lint
       - name: 构建（tsc + vite build）

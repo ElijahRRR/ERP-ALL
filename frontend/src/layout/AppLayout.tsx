@@ -13,6 +13,7 @@ import {
   ShopOutlined,
   ShoppingOutlined,
   TeamOutlined,
+  ThunderboltOutlined,
   UserSwitchOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
@@ -31,6 +32,7 @@ const MENU = [
   { key: '/products', icon: <ShoppingOutlined />, label: '产品库', permission: 'catalog.product_read' },
   { key: '/listings', icon: <ShopOutlined />, label: '上架管理', permission: 'listing.read' },
   { key: '/pricing', icon: <DollarOutlined />, label: '定价策略', permission: 'pricing.read' },
+  { key: '/automation', icon: <ThunderboltOutlined />, label: '自动化档位', permission: 'automation.read' },
   { key: '/orders', icon: <ProfileOutlined />, label: '订单管理', permission: 'order.read' },
   { key: '/purchasers', icon: <UserSwitchOutlined />, label: '采购方', permission: 'procurement.read' },
   { key: '/stores', icon: <GlobalOutlined />, label: '店铺管理', permission: 'channel.store_read' },

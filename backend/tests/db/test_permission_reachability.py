@@ -166,29 +166,68 @@ def test_0039_grant_matrix_exact(migrated_db: str) -> None:
     assert not diffs, "0039 授予矩阵与裁定不符：\n  " + "\n  ".join(diffs)
 
 
+# ── 0040 授予矩阵（R2-09 增量2；同形于 _EXPECTED_0039，另立一张而不是并进去）──
+#
+# 不并进 `_EXPECTED_0039`：那张表的 docstring 与判据名都绑死 0039，混进 0040 的产出后
+# 「这条是谁授的」就再也读不出来。两张表各自锁各自迁移的终态。
+_EXPECTED_0040 = {
+    "automation.read": {"团队管理员"},
+    "automation.write": {"团队管理员"},
+}
+
+
+def test_0040_grant_matrix_exact(migrated_db: str) -> None:
+    """0040 的两个码，其模板角色持有者集合必须与裁定完全一致（多一个少一个都红）。"""
+    with psycopg.connect(migrated_db) as conn:
+        rows = conn.execute(
+            "SELECT rp.permission_code, r.name FROM app.role_permission rp"
+            " JOIN app.role r ON r.id = rp.role_id AND r.team_id IS NULL"
+            " WHERE rp.permission_code = ANY(%s)",
+            (list(_EXPECTED_0040),),
+        ).fetchall()
+    actual: dict[str, set[str]] = {code: set() for code in _EXPECTED_0040}
+    for code, role in rows:
+        actual[str(code)].add(str(role))
+    diffs = [
+        f"{code}: 期望 {sorted(want)}，实得 {sorted(actual[code])}"
+        for code, want in _EXPECTED_0040.items()
+        if actual[code] != want
+    ]
+    assert not diffs, "0040 授予矩阵与裁定不符：\n  " + "\n  ".join(diffs)
+
+
 # ── 0039 回滚不许替前序迁移删东西（2026-07-27，独立审查 AI 的 N2）──
 
 
-def _load_0039() -> ModuleType:
-    path = REPO_ROOT / "backend" / "alembic" / "versions" / "0039_permission_grants_backfill.py"
-    spec = importlib.util.spec_from_file_location("_mig_0039", path)
+def _load_migration(filename: str) -> ModuleType:
+    """按文件名动态加载迁移模块，用于在测试里跑它**真正发出的** SQL。
+
+    照抄迁移的拼串逻辑等于测试自己的副本，改了迁移不改副本就测不出来。
+    """
+    path = REPO_ROOT / "backend" / "alembic" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(f"_mig_{filename[:4]}", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-def _downgrade_sql(mod: ModuleType) -> list[str]:
-    """抓 `downgrade()` 真正发出的 SQL，而不是在测试里照抄一遍它的拼串逻辑。
+def _load_0039() -> ModuleType:
+    return _load_migration("0039_permission_grants_backfill.py")
 
-    照抄等于测试自己的副本，改了迁移不改副本就测不出来。
-    """
+
+def _emitted_sql(mod: ModuleType, direction: str) -> list[str]:
+    """抓 `upgrade()` / `downgrade()` 真正发出的 SQL。"""
     stmts: list[str] = []
     with mock.patch.object(
         alembic_op, "execute", side_effect=lambda sql, *a, **k: stmts.append(str(sql))
     ):
-        mod.downgrade()
+        getattr(mod, direction)()
     return stmts
+
+
+def _downgrade_sql(mod: ModuleType) -> list[str]:
+    return _emitted_sql(mod, "downgrade")
 
 
 def test_0039_downgrade_spares_predecessor_grants(migrated_db: str) -> None:

@@ -17,6 +17,8 @@ export type Trademark = Schemas['Trademark']
 export type TroCase = Schemas['TroCase']
 export type ImportJob = Schemas['ImportJob']
 export type ImportErrorReport = Schemas['ImportErrorReport']
+// R2-09 增量2 自动化档位面板（契约 codegen 类型，禁页面手写响应 interface——008§2）
+export type AutomationPolicy = Schemas['AutomationPolicy']
 export type PageOf<T> = { items: T[]; total: number; page: number; size: number }
 
 // ACCESS_KEY 导出给 AuthContext 监听跨标签页 token 变更（storage 事件按 key 过滤）
