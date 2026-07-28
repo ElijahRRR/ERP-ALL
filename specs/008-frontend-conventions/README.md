@@ -25,10 +25,20 @@
 1. 所有请求必须走 `api/client.ts`（统一 Bearer/刷新重试/ApiError 错误信封）。
    页面/组件内禁止 `fetch`/`axios`。现状达标 13/13，保持。
 2. **响应类型必须取自 `schema.d.ts`（契约 codegen），禁止页面手写 interface。**
-   ⚠️ 审计已发现现行违例（**FE-DEBT-01**）：StoresPage 等页内联手写 `Store`/
-   `ProxyItem` 等响应类型——与契约无编译期绑定，后端改字段前端不报错，属
-   "悄悄漂移"裂缝。处置：新代码即日禁止；存量页**随下一次触碰该页时替换**，
-   FE-DESIGN 启动前清零。
+   ⚠️ 审计已发现现行违例（**FE-DEBT-01**）：多页内联手写响应类型——与契约无编译期
+   绑定，后端改字段前端不报错，属"悄悄漂移"裂缝。处置：新代码即日禁止；存量页
+   **随下一次触碰该页时替换**，FE-DESIGN 启动前清零。
+
+   **债务盘点（2026-07-28 实测，此前只写「存量」未量化）**：手写 interface 散布
+   **8 个页面共约 20 个**——PricingPage 8 / ListingsPage 4 / OrdersPage 4 /
+   Incidents·Proxies·ScrapeJobs·NotificationBell·TeamSwitcher 各 1；
+   另 `pages/products/types.ts` 4 个已单独立单（**FX-0728**，根因在契约缺口非前端偷懒）。
+   **判定口径**：只有**被 `api.get<T>/post<T>` 当泛型用的**才算 §2 违例；纯视图模型
+   （表单值、下拉项、行内展开结构）不算。抽查 PricingPage：8 个中至少 3 个
+   （`PricingStrategy`/`PreviewResult`/`RepriceResult`）是真违例。
+   **为什么现在只量化不清偿**：逐页替换会牵动契约补字段（同 FX-0728 的根因），
+   属独立工作量，塞进功能单会失控。**但 FE-DESIGN 启动前必须清零**——新设计要接
+   codegen 类型，届时这些手写形状会变成硬阻塞而非"技术债"。
 3. 契约变更流程只有一条：改 `openapi-v0.yaml` → `pnpm gen:api` → tsc 编译期
    暴露不兼容。禁止先改前端再补契约。
 
