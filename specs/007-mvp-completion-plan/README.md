@@ -26,6 +26,27 @@
 | 9 三档自动化贯通 | ❌（表已建,仅通 order_block 一档） | → R2-09 |
 | （D-Q53）前端设计 | 前端已有 13 页功能件 | 设计打磨 → FE-DESIGN |
 
+## 仓库—工单归属核对（2026-07-28，防 R2-13 类缺口复发）
+
+> **成因教训**：R2-13（自动采购插件）之所以整整漏掉，是因为需求源只有 erpAPI 仓考古，
+> 而该能力住在独立仓 + 第三方 SaaS，**考古照不到**。故建立此表：Owner 名下每个仓
+> 逐个对照有无工单认领，新增仓时补录。
+
+| 仓 | 认领工单 |
+|---|---|
+| amazon-scraper-v3 | R2-01 采集引擎移植 |
+| walmart-audit-system | R2-02 审核弹药 |
+| trademark-data / walmart-trademark-sync | R2-02 基线 + R2-12 USPTO 日增链 |
+| tro-scraper-matrix | R2-12 TRO 链 |
+| amazon-walmart-category-mapping | R2-02 类目映射 |
+| walmart-scraper | 跟卖/竞品数据（模块 5，随 R2-06 与货源占位链） |
+| AMZ-Purchase-Assistant | **R2-13**（2026-07-27 立单） |
+| erpAPI | 遗留系统，考古源 |
+| **PIM-HTML / Get-product-win / Product-Get-mac-** | **无——Owner 2026-07-28 确认已废弃**，不立单、后续核对不再提 |
+
+（与 ERP 无关的仓：ai-skills / openclaw-skills / crypto-signal-engine / flow2api /
+gemini-multi-account / gpt-batch-register / amazon-scraper-v2〔已被 v3 取代〕。）
+
 ## 工单定义
 
 ### R2-07 售后与店铺事件域【L1→L2】（returns + 封店工作流 + 邮箱）
