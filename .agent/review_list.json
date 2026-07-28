@@ -795,6 +795,11 @@
     "date": "2026-07-28",
     "kind": "correction",
     "text": "【第三闸第四轮：C-unset 真机通过 + 我的 nginx 假设被证伪 + D 卡凭据已解】①**C-unset 换壳后 10 行全 0，A/B1/B2/B反向/B补充/C 各态全过**——修复在真机确认有效，此前 8/10 失败确系浏览器持有修复前 chunk（换壳后浏览器与镜像同为 index-BQBPdeUe.js）。②**我上一轮怀疑「index.html 不缓存那道闸没接线」被证伪**：curl -I 实测 /automation 与 /index.html 两条路径都带 Cache-Control: no-store, must-revalidate，闸是接线的，nginx.conf 不改。真机理是 no-store 只能防「新导航拿到旧壳」，**防不住一个从上一轮就没关过、只点页面内「刷新」按钮的标签页**（该按钮只重取 API，从不重新请求 index.html）。故 compose/nginx 注释里「根治 stale 模块类事故」这句**过头了**：缓存路堵住了、旧标签页路没堵——已加的「产物对拍」机器判据正是补这条，属正确的补偿控制而非冗余。教训：**声称「根治」的注释要标明所根治的具体路径**，否则下次同类事故会因为「这条闸已根治」而不去查它。③**D 项卡在缺非超管凭据，实为不必要的阻塞**：核过 identity 契约，超管足以自助造账号（POST /users 收 password；PATCH /users/{id} 可重置；POST /roles + PUT /roles/{id}/permissions 造只读角色；PUT /users/{id}/roles 挂角色）。已写进指令：**密码由部署机自己生成、只写本机密码文件、永不进对话**，并附清理口径（临时账号 disable、临时角色清权限，**不动 team 1 既有团管角色**）。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "landed",
+    "text": "【增量2 第三闸通过：部署机真机验证全项 PASS】前置→第 7 步全部满足判据、零一票否决：0040 落库且模板+team1 团管各 2 码；WIRED=3；UI 四项 A/B(含 B 反向与非法 semi 补充)/C(unset 10 行全 0、configured/disabled/非法档位/未接线各态)/D(只读态四条 + 无权限态菜单消失且 403) 全过；审计 10 行全 team_id=1/actor_id=6/automation.policy_set；清理 DELETE 3 且既有团管角色未触碰、审计一行未删；降级回 0039 且 automation_codes=0；终态 main@1f7f742、反向探针 ModuleNotFoundError、健康 200。**审计段自洽性值得记**：187 为 pricing_watch 且 is_first_write=f 而更晚的 188 反为 t——因 187 属上一轮（行尚在），上轮清理删行后本轮再 PUT 故 before 又为 NULL，三个 t 正对应本轮三条 flow 首次落库；判据在「跨轮次删除后重建」这种非平凡时序下仍自洽。**本轮四个问题全部不在被验对象上**：①C 段 0 行=中文字面量过 PowerShell 管道失配（我的指令）②C-unset 8/10=浏览器持修复前 chunk（镜像本身是修复版）③crypto/atob 未定义=部署机工具层 JS 运行时缺全局对象（我的 PowerShell 一行未跑到）④D 缺凭据=不必要阻塞（超管可自造）。四次均被部署侧「报错即停、不扩大、不重试」挡住，无一变成误操作。四条对应改进已全部落进指令：去中文谓词、产物对拍机器判据、UI 首选零脚本、凭据自助。遗留不阻塞：临时口令明文文件仍在（账号已停用、角色已清空，凭据已惰化，建议删）、两个验证账号保留。**闸序四闸已过三闸：CI ✅ → 审查 ✅ 五轮 → 部署 ✅ → 等 Owner 授权合并**。"
    }
   ]
  },
