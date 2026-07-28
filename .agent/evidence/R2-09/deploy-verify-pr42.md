@@ -167,9 +167,19 @@ echo "CENSUS_EXIT=$LASTEXITCODE"
 详细步骤与判据在仓内 **`.agent/evidence/R2-09/runbook-increment2.md`**（你已经检出的分支上就有，
 §① 前置与 §② A-D 四项）。此处只列要点与贴回格式；**逐条按 runbook 原文执行**。
 
-**前置**：用一个**绑了「团队管理员」角色的普通账号**登录（不是超管——超管权限恒短路，
-验不出授权）。**上轮建的 `pr42_verify`（team 1，团管+采集员）仍在，直接复用即可**，
-不必新建。开页面前 **Ctrl+F5**（前端本轮有改动，务必硬刷新，否则验的是旧页）。
+**前置一（产物对拍，UI 判据之前必做）**：本项目「浏览器跑旧产物」已复发三次
+（HF-0716①、FE-0716、2026-07-28 本单 C-unset 假阳性），**只靠 Ctrl+F5 的口头约定挡不住**。
+改为机器判据——两个 chunk 名必须相同才继续：
+
+```powershell
+docker compose exec frontend sh -c "ls /usr/share/nginx/html/assets/index-*.js"
+```
+再在页面控制台执行 `document.querySelector('script[type=module]')?.src`。
+**两者文件名不一致 → 浏览器拿的是缓存旧壳，任何 UI 判据结论都不作数**：
+DevTools 勾 Disable cache 后 Ctrl+Shift+R（或关标签页重开），直到一致为止。
+
+**前置二**：用一个**绑了「团队管理员」角色的普通账号**登录（不是超管——超管权限恒短路，
+验不出授权）。**上轮建的 `pr42_verify`（team 1，团管+采集员）仍在，直接复用即可**，不必新建。
 
 - **A 改档**（`pricing_watch` 点「半自动」）：绿提示 + **不弹**确认框 + 状态变蓝「半自动」+
   开关自动变启用 + 最后修改列出现「时间 · 用户 #id」。五条全中才算过。
