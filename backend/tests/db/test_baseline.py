@@ -99,7 +99,8 @@ class TestSeeds:
             assert (  # 36 基线 + 0007 scrape.* 3 + 0008 audit.* 3
                 # + 0010 compliance.import_* 2 + 0030 aftersale.read 1 + 0031 refund.* 2
                 # + 0033 catalog.brand_* 2 + 0035 compliance.blacklist_*/trademark/tro 4
-                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 53
+                # + 0040 automation.* 2
+                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 55
             )
             assert (
                 conn.execute("SELECT count(*) FROM app.role WHERE team_id IS NULL").fetchone()[0]

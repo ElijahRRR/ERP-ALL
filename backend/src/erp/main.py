@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from erp import __version__
 from erp.aftersale.router import aftersale_router
 from erp.audit.router import audit_router
+from erp.automation.router import automation_router
 from erp.catalog.router import catalog_router
 from erp.channel.router import channel_router
 from erp.compliance.router import compliance_router
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog_router, prefix="/api/v1")
     app.include_router(compliance_router, prefix="/api/v1")
     app.include_router(aftersale_router, prefix="/api/v1")
+    app.include_router(automation_router, prefix="/api/v1")
 
     return app
 

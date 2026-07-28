@@ -656,7 +656,7 @@
    "specs/007-mvp-completion-plan/README.md"
   ],
   "finding": "PRD §8 模块9，审计补单(2026-07-16)。是'贯通'不是'建表'(现状已核实)。**2026-07-25 考古完成**（`.agent/evidence/R2-09/archaeology.md`，1512行；R2-12 三日连测墙钟等待期间提前起，只读未立项，未改任何实现代码）：六路并行侦察+对抗性交叉核对，合成阶段推翻两路初判（①不需新增状态列——`product.status`/`listing.status`/`maintenance_task` 已是天然停驻位，真缺是 task 级放行**端点**；②`kinds` fail-closed 断言系读 docstring 非代码）。**四条硬阻塞待 Owner 裁决**（不裁定开不了工但清单不冻结则 CI 第一天就红）：①001§09 flow 清单需冻结v2（`listing_pricing` 图纸真名 `pricing_watch`、`scrape_to_audit` 图纸零出处、两行已被 team_config/schedule 种子取代）②007 验收判据要四环各自可停而 001 只供给两环③007「吃 Redis pubsub」与实测不符（`get_config_service` 全仓仅3处命中且无业务代码调用，应改述为「档位每决策直读SQL」）④refund auto 是不可逆真钱，端点未定（`ck_cc_action` 扩1或3个），建议工单等级改标【L1（refund执行片L2）】。另6条Owner待裁+8条盲区（含**验收本身不可重复执行**——商品状态单向前进）；建议拆7增量（量级约R2-12的1.3~1.5倍）。**顺带实锤一处已上线 fail-open**（本轮未修，属listing域跨界）：`listing/maintenance.py:29` 默认 `kinds=[\"delist\"]` 与同文件docstring/`0037`种子的`[]`不符，schedule config 一旦丢`kinds`键即自动执行真渠道下架，绕过D-Q65②人工闸（种子当前带该键未触发，属潜伏）；——**该 fail-open 已于 2026-07-26 随 PR #36/#37 修复（改空表 fail-closed + 3 条回归测试），不再遗留本单**。**2026-07-26 Owner 裁定开工前四条硬阻塞，批注已回传**（`.agent/evidence/R2-09/owner-rulings-20260726.md`，逐条给出可套用的 specs 改动请求；按纪律 007 与图纸归审计侧、开发侧不改正文）。**口径更正**：此前记「四条硬阻塞」，核考古原文应为 **10 条待裁、前 4 条不裁开不了工**，后 6 条（auto 档准入门槛 / guardrail 键与默认值 / 半自动停驻 SLA / refund 端点 / 权限点命名 / 面板归属）随对应增量逐个提请、不阻塞开工。四条裁定：①flow 清单 v2 一次性冻结（删 gtin_alert 与 suspension_reminder 两行——参数已搬走、留着即双落点致运营改了不生效；listing_pricing 归一为 pricing_watch；新登记 scrape_to_audit；新登记 D-Q65② 宪法级要求的 maintenance runner 人工/半自动档；match 跳 sourcing 归 audit_to_listing）②验收判据四环不下调，补登记 scrape_to_audit + listing_dispatch 凑齐（判据合理、是图纸漏登记）③order_block / compliance_block **认二元**不补 semi（order_block 是唯一已上线消费点，加语义即改已上线的订单冻结行为，风险不对称）④删掉「吃 R2-04 Redis pubsub 配置广播」的实现指定、改为「档位每次决策直读、不进缓存」（实测该缓存生产零读者、广播在失效没人读的缓存，且它 fail-open 而档位必须 fail-closed 方向相反；直读延迟≈0 更准）。另把裁定④的两条直接后果写入批注、落工单不得漏：档位读须与被闸住的写同事务且每决策读一次（beat 任务级硬超时 900s，任务级读一次最坏陈旧 900s+30s，直接击穿原 60s 承诺）；逐 flow 声明实时求值 vs 创建快照并做成表（现状已分化：refund 创建快照 / order_block 实时求值 / 另两条未定，且 60s 生效在快照型 flow 上无法定义）。**立项前置 = 审计侧按批注落笔 001§09 与 007 正文**，落笔后按考古 §4 的 7 增量拆分立项。 | 【审计 2026-07-26】按 owner-rulings-20260726.md 落笔完成：001§09 flow v2 九条冻结（新登记 scrape_to_audit/listing_dispatch/maintenance_run，删 gtin_alert/suspension_reminder，listing_pricing→pricing_watch 归一）+ 逐 flow 求值语义表（实时/创建快照）+ order_block/compliance_block 二元档位 + 直读不进缓存 + beat 逐条目读档纪律；007 验收四环 flow 映射与切档口径同步修订。四条断言已源码核实属实（ConfigService 无业务读者/beat 900s 硬超时/refund 已快照/代码仅 order_block 一码）。余 6 条(§2[5]~[10])随增量提请。",
-  "last_checked_at": "2026-07-27",
+  "last_checked_at": "2026-07-28",
   "note": "验收：三件同族商品各跑一档（Owner 07-27 裁定 Q1(a)，原「同一商品三档各跑一遍」在单向状态机下跑不通）；切档生效口径见 acceptance（原「60s 生效」已由 Owner 07-26 裁定 4 替代）",
   "gate": "✅ 开工前置已解除(2026-07-26)：flow 清单 v2 冻结 + 四环补齐 + 二元档位 + 直读口径已落 001§09/007（Owner 四条裁定，审计侧核实源码后落笔）",
   "acceptance": "三件同族商品各跑一档（Owner 2026-07-27 裁定 Q1 选 (a)，替代原「同一商品在三档下各跑一遍」）：同一 SKU 家族取 A/B/C 三件，分别在 manual / semi / auto 下跑完整链路 采集→审核→上架→定价，全自动零人工介入、半自动在设定环节停、人工档每环节停。**改判据的理由**：商品状态单向前进（ingested→audit_passed→listing draft→live），跑完 auto 档回不到 manual 档，全仓无状态回退工具（tools/audit_replay.py:166 是离线重放，不改 product.status），原判据在当前状态机下物理上无法执行；判据的真实目的是「三档在同一条流水线上都走得通」，三件等价输入同样证明这件事。**明确不做**：不为验收往仓里引入商品状态回退能力（含 is_test 店专用重置脚本）——那是收益一次性、风险长期的通道。四环对应 flow(§09 v2.1)：①scrape_to_audit ②audit_to_listing ③listing_dispatch ④pricing_watch。切档生效口径(替代原「60s内生效」)：实时求值类于下一次决策即生效，含 auto 档 beat 逐条目读档(最坏陈旧=一个条目非一批)；创建快照类(refund/cancel/purchase_execute)对在途请求不生效属正确行为，查新建请求即可。枚举须与 §09 flow 清单 v2.1 九+一条严格对照(CI 校验)。⚠️ specs/007-mvp-completion-plan/README.md:88 的正文仍是旧措辞，归审计侧按批注回传 owner-rulings-20260727.md 同步。",
@@ -715,6 +715,91 @@
     "date": "2026-07-28",
     "kind": "landed",
     "text": "【2026-07-28 第三闸真机验证收尾——逐项结论如实分类】部署机最终回执 `HEALTH_CODE=200 (after 1 tries)`，机器留在 `main@1f09edf`、状态正常（同时**实证 `/healthz` 是正确路径**，v4 修正有效）。**拿到实证的（4 项）**：①容器跑的确实是分支代码——`FLOWS= 10`/`KERNEL_EXIT=0`；②切换真实生效——切回后负向判据如期失败 `ModuleNotFoundError`/`ROLLBACK_KERNEL_EXIT=1`；③零迁移属实——migrate `Exited (0)` 未执行新迁移；④服务健康、可回到正常态。**无覆盖、未拿到实证的（1 项）**：现网数据新旧判定对拍——**因 `automation_policy` 空表而为空真**，不计通过（详见上一条 correction）。**物理上无法在这台机补齐**：补它只能往生产库造策略行再对拍，属「往生产写业务数据」，为一次验证不值得；等价性由 CI + 审查侧 33 组差分实测（含 11 组人造库状态）承担，**那 11 组恰好覆盖了现网空表覆盖不到的区间**。**副产物（运营需知情）**：现网无任何自动化策略行，`order_block` 全部「只软标记不冻结」——与 D-Q14 缺省一致、非缺陷，但拦截能力一处都没启用。**过程代价**：本闸往返 5 轮，**5 处指令错全在云端侧**（判据写宽 / fetch 不更新本地分支×2 /健康路径凭记忆编 / 缺就绪等待），部署机 5 次全部严格照做并及时停手、无一次自作主张。**闸序状态**：CI 绿 ✅ → 独立审查通过 ✅ → 真机验证已尽其所能 → **等 Owner 裁定是否收口并授权合并**。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "landed",
+    "text": "【2026-07-28 增量1 关账：PR #41 squash 合入 main `4b668e4`，四道闸首次为本单走满】Owner 裁定「收口合并」。闸序留痕：①CI 四项全绿（@ c36f6f1）②独立审查通过（临时 PG 簇差分实测 3 flow × 11 组库状态 = 33 条零分歧、四种图纸漂移变异全红、事务边界核过、全仓 automation_policy SQL 只剩内核一处；唯一低级问题 F1 正文自相矛盾已修）③部署机真机验证 **4 项实证 + 1 项无覆盖**——实证：容器跑的确实是分支代码（FLOWS=10，该模块 main 上不存在）/ 切换真实生效（切回后负向 import 如期失败 exit 1）/ 零迁移属实（migrate Exited(0)）/ 服务健康可回正常态（HEALTH_CODE=200）；**无覆盖：现网数据新旧对拍因 automation_policy 空表而为空真，明确不计通过**，等价性由 ①② 承担④Owner 授权。**「1 项无覆盖」已写进 PR 正文与合并提交信息**，不埋在四个 ✅ 里。**增量1 交付物**：`core/automation.py`（10 条 flow 的 Mode/Evaluation/FlowSpec + resolve_mode）、`test_automation_flow_contract.py`（直解 §09 注册表，双向一致 + 合法档位集 + 求值语义，带前提自检）、`test_automation_resolve.py`（8 条真库判据）、两处旧读点回接内核。**下一步：增量2**（策略读写 API GET/PUT `/automation-policies` + 权限点 `automation.read/write` + 前端策略面板 + Q3 三条：面板显性区分「未配置/已停用/manual」三态、`enabled=false` 记 warn【增量1 已落】、闸类 flow 停用给显式二次确认；**面板不做模板按钮**——Q2 终裁不加模板）。无前置，分支已从 `4b668e4` 重建。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【2026-07-28 合并后发现一处正文失实（第五次）+ 其载体是一个流程漏洞】stop-hook 报 dirty 牵出：**PR #41 squash 进 main 实际 12 个文件，正文声称 10 个**。多出的两个都在 `.agent/`：①`evidence/R2-09/deploy-verify-pr41.md`（真机指令，正当新增，但正文的文件清单停在它诞生之前没更新）②`evidence/R1-11/dry-run-feed-snapshot.json`——**测试漂移被 `git add -A .agent` 扫进提交**。该快照由测试每次运行重写（R1-11 时代的「测试写证据」机制），EAN 随沙箱库池状态在池号 2/3 摆动（`…0021`↔`…0038`，CI fresh DB 恒为 `0021`=canonical）；漂移在多个 add -A 提交间来回翻转，`4fd76ae` 又把它翻回 0021。**「代码改动只在一个 commit/5 个文件」的不变量仍为真**（多的两个均为 .agent 文档），但文件数失实成立，且漂移文件未经审查侧过目（审查审的 a2cdda7 是 10 文件版）。**流程修正两条**：①提交一律**显式列文件**，弃用 `git add -A .agent`——它会把测试重写的 evidence 连带扫进来；②跑完全量 pytest 后、提交前，先 `git checkout -- .agent/evidence/R1-11/dry-run-feed-snapshot.json` 还原漂移（canonical=0021）。**根治**（让该测试对池状态确定化）属改既有测试语义，另行提单不混进 R2-09。erpAPI 仓核过：干净。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【2026-07-28 增量2 完成（workflow 编排 + 审查修复 + 变异复证）】范围：GET/PUT `/automation-policies` + 迁移 0040（`automation.read/write` 种码 + 授团管 + 按角色名回填既有团队副本，JOIN-by-name 单条 SQL 与 0039 同形）+ 前端 `/automation` 面板 + 契约/codegen/CI 新鲜度门禁 + runbook。**Q3 三条全落**：三态在 API 层显性区分（state 独立字段，T1/T4 钉死）；停用记 warn（增量1 已落）；闸类停用与 auto→manual 均弹危险确认。**Q2 终裁遵守**：无模板按钮。PUT 不收 config（AUTOMATION_CONFIG_NOT_WRITABLE 显式 422）。**编排**：11 个 opus/max 子代理（4 勘察→1 设计→2 实现→3 镜头审查→1 变异证伪），审查与证伪抓出 **19 条去重发现**，其中合并前必修 6 条全部修复：①证伪 M4 坐实 T7 审计判据有出口（查询无本次运行界定，温库上删掉审计写入判绿——CI 冷库掩护着它）→ 加 max(id) 水位线 + 恰好 2 行断言，修后温库连续两轮变异皆红、恢复 sha 一致；②F1 compliance_block 零消费点却被面板断言「拦截生效」（ERP_ENV 同形假绿）→ 新增 WIRED_FLOWS 代码事实注册表 + API `wired` 字段，未接线 flow 显灰 Tag、不渲染拦截断言，T1 钉住 wired 集合（接线 PR 忘更新即红）；③F2 闸类二次确认漏 effective=semi（order_block 存 semi 时闸真在拦却无确认）→ 条件改为 gate∧wired∧effective∈{semi,auto}∧目标 manual/停用；④F3/R3/P1-1 三镜头同报：GET 对无团队超管按 team_id=NULL 静默查、返回一屏「全 unset+红字」假面板 → GET 与 PUT 同口径 422 AUTOMATION_TEAM_REQUIRED，T14 钉死；⑤r8-F1/F2：extra=forbid 与 min/max_length 把请求体校验推进 FastAPI 默认 {detail} 信封、绕过 002 统一信封且 T10 只看状态码抓不到 → 改显式 config 字段 + 服务层三档校验，空串/超长/bogus 全走 AUTOMATION_MODE_ILLEGAL 统一信封（T2 扩测）、config 走 AUTOMATION_CONFIG_NOT_WRITABLE（T10 断言码）；⑥R5 停用一条已存非法档位的行恒 422（运维被锁在坏状态）→ enabled=false 时只验三档、flow 级校验仅在启用时强制，T12 双向钉死（停用成功且坏值仍标 illegal、带坏值复启仍拦）。**次级修复**：契约 required 补 5 个 nullable 字段 + gate/wired 入 schema + config additionalProperties + 出参上枚举（R1/R2/R9）；前端删 GATE_FLOWS 硬编码、gate 由服务端派生（F4）；审计 before 读加 FOR UPDATE（F12）；GET 对枚举外遗留行 warn 留痕不静默吞（F9，T13）；view_policy 纯函数单测补 unknown_mode 分支与 _MODE_ORDER 不丢档判据（F8/F10，test_automation_view.py）；CI frontend job 加 codegen 新鲜度门禁（R10）；runbook 修 alembic_version 表在 public 非 app（P1-3）、同名自建角色告知（P2）、module 计 11（P3）、沙箱 24 断言那轮标注为修复前版本不作取证（F11）。**登记不修**：erp/automation 包名双义（R8，命名债入 PR 正文）；RequestValidationError app 级信封缺口（缺 mode 等结构违例仍走 FastAPI {detail}，全仓皆然、002 既有缺口，另行提单）；AUTOMATION_TEAM_REQUIRED 的 404 vs 422 收敛问题不存在了（TEAM_REQUIRED 本就 422），但 FLOW_UNKNOWN 用 404 是全仓 BusinessError 首次非 409/422 覆写——按设计决策落地，审计侧若要收敛回既成惯例改动面一处，随审查提。**门禁**：全量 pytest exit 0（646 passed / 1 skipped，新增 30 条：新文件 29 + reachability 参数化 +1；此数为实测钉死——首记 651/35 系笔误，实测时汇总行被 addopts 的 -q 与命令行 -q 叠成 -qq 压掉，数点数错）、ruff/mypy strict 绿、前端 gen:api 幂等 + lint + build 绿、0040 单步与整链往返 exit 0。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【增量2 审查一轮响应（PR #42）】审查报告（所审 2009955）出 F1（中）+ N2（低），两条均按建议做等价修复：F1——WIRED_FLOWS 守卫方向反了，T1 只能挡「改表忘改测试」、挡不住「接线忘改表」（后者才是要防的方向，落在闸类上=危险确认被跳过+面板说假话）→ 按审查建议把锚打在代码事实上，新增 tests/test_wired_flows_census.py 钉死 backend/src 全部 resolve_mode( 调用点（正则 \\bresolve_mode\\( 天然排除 _resolve_mode 同名私有包装与 gateway 的 GatewayMode 解析；排除定义文件），新接一处调用点即红，failure message 指路三处同步（census 表 / WIRED_FLOWS / T1 断言）；WIRED_FLOWS 内容断言并置于同文件。已手工证伪：临时向 procurement.py 注入一处调用 → census 红，恢复后绿。同步修正三处方向说反的注释（core/automation.py、T1、PR 正文）。N2——AutomationPolicyIn.enabled 从可省默认 true 改为必填：对停用行只发 mode 会静默复启，落在 refund/cancel 是真钱不可逆；openapi required 补 enabled、default 移除；既有测试 PUT 载荷全部补整对提交；新增 T15 钉死「缺 enabled → 422 且停用行不被复启」（结构性违例走 FastAPI detail 信封，属已登记的 002 全仓缺口，T15 只断状态码+库未动）。门禁（截至本次提交前实测）：全量 pytest exit 0（649 passed / 1 skipped，本轮 +3：census 2 + T15 1）、ruff/mypy 绿、gen:api 幂等（sha 相同）、前端 lint/build 绿。另录环境事实一条：pytest 9.1.1 对「同目录参数不连续交错」的子集调用会丢 tests/db/conftest.py 夹具（fixture 'migrated_db' not found），用全旧文件三元组合复现（baseline+zh_forbidden+resolve 8 errors），与本增量无关，CI 整树收集不受影响；子集调用时同目录文件须连续排列。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【增量2 审查复核通过 → 部署指令下发】审查 AI 复审 2c2ab65 通过：F1 修法经其临时 worktree 变异实测（新接调用点红 / _resolve_mode 同名不误中）；N2 三处一致（模型/openapi/schema.d.ts）且 T15 验的是危害本身；登记一处理论残留不拦（绕过 resolve_mode 直用 view_policy 自行闸控则 census 看不见——今日零调用方，接线增量若出现会撞 T1，不加同形判据）。闸序：CI ✅ 审查 ✅ → 部署机 ⏳。部署指令落仓 .agent/evidence/R2-09/deploy-verify-pr42.md（复用 pr41 v4 已验证脚手架：-B 自校验 checkout / healthz 轮询 / 退出码判成败），与 #41 的三点差异已写进指令头：0040 迁移执行属预期、UI 四项按 runbook §② 人工判据、切回 main 前必须先 alembic downgrade 0039（main 不认 0040 版本号，顺序不能反）。清理步条件执行（仅当验证前 policy_rows=0，绝不删既有行）；audit_log 留痕不删。另修 runbook §⑥ 一处残留旧说法（原写 T1 钉着忘更即红——那正是 F1 指出的反方向，改为 census 拦）。待 Owner 转交部署 AI。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【增量2 部署机第 3 闸首轮：C 段一票否决命中，判据按设计工作】部署回执：①-⑥ 前半全过（checkout 自校验一致、0040 执行、WIRED=3、健康 200、版本/种码/policy_rows=0 均符）；C 段实测只有(模板)+team_id=1 两行、缺 team 2 ——即「既有团队看不到面板且无任何报错」的真实实例，被判据当场抓住。部署 AI 处置全对：停 UI 验证、按⑩⑪⑫强制降级 0039+切回 main+负向探针失败+健康 200，机器安全（main@a6fe3f6、库 0039、零残留）。初判定性：非 0040 代码缺陷——按名回填是 0031→0039 一贯语义（runbook §③2 事先写明了这两种可能），且 0002 起 API 建团必复制「团队管理员」模板，team 2 缺副本说明它绕过 API 直插建团或副本事后被改名/删除；同一缺口意味着 team 2 连 0039 的 A 组补授也没拿到（同名模式），缺口早已存在、本次是首次被判据照出。已下发只读诊断指令（团队身份/角色清单/用户绑定/与模板差集/审计溯源），等回执后按三岔口推 Owner 拍板：(a) team 2 空壳无用户→验收判据按「有用户的团队」放宽重验；(b) 真团队缺角色→运维补副本后重跑（库已在 0039，upgrade 自然重放 0040）；(c) 若要求「缺模板副本自愈」→ 语义变更另立工单，不进本 PR。另：main 推进 a6fe3f6（事件流拉平三规则），分支已 rebase（代码 commit 换 sha：2009955→8e7915f、2c2ab65→e7ea2d1，内容不变），PR 正文同步、按新规则贴「待审 @」评论。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【增量2 部署诊断定论：team 2 = R2-02 对拍验证残留】五条只读诊断回执（DIAG_EXIT=0）：team 2 名即「R2-02对拍」（2026-07-14 建）、audit_log 无其建团行（仅 team 1 有 identity.team_create）、模板 7 角色全缺、team 1 则七副本齐全（团管 42 码）——四特征齐指「绕过 API 直插 SQL 建团」的验证残留，非真团队。顺带发现待查（不阻塞）：team 2 唯一用户有 user_role 绑定但本团队零角色，绑定必指向他团队或模板角色（跨团队绑定，RLS 杂音候选）。定性闭环：0040/0039 按名回填漏过它属预期语义；「既有真团队看不到面板」的风险场景在本机不存在（唯一真团队 team 1 两码齐全）。待 Owner 三岔口拍板（改验收判据与数据处置均在必停清单）：(a) 判残留、验证判据改为「API 建团且有副本的团队全中」重发（推荐，不写数据）；(b) 补副本把 team 2 转正后重验；(c) 删除 team 2（另行指令）。team 2 本体处置不挂 PR #42 闸序。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "ruling",
+    "text": "【Owner 裁定 (c)：删除 team 2 后重验】三岔口拍板为删除（验证残留彻底清掉）。删除指令落仓 .agent/evidence/R2-09/deploy-cleanup-team2-pr42.md：单事务双硬闸——闸 1 身份核对（id=2 必须名为 R2-02对拍）；闸 2 由 pg_constraint 动态清点全部 28 张 FK 表（含 shared_resource 双列），除 app_user 恰 1 行外任何非 0 即 RAISE 中止整体回滚（防残留团队名下挂业务数据、超授权删除）；三删固定顺序 user_role→app_user→team 全带 RETURNING 取证，user_role 的 role_id 顺带回答跨团队绑定疑点；audit 三族无 team FK 一行不删。删除后重验 = 直接重跑 deploy-verify-pr42.md 原文，判据零修改（1 团队时 C 段 = 模板+team1 = 团队数+1 自然成立）。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "ruling",
+    "text": "【v1 闸 2 中止（product=400）→ Owner 扩权删净】v1 单事务按设计中止整体回滚（CLEANUP_TEAM2_EXIT=3，team 2 名下 400 行产品超授权范围，部署 AI 未扩删未重试——处置正确）。沙箱同构 schema 复核：product 仅被 variant_member/listing/listing_spec 三表引用（全 NO ACTION），而 v1 闸 2 已证 28 张 team FK 表中仅 product 非零（listing/variant_group 等 team 2 下全 0）→ 400 行是无下游挂载的裸产品行（R2-02 对拍导入后未走到上架）。Owner 追加裁定：扩权删净含 400 行产品。v2 指令追加至 deploy-cleanup-team2-pr42.md：闸 2 例外集扩为 {app_user=1, product=恰400}（行数不符即中止——与授权时状态漂移的自检）；新增闸 3 三张引用表对 team 2 产品必须 0 行（裸产品定性的机器复核，非 0 中止）；四删顺序 product→user_role→app_user→team，产品段用 WITH del RETURNING 计数取证；仍单事务任一异常整体回滚；audit 三族不动。删除成功后直接重跑 deploy-verify-pr42.md 原文，判据零修改。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【v2 闸 3 中止（listing_spec=4）→ 发现清点盲区，转全量只读清点】v2 回执：闸 3 拦下 4 行 listing_spec 挂载（variant_member=0 listing=0），单事务整体回滚分毫未动，部署 AI 未扩删未重试。沙箱复核两点：①listing_spec 有 team_id 列但无 team FK——按 FK 枚举的 28 表清点天然照不到它，这 4 行即 R2-03 规格构建器时期对 team 2 产品的构建产物（offer_mode/wpt/payload/build_hash 列形），且无任何表引用 listing_spec，删除是终点无连锁；②同型盲区共 19 张父表（有 team_id 无 team FK，除审计三族）：scrape_task/scrape_result（对拍原始采集数据的最可能落点）、feed_item、listing_state_history、llm_usage_log、notification、order/return/price/procurement/refund/shipment/task_run 族——不挡删团队但属「team 2 名下数据」，删净语义是否覆盖需 Owner 见数拍板。改策略：不再按闸逐次挤——先发全量只读清点（19 父表 team_id=2 行数全打出含 0、4 行 listing_spec 预览不含 payload），拿完整数字后一次定 v3 终版。审计三族无论如何不动（留痕铁律）。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "ruling",
+    "text": "【全量清点回执 + Owner 终裁 → v3 终版落仓】清点（FULL_CENSUS_EXIT=0）：19 张无 FK team_id 父表中仅 listing_spec=4（07-15 构建，WPT=Art Sets/Planter Boxes/Drinkware/Mirrors——即 R2-03 验收① dry-run 构建产物，无表引用它）与 llm_usage_log=1580（R2-03 AI 属性填写费用流水）非零，其余 15 张全 0；审计三族 audit_run=2400 / audit_hit=6098 / audit_log=0。Owner 终裁：4 行规格产物 + 1580 行流水一并删（费用流水口径代价已提示、Owner 选彻底无痕）；审计三族铁律保留孤儿化。v3 追加至 deploy-cleanup-team2-pr42.md：四道闸每项行数钉死清点值（product=400 / listing_spec=4 / llm_usage_log=1580 / app_user=1），任何漂移即中止整体回滚；六删顺序 listing_spec→product→llm_usage_log→user_role→app_user→team，大表 WITH del 计数取证；终检含「审计两行仍 2400/6098 纹丝不动」的防误删断言。删除成功后重跑 deploy-verify-pr42.md 原文，判据零修改。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【第三闸 UI C-unset 抓到真缺陷 → 已修 + 补上仓内第一条前端渲染判据】v3 清理全部符合授权（4/400/1580 三值精确、审计 2400+6098 纹丝不动、CLEANUP_TEAM2_V3_EXIT=0）；重验①-⑥ 全过（0040 落库、C 段模板+team1 各 2 码、total_teams=1），UI 除 C-unset 外逐项过。**缺陷**：未配置行的档位 Segmented 显示「人工」为选中态——恰好击穿本增量立身之本（unset≠配了 manual，Q3 裁定要三态不塌缩）。机理：`value={row.mode ?? undefined}` 命中 rc-segmented 的 `useMergedState(segmentedOptions[0]?.value, {value})`（index.js:118）回落到第一个选项，而第一档恒为 manual（_MODE_ORDER 保守档最左，本是刻意设计）→ 新团队十行全显示「有人配了人工」，order_block 上更像有人主动选过。**连带第二症**（部署机未报、代码核出）：item 是 `<input type=radio checked>`，点已选中项不触发 change → 未配置行上「显式设为人工」这条路是死的；闸类只有 manual/auto 两档，唯一绕法是先开 auto——先打开拦截再关回去。修复：`value={row.mode ?? ''}`（不匹配任何选项 → 无选中项 + 点击是 false→true 真实变更），一处改动同时解两症，并覆盖「库存脏串」那档。**取证纪律**：本缺陷 tsc/eslint/后端测试全看不见（只在渲染后存在），唯一抓住它的是人工目验，不可复跑——故补 frontend/e2e/automation-panel.mjs（headless chromium + 路由桩，不连后端）4 条断言，并接进 CI frontend job（就绪轮询而非固定 sleep，同部署机 healthz 教训）。判据可红性已实测：回退修复后重建 → 3 条红且正是人工目验报的两处症状，第 2 条（已配置行仍显选中）保持绿证明不是全红蒙混；恢复后 4 条全绿。playwright 早在首个前端 commit 就进了 devDependencies、一直无人使用，本次是它第一次被用上（FE-TEST-01「零前端测试」由此部分清偿）。附注两条：runbook §② C-unset 的判据写法（要求无选中项）当时就是对的，是代码没做到——判据先于实现存在，这次它赢了；部署机保留的验证账号 pr42_verify（team 1，团管+采集员）未清理属正确处置（runbook 未授权动身份数据），去留请 Owner 定。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【新加的 e2e 步骤把 CI 弄红——本地绿 CI 红的环境差异，已修】68a67fa 上 evidence-gate/backend/workers 三 job 全绿，只有我新加的「面板渲染判据」红：日志显示 vite preview 正常起并打印 Local: http://localhost:4173/，但 curl 127.0.0.1 六十秒轮询全 000。根因是绑定地址而非判据本身——vite preview 默认 host=localhost，Node 17+ 的 DNS 解析顺序是 verbatim，runner 上 localhost 先解析到 ::1 → 服务只监听 IPv6，而轮询与脚本两侧都写 127.0.0.1；沙箱里 localhost 直接是 127.0.0.1，所以本地怎么跑都绿、复现不出来。修法：preview 显式 --host 127.0.0.1 两侧钉死 IPv4，失败分支补打 ss -lntp 便于下次定位，脚本头注同步写明该参数不可省。本地已按 CI 完整姿势（起服务→就绪轮询→跑脚本）复跑：READY_CODE=200、四条断言全过。教训记一条：**新判据第一次进 CI 必须假设「本地绿≠CI 绿」**——本地与 runner 的差异面（DNS 顺序、预装浏览器版本、localhost 语义）不在代码里，只能靠首跑实证；这次首跑就红反而是好事，红在我自己的新步骤上、没有污染既有闸。另：CI 新增步骤耗时约 2 分钟（playwright 下载 chromium 177MB + headless shell 114MB），若审查侧认为不值当可改为按路径触发或拆出单提。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【审查五轮全通过 + 一条我方接收缺口】审查侧已就 PR #42 出五轮报告（所审 2009955→2c2ab65→3367187→20c6ef6→f7fe850），**后三轮我未收到推送**——它们以 PR review（pullrequestreview）形式提交，webhook 只推了前两轮的。**接收缺口记为规则补丁**：自检轮询不能只看 issue comments，必须同时拉 get_reviews 比对 submitted_at；否则「审查已出但开发侧不知道」会静默卡住闸序（本次即 Owner 主动问才发现）。五轮结论：F1/N2 首轮提出、二轮经其独立变异实测确认修复；三轮核了清理指令（重点核 SQL 无 BEGIN/COMMIT 这一处）；四轮**独立起 worktree 变异实测了我新加的前端渲染判据**——基线四条全绿、变异下①报「实得 1 个选中项」③报「实得 0 个 PUT」而②保持绿，两个声称与反向护栏一并坐实；五轮核 rebase range-diff 全 = 且认定 f7fe850 属另一工单（R2-12 验收①）。**两条意见已落地**：①清理指令的单事务性**靠调用参数不靠 SQL**（`psql -1` + ON_ERROR_STOP=1），拆掉 -1 单独跑闸即退化为告警——已在 deploy-cleanup-team2-pr42.md 顶部加专节 + 铁律第 4 条（v1/v2/v3 通用）；②e2e 桩数据与 openapi 漂开时脚本不会红——已在 row() 工厂头注写明「契约加字段必须同步本工厂」，并点明契约那半由 gen:api 门禁 + tests/db 覆盖。**登记不拦**：审查 N1——清理指令闸 2 靠 pg_constraint 枚举，看不见「有 team_id 列但无 FK」的 19 张表（v2 那轮发现的同一盲区），执行时刻不复验其余那些表，故「除审计外彻底无痕」严格意义上依赖那次清点而非执行时自证；后果（孤儿化）可接受。审查侧亦记：非 API 建团路径（seed/conftest/e2e）仍会复现 0040 按名回填的盲区，属另一单。我提的两个问题（e2e 设施是否超范围、2 分钟浏览器下载是否值当）审查侧未明确裁定，仅记观察不拦——按「无阻拦项」处理，若 Owner 有异议随时可拆。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【第三闸第三轮：编码假设坐实 + C-unset 出现 2/8 分裂待定位】①**C 段 0 行确系我指令的编码缺陷，非数据丢失**：部署机诊断回执 match_by_literal=0 而 match_by_unicode=2、角色 14 行齐全（模板 7 + team1 7）、团管两侧 automation_codes 均为 2、client/server_encoding 皆 UTF8——中文字面量经 PowerShell 管道进 psql 匹配不上。已修两处取证 SQL（deploy-verify C 段 + runbook §③2）为「不带中文谓词、全量列角色 + automation 码数、由人读哪行是团管」，信息量更足且不依赖管道编码。教训与本周主线同形：**判据被传输链路弄坏时，读出来的 0 行与真实的 0 行长得一模一样**——这次「判据的出口」在管道上。②**C-unset 报 2/8 分裂**（pricing_watch/order_block 无选中，其余 8 行仍选中「人工」），我无法从代码解释：沙箱用同源产物 + 10 行全 unset 桩数据复现，**10/10 全部无选中项**，且 44acfba 之后前端源码零改动。Dockerfile 为镜像内 pnpm build 且 .dockerignore 排除 dist，排除「宿主陈旧产物入镜像」。故最可能是部署机服务/浏览器持有的是修复前产物。已构建两版产物对拍出**与压缩变量名无关的单一判别标记**：`mode??void 0` 计数=0 即修复版、≥1 即修复前版（修复版 `mode??\"\"` 计 2、修复前计 1，因 stateTag 那处未变，故只能用 void 0 这条判别）。下发三件只读诊断：镜像内产物 grep 该标记、浏览器实际加载的 chunk 名与镜像内 ls 对拍（抓浏览器/nginx 缓存）、控制台逐行输出 flow_code→选中数（抓测量口径）。**未下任何修复指令**——在证据分清「产物旧」与「代码真有残缺」之前不改码。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【第三闸第四轮：C-unset 真机通过 + 我的 nginx 假设被证伪 + D 卡凭据已解】①**C-unset 换壳后 10 行全 0，A/B1/B2/B反向/B补充/C 各态全过**——修复在真机确认有效，此前 8/10 失败确系浏览器持有修复前 chunk（换壳后浏览器与镜像同为 index-BQBPdeUe.js）。②**我上一轮怀疑「index.html 不缓存那道闸没接线」被证伪**：curl -I 实测 /automation 与 /index.html 两条路径都带 Cache-Control: no-store, must-revalidate，闸是接线的，nginx.conf 不改。真机理是 no-store 只能防「新导航拿到旧壳」，**防不住一个从上一轮就没关过、只点页面内「刷新」按钮的标签页**（该按钮只重取 API，从不重新请求 index.html）。故 compose/nginx 注释里「根治 stale 模块类事故」这句**过头了**：缓存路堵住了、旧标签页路没堵——已加的「产物对拍」机器判据正是补这条，属正确的补偿控制而非冗余。教训：**声称「根治」的注释要标明所根治的具体路径**，否则下次同类事故会因为「这条闸已根治」而不去查它。③**D 项卡在缺非超管凭据，实为不必要的阻塞**：核过 identity 契约，超管足以自助造账号（POST /users 收 password；PATCH /users/{id} 可重置；POST /roles + PUT /roles/{id}/permissions 造只读角色；PUT /users/{id}/roles 挂角色）。已写进指令：**密码由部署机自己生成、只写本机密码文件、永不进对话**，并附清理口径（临时账号 disable、临时角色清权限，**不动 team 1 既有团管角色**）。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "landed",
+    "text": "【增量2 第三闸通过：部署机真机验证全项 PASS】前置→第 7 步全部满足判据、零一票否决：0040 落库且模板+team1 团管各 2 码；WIRED=3；UI 四项 A/B(含 B 反向与非法 semi 补充)/C(unset 10 行全 0、configured/disabled/非法档位/未接线各态)/D(只读态四条 + 无权限态菜单消失且 403) 全过；审计 10 行全 team_id=1/actor_id=6/automation.policy_set；清理 DELETE 3 且既有团管角色未触碰、审计一行未删；降级回 0039 且 automation_codes=0；终态 main@1f7f742、反向探针 ModuleNotFoundError、健康 200。**审计段自洽性值得记**：187 为 pricing_watch 且 is_first_write=f 而更晚的 188 反为 t——因 187 属上一轮（行尚在），上轮清理删行后本轮再 PUT 故 before 又为 NULL，三个 t 正对应本轮三条 flow 首次落库；判据在「跨轮次删除后重建」这种非平凡时序下仍自洽。**本轮四个问题全部不在被验对象上**：①C 段 0 行=中文字面量过 PowerShell 管道失配（我的指令）②C-unset 8/10=浏览器持修复前 chunk（镜像本身是修复版）③crypto/atob 未定义=部署机工具层 JS 运行时缺全局对象（我的 PowerShell 一行未跑到）④D 缺凭据=不必要阻塞（超管可自造）。四次均被部署侧「报错即停、不扩大、不重试」挡住，无一变成误操作。四条对应改进已全部落进指令：去中文谓词、产物对拍机器判据、UI 首选零脚本、凭据自助。遗留不阻塞：临时口令明文文件仍在（账号已停用、角色已清空，凭据已惰化，建议删）、两个验证账号保留。**闸序四闸已过三闸：CI ✅ → 审查 ✅ 五轮 → 部署 ✅ → 等 Owner 授权合并**。"
    }
   ]
  },
@@ -793,6 +878,11 @@
     "date": "2026-07-27",
     "kind": "correction",
     "text": "**独立审查 AI 出具 PR #37 审查报告（10 条），逐条复核后的两处数字/范围更正**：①**F8：0039 幂等往返数字「re-up 恢复 5 行」是错的**。我实跑 `downgrade 0038 → upgrade head` 量得：**模板角色 13 行**（＝`_GRANTS` 条目数，与报告静态推导一致），本地库另有团队角色副本 49 行，合计 62。报告只能推导干净库的 13，实测补上了「有团队时按同名副本成倍展开」这一半。原来的 5 恰好等于去重角色数，口径串了。②**F4：dry-run 快照归位在全仓 7 条渠道写路径里只覆盖了 3 条**。剩余四处仍写死 `result={\"dry_run\": True}`：`order/ship.py:214`、`:244`、`pricing/service.py:535`、`:793`。发货回传与价格推送同属渠道写路径，A152 真调前仍观测不到将发内容。**本 PR 不做，明确挂单**，别让 PR 正文读起来像已闭环。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "landed",
+    "text": "【验收① 结清：USPTO 三日连测 3/3 PASS】07-26（无数据日）+ 07-27 + 07-28 全 PASS，证据回填 .agent/evidence/R2-12/uspto-3day-verification.md 三日记录表。交叉校验自洽：completed_files 232→233→234 每日恰 +1 且与 latest_file 逐日前推一致；total 增量小于 records_inserted 属正常（ON CONFLICT DO UPDATE 更新不涨行数）；revision 204→206→210 逐日递增。**两处如实标注、不含糊**：①07-27 无 schtasks 直证（只保留最近一次运行，已被 07-28 覆盖），判定改由两个独立机器时间戳互证——日志文件名精确落在 18:00:01、etl_progress.completed_at=10:00:21 UTC（＝北京 18:00:21，DB 自写与日志无关）；已记为间接证据并留改进项：下轮窗口前让 .bat 收尾把 schtasks 四项写进当日日志，直证逐日留痕。②判据第三句「审核检索可见新商标」**本轮无真机操作**，改由三段代码事实闭合：检索出口可用（验收④ 已实测 nike+LIVE 208 条 / 无权限 403）；新行 mark_norm 必非空（bulk_import_trademark.py:110 与 import_service.py:392 逐字同式派生，且缺 mark_text 的行计 err，两日 err=0 ⇒ 全部派生成功——这正是该子句要防的「只填 mark_text 不填 mark_norm 则行数全对但搜不到」）；检索 router.py:394 直查 refdata.trademark 无缓存无物化视图。残余=无人真在搜索框搜过新商标，风险已压极低故不阻塞，下次上机顺手补一次实搜。**观察项两条**（不阻塞）：revision 步长 2/4 与行数不成比例、口径未明；[DELTA] rows=65184 vs 逻辑 65177 的 7 行差有两种解释（部署侧称 CSV 内嵌换行、仓内判据写的是「无 mark 文本行」），err=0 且 merged==total 已证未丢数。收账后按 runbook 处置：部署机可切回 main（含 9bc0bbbf 两跳修复），远端分支 claude/fix-uspto-json-download 可删。"
    }
   ]
  },

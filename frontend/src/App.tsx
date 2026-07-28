@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '@/auth/AuthContext'
 import AppLayout from '@/layout/AppLayout'
 import AuditPage from '@/pages/AuditPage'
+import AutomationPage from '@/pages/AutomationPage'
 import CompliancePage from '@/pages/CompliancePage'
 import HomePage from '@/pages/HomePage'
 import IncidentsPage from '@/pages/IncidentsPage'
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/listings" element={<ListingsPage />} />
             <Route path="/pricing" element={<PricingPage />} />
+            <Route path="/automation" element={<AutomationPage />} />
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/purchasers" element={<PurchasersPage />} />
             <Route path="/stores" element={<StoresPage />} />

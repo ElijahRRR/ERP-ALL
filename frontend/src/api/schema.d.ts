@@ -4208,6 +4208,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/automation-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 自动化档位总览（注册表 ∪ 本团队行；无行的 flow 也返回 state=unset，恒 10 条） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AutomationPolicy"][];
+                    };
+                };
+                /** @description 超管未带 X-Act-Team（AUTOMATION_TEAM_REQUIRED）——不按 team_id=NULL 静默查，那会返回一屏描述「没有团队」的假面板 */
+                422: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automation-policies/{flowCode}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** 置本团队某 flow 的档位（全量置态 upsert；表无 DELETE 授权，关闭=enabled false 或 manual） */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    flowCode: components["parameters"]["flowCode"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description 必须是 manual/semi/auto 之一；enabled=true 时还须属于该 flow 的 legal_modes（闸类只有 manual/auto），否则 422 AUTOMATION_MODE_ILLEGAL。enabled=false 时放宽到三档任一——停用一条已存非法档位的行必须走得通（停用是收紧） */
+                        mode: string;
+                        /** @description 必填（审查 N2）——此前可省略且默认 true，对停用行只发 mode 会静默复启，落在 refund/cancel 上是真钱不可逆；schema 必须与「全量置态整对提交」一致 */
+                        enabled: boolean;
+                        /** @description 恒拒绝（422 AUTOMATION_CONFIG_NOT_WRITABLE）——全仓零消费点，写入只会造成「护栏已配」的错觉；显式接住再拒绝以走统一错误信封 */
+                        config?: {
+                            [key: string]: unknown;
+                        } | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AutomationPolicy"];
+                    };
+                };
+                /** @description flow_code 不在 §09 注册表（AUTOMATION_FLOW_UNKNOWN） */
+                404: components["responses"]["Error"];
+                /** @description 档位取值或对该 flow 非法（AUTOMATION_MODE_ILLEGAL）/ 带 config（AUTOMATION_CONFIG_NOT_WRITABLE）/ 超管未带 X-Act-Team（AUTOMATION_TEAM_REQUIRED）。注：缺 mode/enabled 字段等请求体结构违例走 FastAPI 默认 detail 信封，全仓皆然（002 既有缺口，另行提单） */
+                422: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/portal/auth/login": {
         parameters: {
             query?: never;
@@ -4836,6 +4929,46 @@ export interface components {
             total?: number;
             page?: number;
             size?: number;
+        };
+        /** @description 档位面板一行 = flow 注册表 ∪ 本团队 automation_policy 行的合并结果。 无行的 flow 也会出现（state=unset），面板据此可对任意 flow 直接 PUT。 三态（unset / disabled / configured）在 API 层显性区分，**不压成单个 mode 字段**。 */
+        AutomationPolicy: {
+            /** @description 001 §09 v2.1 注册码（10 条） */
+            flow_code: string;
+            /** @description 该 flow 的合法档位，按 manual→semi→auto 排序；闸类（order_block/compliance_block）只有两档。面板据此渲染档位选择器，前端不得硬编码档位集 */
+            legal_modes: ("manual" | "semi" | "auto")[];
+            /**
+             * @description realtime=下次决策即生效；snapshot=创建时固化，切档不影响在途请求
+             * @enum {string}
+             */
+            evaluation: "realtime" | "snapshot";
+            /**
+             * @description unset=本团队无行（等同人工，从未配置）；disabled=有行但 enabled=false（等同人工，是被人关掉的）；configured=有行且启用
+             * @enum {string}
+             */
+            state: "unset" | "disabled" | "configured";
+            /** @description 库中原值；state=unset 时 null。理论上受 ck_automation_mode 约束在三档内，绕过约束的坏值原样透出以便运维发现 */
+            mode: string | null;
+            /** @description state=unset 时 null */
+            enabled: boolean | null;
+            /**
+             * @description 与内核 resolve_mode 逐字等价（同一纯函数），含「闸类存非法档位原样生效」
+             * @enum {string}
+             */
+            effective_mode: "manual" | "semi" | "auto";
+            /** @description 库中档位不在该 flow 的 legal_modes。DB 的 ck_automation_mode 不区分 flow，只能在服务层挡 */
+            illegal_for_flow: boolean;
+            /** @description 闸类（legal_modes 无 semi）——manual 是放松不是收紧。由服务端从 FlowSpec 派生，前端不得自行硬编码闸类清单 */
+            gate: boolean;
+            /** @description 已接消费点（代码事实，见 core/automation.py WIRED_FLOWS）。false=改档只落库不改变任何行为，前端不得对其渲染「拦截生效/不生效」 */
+            wired: boolean;
+            /** @description 只读透传。本增量 PUT 不接受该字段——全仓零消费点，写入只会造成「护栏已配」的错觉 */
+            config: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            updated_at: string | null;
+            /** @description app_user.id（本增量不联查显示名，保持最小面） */
+            updated_by: number | null;
         };
         TokenPair: {
             access_token?: string;
@@ -5560,6 +5693,7 @@ export interface components {
         refundRequestId: number;
         incidentId: number;
         assignmentId: number;
+        flowCode: string;
     };
     requestBodies: {
         TeamWrite: {

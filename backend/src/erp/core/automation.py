@@ -40,6 +40,7 @@ flow 上，再复制 8 遍就不可能保证一致。内核把这三种边角**�
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 import structlog
 from sqlalchemy import text
@@ -101,9 +102,89 @@ FLOWS: dict[AutomationFlow, FlowSpec] = {
     AutomationFlow.MAINTENANCE_RUN: FlowSpec(_THREE, Evaluation.REALTIME),
 }
 
+# **已接消费点**的 flow——真的有代码在读 `resolve_mode` 并据此改变行为。
+# 这是**代码事实**不是图纸事实（图纸把 10 条都登记了，接线随增量3-5 逐步来），
+# 所以只能维护在这里。「接了线忘登记」**不靠纪律**：`tests/test_wired_flows_census.py`
+# 钉死 `resolve_mode(` 的全部调用点，新增一处即红，逼接线 PR 当场同步本表
+# （PR #42 审查 F1 二抓：T1 只能挡「改表忘改测试」，挡不住「接线忘改表」——后者
+# 才是要防的方向，且落在闸类 flow 上就是「危险确认被跳过 + 面板说假话」）。
+# 面板据此决定敢不敢说「拦截生效/不生效」——对没接线的 flow 说这两句话都是假话
+# （审查 2026-07-28 F1 首抓：compliance_block 零消费点却被面板断言「拦截生效」，
+# 与「compose 从未注入 ERP_ENV 而判据全绿」同形）。
+# 当前三条：order_block（order/procurement.py:38）、refund/cancel（aftersale/refund.py:41）。
+WIRED_FLOWS: frozenset[AutomationFlow] = frozenset(
+    {AutomationFlow.ORDER_BLOCK, AutomationFlow.REFUND, AutomationFlow.CANCEL}
+)
+
+
+class PolicyState(StrEnum):
+    """面板三态（Owner Q3 裁定）。
+
+    **API 层不许把三态压成一个 `mode` 字段**——压了之后前端再想区分也区分不出来，
+    而「配着但已停用」正是最难发现的一类故障（本模块头注同款理由）。
+    """
+
+    UNSET = "unset"  # 本团队无行：等同人工，且从未配置过
+    DISABLED = "disabled"  # 有行但 enabled=false：等同人工，但**是被人关掉的**
+    CONFIGURED = "configured"  # 有行且启用
+
+
+@dataclass(frozen=True)
+class PolicyView:
+    """一条 (team, flow) 的完整判读。`resolve_mode` 与面板 API 共用同一份。"""
+
+    state: PolicyState
+    stored_mode: str | None  # 库中原值（无行=None）；取值非法时原样保留，便于运维看见坏值
+    mode: Mode | None  # 解析成功的档位；无行 / 取值不在 Mode 内 = None
+    effective_mode: Mode  # **等于 resolve_mode 的返回值**
+    illegal_for_flow: bool  # 库中档位不在该 flow 的 legal_modes（含无法解析）
+    warn: Literal["disabled", "unknown_mode", "illegal_for_flow"] | None
+
+
+def view_policy(
+    flow: AutomationFlow, *, row_mode: str | None, row_enabled: bool | None
+) -> PolicyView:
+    """纯函数：把 `automation_policy` 的一行（或「无行」）判读成三态 + 生效档位。
+
+    抽出来的唯一理由：**面板显示的与订单闸实际执行的必须是同一个判断**。各写一份
+    就会重演内核当初要消灭的东西（两处读点对三条边角各自隐含、无人对账）。
+
+    `warn` 只把「该发哪条告警」返出去、不落日志——纯函数才能在 API 的列表路径上
+    白跑 10 次而不刷屏。日志由 `resolve_mode` 发，事件名与字段与抽取前逐字一致。
+
+    `row_mode` 与 `row_enabled` 必须成对传（同一行的两列），无行时两者都传 None。
+    """
+    legal = FLOWS[flow].legal_modes
+    if row_mode is None:
+        return PolicyView(PolicyState.UNSET, None, None, Mode.MANUAL, False, None)
+    try:
+        parsed: Mode | None = Mode(row_mode)
+    except ValueError:  # DB CHECK 已挡住，除非有人绕过约束直接改库
+        parsed = None
+    illegal = parsed is None or parsed not in legal
+    if not row_enabled:
+        # 停用 → manual。**这对闸类 flow 是放松**（manual=只软标记不冻结），
+        # 即「误停用 = 订单拦截静默失效」。只留痕不改语义，见本模块头注。
+        return PolicyView(PolicyState.DISABLED, row_mode, parsed, Mode.MANUAL, illegal, "disabled")
+    if parsed is None:
+        return PolicyView(PolicyState.CONFIGURED, row_mode, None, Mode.MANUAL, True, "unknown_mode")
+    # 非法档位**只告警不改写**：`order_block` 上存着 `semi` 时现行代码是拦截的，
+    # 归 manual 会让该团队静默失去订单拦截，而本内核声明行为零变化。
+    return PolicyView(
+        PolicyState.CONFIGURED,
+        row_mode,
+        parsed,
+        parsed,
+        illegal,
+        "illegal_for_flow" if illegal else None,
+    )
+
 
 async def resolve_mode(session: AsyncSession, *, team_id: int, flow: AutomationFlow) -> Mode:
     """→ 该团队该 flow 的当前档位。三种边角一律回 `manual` 并留痕（见模块头注）。
+
+    判读逻辑在 `view_policy`（纯函数），**面板 API 共用同一份**——两边各算一份就会
+    出现「面板显示 auto、闸实际按 manual 跑」而无人发现。本函数只负责取行与落日志。
 
     调用方一律用本函数，**不要再各写各的 SQL**——那正是内核要消灭的东西。
     `snapshot` 型 flow 由调用方在创建请求时把结果固化进自己的 `mode_applied` 列。
@@ -117,37 +198,32 @@ async def resolve_mode(session: AsyncSession, *, team_id: int, flow: AutomationF
             {"t": team_id, "f": flow.value},
         )
     ).first()
-    if row is None:
-        return Mode.MANUAL
-    if not row.enabled:
+    view = view_policy(
+        flow,
+        row_mode=None if row is None else str(row.mode),
+        row_enabled=None if row is None else bool(row.enabled),
+    )
+    if view.warn == "disabled":
         # 「配着但没生效」是最难发现的一类故障，必须留痕（Q3）
         log.warning(
             "automation.policy_disabled_treated_as_manual",
             team_id=team_id,
             flow=flow.value,
-            stored_mode=row.mode,
+            stored_mode=view.stored_mode,
         )
-        return Mode.MANUAL
-    try:
-        mode = Mode(row.mode)
-    except ValueError:  # DB CHECK 已挡住，除非有人绕过约束直接改库
+    elif view.warn == "unknown_mode":
         log.warning(
             "automation.unknown_mode_treated_as_manual",
             team_id=team_id,
             flow=flow.value,
-            stored_mode=row.mode,
+            stored_mode=view.stored_mode,
         )
-        return Mode.MANUAL
-    if mode not in FLOWS[flow].legal_modes:
-        # **只告警，不改写**。差点写成「一律归 manual」，那对闸类 flow 是**放松**：
-        # `order_block` 上若存着 `semi`，现行代码是拦截的（`mode in ("semi","auto")`），
-        # 归 manual 会让该团队静默失去订单拦截——而本增量声明行为零变化。
-        # 「非法档位该怎么处理」与 Q3 同族，归 Owner 裁定；在那之前照原样返回。
+    elif view.warn == "illegal_for_flow":
         log.warning(
             "automation.illegal_mode_for_flow",
             team_id=team_id,
             flow=flow.value,
-            stored_mode=mode.value,
+            stored_mode=view.stored_mode,
             legal=sorted(m.value for m in FLOWS[flow].legal_modes),
         )
-    return mode
+    return view.effective_mode

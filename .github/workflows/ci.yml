@@ -104,7 +104,34 @@ jobs:
         with: {node-version: 22, cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml}
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
+      - name: 契约 codegen 新鲜度（schema.d.ts 必须与 openapi 同 PR 更新）
+        # 008 §5.1 此前纯靠人审——改了 002 契约忘跑 gen:api，类型与契约就静默漂移
+        # （审查 2026-07-28 R10）。openapi-typescript 版本锁在 lockfile，产物确定。
+        run: |
+          pnpm gen:api
+          git diff --exit-code -- src/api/schema.d.ts
       - name: Lint（eslint）
         run: pnpm lint
       - name: 构建（tsc + vite build）
         run: pnpm build
+      # 仓内**第一条前端渲染判据**（FE-TEST-01 此前记为「零前端测试」）。起因见脚本头注：
+      # 未配置行被 antd Segmented 渲染成「已选中人工」——tsc/eslint/后端测试全看不见，
+      # 只在渲染后存在，是部署机第三闸的人工目验抓到的。人工目验不可复跑，故补此闸。
+      # playwright 早在首个前端 commit 就进了 devDependencies，一直没有任何东西用它。
+      - name: 面板渲染判据（headless chromium）
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          # **必须显式 --host 127.0.0.1**：vite preview 默认 host 是 `localhost`，而
+          # Node 17+ 的 DNS 解析顺序是 verbatim——runner 上 `localhost` 先解析到 ::1 时
+          # 服务只监听 IPv6，用 127.0.0.1 去打恒为 000（首版 CI 实测 60s 轮询全 000，
+          # 而沙箱 `localhost` 直接是 127.0.0.1 所以本地复现不出来）。两侧钉死 IPv4。
+          pnpm preview --port 4173 --strictPort --host 127.0.0.1 &
+          # 就绪轮询而非固定 sleep：起完就打会拿到空响应（部署机 healthz 踩过同款，
+          # 判据是最终状态码，不是单次 curl 的退出码）。
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4173/automation || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          [ "$code" = "200" ] || { echo "preview 未就绪（最终 $code）"; ss -lntp || true; exit 1; }
+          node e2e/automation-panel.mjs
