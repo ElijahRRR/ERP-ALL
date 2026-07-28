@@ -735,6 +735,11 @@
     "date": "2026-07-28",
     "kind": "progress",
     "text": "【增量2 审查一轮响应（PR #42）】审查报告（所审 2009955）出 F1（中）+ N2（低），两条均按建议做等价修复：F1——WIRED_FLOWS 守卫方向反了，T1 只能挡「改表忘改测试」、挡不住「接线忘改表」（后者才是要防的方向，落在闸类上=危险确认被跳过+面板说假话）→ 按审查建议把锚打在代码事实上，新增 tests/test_wired_flows_census.py 钉死 backend/src 全部 resolve_mode( 调用点（正则 \\bresolve_mode\\( 天然排除 _resolve_mode 同名私有包装与 gateway 的 GatewayMode 解析；排除定义文件），新接一处调用点即红，failure message 指路三处同步（census 表 / WIRED_FLOWS / T1 断言）；WIRED_FLOWS 内容断言并置于同文件。已手工证伪：临时向 procurement.py 注入一处调用 → census 红，恢复后绿。同步修正三处方向说反的注释（core/automation.py、T1、PR 正文）。N2——AutomationPolicyIn.enabled 从可省默认 true 改为必填：对停用行只发 mode 会静默复启，落在 refund/cancel 是真钱不可逆；openapi required 补 enabled、default 移除；既有测试 PUT 载荷全部补整对提交；新增 T15 钉死「缺 enabled → 422 且停用行不被复启」（结构性违例走 FastAPI detail 信封，属已登记的 002 全仓缺口，T15 只断状态码+库未动）。门禁（截至本次提交前实测）：全量 pytest exit 0（649 passed / 1 skipped，本轮 +3：census 2 + T15 1）、ruff/mypy 绿、gen:api 幂等（sha 相同）、前端 lint/build 绿。另录环境事实一条：pytest 9.1.1 对「同目录参数不连续交错」的子集调用会丢 tests/db/conftest.py 夹具（fixture 'migrated_db' not found），用全旧文件三元组合复现（baseline+zh_forbidden+resolve 8 errors），与本增量无关，CI 整树收集不受影响；子集调用时同目录文件须连续排列。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【增量2 审查复核通过 → 部署指令下发】审查 AI 复审 2c2ab65 通过：F1 修法经其临时 worktree 变异实测（新接调用点红 / _resolve_mode 同名不误中）；N2 三处一致（模型/openapi/schema.d.ts）且 T15 验的是危害本身；登记一处理论残留不拦（绕过 resolve_mode 直用 view_policy 自行闸控则 census 看不见——今日零调用方，接线增量若出现会撞 T1，不加同形判据）。闸序：CI ✅ 审查 ✅ → 部署机 ⏳。部署指令落仓 .agent/evidence/R2-09/deploy-verify-pr42.md（复用 pr41 v4 已验证脚手架：-B 自校验 checkout / healthz 轮询 / 退出码判成败），与 #41 的三点差异已写进指令头：0040 迁移执行属预期、UI 四项按 runbook §② 人工判据、切回 main 前必须先 alembic downgrade 0039（main 不认 0040 版本号，顺序不能反）。清理步条件执行（仅当验证前 policy_rows=0，绝不删既有行）；audit_log 留痕不删。另修 runbook §⑥ 一处残留旧说法（原写 T1 钉着忘更即红——那正是 F1 指出的反方向，改为 census 拦）。待 Owner 转交部署 AI。"
    }
   ]
  },

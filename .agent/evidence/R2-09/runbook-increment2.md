@@ -233,4 +233,5 @@ WHERE team_id=<团队id> AND flow_code='order_block';
   0040 之后仓内 11 个 module 全是裸英文，本增量不单独加中文映射。
 - **未接线 flow 的改档只落库**：`wired=false` 的 flow（当前 7 条，含 `compliance_block`）
   改档不改变任何行为——面板有灰 Tag 标注。接线随增量3-5，接线 PR 必须同步更新
-  `core/automation.py` 的 `WIRED_FLOWS`（T1 判据钉着，忘了会红）。
+  `core/automation.py` 的 `WIRED_FLOWS`——「接线忘更」由 `tests/test_wired_flows_census.py`
+  钉调用点拦（新接一处即红；T1 只守「改表忘改测试」那个方向，审查一轮 F1）。
