@@ -770,6 +770,11 @@
     "date": "2026-07-28",
     "kind": "ruling",
     "text": "【全量清点回执 + Owner 终裁 → v3 终版落仓】清点（FULL_CENSUS_EXIT=0）：19 张无 FK team_id 父表中仅 listing_spec=4（07-15 构建，WPT=Art Sets/Planter Boxes/Drinkware/Mirrors——即 R2-03 验收① dry-run 构建产物，无表引用它）与 llm_usage_log=1580（R2-03 AI 属性填写费用流水）非零，其余 15 张全 0；审计三族 audit_run=2400 / audit_hit=6098 / audit_log=0。Owner 终裁：4 行规格产物 + 1580 行流水一并删（费用流水口径代价已提示、Owner 选彻底无痕）；审计三族铁律保留孤儿化。v3 追加至 deploy-cleanup-team2-pr42.md：四道闸每项行数钉死清点值（product=400 / listing_spec=4 / llm_usage_log=1580 / app_user=1），任何漂移即中止整体回滚；六删顺序 listing_spec→product→llm_usage_log→user_role→app_user→team，大表 WITH del 计数取证；终检含「审计两行仍 2400/6098 纹丝不动」的防误删断言。删除成功后重跑 deploy-verify-pr42.md 原文，判据零修改。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【第三闸 UI C-unset 抓到真缺陷 → 已修 + 补上仓内第一条前端渲染判据】v3 清理全部符合授权（4/400/1580 三值精确、审计 2400+6098 纹丝不动、CLEANUP_TEAM2_V3_EXIT=0）；重验①-⑥ 全过（0040 落库、C 段模板+team1 各 2 码、total_teams=1），UI 除 C-unset 外逐项过。**缺陷**：未配置行的档位 Segmented 显示「人工」为选中态——恰好击穿本增量立身之本（unset≠配了 manual，Q3 裁定要三态不塌缩）。机理：`value={row.mode ?? undefined}` 命中 rc-segmented 的 `useMergedState(segmentedOptions[0]?.value, {value})`（index.js:118）回落到第一个选项，而第一档恒为 manual（_MODE_ORDER 保守档最左，本是刻意设计）→ 新团队十行全显示「有人配了人工」，order_block 上更像有人主动选过。**连带第二症**（部署机未报、代码核出）：item 是 `<input type=radio checked>`，点已选中项不触发 change → 未配置行上「显式设为人工」这条路是死的；闸类只有 manual/auto 两档，唯一绕法是先开 auto——先打开拦截再关回去。修复：`value={row.mode ?? ''}`（不匹配任何选项 → 无选中项 + 点击是 false→true 真实变更），一处改动同时解两症，并覆盖「库存脏串」那档。**取证纪律**：本缺陷 tsc/eslint/后端测试全看不见（只在渲染后存在），唯一抓住它的是人工目验，不可复跑——故补 frontend/e2e/automation-panel.mjs（headless chromium + 路由桩，不连后端）4 条断言，并接进 CI frontend job（就绪轮询而非固定 sleep，同部署机 healthz 教训）。判据可红性已实测：回退修复后重建 → 3 条红且正是人工目验报的两处症状，第 2 条（已配置行仍显选中）保持绿证明不是全红蒙混；恢复后 4 条全绿。playwright 早在首个前端 commit 就进了 devDependencies、一直无人使用，本次是它第一次被用上（FE-TEST-01「零前端测试」由此部分清偿）。附注两条：runbook §② C-unset 的判据写法（要求无选中项）当时就是对的，是代码没做到——判据先于实现存在，这次它赢了；部署机保留的验证账号 pr42_verify（team 1，团管+采集员）未清理属正确处置（runbook 未授权动身份数据），去留请 Owner 定。"
    }
   ]
  },

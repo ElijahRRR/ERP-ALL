@@ -114,3 +114,20 @@ jobs:
         run: pnpm lint
       - name: 构建（tsc + vite build）
         run: pnpm build
+      # 仓内**第一条前端渲染判据**（FE-TEST-01 此前记为「零前端测试」）。起因见脚本头注：
+      # 未配置行被 antd Segmented 渲染成「已选中人工」——tsc/eslint/后端测试全看不见，
+      # 只在渲染后存在，是部署机第三闸的人工目验抓到的。人工目验不可复跑，故补此闸。
+      # playwright 早在首个前端 commit 就进了 devDependencies，一直没有任何东西用它。
+      - name: 面板渲染判据（headless chromium）
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm preview --port 4173 --strictPort &
+          # 就绪轮询而非固定 sleep：预览服务端口转发会先接受连接再断开，
+          # 起完就打会拿到空响应（部署机上踩过同款，判据是最终状态码不是单次退出码）。
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4173/automation || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          [ "$code" = "200" ] || { echo "preview 未就绪（最终 $code）"; exit 1; }
+          node e2e/automation-panel.mjs

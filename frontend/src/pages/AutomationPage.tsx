@@ -206,7 +206,18 @@ export default function AutomationPage() {
             // 档位集由 API 的 legal_modes 驱动（闸类自然只渲染两档），前端不硬编码
             render: (_: string | null, row: AutomationPolicy) => (
               <Segmented
-                value={row.mode ?? undefined}
+                // **不能写 `?? undefined`**——那正是部署机 UI 判据 C-unset 抓到的缺陷。
+                // rc-segmented 对 `value === undefined` 回落到**第一个选项**
+                // （`useMergedState(segmentedOptions[0]?.value, {value})`，index.js:118），
+                // 而第一档恒为 manual（`_MODE_ORDER` 保守档最左）——于是未配置行渲染成
+                // 「已选中人工」，把本增量最核心的 unset≠configured-as-manual 就地抹平：
+                // 新团队十行全显示「有人配了人工」，order_block 上更像是有人主动选过。
+                // 连带第二症：item 是 `<input type=radio checked>`，点击**已选中**项不触发
+                // change，所以那条路上「显式设成人工」根本发不出请求；对闸类 flow（只有
+                // manual/auto 两档）唯一绕法是先开 auto——先打开拦截再关回去。
+                // 传一个不匹配任何选项的值 → 无选中项（三态在控件上也分得开），且点 manual
+                // 是 false→true 的真实变更，请求正常发出。空串同时覆盖「库里存着脏串」那档。
+                value={row.mode ?? ''}
                 options={row.legal_modes.map((m) => ({ value: m, label: modeText(m) }))}
                 disabled={!canWrite || saving === row.flow_code}
                 onChange={(v) => onModeChange(row, String(v))}
