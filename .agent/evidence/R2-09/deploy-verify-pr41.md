@@ -125,12 +125,31 @@ echo "KERNEL_EXIT=$LASTEXITCODE"
 > 它能 import 成功且 `FLOWS` 恰好 10 条，就证明这个容器跑的是分支代码而不是旧镜像缓存。
 > 这条同时是第 6 步的判据——切回 main 后同一条命令**必须失败**。
 
+> **v4 修订（2026-07-28）：健康检查必须等就绪，不能起完就打。**
+> `docker compose up -d --build` 在**容器创建完**就返回，此时 uvicorn 往往还没绑上端口；
+> 而 Docker 的端口转发会先接受 TCP 连接再关闭 → `curl` 返回 **exit 52（空响应）/ 状态码 000**。
+> 2026-07-28 实际踩到。**这不是故障，是我没写等待**。下面改成轮询等就绪：
+
 ```powershell
-curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/healthz
-echo "HEALTH_EXIT=$LASTEXITCODE"
+$code = "000"
+foreach ($i in 1..30) {
+  $code = (curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1:8000/healthz)
+  if ($code -eq "200") { break }
+  Start-Sleep -Seconds 2
+}
+"HEALTH_CODE=$code (after $i tries)"
 ```
 
-**贴回⑤**：HTTP 状态码 + `HEALTH_EXIT`（期望 `200` 与 `0`）。
+**判据**：`HEALTH_CODE=200`。**若 60 秒后仍不是 200**，跑下面两条再停下贴回：
+
+```powershell
+docker compose ps
+docker compose logs --tail 60 api
+```
+
+（`curl` 退出码在这里**不是**判据——轮询里每次失败都会有非 0 退出码，属正常。判据是最终状态码。）
+
+**贴回⑤**：`HEALTH_CODE`（期望 `200`）。
 
 > **v3 修订（2026-07-28）**：初版这里写的是 `/api/health`，**那个路径不存在，是我凭记忆编的**。
 > 真实端点是 **`/healthz`**（`backend/src/erp/main.py:110`，`@app.get("/healthz")`，**无 `/api` 前缀**，
@@ -298,11 +317,16 @@ echo "ROLLBACK_KERNEL_EXIT=$LASTEXITCODE"
 > **停下贴回**，这台机还跑在未合并的分支上。
 
 ```powershell
-curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/healthz
-echo "ROLLBACK_HEALTH_EXIT=$LASTEXITCODE"
+$code = "000"
+foreach ($i in 1..30) {
+  $code = (curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1:8000/healthz)
+  if ($code -eq "200") { break }
+  Start-Sleep -Seconds 2
+}
+"ROLLBACK_HEALTH_CODE=$code (after $i tries)"
 ```
 
-**贴回⑪**：状态码 + `ROLLBACK_HEALTH_EXIT`（期望 `200` 与 `0`）——确认切回后服务仍正常。
+**贴回⑪**：`ROLLBACK_HEALTH_CODE`（期望 `200`）——确认切回后服务仍正常。
 
 ---
 

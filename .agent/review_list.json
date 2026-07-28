@@ -705,6 +705,11 @@
     "date": "2026-07-28",
     "kind": "progress",
     "text": "【2026-07-28 真机验证第一轮：6 项 PASS，卡在我编错的健康路径】部署机执行 v3 指令，**前置②③④⑨⑩⑪ 全部通过**：分支对齐自校验 LOCAL=REMOTE=7608533、无 ahead/behind/diverged、被丢弃提交检查无输出；`UP_EXIT=0`，migrate `Exited (0)` 且**未执行新迁移**（与「零迁移」相符）；**`FLOWS= 10` / `KERNEL_EXIT=0`——证明容器跑的确实是分支代码，不是旧镜像缓存**；切回后**负向判据如期失败** `ModuleNotFoundError: No module named 'erp.core.automation'`、`ROLLBACK_KERNEL_EXIT=1`，证明切换真实生效。**卡点是我的第三处指令错**：健康检查我写的 `/api/health` **根本不存在，是凭记忆编的**；真实端点是 **`/healthz`**（`backend/src/erp/main.py:110`，无 `/api` 前缀，业务路由才挂 `/api/v1`）。部署机报回「分支与 main 都是 404」——**两边都 404 恰好证明这不是回归而是路径写错**，且它没有自行改试其他路径，处理得对。已改 v3。**同时发现第四处**：第 6 步 `git checkout main` 与前置那个 bug**同源**——`git fetch origin main` 只更新 `origin/main`，不动本地 main，故它落在陈旧的本地 main `1986bb1` 而非远端 `1f09edf`，而我第 6 步的判据只看 `git log -1`、**没有比对 origin/main**，所以没抓住。已改为 `git checkout -B main origin/main` + 两个 rev-parse 自校验。**剩余未跑**：步骤 3（现网数据新旧判定对拍）、4（判据自检）、5（日志扫 automation.* 告警）。**关键简化**：步骤 3/4 是**纯只读 DB 查询、与部署哪个分支无关**，可直接在当前 main 上跑，不必为它们重挂分支；步骤 5 需要分支代码在跑，但若步骤 3 的 C 段返回 0 行则它必然无匹配、可省。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【2026-07-28 真机对拍：**结果是空集，不能算等价性验证通过**——如实记】部署机跑完 A 段：`total_rows=0`——**该机 `app.automation_policy` 是空表**（仅 2 个团队，order_block 全为「无行」）。所以 `divergent_gate=0 / divergent_mode=0` 是**空真**，**这一步没有产出任何关于新旧行为等价的证据**，不得计为「对拍通过」。**第 4 步判据自检恰好发挥了作用**：`total_rows=0 = checked_rows=0`、`total_teams=2 = 第四段 2 行`——它把「0 因为表空」与「0 因为查错了库/表」区分开了，这正是当初加它的理由，设计有效。**它实际产出的是另一条有用事实**：该机现网**没有任何自动化策略行**，即所有团队所有 flow 都是 manual；`order_block` 全部「只软标记不冻结」，四检 flagged 不会被冻结。**这与 D-Q14「合规命中=软标记，自动拦截开关由同事自行开启」的缺省一致，不是缺陷**，但意味着拦截能力目前在现网**一处都没启用**——运营侧应知情。**由此可推的一条窄结论**：对这台机而言本次重构**不可能改变行为**（零行时新旧读点都回 manual），但这是「因为没数据」而非「因为验过了」。**行为等价的真实依据仍只有 CI 与审查侧的 33 组差分实测**（后者用临时 PG 簇造了 11 组库状态，恰好补上了现网空表的覆盖缺口）。**第五处指令错**：B 段 `/healthz` 返回 `000` / curl `exit 52`（空响应，非连接拒绝的 7）——`docker compose up -d --build` 在容器创建完即返回，此时 uvicorn 常未绑好端口，而 Docker 端口转发会先接受 TCP 再关闭。**我没写等待就绪**。已改为轮询 30 次×2s，并注明「curl 退出码在轮询里不是判据，最终状态码才是」。本地 main 已精确对齐 `origin/main@1f09edf`（`MAIN_ALIGN_EXIT=0`，两个 rev-parse 相同）。"
    }
   ]
  },
