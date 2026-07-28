@@ -121,13 +121,17 @@ jobs:
       - name: 面板渲染判据（headless chromium）
         run: |
           pnpm exec playwright install --with-deps chromium
-          pnpm preview --port 4173 --strictPort &
-          # 就绪轮询而非固定 sleep：预览服务端口转发会先接受连接再断开，
-          # 起完就打会拿到空响应（部署机上踩过同款，判据是最终状态码不是单次退出码）。
+          # **必须显式 --host 127.0.0.1**：vite preview 默认 host 是 `localhost`，而
+          # Node 17+ 的 DNS 解析顺序是 verbatim——runner 上 `localhost` 先解析到 ::1 时
+          # 服务只监听 IPv6，用 127.0.0.1 去打恒为 000（首版 CI 实测 60s 轮询全 000，
+          # 而沙箱 `localhost` 直接是 127.0.0.1 所以本地复现不出来）。两侧钉死 IPv4。
+          pnpm preview --port 4173 --strictPort --host 127.0.0.1 &
+          # 就绪轮询而非固定 sleep：起完就打会拿到空响应（部署机 healthz 踩过同款，
+          # 判据是最终状态码，不是单次 curl 的退出码）。
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4173/automation || true)
             [ "$code" = "200" ] && break
             sleep 2
           done
-          [ "$code" = "200" ] || { echo "preview 未就绪（最终 $code）"; exit 1; }
+          [ "$code" = "200" ] || { echo "preview 未就绪（最终 $code）"; ss -lntp || true; exit 1; }
           node e2e/automation-panel.mjs

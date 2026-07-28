@@ -12,8 +12,13 @@
  * 不连后端：`/api/v1/me` 与 `/api/v1/automation-policies` 全用路由桩，
  * 因此它验的是**面板对给定契约数据的渲染**，不验后端——后端那半由 tests/db 覆盖。
  *
- * 用法（需先 `pnpm build` 并起 `pnpm preview`）：
+ * 用法（需先 `pnpm build`，并起**绑 IPv4** 的预览服务）：
+ *   pnpm preview --port 4173 --strictPort --host 127.0.0.1 &
  *   node e2e/automation-panel.mjs [baseURL]
+ *
+ * `--host 127.0.0.1` 不可省：vite preview 默认 host 为 `localhost`，Node 17+ 按
+ * verbatim 顺序解析，某些环境（GH runner 实测）先拿到 ::1 → 只监听 IPv6，
+ * 而本脚本与 CI 轮询都走 127.0.0.1，会恒连不上。
  */
 
 import { chromium } from 'playwright'
