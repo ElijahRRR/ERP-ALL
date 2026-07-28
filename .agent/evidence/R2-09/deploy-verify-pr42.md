@@ -207,7 +207,14 @@ DevTools 勾 Disable cache 后 Ctrl+Shift+R（或关标签页重开），直到�
   > `PUT /api/v1/users/{id}/roles`（挂角色）。UI「用户管理 / 角色管理」页同款操作。
   > **密码你自己生成、只写进本机密码文件，永远不要贴进对话。**
   >
-  > **PowerShell 两处坑（2026-07-28 各踩一次）**：① 没有 `crypto` 全局对象（那是 Node 的），
+  > **首选 UI 路径，不要写脚本**（2026-07-28 教训）：D 是 UI 判据，用「角色管理」建只挂
+  > `automation.read` 的临时角色、用「用户管理」建临时用户并挂该角色即可——**零脚本、
+  > 零 token、零密码文件解码**。走 CLI 那条链（读密码文件→解码→登录取 token→四次 API）
+  > 连栽三次：`crypto is not defined`、`atob is not defined`（**都是 JS 内置，部署机运行时
+  > 没有**）、`$pwd` 撞自动变量。**给部署机的指令一律不得依赖 JS 内置**；能在 UI 做完的
+  > 就别下到命令行——每多一环就多一个与被验对象无关的失败面。
+  >
+  > 万不得已走 PowerShell 时的两处坑：① 没有 `crypto` 全局对象（那是 Node 的），
   > 安全随机要走 .NET；② **`$pwd` 是自动变量（当前目录），不能拿来存口令**——换个名字。
   >
   > ```powershell
@@ -217,6 +224,8 @@ DevTools 勾 Disable cache 后 Ctrl+Shift+R（或关标签页重开），直到�
   > $newPwd = ([Convert]::ToBase64String($b) -replace '[+/=]','x')   # 32 位，勿打印
   > ```
   > `RandomNumberGenerator::Create()` 在 Windows PowerShell 5.1 与 PS 7 都在。
+  > base64 解码同理走 .NET，不要用 `atob`：
+  > `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line))`。
 
 **§C 非法档位造数与还原**（只打测试团队，`<团队id>` 用你实际测试团队的 id）：
 
