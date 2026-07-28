@@ -21,3 +21,12 @@ htmlcov/
 *.db
 .claude/worktrees/
 *.tsbuildinfo
+# 数据库转储：真机验证/迁移演练会在仓库根留下 pg_dump 产物（2026-07-28 部署机上实见
+# `erp_all-before-0039.dump`）。它含全量业务数据与 store_credential 密文，
+# **一次 `git add -A` 就会把生产转储提交进仓库**。转储本身该不该留在盘上归 Owner 定，
+# 但「误提交」这条路先堵死。
+*.dump
+*.dump.gz
+*.sql.gz
+# pnpm 本地 store（部署机上实见 frontend/.pnpm-store/）
+.pnpm-store/

@@ -3,13 +3,13 @@
 > 合并前闸序**第三闸**。第一闸 CI 绿已过（4/4）；第二闸独立审查**已通过**
 > （差分实测 33 组零分歧 + 四种图纸漂移变异全红；唯一低级问题 F1 已修）。
 >
-> **本单是纯重构：零迁移、零新端点、零前端改动。** 代码改动只有一个 commit（`8738c1d`），
+> **本单是纯重构：零迁移、零新端点、零前端改动。** 代码改动只有一个 commit（`f22f011`），
 > 5 个 backend 文件。它把两处「各写各的 SQL」的档位读取收进一个内核，**声明行为零变化**。
 >
 > **所以这一闸要验的不是逻辑对不对**（那由 CI 与审查侧的 33 组差分实测覆盖），
 > **而是三件只有真机能回答的事**：
 > ①新代码在这台机上真的起得来；②**现网真实数据**在新旧两套判定下结论是否一致；
-> ③回滚路径通不通。
+> ③切离验证分支的路径通不通。
 >
 > 全程**不发任何渠道请求、不写任何业务数据、不跑迁移之外的 DDL**。
 
@@ -21,33 +21,60 @@
    不建表、不改数据。本文**不需要**一次性容器（没有转储暂存环节）。
 2. **不输出密钥**：贴回结果前自查，命令与输出里不得含口令、`client_secret`、token、代理账号密码。
    **`infra/.env` 的内容一个字都不要贴回来**——包括「我看了一眼，里面是 xxx」这种转述。
-3. **不改码、不 push、不 merge**。你只做「切分支 → 起服务 → 只读取证 → 回滚」。
+3. **不改码、不 push、不 merge**。你只做「切分支 → 起服务 → 只读取证 → 切回」。
    发现问题就停下贴回，**不要自行「修一下再试」**。
 4. 若任一步骤报错：**停在那一步**，把该步的完整报错贴回，不要继续往下跑。
 5. **判成败一律看退出码**，不要看输出里有没有红字。每步都给了 `*_EXIT`，照抄那个数字。
-6. **本分支尚未合并**。第 6 步必须执行回滚，把这台机切回 `main`。
+6. **本分支尚未合并**。第 6 步必须把这台机切离验证分支（推荐切到 `main`）。
 
 ---
 
-## 前置：记住回滚锚点
+## 前置：记住锚点
+
+> **v2 修订（2026-07-28）**：初版这里写「`git status --porcelain` **期望为空**，非空就停」。
+> **那条判据是我写宽了**——部署机据此正确地停在了这一步，问题在指令不在执行。
+> **未跟踪文件（`??`）对切分支无害**，git 只在「未跟踪文件与目标分支的已跟踪文件同名」
+> 时才会拒绝 checkout。真正该拦的是**已跟踪文件的未提交改动**（那会被 checkout 带走或冲突）。
+> 下面改成分开查。
 
 ```powershell
 cd <ERP-ALL 仓库根>
 git fetch origin main
 git fetch origin claude/r2-03-launch-leg5n8
 git rev-parse --short HEAD
-git status --porcelain
+git status --porcelain --untracked-files=no
+echo "TRACKED_DIRTY_EXIT=$LASTEXITCODE"
 ```
 
-**贴回①**：`git rev-parse` 那一行（**这是回滚锚点，第 6 步要用**）+ `git status --porcelain`
-的输出（**期望为空**；非空说明本机有未提交改动，先停下告诉我，不要继续）。
+**贴回①**：`git rev-parse` 那一行 + `git status --porcelain --untracked-files=no` 的输出。
+
+- **期望后者为空**。为空 = 没有已跟踪文件被改动，**可以安全切分支**（未跟踪文件不影响）。
+- **非空才停**：那说明有人在这台机上直接改过仓库里的文件，停下贴回，不要继续。
+
+```powershell
+# 未跟踪文件是否会与目标分支撞名（撞名 checkout 会被 git 拒绝）
+git checkout --no-overlay claude/r2-03-launch-leg5n8 --dry-run 2>&1
+echo "CHECKOUT_DRYRUN_EXIT=$LASTEXITCODE"
+```
+
+若你的 git 版本不支持 `--dry-run`，跳过这条直接做下一步的 `git checkout`——**真撞名时
+git 会自己拒绝并列出文件名**，那时停下贴回即可，不会造成损坏。
+
+> **本机已知的未跟踪文件（2026-07-28 回执）**：`.codex/`、`AGENTS.md`、`RS-02a-runbook.md`、
+> `erp_all-before-0039.dump`、`frontend/.pnpm-store/`。云端侧已逐个核过：**这五个在 `main`
+> 与验证分支上都不存在同名已跟踪文件**，所以 checkout 不会碰它们，也不会被拒绝。
+>
+> ⚠️ 其中 **`erp_all-before-0039.dump` 是一份生产库转储**。它躺在仓库根且此前**未被
+> `.gitignore` 忽略**——一次 `git add -A` 就会把生产转储提交进仓库。本 PR 已把
+> `*.dump` 加进 `.gitignore` 堵死这条路。**转储文件本身留不留、什么时候删，归 Owner 定；
+> 你不要删它、也不要打开看它的内容。**
 
 ```powershell
 git checkout claude/r2-03-launch-leg5n8
 git log --oneline -3
 ```
 
-**贴回②**：`git log` 三行。**期望最上面一行是 `8dac51e`**（若不是，说明我又推了新提交，
+**贴回②**：`git log` 三行。**期望最上面一行是 `28769e8`**（若不是，说明我又推了新提交，
 停下告诉我实际看到的 sha，我核对后再让你继续）。
 
 ---
@@ -80,7 +107,7 @@ echo "KERNEL_EXIT=$LASTEXITCODE"
 
 > **为什么先验这个**：`erp/core/automation.py` 是本单新增的文件，`main` 上**根本不存在**。
 > 它能 import 成功且 `FLOWS` 恰好 10 条，就证明这个容器跑的是分支代码而不是旧镜像缓存。
-> 这条同时是第 6 步回滚的判据——回滚后同一条命令**必须失败**。
+> 这条同时是第 6 步的判据——切回 main 后同一条命令**必须失败**。
 
 ```powershell
 curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/api/health
@@ -206,7 +233,20 @@ echo "LOG_SCAN_DONE=1"
 
 ---
 
-## 第 6 步：回滚到 main（**必做**，本分支尚未合并）
+## 第 6 步：切回 main（**必做**，本分支尚未合并）
+
+> **v2 修订（2026-07-28）**：初版这里叫「回滚」，措辞不准。2026-07-28 的回执显示
+> **这台机的 HEAD 是 `1986bb1`（RS-02a 那次合并），比 `main` 落后 5 个提交**
+> ——RS-02a 之后那次「切回 main」始终没做，这个悬了两天的回执**至此有答案了**。
+>
+> 所以本步对这台机而言**不是回滚而是前进 5 个提交**。云端侧已核过那 5 个提交的内容：
+> `1986bb1..1f09edf` 在 `backend/` `frontend/` `workers/` `infra/` 下的**唯一改动是
+> `infra/local-deploy/README.md`（+26 行文档）**，其余全是 `.agent/` 台账与 `specs/` 正文。
+> **即：这台机在跑的运行代码与当前 main 逐字相同，没有功能漂移。**
+> 切过去是把 git 状态对齐，不会改变正在跑的程序行为。
+>
+> 若你更希望保持原状不动，也可以停在这一步告诉 Owner——但**不要停在验证分支上**，
+> 那是未合并代码。两个可接受的终态：`main`（推荐）或 `1986bb1`（原状）。
 
 ```powershell
 cd <ERP-ALL 仓库根>
@@ -229,7 +269,7 @@ echo "ROLLBACK_KERNEL_EXIT=$LASTEXITCODE"
 `ROLLBACK_KERNEL_EXIT` **非 0**）。
 
 > **这是负向判据，反着看**：`main` 上没有这个模块，所以 import 必须报错。
-> 若它反而成功了，说明**回滚没真的生效**（旧镜像缓存、或 checkout 没成功）——
+> 若它反而成功了，说明**切换没真的生效**（旧镜像缓存、或 checkout 没成功）——
 > **停下贴回**，这台机还跑在未合并的分支上。
 
 ```powershell
@@ -237,22 +277,22 @@ curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8000/api/health
 echo "ROLLBACK_HEALTH_EXIT=$LASTEXITCODE"
 ```
 
-**贴回⑪**：状态码 + `ROLLBACK_HEALTH_EXIT`（期望 `200` 与 `0`）——确认回滚后服务仍正常。
+**贴回⑪**：状态码 + `ROLLBACK_HEALTH_EXIT`（期望 `200` 与 `0`）——确认切回后服务仍正常。
 
 ---
 
 ## 汇总：一共 11 条贴回
 
-①仓库 head 与 `git status` ②分支三行 log ③`UP_EXIT`+`ps` ④内核 import+`KERNEL_EXIT`
+①仓库 head 与 `git status --untracked-files=no` ②分支三行 log ③`UP_EXIT`+`ps` ④内核 import+`KERNEL_EXIT`
 ⑤健康码 ⑥A/B/C/D 四段 + `CENSUS_EXIT` ⑦两个 count + `PROBE_EXIT` ⑧日志匹配（无则写「无匹配」）
-⑨回滚 log + `ROLLBACK_UP_EXIT` ⑩**必须失败**的 import + `ROLLBACK_KERNEL_EXIT` ⑪回滚后健康码
+⑨切回 main 的 log + `ROLLBACK_UP_EXIT` ⑩**必须失败**的 import + `ROLLBACK_KERNEL_EXIT` ⑪切回后健康码
 
 **一票否决项**（命中任一即停，不要继续）：
 - 第 1 步 migrate 执行了新迁移（与「零迁移」矛盾）
 - 第 2 步 `FLOWS` 不是 10 或 import 失败
 - 第 3 步 `divergent_gate` / `divergent_mode` 不是 0
 - 第 4 步 count 与第 3 步对不上（说明前面的「0」不作数）
-- 第 6 步 import **没有**失败（回滚未生效）
+- 第 6 步 import **没有**失败（切换未生效，机器还跑在未合并分支上）
 
 ---
 

@@ -690,6 +690,11 @@
     "date": "2026-07-28",
     "kind": "landed",
     "text": "【2026-07-28 三条批注回传全部由审计侧落地 + rebase 到 6e4b7d4】审计侧 `6e4b7d4` 一次落齐：①**007:88 验收判据同步**为「同一 SKU 家族取 A/B/C 三件，分别在 manual/semi/auto 下各跑一档」并写入改判据理由（单向状态机 + 无回退工具）——台账与 007 正文不一致的挂账**已销**；②**R2-13 13c 标注护栏消费点须从零建**（承接我那条跨单留痕：automation_policy.config 全仓零消费点）；③**§09 加契约门禁解析约束提醒**（承接我那条「解析器很脆」的批注）。另 `20a25d8` 补 R2-07 台账验收判据。**rebase 无冲突**（两侧改的是不同工单条目），R2-09 与 R2-07 的 acceptance 各自完好。**关键复核——§09 被改动而契约门禁正解析该文件**：实测新 §09 仍解析出**正好 10 行 flow**、契约门禁 23 条判据全绿；审计侧加的是引用块（行首 `>`），未被 `line.startswith('|')` 误收。全量 pytest exit 0、evidence-gate exit 0。**一条自我更正（循环协议层面）**：上一轮我把「PR 对象的 base.sha 是否变化」定为「main 有没有推进」的判据，**这是错的**——GitHub 返回的 base.sha 不随 main 实时更新（本轮 main 已到 6e4b7d4 而 PR 仍报 449a9a8）。可靠判据是 `git ls-remote origin refs/heads/main`。差一点因为「三个字段全同」而漏掉 main 推进。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【2026-07-28 部署机前置回执 → 修我自己写宽的一条判据 + 两条真机侧发现】部署机按指令停在前置检查，**停得对，错在指令**。**更正 1（判据写宽）**：我写的是「`git status --porcelain` 期望为空，非空就停」，但回执里 5 项全是**未跟踪文件**（`??`）：`.codex/`、`AGENTS.md`、`RS-02a-runbook.md`、`erp_all-before-0039.dump`、`frontend/.pnpm-store/`。**未跟踪文件对切分支无害**——git 只在「未跟踪文件与目标分支的已跟踪文件同名」时才拒绝 checkout。已逐个核过：这 5 个在 main 与验证分支上**都不存在同名已跟踪文件**，checkout 安全。指令已改为 `git status --porcelain --untracked-files=no`（只拦已跟踪文件的未提交改动）+ 撞名 dry-run。**更正 2（措辞不准）**：第 6 步原写「回滚到 main」，但回执显示部署机 HEAD 是 **`1986bb1`**（RS-02a 那次合并），**比 main 落后 5 个提交**——所以那一步对这台机是**前进**不是回滚。已核 `1986bb1..1f09edf` 在 backend/frontend/workers/infra 下**唯一改动是 `infra/local-deploy/README.md`（+26 行文档）**，其余全是 .agent/ 与 specs/ 正文，**即运行代码与当前 main 逐字相同、无功能漂移**。指令已改措辞并给出两个可接受终态（main 或 1986bb1）。**顺带结清一条悬账**：RS-02a 之后那次「部署机切回 main 回执」始终未回——本回执给出答案：**没切，机器一直停在 1986bb1**。**真机侧发现（需 Owner 定）**：`erp_all-before-0039.dump` 是一份**生产库转储**，躺在仓库根且**此前未被 .gitignore 忽略**——一次 `git add -A` 就会把生产转储提交进仓库。已把 `*.dump` / `*.dump.gz` / `*.sql.gz` / `.pnpm-store/` 加进 `.gitignore` 堵死误提交路径（仓库内无已跟踪的同类文件，加忽略零影响）。**转储文件本身留不留、何时删归 Owner 定**，云端侧不动它、也未让部署机删或打开它。"
    }
   ]
  },
