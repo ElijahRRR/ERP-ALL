@@ -200,6 +200,13 @@ DevTools 勾 Disable cache 后 Ctrl+Shift+R（或关标签页重开），直到�
 - **D 无权限只读**：只挂 `automation.read` 的账号（重新登录）→ 菜单在、10 行可见、
   「只读（缺 automation.write）」标签在、控件全灰不可点。再摘掉 read 重登 → 菜单消失。
 
+  > **凭据自助，不要为此等 Owner**（2026-07-28 在此卡过一次）：本机已有 super 凭据，
+  > 而超管足以自造本步所需账号——`POST /api/v1/users`（收 `password`，≥8 位）、
+  > `PATCH /api/v1/users/{id}`（可重置密码）、`POST /api/v1/roles` +
+  > `PUT /api/v1/roles/{id}/permissions`（造只挂 `automation.read` 的角色）、
+  > `PUT /api/v1/users/{id}/roles`（挂角色）。UI「用户管理 / 角色管理」页同款操作。
+  > **密码你自己生成、只写进本机密码文件，永远不要贴进对话。**
+
 **§C 非法档位造数与还原**（只打测试团队，`<团队id>` 用你实际测试团队的 id）：
 
 ```sql
@@ -239,6 +246,9 @@ echo "AUDIT_EXIT=$LASTEXITCODE"
 ---
 
 ## 第 6 步：清理验证痕迹（**条件执行**）
+
+> D 步若自造了临时角色/账号：临时账号 `PATCH` 成 `status=disabled`、临时角色权限清空即可
+> （本仓无用户删除端点）。**不要动 team 1 既有的「团队管理员」角色**——那是在跑的授权。
 
 **仅当第 3 步 D 段是 0 行（验证前表空）时执行**——那么现在表里的行全部是第 4 步造的：
 

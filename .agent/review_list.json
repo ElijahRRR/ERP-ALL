@@ -790,6 +790,11 @@
     "date": "2026-07-28",
     "kind": "correction",
     "text": "【第三闸第三轮：编码假设坐实 + C-unset 出现 2/8 分裂待定位】①**C 段 0 行确系我指令的编码缺陷，非数据丢失**：部署机诊断回执 match_by_literal=0 而 match_by_unicode=2、角色 14 行齐全（模板 7 + team1 7）、团管两侧 automation_codes 均为 2、client/server_encoding 皆 UTF8——中文字面量经 PowerShell 管道进 psql 匹配不上。已修两处取证 SQL（deploy-verify C 段 + runbook §③2）为「不带中文谓词、全量列角色 + automation 码数、由人读哪行是团管」，信息量更足且不依赖管道编码。教训与本周主线同形：**判据被传输链路弄坏时，读出来的 0 行与真实的 0 行长得一模一样**——这次「判据的出口」在管道上。②**C-unset 报 2/8 分裂**（pricing_watch/order_block 无选中，其余 8 行仍选中「人工」），我无法从代码解释：沙箱用同源产物 + 10 行全 unset 桩数据复现，**10/10 全部无选中项**，且 44acfba 之后前端源码零改动。Dockerfile 为镜像内 pnpm build 且 .dockerignore 排除 dist，排除「宿主陈旧产物入镜像」。故最可能是部署机服务/浏览器持有的是修复前产物。已构建两版产物对拍出**与压缩变量名无关的单一判别标记**：`mode??void 0` 计数=0 即修复版、≥1 即修复前版（修复版 `mode??\"\"` 计 2、修复前计 1，因 stateTag 那处未变，故只能用 void 0 这条判别）。下发三件只读诊断：镜像内产物 grep 该标记、浏览器实际加载的 chunk 名与镜像内 ls 对拍（抓浏览器/nginx 缓存）、控制台逐行输出 flow_code→选中数（抓测量口径）。**未下任何修复指令**——在证据分清「产物旧」与「代码真有残缺」之前不改码。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【第三闸第四轮：C-unset 真机通过 + 我的 nginx 假设被证伪 + D 卡凭据已解】①**C-unset 换壳后 10 行全 0，A/B1/B2/B反向/B补充/C 各态全过**——修复在真机确认有效，此前 8/10 失败确系浏览器持有修复前 chunk（换壳后浏览器与镜像同为 index-BQBPdeUe.js）。②**我上一轮怀疑「index.html 不缓存那道闸没接线」被证伪**：curl -I 实测 /automation 与 /index.html 两条路径都带 Cache-Control: no-store, must-revalidate，闸是接线的，nginx.conf 不改。真机理是 no-store 只能防「新导航拿到旧壳」，**防不住一个从上一轮就没关过、只点页面内「刷新」按钮的标签页**（该按钮只重取 API，从不重新请求 index.html）。故 compose/nginx 注释里「根治 stale 模块类事故」这句**过头了**：缓存路堵住了、旧标签页路没堵——已加的「产物对拍」机器判据正是补这条，属正确的补偿控制而非冗余。教训：**声称「根治」的注释要标明所根治的具体路径**，否则下次同类事故会因为「这条闸已根治」而不去查它。③**D 项卡在缺非超管凭据，实为不必要的阻塞**：核过 identity 契约，超管足以自助造账号（POST /users 收 password；PATCH /users/{id} 可重置；POST /roles + PUT /roles/{id}/permissions 造只读角色；PUT /users/{id}/roles 挂角色）。已写进指令：**密码由部署机自己生成、只写本机密码文件、永不进对话**，并附清理口径（临时账号 disable、临时角色清权限，**不动 team 1 既有团管角色**）。"
    }
   ]
  },
