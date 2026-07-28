@@ -206,6 +206,17 @@ DevTools 勾 Disable cache 后 Ctrl+Shift+R（或关标签页重开），直到�
   > `PUT /api/v1/roles/{id}/permissions`（造只挂 `automation.read` 的角色）、
   > `PUT /api/v1/users/{id}/roles`（挂角色）。UI「用户管理 / 角色管理」页同款操作。
   > **密码你自己生成、只写进本机密码文件，永远不要贴进对话。**
+  >
+  > **PowerShell 两处坑（2026-07-28 各踩一次）**：① 没有 `crypto` 全局对象（那是 Node 的），
+  > 安全随机要走 .NET；② **`$pwd` 是自动变量（当前目录），不能拿来存口令**——换个名字。
+  >
+  > ```powershell
+  > $b = New-Object byte[] 24
+  > $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  > $rng.GetBytes($b); $rng.Dispose()
+  > $newPwd = ([Convert]::ToBase64String($b) -replace '[+/=]','x')   # 32 位，勿打印
+  > ```
+  > `RandomNumberGenerator::Create()` 在 Windows PowerShell 5.1 与 PS 7 都在。
 
 **§C 非法档位造数与还原**（只打测试团队，`<团队id>` 用你实际测试团队的 id）：
 
