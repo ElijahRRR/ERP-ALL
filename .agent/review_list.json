@@ -775,6 +775,11 @@
     "date": "2026-07-28",
     "kind": "correction",
     "text": "【第三闸 UI C-unset 抓到真缺陷 → 已修 + 补上仓内第一条前端渲染判据】v3 清理全部符合授权（4/400/1580 三值精确、审计 2400+6098 纹丝不动、CLEANUP_TEAM2_V3_EXIT=0）；重验①-⑥ 全过（0040 落库、C 段模板+team1 各 2 码、total_teams=1），UI 除 C-unset 外逐项过。**缺陷**：未配置行的档位 Segmented 显示「人工」为选中态——恰好击穿本增量立身之本（unset≠配了 manual，Q3 裁定要三态不塌缩）。机理：`value={row.mode ?? undefined}` 命中 rc-segmented 的 `useMergedState(segmentedOptions[0]?.value, {value})`（index.js:118）回落到第一个选项，而第一档恒为 manual（_MODE_ORDER 保守档最左，本是刻意设计）→ 新团队十行全显示「有人配了人工」，order_block 上更像有人主动选过。**连带第二症**（部署机未报、代码核出）：item 是 `<input type=radio checked>`，点已选中项不触发 change → 未配置行上「显式设为人工」这条路是死的；闸类只有 manual/auto 两档，唯一绕法是先开 auto——先打开拦截再关回去。修复：`value={row.mode ?? ''}`（不匹配任何选项 → 无选中项 + 点击是 false→true 真实变更），一处改动同时解两症，并覆盖「库存脏串」那档。**取证纪律**：本缺陷 tsc/eslint/后端测试全看不见（只在渲染后存在），唯一抓住它的是人工目验，不可复跑——故补 frontend/e2e/automation-panel.mjs（headless chromium + 路由桩，不连后端）4 条断言，并接进 CI frontend job（就绪轮询而非固定 sleep，同部署机 healthz 教训）。判据可红性已实测：回退修复后重建 → 3 条红且正是人工目验报的两处症状，第 2 条（已配置行仍显选中）保持绿证明不是全红蒙混；恢复后 4 条全绿。playwright 早在首个前端 commit 就进了 devDependencies、一直无人使用，本次是它第一次被用上（FE-TEST-01「零前端测试」由此部分清偿）。附注两条：runbook §② C-unset 的判据写法（要求无选中项）当时就是对的，是代码没做到——判据先于实现存在，这次它赢了；部署机保留的验证账号 pr42_verify（team 1，团管+采集员）未清理属正确处置（runbook 未授权动身份数据），去留请 Owner 定。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "correction",
+    "text": "【新加的 e2e 步骤把 CI 弄红——本地绿 CI 红的环境差异，已修】68a67fa 上 evidence-gate/backend/workers 三 job 全绿，只有我新加的「面板渲染判据」红：日志显示 vite preview 正常起并打印 Local: http://localhost:4173/，但 curl 127.0.0.1 六十秒轮询全 000。根因是绑定地址而非判据本身——vite preview 默认 host=localhost，Node 17+ 的 DNS 解析顺序是 verbatim，runner 上 localhost 先解析到 ::1 → 服务只监听 IPv6，而轮询与脚本两侧都写 127.0.0.1；沙箱里 localhost 直接是 127.0.0.1，所以本地怎么跑都绿、复现不出来。修法：preview 显式 --host 127.0.0.1 两侧钉死 IPv4，失败分支补打 ss -lntp 便于下次定位，脚本头注同步写明该参数不可省。本地已按 CI 完整姿势（起服务→就绪轮询→跑脚本）复跑：READY_CODE=200、四条断言全过。教训记一条：**新判据第一次进 CI 必须假设「本地绿≠CI 绿」**——本地与 runner 的差异面（DNS 顺序、预装浏览器版本、localhost 语义）不在代码里，只能靠首跑实证；这次首跑就红反而是好事，红在我自己的新步骤上、没有污染既有闸。另：CI 新增步骤耗时约 2 分钟（playwright 下载 chromium 177MB + headless shell 114MB），若审查侧认为不值当可改为按路径触发或拆出单提。"
    }
   ]
  },
