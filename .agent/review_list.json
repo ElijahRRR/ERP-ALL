@@ -957,5 +957,20 @@
   "acceptance": "①真实订单人工档由插件完成采购并回填,金额/单号/运单与亚马逊后台一致;②三档各跑一遍,auto 超 amount_ceiling 必转人工且零下单;③越权:A实例取不到B账号任务(必败);④并发下发同一订单不产生两个采购任务;⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练",
   "finding": "审计侧解包 v2.5.0 crx 并对比仓内 v2.4.1(2026-07-27)：实为完整自动采购机器人(加购→填址→结账→抓单号→回填 + 物流回填链 + 验证码人机接力),支持 com/ca/co.jp,两版差异仅日本地址选择两函数。安全实测：host_permissions=*://*/* + cookies 权限可读该浏览器任何站点 cookie(含 Walmart 后台/飞书)；updateBuyerCookie 将买家 cookie 上传厂商服务器。fork 时须收窄权限。性质=迁移非新建(现产线跑在 smallbee168.com)",
   "last_checked_at": "2026-07-27"
+ },
+ {
+  "id": "R2-14",
+  "priority": "P1",
+  "dimension": "product",
+  "status": "todo",
+  "check": "生命周期出口（Owner 2026-07-28 指出「只有进没有出」）：硬删除三级规则(无历史直删/有历史删实体留墓碑/审计财务订单绝不删)+deleted_product 与 deleted_principal 两张墓碑表+列表默认折叠已停用项+删除权限点与二次确认与 audit_log 留痕。口径见 00-conventions §7.1，分片见 007",
+  "evidence": [
+   "specs/001-domain-model/00-conventions.md",
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "gate": "排期待 Owner 定：建议 14a(产品删除)+14c(列表折叠)进 MVP，14b(主体删除)+14d(权限留痕)紧随",
+  "acceptance": "①删从未上架产品→物理行消失、无墓碑、列表不再出现；②删上过架产品→实体消失但重采同 ASIN 不再入库(墓碑保去重)；③删操作过的用户→其 audit_log 仍在且操作人显示「XX（已删除）」而非裸 id；④删除动作在 audit_log 可查(谁/何时/删了什么/before 快照)；⑤订单、审计三族、财务表在任何删除路径下行数不变；⑥列表默认不显示已停用项且开关可切",
+  "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类",
+  "last_checked_at": "2026-07-28"
  }
 ]
