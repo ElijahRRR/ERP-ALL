@@ -25,7 +25,12 @@ import { chromium } from 'playwright'
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:4173'
 
-/** 契约字段齐全的一行（对齐 openapi AutomationPolicy 的 required 13 项）。 */
+/** 契约字段齐全的一行（对齐 openapi AutomationPolicy 的 required 13 项）。
+ *
+ * ⚠️ **契约加字段时必须同步本工厂**（审查 2026-07-28 四轮的观察项）：桩数据与
+ * openapi 漂开时本脚本**不会红**——它验的是渲染，不验契约。契约那半由
+ * `pnpm gen:api` 新鲜度门禁 + 后端 `tests/db` 覆盖，两者合起来才闭合。
+ */
 function row(flow, over = {}) {
   return {
     flow_code: flow,

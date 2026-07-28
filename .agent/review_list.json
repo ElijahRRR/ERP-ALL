@@ -780,6 +780,11 @@
     "date": "2026-07-28",
     "kind": "correction",
     "text": "【新加的 e2e 步骤把 CI 弄红——本地绿 CI 红的环境差异，已修】68a67fa 上 evidence-gate/backend/workers 三 job 全绿，只有我新加的「面板渲染判据」红：日志显示 vite preview 正常起并打印 Local: http://localhost:4173/，但 curl 127.0.0.1 六十秒轮询全 000。根因是绑定地址而非判据本身——vite preview 默认 host=localhost，Node 17+ 的 DNS 解析顺序是 verbatim，runner 上 localhost 先解析到 ::1 → 服务只监听 IPv6，而轮询与脚本两侧都写 127.0.0.1；沙箱里 localhost 直接是 127.0.0.1，所以本地怎么跑都绿、复现不出来。修法：preview 显式 --host 127.0.0.1 两侧钉死 IPv4，失败分支补打 ss -lntp 便于下次定位，脚本头注同步写明该参数不可省。本地已按 CI 完整姿势（起服务→就绪轮询→跑脚本）复跑：READY_CODE=200、四条断言全过。教训记一条：**新判据第一次进 CI 必须假设「本地绿≠CI 绿」**——本地与 runner 的差异面（DNS 顺序、预装浏览器版本、localhost 语义）不在代码里，只能靠首跑实证；这次首跑就红反而是好事，红在我自己的新步骤上、没有污染既有闸。另：CI 新增步骤耗时约 2 分钟（playwright 下载 chromium 177MB + headless shell 114MB），若审查侧认为不值当可改为按路径触发或拆出单提。"
+   },
+   {
+    "date": "2026-07-28",
+    "kind": "progress",
+    "text": "【审查五轮全通过 + 一条我方接收缺口】审查侧已就 PR #42 出五轮报告（所审 2009955→2c2ab65→3367187→20c6ef6→f7fe850），**后三轮我未收到推送**——它们以 PR review（pullrequestreview）形式提交，webhook 只推了前两轮的。**接收缺口记为规则补丁**：自检轮询不能只看 issue comments，必须同时拉 get_reviews 比对 submitted_at；否则「审查已出但开发侧不知道」会静默卡住闸序（本次即 Owner 主动问才发现）。五轮结论：F1/N2 首轮提出、二轮经其独立变异实测确认修复；三轮核了清理指令（重点核 SQL 无 BEGIN/COMMIT 这一处）；四轮**独立起 worktree 变异实测了我新加的前端渲染判据**——基线四条全绿、变异下①报「实得 1 个选中项」③报「实得 0 个 PUT」而②保持绿，两个声称与反向护栏一并坐实；五轮核 rebase range-diff 全 = 且认定 f7fe850 属另一工单（R2-12 验收①）。**两条意见已落地**：①清理指令的单事务性**靠调用参数不靠 SQL**（`psql -1` + ON_ERROR_STOP=1），拆掉 -1 单独跑闸即退化为告警——已在 deploy-cleanup-team2-pr42.md 顶部加专节 + 铁律第 4 条（v1/v2/v3 通用）；②e2e 桩数据与 openapi 漂开时脚本不会红——已在 row() 工厂头注写明「契约加字段必须同步本工厂」，并点明契约那半由 gen:api 门禁 + tests/db 覆盖。**登记不拦**：审查 N1——清理指令闸 2 靠 pg_constraint 枚举，看不见「有 team_id 列但无 FK」的 19 张表（v2 那轮发现的同一盲区），执行时刻不复验其余那些表，故「除审计外彻底无痕」严格意义上依赖那次清点而非执行时自证；后果（孤儿化）可接受。审查侧亦记：非 API 建团路径（seed/conftest/e2e）仍会复现 0040 按名回填的盲区，属另一单。我提的两个问题（e2e 设施是否超范围、2 分钟浏览器下载是否值当）审查侧未明确裁定，仅记观察不拦——按「无阻拦项」处理，若 Owner 有异议随时可拆。"
    }
   ]
  },
