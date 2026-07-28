@@ -90,3 +90,13 @@ verdict 语义：pass → product.status=audit_passed；reject → audit_rejecte
 
 索引：`(team_id, module, occurred_at)`。
 预算闸：automation 域每小时聚合本表 → team_config 预算阈值（`llm_budget_daily_usd`）超限 → notification critical + 三档策略降级建议（不自动停，人决策）。
+
+**保留口径（2026-07-28 补记，源自 team 2 验证残留清理实践）**：本表**无永久保留要求**
+（D-Q18 的永久保留只覆盖订单与售后），团队注销或验证残留清理时可随 `team_id` 一并删除；
+预算闸只吃近窗聚合，删历史行不影响其正确性；财务域（§08）的分录科目**不含 LLM 成本**，
+故亦无依赖。
+> ⚠️ **与审计三族的不对称（结构事实，不是疏漏）**：`audit_run`/`audit_hit`/`audit_log`
+> **无 team 外键**（分区热路径不建 FK，见本文 audit_run 列注），因而**无法按团队选择性
+> 删除**——清理团队时它们必然整族留存。结果是"审计发生过"的证据保留、而其成本流水可被
+> 清走。这个不对称是可接受的：审计留痕是合规底线，成本流水只是运营指标。
+> **任何清理指令须显式声明审计三族一行不删**，不得为"清干净"去动它们。
