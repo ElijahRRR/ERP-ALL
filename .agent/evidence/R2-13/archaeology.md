@@ -48,9 +48,32 @@ fetch(url,{headers:{"Content-Type":"application/json",...options.headers},...opt
 `plugin_instance` **实例专属 token（禁全局共享密钥）**，而插件侧现在没有注入认证头的
 地方——**必须改插件代码**加上头注入与 token 存取。这条落在 13a 的工作量估计里。
 
-> 未查的一件：调用方是否在 `options.headers` 里逐次传了什么。抓取该细节的命令被安全
-> 分类器拦下（模式形似翻凭证），**未绕过**。对本单结论无影响——无论现状如何，
-> 认证机制都要按图纸重做。实施 13a 时在本机对照插件源码确认即可。
+#### 补：这一格已查（原「未查」项，PR #47 审查侧 N-b 提出，本轮复算确认）
+
+原先未查的是「调用方是否在 `options.headers` 里逐次传了什么」（抓取命令曾被安全分类器
+拦下，未绕过）。本轮改用只读静态分析补上了，**结论不中性——它会改 13a 的做法**：
+
+**`...options` 排在 `headers:` 之后，故调用方一旦传 `headers`，整个 headers 对象被整体
+替换，base 全丢。** 这不是「合并」，是「覆盖」。node 实测：
+
+```
+不传 headers        → {"Content-Type":"application/json"}
+传了 headers        → {"Content-Type":"application/json;charset=UTF-8"}   ← base 被整体替换
+base 里加 token 后   → {"Content-Type":"application/json;charset=UTF-8"}   ← token 没了
+```
+
+**九个调用里恰好有一个这么传**：`purchaseOrderFinishUpdate`
+（`headers:{"Content-Type":"application/json;charset=UTF-8"}`）。全文 `headers` 只出现
+3 处，2 处是封装自身，第 3 处就是它。
+
+今天无害（两边都只是 Content-Type）。但 13a 若按最自然的做法「在 base headers 里加实例
+token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是「采购完成回报」这条已经花过钱
+的路径**。九分之一的间歇性失败，最难查的那种。
+
+→ **13a 的工作量口径因此改变**：不是「加认证头注入」，而是「**先修 wrapper 的 headers
+合并顺序，再加注入**」。见 §二 13a 行。
+
+（本项为只读静态分析，未取任何凭证。）
 
 ### ③ `manifest.json` 的权限面，比 007 的描述更值得警惕
 
@@ -68,6 +91,32 @@ fetch(url,{headers:{"Content-Type":"application/json",...options.headers},...opt
 
 > 现状风险的具体形状：该扩展可读取**装它的那个浏览器访问过的任何站点**的 cookie——
 > 包括 Walmart 卖家后台与飞书。这台机器同时是运营日常用的浏览器，故这不是理论风险。
+
+#### 补：四个权限里**三个是零调用**（PR #47 审查侧 N-c 提出，本轮扩大核实）
+
+审查侧指出 `scripting` 零调用可直接删。逐个核下来**范围比这更大**——把插件自有 JS
+与两个第三方库全扫了一遍（`js/popup.js`、`js/background.js`、`lib/jquery-3.3.1.min.js`、
+`layer/layer.js`，即 manifest 引到的全部 JS）：
+
+| 声明的权限 | 实际调用 | 处置 |
+|---|---|---|
+| `storage` | **0** | 可删 |
+| `tabs` | **0** | 可删 |
+| `scripting` | **0** | 可删 |
+| `cookies` | 1（`background.js` 的 `chrome.cookies.getAll`） | 按 `buyer_session` 裁定 |
+
+`chrome.runtime`（popup.js 的 `sendMessage`/`lastError`、layer.js 的 `chrome.runtime.id`）
+**不需要声明权限**，故不构成对上表的反例。
+
+> **这同时补上了 §〇③ 那句推断的最后一块。** `chrome.scripting.executeScript` 是需要
+> host 权限的——若它存在且打到非 amazon 目标，收窄 `host_permissions` 就会打断它。
+> 实测零调用，故收窄确实不打断任何东西。**核过之后那句才站得住。**
+>
+> 注：`incomplete_results: true` 的 GitHub 代码搜索**不能**用作「零命中」的证据，
+> 上表是逐文件取回原文后计数得出的。
+
+→ 随 13a 的安全收窄一并处理：删 `storage` / `tabs` / `scripting` 三条 + 收窄
+`host_permissions`；`cookies` 留待 §四 第 3 条裁定。
 
 ---
 
@@ -114,14 +163,15 @@ fetch(url,{headers:{"Content-Type":"application/json",...options.headers},...opt
 
 | 增量 | 内容 | 本轮实测带来的调整 |
 |---|---|---|
-| **13a** | 插件端点组 + `plugin_instance` 实例认证 | **含改插件代码**：加认证头注入（§〇②）；并定「两个路径前缀」的处置（§〇①） |
+| **13a** | 插件端点组 + `plugin_instance` 实例认证 | **含改插件代码**：**先修 wrapper 的 headers 合并顺序，再加认证头注入**——顺序反了会让 `purchaseOrderFinishUpdate` 静默丢认证头（§〇② 补）；并定「两个路径前缀」的处置（§〇①） |
 | **13b** | `buyer_account` 建表 + `procurement_order.buyer_account_id` + 任务路由 | 图纸 `:131-150` 已给全，含唯一约束与索引 |
 | **13c** | `purchase_execute` 三档接线 + **三档护栏** | **三件耦合**：放开 `config` 写入 + 消费点 + 判据（§一） |
 | **13d** | 回填与异常 | 回填列与状态机**全部现成**，主要是服务层与对账 |
 | **13e** | 灰度切换（**最高风险片**） | 红线：同一浏览器配置内绝不同时启用两个插件——**会重复下单** |
 
-**安全项随 13a 强制**：收窄 `host_permissions`、按 `buyer_session` 决定是否删 `cookies`
-权限与 `updateBuyerCookie`、ERP 不可达时插件 **fail-closed 不自行采购**。
+**安全项随 13a 强制**：收窄 `host_permissions`、**删掉 `storage`/`tabs`/`scripting` 三条
+零调用权限**（§〇③ 补）、按 `buyer_session` 决定是否删 `cookies` 权限与 `updateBuyerCookie`、
+ERP 不可达时插件 **fail-closed 不自行采购**。
 
 ---
 
@@ -152,6 +202,21 @@ fetch(url,{headers:{"Content-Type":"application/json",...options.headers},...opt
 2. **gate 口径**（§三）：是否接受「13a/13b/13d 先行，auto 档卡在 13c 之后」。
 3. **`buyer_session` 用不用**——决定 `cookies` 权限与 `updateBuyerCookie` 的去留（007 已列，
    但没定）。这条影响 13a 的安全收窄范围。
+4. **`daily_cap` 在图纸里有两个存储位置，谁是权威？**（PR #47 审查侧 N-a 提出；本文
+   原先引了两处却没发现是同一个名字）
+
+   | 位置 | 出处 | 措辞 |
+   |---|---|---|
+   | `buyer_account.daily_cap` INT 列 | `07-order-sourcing-aftersale.md:144` | 「单日采购上限（风控，null=不限）」，路由按它走（`07:152`、`007:278`） |
+   | `automation_policy.config.daily_cap` 护栏键 | `09-platform.md:208` | 「**单账号**日采购上限」，`007:280` 同 |
+
+   **两处措辞是同一语义**，而本文 §二 把它们分给了两个增量：13b 建列并按它路由、
+   13c 建护栏消费点。**若不先定谁是权威，运营在一处设了限、以为封住了，另一处照旧放行**
+   ——这正是「护栏有出口」的形状，而且落在**花真金白银的 auto 档**上。
+
+   可选口径：(a) 列为权威、护栏键读列；(b) 护栏键为权威、列降为缓存；(c) 二者语义拆开
+   （如列=账号硬上限、护栏=策略软上限，取两者较小值）。**必须在 13b 动工前定**——
+   13b 一旦按列路由落码，改口径就要动数据。
 
 ## 五、开工前已确认的事实清单（供审查复算）
 
@@ -163,5 +228,20 @@ fetch(url,{headers:{"Content-Type":"application/json",...options.headers},...opt
 | 不在 WIRED_FLOWS | `sed -n '115,117p' backend/src/erp/core/automation.py` | 仅 ORDER_BLOCK/REFUND/CANCEL |
 | 护栏键零消费点 | `grep -rn "amount_ceiling\|daily_cap\|price_delta_pct" backend/src/ --include=*.py` | 仅 `automation/router.py` 的说明注释 |
 | config 写入被显式拒 | `grep -n "AUTOMATION_CONFIG_NOT_WRITABLE" backend/src/erp/automation/router.py` | 有 |
-| 插件 9 端点与两个前缀 | `grep -o "endpoints:{[^}]*}" /workspace/amz-purchase-assistant/js/popup.js` | 见 §〇① |
-| 插件权限面 | `cat /workspace/amz-purchase-assistant/manifest.json` | `*://*/*` + `cookies` |
+| 插件 9 端点与两个前缀 | `grep -o "endpoints:{[^}]*}" <插件仓>/js/popup.js` | 见 §〇① |
+| 插件权限面 | `cat <插件仓>/manifest.json` | `*://*/*` + `cookies` |
+
+### 本轮（PR #47 审查侧 N-a/N-b/N-c）新增的主张
+
+外部仓一律以 `ElijahRRR/AMZ-Purchase-Assistant@07282ed`（v2.4.1）为准。
+
+| 声称 | 复算命令 | 期望 |
+|---|---|---|
+| `headers` 全文只 3 处，第 3 处即唯一传 headers 的调用 | `grep -o "headers" <插件仓>/js/popup.js \| wc -l`，再看每处上下文 | 3；第 3 处在 `purchaseOrderFinishUpdate` |
+| 传了 headers 则 base 被整体替换 | 用 `{headers:{...base,...o.headers},...o}` 跑一次 node | 传 headers 时 base 键全丢 |
+| 四权限里三个零调用 | 对 4 个 JS 各数 `chrome.storage` / `chrome.tabs` / `chrome.scripting` / `chrome.cookies` | 前三个 0；`cookies` 仅 `background.js` 1 处 |
+| 插件自有 JS 就是两个文件 | `cat <插件仓>/manifest.json` 看 `content_scripts.js` 与 `background.service_worker` | `js/popup.js` + `js/background.js`（其余为 jquery/layer 库） |
+| `daily_cap` 两个存储位置 | `grep -rn "daily_cap" specs/` | `07:144` 建列、`09:208` 护栏键，措辞同义 |
+
+> ⚠️ **复算这几条时不要用 GitHub 代码搜索**：它对本仓返回 `incomplete_results: true`，
+> **不能用作「零命中」的证据**。上表全部是逐文件取回原文后计数得出的。

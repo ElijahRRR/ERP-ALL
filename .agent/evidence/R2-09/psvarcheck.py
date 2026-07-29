@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
+import io
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 BLOCK_RE = re.compile(r"```powershell\n(.*?)```", re.S)
@@ -85,14 +88,38 @@ $HEAD_SHA = git rev-parse HEAD   # 不要写成 $head_sha
 ```"""
 
 
+def _prose_exit_code() -> int:
+    """把一份只有散文的文件真的喂给 `report()`，取它的退出码。
+
+    **零命中守卫住在 `report()` 里，`check()` 够不着它。** PR #47 审查侧发现：
+    三个检查器的 self-test 测的全是 `check()`，于是把 `report()` 的 `return 2`
+    改成 `return 0`（守卫失效）时，三个 self-test 照样全绿、CI 照样全绿。
+    这是「守卫的守卫缺席」——与本文件头注记的那条失实同形，只是下沉了一层。
+    故本函数不测 `check()`，只测**退出码**：唯一能钉住那道守卫的路径。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "prose-only.md"
+        p.write_text("只有散文，没有任何 powershell 代码块。\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return report(p)
+
+
 def self_test() -> int:
     bad, _ = check(_BAD)
     good, _ = check(_GOOD)
     comment, _ = check(_COMMENT_ONLY)
     _, empty_blocks = check("没有代码块的散文。")
-    ok = len(bad) == 1 and not good and not comment and empty_blocks == 0
+    prose_exit = _prose_exit_code()
+    ok = (
+        len(bad) == 1
+        and not good
+        and not comment
+        and empty_blocks == 0
+        and prose_exit == 2
+    )
     print(f"self-test  碰撞判红={len(bad) == 1}  干净判绿={not good}")
     print(f"           注释内不误判={not comment}  零块可被识别={empty_blocks == 0}")
+    print(f"           零命中出口 report()=={prose_exit}（须为 2，非 0）")
     for p in bad:
         print(f"  （应报）{p}")
     print("self-test", "通过 ✅" if ok else "失败 ❌")

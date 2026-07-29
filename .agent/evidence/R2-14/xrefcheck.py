@@ -27,8 +27,11 @@ PR #46 的 N1 就是反例：⑦ 写「这是⑪的基线」，而 ⑪ **确实�
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
@@ -159,11 +162,27 @@ _BAD = """## ⑦ 基线快照（与⑪对拍）
 _GOOD = _BAD.replace("与⑪对拍", "与⑬对拍").replace("这是⑪的基线", "这是⑬的基线")
 
 
+def _prose_exit_code() -> int:
+    """把一份没有圈码步骤的文件真的喂给 `report()`，取它的退出码。
+
+    **零命中守卫（「不适用」出口）住在 `report()` 里，`check()` 够不着它**——
+    PR #47 审查侧实测：把 `report()` 的 `return 2` 改成 `return 0`，
+    三个检查器的 self-test 全绿。守卫本身没有被任何 self-test 保护。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "prose-only.md"
+        p.write_text("只有散文，没有任何圈码步骤标题。\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return report(p)
+
+
 def self_test() -> int:
     bad = check(_BAD)
     good = check(_GOOD)
-    ok = bool(bad) and not good
+    prose_exit = _prose_exit_code()
+    ok = bool(bad) and not good and prose_exit == 2
     print(f"self-test  修复前判红={bool(bad)}  修复后判绿={not good}")
+    print(f"           零命中出口 report()=={prose_exit}（须为 2，非 0）")
     for p in bad:
         print(f"  （修复前应报）{p}")
     print("self-test", "通过 ✅" if ok else "失败 ❌")
