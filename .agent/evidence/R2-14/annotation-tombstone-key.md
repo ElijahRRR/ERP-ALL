@@ -1,12 +1,33 @@
-# R2-14 批注回传：`deleted_product` 的墓碑键与真实去重键对不上
+# R2-14 批注回传：`deleted_product` 的墓碑键应按 BR-CAT-002 展开为 `(source_channel, source_ref)`
 
 > 云端 AI → 审计侧 / Owner，2026-07-29。
-> **本文不改图纸正文**（`specs/001-domain-model/` 归审计侧），只提请修订并说明云端侧的实现取舍。
+> **本文不改图纸正文**（`specs/001-domain-model/` 归审计侧），只提请补注并说明云端侧的实现取舍。
 > 依据 CLAUDE.md 分工表：设计变更走批注回传。
+
+> ## ⚠️ 本文 v1 的定性是错的，v2（2026-07-29 同日）已更正
+>
+> **v1 写的是**「图纸的墓碑键**指向一个不存在的列**」，并把它与 `ERP_ENV` 从未注入、
+> `compliance_block` 零消费点、`O-1..O-6` 并列，称「共同点是只要没人去对源码，
+> 它看起来永远是对的」。
+>
+> **那个类比错了。** 那三例是**真的不存在**；而 `asin` 这个词在文档里**有明确定义**，
+> 只是定义不在 `00-conventions` 里（见 §一）。
+>
+> **错因**：v1 只检索了 `00-conventions.md` 与 `backend/alembic/versions/`，
+> **没有检索 `03-catalog.md` 与 `business-rules-ledger.md`**——而定义正在那两处。
+> 是 Owner 追问「开发文档中应该有写这些吧」才促成复核。
+>
+> **教训与上一条同族但更进一层**：上一次是 grep 被 `head` 截断，这一次检索没被截断，
+> 是**检索面没覆盖到定义所在的文件**——**「查过了」不等于「查全了」，而下重结论
+> （「它指向的东西不存在」）要求的恰恰是查全**。结论若只是「建议改键」，查得窄一点
+> 尚可补救；说成「图纸凭空捏造」，就必须穷尽文档才有资格。
+>
+> **技术结论未变**（键仍应为 `(team_id, source_channel, source_ref)`），变的是**依据**：
+> 从「纠正图纸的错误」改为「**按宪法把简写展开**」。
 
 ---
 
-## 一、事实
+## 一、事实：`asin` 是**有定义的简写**，定义在别处
 
 `00-conventions.md §7.1` 的墓碑表定义写：
 
@@ -14,15 +35,34 @@
 > 商品行，空间该省的省掉；同时**去重键 `(team_id, asin)` 仍认得该 ASIN，不会下次采集
 > 又抓回来**（无墓碑硬删 = 垃圾循环回流，这是硬删除唯一的技术陷阱）。
 
-**代码侧三条实测**（均可复算）：
+**该简写在文档里有两处明确定义**（v1 漏检的正是这两处）：
+
+| 出处 | 原文 |
+|---|---|
+| `001-domain-model/03-catalog.md:14` | `\| source_ref \| TEXT \| NOT NULL \| **ASIN（或未来其他源主键）** \|` |
+| `000-founding/business-rules-ledger.md:44`（BR-CAT-002） | 内部身份 = master_sku（渠道中立终身不变）；**ASIN 降级为 `(source_channel, source_ref)` 属性** |
+
+**BR-CAT-002 是宪法级依据**（铁律 1：`specs/000-founding/` 是宪法）。它直接说明
+「ASIN」在本系统的存储表示就是 `(source_channel, source_ref)` 这一对。
+因此 D-Q31 的「去重键 = `(team_id, asin)`」展开成存储语言即
+`(team_id, source_channel, source_ref)`——**与代码里的 `uq_product` 完全一致**。
+
+**代码侧三条实测**（均可复算，v1 的这三条本身没错）：
 
 | 事实 | 复算命令 | 结果 |
 |---|---|---|
-| `product` 表**没有 `asin` 列** | `grep -n "asin" backend/alembic/versions/0007_scrape_catalog.py` | **零命中** |
-| 全仓 `asin` 只出现在合规黑名单 | `grep -rn "asin" backend/alembic/versions/*.py` | 全部是 `blacklist_asin`，与产品域无关 |
-| 真实去重键 | `grep -n "uq_product" backend/alembic/versions/0007_scrape_catalog.py` | `uq_product UNIQUE (team_id, source_channel, source_ref)` |
+| `product` 表无名为 `asin` 的列 | `psql -c "SELECT column_name FROM information_schema.columns WHERE table_schema='app' AND table_name='product'"` | 19 列，无 `asin` |
+| 真实唯一键 | `grep -n "uq_product" backend/alembic/versions/0007_scrape_catalog.py` | `uq_product UNIQUE (team_id, source_channel, source_ref)` |
+| 入库点同键 | `sed -n '520,532p' backend/src/erp/scrape/service.py` | `ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE` |
 
-入库点 `scrape/service.py:523` 亦为 `ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE`。
+**前端也遵循同一映射**（可佐证这不是代码擅自偏离）：
+`ProductsPage.tsx:197` 是 `{ title: 'ASIN', dataIndex: 'source_ref' }`；
+`ProductDetailDrawer.tsx:58` 更进一步，用 `source_channel === 'amazon'` 做条件才拼
+亚马逊商品链接——**前端自己就知道「`source_ref` 只有在亚马逊渠道时才是 ASIN」**。
+契约 002 的 `Product` schema 同样只有 `source_channel` / `source_ref`。
+
+**结论：文档、契约、代码、前端四处一致，没有矛盾。** `§7.1` 用的是一个在别处
+有定义的行业简写，不是笔误，更不是凭空捏造。
 
 ---
 
@@ -42,32 +82,41 @@
 
 ---
 
-## 三、云端侧的实现取舍（已在 14a 落地，请审计侧确认或改判）
+## 三、云端侧的实现取舍（14a 落地，请审计侧确认或改判）
 
 **建 `deleted_product (team_id, source_channel, source_ref, reason, deleted_at, deleted_by)`，
 唯一键与 `uq_product` 严格同形。**
 
-- 图纸表达的**意图完全保留**——墓碑保去重、不让删掉的商品下次采集又回流；
-- 改的只是**键的拼法**，让它指向真实存在的去重键；
+- 这**不是纠正图纸，是按 BR-CAT-002 把「asin」这个简写展开成它的存储表示**；
+- 图纸表达的意图完全保留——墓碑保去重、不让删掉的商品下次采集又回流；
 - 「几十字节 vs 完整商品行」的空间论证同样成立（多一列 `source_channel`，仍是几十字节）。
 
-**请审计侧修订 §7.1 该段正文**，把 `(team_id, asin)` 改为
-`(team_id, source_channel, source_ref)`，并把「仍认得该 ASIN」改为「仍认得该采集来源」。
+**提请审计侧在 §7.1 补一句指向定义**（不是改结论，是防照字面实现）：
+写明此处 `asin` 即 BR-CAT-002 的 `(source_channel, source_ref)`，故墓碑键为
+`(team_id, source_channel, source_ref)`。理由见 §二——**§7.1 是「三级删除规则」的
+落地口径文档，读它的人多半直接照着建表，未必会回溯到 `03-catalog` 或宪法去查
+「asin」的定义**；而这两个文件里的定义恰恰带着「（或未来其他源主键）」这个关键限定。
+
 若审计侧另有判断（例如认为应给 `product` 补一个真正的 `asin` 列并以它为去重键），
-那是更大的改动，**请直接改判，云端侧照办**——本文只是把矛盾摆出来，不代替设计决策。
+那是更大的改动，**请直接改判，云端侧照办**。
 
 ---
 
-## 四、为什么单独写这一条
+## 四、这条为什么值得单独写：**不是图纸错了，是简写在落地文档里失去了限定**
 
-这处与本项目反复出现的一类问题同形：**契约/判据写得像回事，但它指向的东西不存在**。
+`§7.1` 用「asin」是行业通行简写，也**确有定义**（§一两处）。问题不在用词，而在：
 
-- `ERP_ENV` 从未注入而判据全绿；
-- `compliance_block` 零消费点却被面板断言「拦截生效」；
-- 本会话刚更正过的 `O-1..O-6`——一组只活在会话里、从未进仓库的编号。
+- 定义在 `03-catalog.md` 与宪法里，**带着「（或未来其他源主键）」这个限定**；
+- 而 `§7.1` 是**落地口径文档**——读它的人是要照着建表的，**简写到了这里就只剩字面**；
+- 于是「照字面建一个 `asin` 单列」变成一条自然而然的路，而那条路会丢掉 `source_channel`，
+  在多渠道时静默误杀（§二③）。
 
-**共同点是：只要没人去对源码，它看起来永远是对的。** §7.1 这段写于 2026-07-28，
-写得非常具体（连「几十字节 vs 完整商品行」都算了），**恰恰是这种具体感让人不会去核**
-——而 `product` 表压根没有 `asin` 列。
+**这与「契约指向不存在的东西」是两类问题，v1 把它们混为一谈是错的**（见文首更正）：
+前者是无中生有，后者是**有定义但定义没跟着简写一起传到落地现场**。
+后者的修法不是纠错，是**在落地现场把定义补回去**——这也是本文向审计侧提的唯一请求。
 
-故本单从考古起就把每条声称机器复算了一遍再落笔，本文附的三条复算命令即为此。
+> **附：本文自身的方法论教训。** v1 下了「图纸指向不存在的列」这个重结论，而检索面
+> 只覆盖 `00-conventions` 与迁移文件。**结论的分量决定检索面必须多宽**：
+> 提「建议改键」，查代码即可；说「图纸凭空捏造」，就必须穷尽文档。
+> v1 用前者的检索面下了后者的结论——**是 Owner 追问「开发文档中应该有写这些吧」
+> 才促成复核**，否则这份批注会带着一个错误的类比进入审计侧的决策链。
