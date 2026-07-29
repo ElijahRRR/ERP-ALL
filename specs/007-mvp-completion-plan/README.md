@@ -77,8 +77,18 @@ gemini-multi-account / gpt-batch-register / amazon-scraper-v2〔已被 v3 取代
   > （搜索摘要的「已修复」结论无法从一手来源证实，不予采信）；③ `isync/mbsync`、
   > `offlineimap` 极成熟但**至今缺 IMAP ID 扩展**（isync bug #73 未决），**连不上 163**；
   > ④ AI 邮件助手类项目全为 0★ 玩具，无可移植者。
-  > **定案：自建**，连接层用 `imapclient`（562★，BSD，内置 `id_()`），架在现有渠道网关
-  > 骨架（多账号/定时/重试/凭证加密/审计）之上——**不是新建基础设施，是换协议**。
+  > **定案：自建**，连接层用 **`imap_tools`**（834★，Apache-2.0，431 提交、仅 2 个未解
+  > issue；消息/附件对象、搜索构建器、文件夹管理齐备），架在现有渠道网关骨架
+  > （多账号/定时/重试/凭证加密/审计）之上——**不是新建基础设施，是换协议**。
+  > **选 imap_tools 而非 imapclient 的理由（2026-07-29 读源码后修正初判）**：初判以
+  > 「imapclient 内置 `id_()`」为主因，**该权重判断错误**——ID 是**一次性 5 行**成本，
+  > 而 imap_tools 省掉的是**几百行 MIME 解析**（中文邮件的 GBK 信头/base64 主题/附件
+  > 文件名编码是最耗时且最易埋隐蔽 bug 的地方）。
+  > **163 接法（源码实证）**：`imap_tools.login()` 默认 `initial_folder='INBOX'`，
+  > **登录即 select、无插入 ID 的窗口**，照默认写法必栽；须传 `initial_folder=None`
+  > 跳过自动 select（作者提供的正规参数，见 `mailbox.py` 的 `if initial_folder is not
+  > None`），经 `mb.client`（原生 imaplib 实例）发 ID，再 `mb.folder.set('INBOX')`。
+  > **退路**：若实测该形态不通，退回 `imapclient`（内置 `id_()`）。
   > 可借鉴的一手参考：`EthanYoQ/Invoice-Downloader`（136★，**Apache-2.0 可商用**，
   > 生产级 163 IMAP 消费者）；分层思路另参 datawhale「163 邮箱助手实战」（脚本层出
   > 结构化数据／凭证层／提示词层／定时层四层分离，与我方 L0→L3 同构）。
