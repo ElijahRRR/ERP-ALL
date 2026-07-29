@@ -174,33 +174,61 @@ $H = @{ Authorization = "Bearer $($r.access_token)" }
 
 **贴回⑦**：只贴 `TOKEN_OK=True` 这一行。**登录那条命令本身不要贴回。**
 
-### 4.1 三条入参校验（**全在开审之前，零金钱代价**）
+### 4.1 四条入参校验（**全在开审之前，零金钱代价**）
+
+> **v2 修订（2026-07-29，部署机首轮在此停手，两处都是本指令的错，不是产品缺陷）**：
+> **(a) 漏传 `Idempotency-Key`。** 该头是契约 002 的**必填头**，由 FastAPI 在进入业务层
+> 之前校验。首轮三条请求都只带了 `$H`，于是全部停在头校验、返回同一个
+> `{"detail":[{"type":"missing","loc":["header","Idempotency-Key"],...}]}`，
+> **一条也没到达要验的业务判定**。
+> **(b) 第③条的期望值本身写错了。** 空列表**返回 200 + 四个空桶**，不是 422——
+> 这是 `AuditBatchIn` 头注明文承诺、`test_audit_batch.py::test_t20_*` 钉死的行为
+> （不加 `min_length=1` 的理由正是：那会落进 FastAPI 无错误码的默认信封，绕过 002
+> 统一错误信封）。首轮若真带了 key，第③条会因为我的期望值错误而误报缺陷。
+
+**每条用一个独立的 `Idempotency-Key`**。原因：①②在幂等占位**之前**就被拒（键其实没被
+消费），但④会走到幂等层；**若几条共用一个键而载荷不同，会拿到 409 `IDEMPOTENCY_CONFLICT`
+而不是各自的业务错误**，判据就失效了。用独立键把这条干扰彻底排除。
 
 ```powershell
-function Try-Post($body) {
+function Try-Post($body, $key) {
+  $h = $H.Clone()
+  if ($key) { $h['Idempotency-Key'] = $key }
   try {
     $resp = Invoke-WebRequest -Method Post -Uri "http://127.0.0.1/api/v1/products/audit" `
-            -Headers $H -ContentType "application/json" -Body $body -SkipHttpErrorCheck
+            -Headers $h -ContentType "application/json" -Body $body -SkipHttpErrorCheck
     "$($resp.StatusCode) $($resp.Content)"
   } catch { "EXCEPTION: $_" }
 }
 
-# ① 大小写笔误的层级（本单修掉的合规闸绕过）
-Try-Post '{"product_ids":[1],"levels":["L0"]}'
+# ① 大小写笔误的层级（本单修掉的合规闸绕过）——本步最要紧的一条
+Try-Post '{"product_ids":[1],"levels":["L0"]}'  'verify-pr43-case1'
 # ② l4 未开放
-Try-Post '{"product_ids":[1],"levels":["l4"]}'
-# ③ 空列表
-Try-Post '{"product_ids":[]}'
+Try-Post '{"product_ids":[1],"levels":["l4"]}'  'verify-pr43-case2'
+# ③ 空列表——**期望 200，不是 4xx**
+Try-Post '{"product_ids":[]}'                   'verify-pr43-case3'
+# ④ 缺 Idempotency-Key（首轮意外撞出来的行为，现在把它钉成判据）
+Try-Post '{"product_ids":[1]}'                  $null
 ```
 
-**贴回⑧**：三行输出。
-**判据**（三条都必须是 4xx，且错误码对得上）：
+**贴回⑧**：四行输出。
+**判据**：
 
-| 用例 | 期望状态 | 期望 `code` |
+| 用例 | 期望状态 | 期望响应 |
 |---|---|---|
-| `levels:["L0"]` | 422 | `AUDIT_LEVELS_INVALID` |
-| `levels:["l4"]` | 422 | `AUDIT_L4_DISABLED` |
-| `product_ids:[]` | 422 | （入参校验类错误即可） |
+| ① `levels:["L0"]` | 422 | 含 `code` = `AUDIT_LEVELS_INVALID` |
+| ② `levels:["l4"]` | 422 | 含 `code` = `AUDIT_L4_DISABLED` |
+| ③ `product_ids:[]` | **200** | `audited/skipped/failed/remaining` 四个桶全为空数组 |
+| ④ 无 `Idempotency-Key` | 422 | `{"detail":[{"type":"missing","loc":["header","Idempotency-Key"],...}]}` |
+
+> **①这条是本单最要紧的一条判据**。修之前，`levels=["L0"]` 会让 L0/L2/L3 **一个分支都不命中**，
+> `verdict` 保持初值 `pass` 直接落库——产品当场变 `audit_passed`、零命中、cost=0，随即可分配上架，
+> **整条合规闸被一个大小写笔误绕过**。现在必须是 422。
+>
+> **④的信封与①②不同是已知欠账，不是本轮缺陷**：①②走 002 统一信封（有 `code`），
+> ④走 FastAPI 默认的 `{"detail": [...]}`（无 `code`）——全仓没有 `RequestValidationError`
+> handler，这是跨端点的既有欠账（已登记 TD-6），本单不修。**判④只看状态码与 `loc` 指向
+> 那个头，不要求它有 `code`。**
 
 > **①这条是本单最要紧的一条判据**。修之前，`levels=["L0"]` 会让 L0/L2/L3 **一个分支都不命中**，
 > `verdict` 保持初值 `pass` 直接落库——产品当场变 `audit_passed`、零命中、cost=0，随即可分配上架，
