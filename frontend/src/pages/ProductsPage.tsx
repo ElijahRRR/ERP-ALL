@@ -1,4 +1,16 @@
-import { Button, Form, Modal, Select, Space, Table, Tag, Typography, message } from 'antd'
+import {
+  Button,
+  Checkbox,
+  Form,
+  Modal,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+  message,
+} from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
 import { ApiError, api, type AuditResult, type PageOf } from '@/api/client'
@@ -20,6 +32,9 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<string | undefined>()
+  // 00-conventions §7.1 的「显示已停用」开关。产品域的「已停用/已归档」= `retired`
+  // （本页文案「已下架」）。默认关 = 默认折叠。
+  const [includeRetired, setIncludeRetired] = useState(false)
   const [auditDetail, setAuditDetail] = useState<AuditRunDetail | null>(null)
   const [allocate, setAllocate] = useState<{ ids: number[]; label: string } | null>(null)
   const [batch, setBatch] = useState<{ ids: number[]; excluded: number } | null>(null)
@@ -31,14 +46,17 @@ export default function ProductsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const qs = status ? `&status=${status}` : ''
+      // 后端语义：显式 status 时 include_retired 不生效（按状态精确筛选优先）。
+      // 故这里也只在无 status 时才发该参数——发一个后端会忽略的参数，等于在请求里
+      // 留一句假话，将来查日志的人会据此推断出错误的行为。
+      const qs = status ? `&status=${status}` : includeRetired ? '&include_retired=true' : ''
       setData(await api.get<PageOf<Product>>(`/products?page=${page}&size=20${qs}`))
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [page, status])
+  }, [page, status, includeRetired])
 
   useEffect(() => {
     void load()
@@ -48,7 +66,7 @@ export default function ProductsPage() {
   // 状态行，「有效数」和确认文案就会按不完整的信息算，用户会对着一个算错的数字掏钱。
   useEffect(() => {
     setSelected([])
-  }, [page, status])
+  }, [page, status, includeRetired])
 
   // 勾选框现在对两种批量动作放行（见下方 rowSelection），所以**两个批量按钮都必须
   // 各自算自己的有效数**：否则拿了「送审合格但不可分配」的行去点分配，按钮上的数字
@@ -144,6 +162,21 @@ export default function ProductsPage() {
           }}
           options={Object.keys(STATUS_COLOR).map((s) => ({ value: s, label: STATUS_LABEL[s] ?? s }))}
         />
+        {/* 开关在选了状态时**禁用而非静默失效**：后端此时忽略 include_retired，
+            留一个点得动却不起作用的勾，正是本项目反复栽跟头的那类「看起来配着、
+            实际没生效」。禁用 + 说明理由，用户至少知道该去清空状态筛选。 */}
+        <Tooltip title={status ? '已按状态精确筛选，此时不再折叠——清空状态筛选后可用' : ''}>
+          <Checkbox
+            disabled={!!status}
+            checked={includeRetired}
+            onChange={(e) => {
+              setPage(1)
+              setIncludeRetired(e.target.checked)
+            }}
+          >
+            显示已下架
+          </Checkbox>
+        </Tooltip>
         <Button onClick={() => void load()}>刷新</Button>
         {canAudit && (
           <Button

@@ -1512,6 +1512,8 @@ export interface paths {
                     brand?: string;
                     /** @description 标题/ASIN/master_sku 搜索 */
                     q?: string;
+                    /** @description 是否包含已下架（retired）产品。默认 false 即折叠（00-conventions §7.1： 列表默认隐藏已停用/已归档项）。**显式传 status 时本参数不生效**—— 按状态精确筛选优先，否则选「已下架」会得到空列表。 */
+                    include_retired?: boolean;
                 };
                 header?: never;
                 path?: never;

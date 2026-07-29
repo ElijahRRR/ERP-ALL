@@ -35,6 +35,10 @@ async def list_products(
     user: Annotated[CurrentUser, Depends(require_permission("catalog.product_read"))],
     session: Annotated[AsyncSession, Depends(get_session)],
     status: str | None = Query(default=None),
+    include_retired: bool = Query(
+        default=False,
+        description="是否包含已下架（retired）产品；默认折叠。显式传 status 时本参数不生效。",
+    ),
     q: str | None = Query(default=None, max_length=100),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
@@ -42,8 +46,16 @@ async def list_products(
     where = "WHERE team_id = :team"
     params: dict[str, Any] = {"team": user.team_id}
     if status:
+        # **显式筛选优先，折叠不叠加。** 否则运营在状态下拉里选「已下架」会得到空列表——
+        # 一个用户明确要求看某状态、系统却按默认把它过滤掉的行为，看起来就是功能坏了。
+        # 故 `status` 与 `include_retired` 是互斥的两条路，不是两个 AND 条件（§7.1 折叠
+        # 的语义是「默认视图不堆垃圾」，不是「retired 不可见」）。
         where += " AND status = :st"
         params["st"] = status
+    elif not include_retired:
+        # 00-conventions §7.1：列表默认隐藏已停用/已归档项 + 「显示已停用」开关。
+        # 产品域的「已归档」就是 `retired`（0012 状态机合法值，前端文案「已下架」）。
+        where += " AND status <> 'retired'"
     if q:
         where += " AND (title ILIKE :q OR source_ref ILIKE :q OR master_sku ILIKE :q)"
         params["q"] = f"%{q}%"
