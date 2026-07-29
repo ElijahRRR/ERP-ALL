@@ -1028,5 +1028,50 @@
   "acceptance": "①openapi 中 Product 关键字段 required 且含前端在用的三字段；②GET /audit-runs/{runId} 有完整响应 schema；③pages/products/types.ts 删除，四处改用 Schemas[...] codegen 类型且 tsc 全绿；④008§2「零手写响应类型」在产品域达成",
   "finding": "【2026-07-28 低频体检发现】R2-09 增量3a 新增 pages/products/types.ts(70行,四个手写 interface)。核实非偷懒：契约侧 Product 全字段可选(id?)当行类型用会抹掉必填语义、且缺 latest_audit_run_id/price_snapshot/updated_at 三个本页在用字段；GET /audit-runs/{runId} 在契约里只有 200 描述无任何 schema，AuditRunDetail 无从生成。开发侧已在文件头完整交底并声明新增的批量送审四形状全部来自 codegen(新代码零手写已守住)。此债此前只活在代码注释里、无工单承接，故登记",
   "last_checked_at": "2026-07-28"
+ },
+ {
+  "id": "R2-15",
+  "priority": "P0",
+  "dimension": "product",
+  "status": "todo",
+  "check": "SKU 内外分离(D-Q72,修订D1)：listing.channel_sku 在 source_channel='amazon' 时取 ASIN(同店冲突加 -N 后缀,唯一约束仍为 (store_id,channel_sku) 故跨店同 ASIN 不冲突)；master_sku 保留为内部身份不再默认发渠道；master_sku 生成式由 'M'||lpad(...,7,'0') 改 'M'||to_char(...,'FM000000000') 修截断撞号缺陷",
+  "evidence": [
+   "specs/000-founding/DECISION-FORM.md",
+   "specs/001-domain-model/03-catalog.md",
+   "specs/001-domain-model/06-listing-pricing.md"
+  ],
+  "gate": "无闸门；改动小但影响此后每一个新上架，且截断缺陷属定时炸弹，建议插在下一个上架相关增量前做掉",
+  "acceptance": "①新上架产品的 channel_sku 等于其 ASIN，Walmart 侧与 99% 存量编码统一；②同店重复上架同 ASIN 自动取 -2/-3 后缀且不撞唯一约束；③跨店同 ASIN 各自上架互不冲突；④master_sku 生成在序号超 999,999,999 时**自动变长不截断**（测试直接断言，不得只测小序号）；⑤既有 listing 的 channel_sku 一律不动(Walmart SKU 不可改)；⑥sku_mapping 回连订单/结算在两种编码下均可用",
+  "finding": "【Owner 2026-07-29 指出 SKU 长度不足 + 在线产品 99% 已用 ASIN】审计核实两点：①**截断撞号缺陷**——现生成式 'M'||lpad(nextval::text,7,'0')，PostgreSQL lpad 在串长超出时从右截断，序号达 1000 万时 lpad('10000000',7,'0')='1000000' 与第 100 万号相同，master_sku 唯一约束报错、产品入库整体停摆(硬停非劣化)；②**channel_sku 本就是独立列**(listing.channel_sku)，现仅由 listing/service.py:393 一行 \"channel_sku\": product[\"master_sku\"] 绑死，拆开成本极小。防关联论据因存量 99% 已暴露而基本作废；保留 master_sku 是因 Walmart SKU 不可改，内外绑死则单向门锁住整个身份体系",
+  "last_checked_at": "2026-07-29"
+ },
+ {
+  "id": "FX-0729",
+  "priority": "P2",
+  "dimension": "product",
+  "status": "todo",
+  "check": "代理管理页零写操作：ProxiesPage 只读，无法新增/编辑/停用代理，只能靠直改库",
+  "evidence": [
+   "frontend/src/pages/ProxiesPage.tsx"
+  ],
+  "gate": "无闸门；与 R2-14 的 14c(列表折叠)同域，可捎带",
+  "acceptance": "①代理可在页面新增/编辑/停用；②停用后不再被新绑定选中，既有绑定给出显式提示；③写操作走权限点门控并写 audit_log",
+  "finding": "【审计实测 2026-07-29，Owner 盘点基础功能时发现】frontend/src/pages/ProxiesPage.tsx 的 api.patch/put/delete 计数为 0——纯只读页。代理是店铺与(D-Q71 后)邮箱轮询的出口依赖，无维护入口意味着换代理只能直改库",
+  "last_checked_at": "2026-07-29"
+ },
+ {
+  "id": "RS-12",
+  "priority": "P1",
+  "dimension": "architecture",
+  "status": "todo",
+  "check": "AI 只读接入协议(Owner 2026-07-29「中途我就可能让 ai 来看数据，要预留好接口和协议」)：AI 专用最小只读角色模板 + 调用主体可区分(审计日志能把 AI 与人分开) + 独立限流，基于既有 REST/OpenAPI 契约与权限点体系，不新建通道",
+  "evidence": [
+   "specs/002-api-contract/openapi-v0.yaml",
+   "specs/001-domain-model/01-identity.md"
+  ],
+  "gate": "无闸门；Owner 真正让 AI 接数据之前完成即可",
+  "acceptance": "①存在 AI 只读角色模板，其权限点集合为各域 *_read 的最小子集，写权限一个不含(越权测试必败)；②AI 发起的调用在 audit_log 中 actor 可辨识，不与人工混淆；③对该角色独立限流，超限拒绝而非拖垮库；④凭证可单独吊销不影响其他账号",
+  "finding": "【现状核实 2026-07-29】能力面其实已具备——全部业务能力都在 REST API 之后，有完整 OpenAPI 契约(002)与权限点系统，给受限角色发 token 即可读数。缺的是三样配套：无专为 AI 设的最小只读角色模板(现权限点按域分读写)、审计日志无法区分调用主体是 AI 还是人、无针对性限流(AI 循环可能拖垮库)",
+  "last_checked_at": "2026-07-29"
  }
 ]

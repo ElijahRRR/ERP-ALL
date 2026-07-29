@@ -12,7 +12,7 @@
 | store_id | BIGINT | NOT NULL REFERENCES store | |
 | product_id | BIGINT | NOT NULL REFERENCES product | |
 | offer_mode | TEXT | NOT NULL CHECK IN (build, match) | 双模式共用本表与生命周期机器（D-Q3） |
-| channel_sku | TEXT | NOT NULL | 新品=master_sku（D1）；重拉存量=原 SKU |
+| channel_sku | TEXT | NOT NULL | **渠道编码（D-Q72 修订，2026-07-29）**：`source_channel='amazon'` 时 **= ASIN**；同店冲突（如下架后重上）加后缀 `ASIN-2`/`ASIN-3`（沿用旧系统 BR-CAT-001，当年确因撞号才加）；非 Amazon 货源（未来 1688 等）另给规则、**不改表**。重拉存量=原 SKU。⚠️ 原「新品=master_sku」作废——依据：Owner 2026-07-29「在线产品 99% 都是直接用的亚马逊 ASIN」，存量既已如此，新品改用 M 号既无法回溯保护、又造成两套编码并存。**内部身份仍是 `master_sku`，二者分离** |
 | gtin | TEXT | NULL | build 必填（服务层校验）；match 跟卖无需自有 GTIN |
 | status | TEXT | NOT NULL DEFAULT 'draft' CHECK IN (draft, queued, submitted, processing, published, live, degraded, delist_pending, delisted, failed, retired) | 见状态机 |
 | error_code | TEXT | NULL | 终态 failed / degraded 的当前错误 → listing_error_catalog |

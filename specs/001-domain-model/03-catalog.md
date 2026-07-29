@@ -8,7 +8,7 @@
 | 列 | 类型 | 约束/默认 | 说明 |
 |---|---|---|---|
 | id | BIGINT | PK identity | |
-| master_sku | TEXT | NOT NULL UNIQUE | `M{7位}`，master_sku_seq 生成，终身不变（D1） |
+| master_sku | TEXT | NOT NULL UNIQUE | **内部身份，终身不变**（D1；**D-Q72 修订：不再默认发往渠道**，渠道编码见 §06 `listing.channel_sku`）。生成式 **`'M' \|\| to_char(nextval('app.master_sku_seq'), 'FM000000000')`**（9 位零填充）。⚠️ **原 `lpad(...,7,'0')` 有截断缺陷**：PostgreSQL `lpad` 在串长超出时**从右截断**，序号达 1000 万时 `lpad('10000000',7,'0')='1000000'` 与第 100 万号撞号 → 唯一约束报错、产品入库整体停摆；`to_char` 超出时自动变长而非截断，故改用之 |
 | team_id | BIGINT | NOT NULL | |
 | source_channel | TEXT | NOT NULL DEFAULT 'amazon' | 采集源（多源扩展点，D-Q4） |
 | source_ref | TEXT | NOT NULL | ASIN（或未来其他源主键） |
@@ -212,7 +212,7 @@ required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤�
 | store_id | BIGINT | NOT NULL REFERENCES store | |
 | channel_sku | TEXT | NOT NULL | 渠道侧 SKU |
 | product_id | BIGINT | NULL REFERENCES product | 可空：重拉的历史在线品可能未入产品库 |
-| origin | TEXT | NOT NULL CHECK IN (legacy, new) | legacy=存量 SKU=ASIN（D1：只映射不迁移）；new=channel_sku=master_sku |
+| origin | TEXT | NOT NULL CHECK IN (legacy, new) | legacy=存量（重拉在线品）；new=本系统上架。**D-Q72 后渠道侧统一为 ASIN 系**（`source_channel='amazon'` 时 `channel_sku`=ASIN，同店冲突加 `-N` 后缀），二者不再是两套编码体系，本列仅表来源不表编码规则 |
 | +公共列（team_id 经 store） | | | |
 
 约束：`uq_sku_mapping (store_id, channel_sku)`。
