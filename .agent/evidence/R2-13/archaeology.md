@@ -159,9 +159,20 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 | 内容脚本 | amazon 订单页 | manifest 的 `content_scripts.matches` |
 | 扩展弹窗页 | `chrome-extension://<id>/popup.html` | `init()` 里的 `isAmazonOrderPage()`——不匹配就不建 UI，`getCookiesAsJson` 走不到 |
 
-**所以 amazon-only 这个性质靠的是两个不同上下文里的两套调用方约束，而 `background.js`
-里一套都没有。** 这让 ② 的结论更硬：不是「有一个调用方恰好传了安全的值」，而是
-「有两个各自独立的调用方约束，改任何一个都会破，而被调方对此一无所知」。
+**还有第三道，独立于上面两道**（PR #47 审查侧第三轮补，已复核）：唯一调用
+`getCookiesAsJson()` 的 `sendBuyerCookie()` **自己开头就早退**——
+
+```js
+const country = getCurrentCountryCode();   // ← 由 detectAmazonSite() 按 hostname 推
+if (!country) { ...; return }              // ← 非 amazon 域返回 null，走不到取 cookie
+```
+
+即使前两道被绕过，这一道还在。另核 popup.js 里 `onMessage` **0 处**——没有消息驱动的
+入口能从外部触发上述处理函数。
+
+**所以 amazon-only 这个性质靠的是两个上下文里的三道各自独立的调用方约束，而
+`background.js` 里一道都没有。** 这让 ② 的结论更硬：不是「有一个调用方恰好传了安全的
+值」，而是「有多道各自独立的调用方约束，改任何一道都会破，而被调方对此一无所知」。
 
 ---
 
@@ -286,12 +297,13 @@ ERP 不可达时插件 **fail-closed 不自行采购**。
 |---|---|---|
 | `headers` 全文只 3 处，第 3 处即唯一传 headers 的调用 | `grep -o "headers" <插件仓>/js/popup.js \| wc -l`，再看每处上下文 | 3；第 3 处在 `purchaseOrderFinishUpdate` |
 | 传了 headers 则 base 被整体替换 | 用 `{headers:{...base,...o.headers},...o}` 跑一次 node | 传 headers 时 base 键全丢 |
-| 四权限里三个零调用 | 对 4 个 JS 各数 `chrome.storage` / `chrome.tabs` / `chrome.scripting` / `chrome.cookies` | 前三个 0；`cookies` 仅 `background.js` 1 处 |
+| 四权限里三个零调用 | 对**仓里全部 5 个** JS 各数 `chrome.storage` / `chrome.tabs` / `chrome.scripting` / `chrome.cookies` | 前三个 0；`cookies` 仅 `background.js` 1 处 |
 | 插件自有 JS 就是两个文件 | `cat <插件仓>/manifest.json` 看 `content_scripts.js` 与 `background.service_worker` | `js/popup.js` + `js/background.js`（其余为 jquery/layer 库） |
 | 仓里共 5 个 JS，第 5 个未被 manifest 引用 | 列仓内 `*.js` 并与 manifest + `popup.html` 的加载项比对 | 多出 `layer/mobile/layer.js`；其全文无 `chrome.*` |
 | 状态存 `localStorage` 而非 `chrome.storage` | 各数一次 `localStorage` / `chrome.storage` | 4 / 0 |
 | `cookies` 的 url 来自调用方所在页 | 读 `getCookiesAsJson()` 与 `background.js` 的监听器 | `window.location.href.split("?")[0]`；监听器不校验 `sender` |
-| `popup.js` 有两个执行上下文 | manifest 的 `content_scripts.js` + `popup.html` 的 `<script src>` | 两处都指向 `js/popup.js`；弹窗页由 `isAmazonOrderPage()` 挡住 |
+| `popup.js` 有两个执行上下文 | manifest 的 `content_scripts.js` + `popup.html` 的 `<script src>` | 两处都指向 `js/popup.js` |
+| 非 amazon 上下文有**三道**独立约束 | ①`matches` ②`init()` 的 `isAmazonOrderPage()` ③`sendBuyerCookie()` 开头的 `getCurrentCountryCode()` 早退 | 三道各自成立；另 popup.js 内 `onMessage` 为 0，无外部消息入口 |
 | `daily_cap` 两个存储位置 | `grep -rn "daily_cap" specs/` | `07:144` 建列、`09:208` 护栏键，措辞同义 |
 
 > ⚠️ **复算这几条时不要用 GitHub 代码搜索**：它对本仓返回 `incomplete_results: true`，
