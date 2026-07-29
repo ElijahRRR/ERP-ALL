@@ -392,9 +392,10 @@
    "backend/src/erp/compliance/assertion.py",
    "backend/tests/db/test_blacklist_assertion.py"
   ],
-  "acceptance": "在blacklist_brand真实跑通：同品牌manual+TRO+trademark三源断言；撤销一源不误删仍有效证据的品牌；人工裁决覆盖+完整回滚；canonical可由assertion全量重建且一致（评审R2-03硬验收：不得只交付空框架。注：第四条目前仅 pytest 内成立，无生产入口）",
+  "acceptance": "在blacklist_brand真实跑通：同品牌manual+TRO+trademark三源断言；撤销一源不误删仍有效证据的品牌；人工裁决覆盖+完整回滚；canonical可由assertion全量重建且一致（评审R2-03硬验收：不得只交付空框架。注：第四条目前仅 pytest 内成立，无生产入口）；⑤rebuild_canonical 有生产入口(CLI)且运维态可执行：真库跑一次全量重建，结果与现存 canonical 逐行相等",
   "finding": "B5① 四条硬验收（三源并存/撤销一源/人工裁决压自动源可回滚/canonical 全量重建幂等）已在 blacklist_brand 测试跑通（非空框架）；存量回填+导入改造完成（增量1 已并 main，真机 0035 回填四域全等）。增量2：TRO 源真实接入（tro 导入域→tro_sync 断言→L2 命中复现测试）+ revoke_by_source_ref 批撤通道。增量3（USPTO 链）+ 增量4/4b（全店对账+报错回收+end_date_renewal 通道）均已并 main 真机验证。**增量5（合规中心页，收口验收⑤）完码 CI 绿**：契约新增 Compliance 端点组（GET /blacklist canonical+/blacklist/trace 断言追溯+/blacklist/pending 候选闸+POST assertions 登记/decide 裁决/revoke 撤销+GET /trademarks trgm+nice+GET /tro-cases+GET /import-jobs/{id}/error-report）；修 import-jobs 权限码契约 catalog.import_*→compliance.import_*+归 Compliance tag（此前契约误标，与路由/0010 种子不符，一并归正）；CompliancePage 四 Tab（黑名单账本/商标库/TRO/导入作业）照 ListingsPage 骨架+路由/菜单/权限三处接线+对账可见性（导入报错报告 Drawer 透出 verify.sample_errors）；schema.d.ts codegen 重生成（响应类型全 codegen，零手写 interface）。测试 test_compliance_api 9 项（断言登记+追溯+allow 压 block+候选裁决+撤销余源仍拉黑+trgm/nice/live+TRO 过滤+报错报告+403 门控）。CI：pytest 501 passed+ruff/format/mypy strict 干净+前端 eslint/tsc/vite build 绿。**上传 HTTP 端点按 router CLI-only 铁律不实现（大文件不经 HTTP、全局数据需超管 system_tx）——人工单主体走 manual 断言写入，契约移除幻影 POST 声明**。**增量5 PR #35 已 squash 合并 main 73b8c19（2026-07-25 Owner 授权），部署机分支验证两段全 PASS**（黑名单账本三源并存+撤销恢复/商标库 trgm+nice 检索/导入报错 Drawer 逐块核对/无权限账号 403 门控/「按主体追溯」撤销闭环）。至此 R2-12 增量 1-5 全部并入 main，验收②③④⑤ 均已真机复现。待：R2-12 整单收账 = 验收① USPTO 三日连测——07-25 第 1 日 FAIL（.bat 为 LF-only 致密钥文件变量从未赋值；日志「密钥缺失」是假象），修复链见 R2-12 条目，**窗口顺延 07-26/27/28**，三日齐绿后 RS-04D 与 R2-12 一并关账（收尾 PR #36 已合入 main `5b37ded`，只差第 2、3 日 A 段）。**第 1 日（07-26）PASS**（无数据日：A 段 Last Run 18:00:01 / Result=0 / Next Run 07-27 18:00；429 限流窗内无新文件；完整性全过、ETL 错误 0；USPTO 14,216,076 / ERP 4,475,105 / 双侧 newest 2026-07-25 / revision 204 / lag_days=1）。**遗留：rebuild_canonical 无任何生产入口（CLI/端点/beat 皆无），故第四条硬验收「canonical 可全量重建」目前只在 pytest 内成立**，运维态无法执行——待 Owner 定是否补 CLI 入口。",
-  "last_checked_at": "2026-07-26"
+  "last_checked_at": "2026-07-29",
+  "gate": "✅ Owner 2026-07-29 裁定：补 rebuild_canonical 生产入口(CLI)——第四条硬验收此前只在 pytest 内成立,生产无入口"
  },
  {
   "id": "RS-05",
@@ -960,7 +961,7 @@
  },
  {
   "id": "R2-14",
-  "priority": "P1",
+  "priority": "P0",
   "dimension": "product",
   "status": "todo",
   "check": "生命周期出口（Owner 2026-07-28 指出「只有进没有出」）：硬删除三级规则(无历史直删/有历史删实体留墓碑/审计财务订单绝不删)+deleted_product 与 deleted_principal 两张墓碑表+列表默认折叠已停用项+删除权限点与二次确认与 audit_log 留痕。口径见 00-conventions §7.1，分片见 007",
@@ -968,10 +969,10 @@
    "specs/001-domain-model/00-conventions.md",
    "specs/007-mvp-completion-plan/README.md"
   ],
-  "gate": "排期待 Owner 定：建议 14a(产品删除)+14c(列表折叠)进 MVP，14b(主体删除)+14d(权限留痕)紧随",
+  "gate": "✅ Owner 2026-07-29 裁定：14a(产品删除+墓碑)+14c(列表折叠)进 MVP；14b(主体删除)+14d(权限留痕)紧随",
   "acceptance": "①删从未上架产品→物理行消失、无墓碑、列表不再出现；②删上过架产品→实体消失但重采同 ASIN 不再入库(墓碑保去重)；③删操作过的用户→其 audit_log 仍在且操作人显示「XX（已删除）」而非裸 id；④删除动作在 audit_log 可查(谁/何时/删了什么/before 快照)；⑤订单、审计三族、财务表在任何删除路径下行数不变；⑥列表默认不显示已停用项且开关可切",
   "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类",
-  "last_checked_at": "2026-07-28"
+  "last_checked_at": "2026-07-29"
  },
  {
   "id": "FX-0728",
