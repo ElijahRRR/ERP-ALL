@@ -198,15 +198,33 @@ docker compose exec frontend sh -c "ls /usr/share/nginx/html/assets/index-*.js"
 > ```
 
 ```powershell
-docker compose exec db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "
-\d app.deleted_product
+docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
+SELECT 'columns=' || string_agg(column_name, ',' ORDER BY ordinal_position)
+FROM information_schema.columns WHERE table_schema='app' AND table_name='deleted_product';
+SELECT 'uq=' || coalesce(max(pg_get_constraintdef(oid)), 'MISSING')
+FROM pg_constraint WHERE conname = 'uq_deleted_product';
+SELECT 'policies=' || coalesce(string_agg(policyname || ':' || cmd, ',' ORDER BY policyname), 'NONE')
+FROM pg_policies WHERE schemaname='app' AND tablename='deleted_product';
 "
 ```
 
-**判据（逐条看）**：
-- 列齐：`id / team_id / source_channel / source_ref / product_id / master_sku / reason / deleted_at / deleted_by`
-- 唯一约束 `uq_deleted_product` 是 **`(team_id, source_channel, source_ref)`**
-- Policies 有且只有 `deleted_product_sel`(SELECT) 与 `deleted_product_ins`(INSERT)
+**判据（逐字比）**：
+
+| 输出 | 期望 |
+|---|---|
+| `columns=` | `id,team_id,source_channel,source_ref,product_id,master_sku,reason,deleted_at,deleted_by` |
+| `uq=` | `UNIQUE (team_id, source_channel, source_ref)` |
+| `policies=` | `deleted_product_ins:INSERT,deleted_product_sel:SELECT`（**有且只有这两条**） |
+
+> 〔2026-07-29 修订，起因是部署机在此停机第五次〕
+> v1 写的是带前导换行的 `psql -c "\n\d app.deleted_product\n"`。**`psql -c` 只在整个载荷
+> 恰好就是一条元命令时才当元命令执行**；一旦带上换行（或与 SQL 混排），整段按 SQL 发送，
+> 于是 `syntax error at or near "\"`。
+>
+> **但正确的修法不是改成单行 `-c '\d ...'`**——`\d` 的输出是给人看的表格，
+> 格式随 psql 版本变，本来就不该拿来当判据。已换成三条 catalog 查询，
+> **输出是可逐字比对的单行字符串**，与本单第③步「查状态不查日志」是同一条道理：
+> **判据要落在能机器比对的事实上，不落在给人看的呈现上。**
 
 ```powershell
 docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
