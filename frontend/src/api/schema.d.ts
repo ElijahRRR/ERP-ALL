@@ -1571,7 +1571,41 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * 硬删除产品（00-conventions §7.1 三级规则；R2-14 14a）
+         * @description ①无历史（无 listing）→ 物理删除、**不写墓碑**；②有历史 → 显式清理引用后物理删除 并写 `deleted_product` 墓碑，此后重新采集同 `(source_channel, source_ref)` 不再入库； ③审计三族 / 财务表 / 订单与售后**一行不删**。
+         *
+         *     **不要求 `Idempotency-Key`**：002 §6 的幂等头针对批量提交类与渠道写路径，本端点 两者都不是；重放语义天然清楚（第二次回 404，而产品确已删除）。
+         */
+        delete: {
+            parameters: {
+                query: {
+                    /** @description 删除原因，写入墓碑与 audit_log */
+                    reason: string;
+                };
+                header?: never;
+                path: {
+                    productId: components["parameters"]["productId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 已删除。`level` ∈ {no_history, with_history} 对应 §7.1 的①/②级； `tombstoned` 为 true 时该商品重采不会再入库。 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProductDeleteResult"];
+                    };
+                };
+                /** @description PRODUCT_NOT_FOUND——不存在或不属于当前团队（**两者响应不可区分**，防资源存在性探测） */
+                404: components["responses"]["Error"];
+                /** @description PRODUCT_DELETE_LISTING_ACTIVE（仍有在架/在途上架记录，须先下架）/ PRODUCT_DELETE_TASK_RUNNING（维护任务执行中）/ PRODUCT_DELETE_LISTING_UNCLASSIFIED（listing 状态未分类，fail-closed） */
+                409: components["responses"]["Error"];
+            };
+        };
         options?: never;
         head?: never;
         /** 编辑产品（title/attrs/images；不可改 master_sku/source_ref） */
@@ -5266,6 +5300,21 @@ export interface components {
         };
         ProductPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["Product"][];
+        };
+        ProductDeleteResult: {
+            product_id: number;
+            master_sku: string;
+            /**
+             * @description §7.1 的①/②级。no_history=从未上架，未留墓碑（重采仍会入库）； with_history=上过架，已留墓碑（重采不再入库）。**前端必须如实区分播报**—— 一句笼统的「删除成功」会让运营以为随时能采回来。
+             * @enum {string}
+             */
+            level: "no_history" | "with_history";
+            /** @description 是否写了 deleted_product 墓碑（== level 为 with_history） */
+            tombstoned: boolean;
+            listings_deleted: number;
+            /** @description 归还回池的 held GTIN 数（used 永不回收） */
+            gtins_released?: number;
+            maintenance_tasks_skipped?: number;
         };
         VariantGroup: {
             id?: number;

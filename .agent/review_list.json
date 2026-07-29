@@ -1003,7 +1003,7 @@
   "id": "R2-14",
   "priority": "P0",
   "dimension": "product",
-  "status": "todo",
+  "status": "in_progress",
   "check": "生命周期出口（Owner 2026-07-28 指出「只有进没有出」）：硬删除三级规则(无历史直删/有历史删实体留墓碑/审计财务订单绝不删)+deleted_product 与 deleted_principal 两张墓碑表+列表默认折叠已停用项+删除权限点与二次确认与 audit_log 留痕。口径见 00-conventions §7.1，分片见 007",
   "evidence": [
    "specs/001-domain-model/00-conventions.md",
@@ -1011,8 +1011,15 @@
   ],
   "gate": "✅ Owner 2026-07-29 裁定：14a(产品删除+墓碑)+14c(列表折叠)进 MVP；14b(主体删除)+14d(权限留痕)紧随",
   "acceptance": "①删从未上架产品→物理行消失、无墓碑、列表不再出现；②删上过架产品→实体消失但重采同 ASIN 不再入库(墓碑保去重)；③删操作过的用户→其 audit_log 仍在且操作人显示「XX（已删除）」而非裸 id；④删除动作在 audit_log 可查(谁/何时/删了什么/before 快照)；⑤订单、审计三族、财务表在任何删除路径下行数不变；⑥列表默认不显示已停用项且开关可切",
-  "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类",
-  "last_checked_at": "2026-07-29"
+  "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类｜【2026-07-29 实现期补充实测，考古漏查的三条】① listing/listing_spec 对 erp_app **无 DELETE 授权**（0009:314），已由 0041 补授；② **无任何外键指向 app.listing(id)**——删 listing 不会被挡，但会在 listing_state_history/feed_item/maintenance_task/price_history/order_line 留悬挂 listing_id；③ gtin_pool.held_listing_id 仅 held 态可回收，删 listing 不归还即**池静默泄漏**。另：audit_run/audit_hit 的 product_id 是裸 bigint 无外键（③级得以成立的原因），但删完后审计页拿到的是解析不回任何东西的 id——故墓碑比图纸多存 product_id 与 master_sku，请审计侧确认。",
+  "last_checked_at": "2026-07-29",
+  "updates": [
+   {
+    "date": "2026-07-29",
+    "kind": "landed",
+    "text": "【14a+14c 落地，闸序中】增量 14c-1（产品列表默认折叠 retired + 「显示已下架」开关，显式 status 筛选优先不叠 AND）/ 14a-1（迁移 0041：deleted_product 墓碑表，键按 BR-CAT-002 展开为 (team_id, source_channel, source_ref) 与 uq_product 同形；catalog.product_delete 权限点授团管；**补授 listing/listing_spec 的 DELETE**——0009:314 只授了 SELECT/INSERT/UPDATE，不补则②级在图纸要它生效的场景下 100% 失败）/ 14a-2（删除服务 + 仓内**第一个 DELETE 端点**，三级判定、显式按序清理引用、GTIN held 归还 used 不回收、维护任务作废、audit_log 精简 before 快照）/ 14a-3（入库点 product_upsert 查墓碑 = 验收②承重件；create_job 预筛仅为优化，两处共用 _deleted_refs 且判据分开写）/ 14a-4（判据 16 条 + 前端删除入口二次确认 + 本条回写）。**已覆盖验收①②④⑤⑥；③（用户删除+deleted_principal）属 14b 不在本轮。**考古与批注见 .agent/evidence/R2-14/。"
+   }
+  ]
  },
  {
   "id": "FX-0728",

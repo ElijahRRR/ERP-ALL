@@ -36,14 +36,24 @@ _TEST_GTINS = ("210000000001", "210000000002")
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _purge_residue(migrated_db: str) -> None:
-    """开跑前清掉本模块上一轮的残留。
+def _purge_residue(migrated_db: str) -> Any:
+    """本模块自造数据的清场——**跑前跑后各一次**。
 
-    **必须先于 `seeded` 跑**（autouse 模块级夹具的既定次序）：`seeded` 里有
+    跑前：`seeded`（与 `test_audit_api` / `test_audit_batch` 共用同一个团队）里有
     `DELETE FROM app.product WHERE team_id = ...`，而本模块会给产品挂 listing——
     上一轮中途失败留下的 listing 会让那句 DELETE 撞外键，于是**整个模块在 setup
     阶段全红，报的还是一个与被测逻辑毫无关系的外键错**，排查方向全被带偏。
+
+    跑后：本模块**正常跑完也会故意留下**在架 listing——`test_live_listing_blocks_delete`
+    断言的就是「拒绝时整体回滚、listing 还在」。那条残留会让**之后**任何复用该团队的
+    模块在 setup 崩掉。不清后手就是把自己的判据变成别人的故障，且故障现场离成因很远。
     """
+    _purge(migrated_db)
+    yield
+    _purge(migrated_db)
+
+
+def _purge(migrated_db: str) -> None:
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         conn.execute(
             "DELETE FROM app.maintenance_task WHERE listing_id IN"
@@ -60,6 +70,13 @@ def _purge_residue(migrated_db: str) -> None:
         conn.execute(
             "DELETE FROM app.deleted_product WHERE source_ref LIKE %s", (f"{_ASIN_PREFIX}%",)
         )
+        # **采集任务必须一并清掉，这条不是洁癖。** worker 拉任务是**全局**的
+        # （worker_node 是基础设施、不按团队圈），所以本模块留下的 pending 任务会被
+        # 别的模块的 worker 拉走——实测 `test_scrape_api::test_full_minimal_loop`
+        # 因此拉到了 `B0R214J002` 而判红，且字母序上本文件正排在它前面，**CI 全新库
+        # 照样会踩**。故障现场离成因隔着一个文件，不留这句注释下次还得再查一遍。
+        conn.execute("DELETE FROM app.scrape_task WHERE target_ref LIKE %s", (f"{_ASIN_PREFIX}%",))
+        conn.execute("DELETE FROM app.scrape_job WHERE input::text LIKE %s", (f"%{_ASIN_PREFIX}%",))
 
 
 def _set_status(migrated_db: str, pid: int, status: str) -> None:
@@ -155,7 +172,7 @@ def test_listing_status_classification_is_exhaustive(migrated_db: str) -> None:
         ).fetchone()[0]
     declared = set(re.findall(r"'([a-z_]+)'::text", src))
     assert declared, f"未能从约束定义解析出状态集合：{src}"
-    assert _CHANNEL_ALIVE | _DELETABLE == declared, (
+    assert declared == _CHANNEL_ALIVE | _DELETABLE, (
         f"delete.py 的状态分类与 ck_listing_status 不一致："
         f"约束多出 {sorted(declared - (_CHANNEL_ALIVE | _DELETABLE))}，"
         f"代码多出 {sorted((_CHANNEL_ALIVE | _DELETABLE) - declared)}"

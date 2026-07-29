@@ -1,7 +1,9 @@
 import {
+  Alert,
   Button,
   Checkbox,
   Form,
+  Input,
   Modal,
   Select,
   Space,
@@ -13,7 +15,13 @@ import {
 } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, api, type AuditResult, type PageOf } from '@/api/client'
+import {
+  ApiError,
+  api,
+  type AuditResult,
+  type PageOf,
+  type ProductDeleteResult,
+} from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
 import AuditRunDrawer from '@/pages/products/AuditRunDrawer'
 import BatchAuditModal from '@/pages/products/BatchAuditModal'
@@ -28,6 +36,7 @@ export default function ProductsPage() {
   const { has } = useAuth()
   const canAudit = has('audit.run')
   const canAllocate = has('listing.allocate')
+  const canDelete = has('catalog.product_delete')
   const [data, setData] = useState<PageOf<Product> | null>(null)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
@@ -42,6 +51,8 @@ export default function ProductsPage() {
   const [stores, setStores] = useState<StoreOpt[]>([])
   const [detail, setDetail] = useState<ProductDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [toDelete, setToDelete] = useState<Product | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -112,6 +123,30 @@ export default function ProductsPage() {
       setAuditDetail(await api.get<AuditRunDetail>(`/audit-runs/${runId}`))
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '加载失败')
+    }
+  }
+
+  async function onDelete(values: { reason: string }) {
+    if (!toDelete) return
+    setDeleting(true)
+    try {
+      // 类型取自 codegen（008§5.4）：删除回执的 schema 随本单进契约。
+      const r = await api.del<ProductDeleteResult>(
+        `/products/${toDelete.id}?reason=${encodeURIComponent(values.reason)}`,
+      )
+      // 回执如实播报：①级与②级的后果不同，②级还带着「重采不会再入库」这层含义，
+      // 一句笼统的「删除成功」会让运营以为随时能采回来。
+      message.success(
+        r.tombstoned
+          ? `已删除 ${r.master_sku}（清理 ${r.listings_deleted} 条上架记录；已留墓碑，重新采集不会再入库）`
+          : `已删除 ${r.master_sku}（从未上架，未留墓碑——重新采集仍会入库）`,
+      )
+      setToDelete(null)
+      void load()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '删除失败')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -267,6 +302,11 @@ export default function ProductsPage() {
                     分配上架
                   </Button>
                 )}
+                {canDelete && (
+                  <Button size="small" danger onClick={() => setToDelete(p)}>
+                    删除
+                  </Button>
+                )}
               </Space>
             ),
           },
@@ -310,6 +350,48 @@ export default function ProductsPage() {
           </Form.Item>
           <Button type="primary" htmlType="submit" block>
             分配
+          </Button>
+        </Form>
+      </Modal>
+      {/* 二次确认（§7.1「配套要求」）。**不可逆操作的确认必须说真话**：
+          ①/②级要到服务端才判得出，所以提示同时覆盖两种后果，不含糊其辞。 */}
+      <Modal
+        title={`删除产品：${toDelete?.master_sku ?? ''}`}
+        open={!!toDelete}
+        onCancel={() => setToDelete(null)}
+        footer={null}
+        destroyOnHidden
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="删除不可撤销"
+          description={
+            <>
+              产品行会被<b>物理删除</b>，标题/图片/属性一并消失，<b>没有回收站</b>。
+              <br />
+              若该产品<b>上过架</b>，还会留下墓碑——此后
+              <b>重新采集同一个 ASIN 也不会再入库</b>；其已下架的上架记录会一并清理，
+              占用的 GTIN 归还池中（已发到渠道的号码不回收）。
+              <br />
+              订单、审计、财务记录<b>不受影响</b>，一行都不会删。
+              <br />
+              在架或下架处理中的产品删不掉——请先完成下架。
+            </>
+          }
+        />
+        <Form layout="vertical" onFinish={onDelete}>
+          <Form.Item
+            name="reason"
+            label="删除原因"
+            rules={[{ required: true, message: '请填写删除原因（会写入墓碑与审计留痕）' }]}
+            extra="会写入墓碑与 audit_log，用于日后追溯是谁、为什么删的。"
+          >
+            <Input.TextArea rows={2} maxLength={200} showCount />
+          </Form.Item>
+          <Button type="primary" danger htmlType="submit" block loading={deleting}>
+            确认删除 {toDelete?.master_sku}
           </Button>
         </Form>
       </Modal>
