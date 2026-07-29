@@ -138,17 +138,23 @@ async def delete_product(
             before_free = await _held_count(session, lid)
             await gtin.release(session, lid)
             gtins_released += before_free
-        maintenance_skipped = (
-            await session.execute(
-                text(
-                    "UPDATE app.maintenance_task SET status = 'skipped',"
-                    " finished_at = now(),"
-                    " error = '产品被删除（R2-14 14a），任务作废'"
-                    " WHERE listing_id = ANY(:ids) AND status = 'scheduled'"
-                ),
-                {"ids": listing_ids},
-            )
-        ).rowcount
+        # 用 RETURNING 数行而不是 `.rowcount`：后者在 SQLAlchemy 的类型里挂在
+        # `CursorResult` 上、`session.execute` 声明的却是 `Result[Any]`（mypy 判红），
+        # 且它的语义随驱动而变。RETURNING 是显式的，数出来的就是真被改的那些行。
+        maintenance_skipped = len(
+            (
+                await session.execute(
+                    text(
+                        "UPDATE app.maintenance_task SET status = 'skipped',"
+                        " finished_at = now(),"
+                        " error = '产品被删除（R2-14 14a），任务作废'"
+                        " WHERE listing_id = ANY(:ids) AND status = 'scheduled'"
+                        " RETURNING id"
+                    ),
+                    {"ids": listing_ids},
+                )
+            ).all()
+        )
         await session.execute(
             text("DELETE FROM app.listing_spec WHERE product_id = :p"), {"p": product_id}
         )
