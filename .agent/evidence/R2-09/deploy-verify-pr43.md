@@ -285,6 +285,21 @@ $resp.Content
 > **整条链上只有我这份指令假设它不存在。**
 > 附带第二个原因：响应存在 `jsonb` 列里，**jsonb 不保留对象键序**，逐字节比较即便没有
 > 那个字段也不可靠。**判据必须比解析后的 JSON，不能比原始文本。**
+>
+> **v4 再修（2026-07-29，部署机第四轮又停在本步；v3 只改对了一半）**：v3 虽然先
+> `ConvertFrom-Json` 解析了，随后却又用 `ConvertTo-Json -Compress` 转回字符串来比——
+> **PowerShell 保留各自读入的属性顺序，所以键序敏感原样还在**，与 v3 自己写的修订目标
+> 直接矛盾。实测差异：首次 `product_id,run_id,verdict,…`，重放（来自 jsonb）
+> `run_id,verdict,product_id,…`，值完全相同却判 `False`。
+>
+> 还有第二个坑同时存在：本轮回执里 `COST_TYPE=Decimal`，而首次侧解析出来是 `Double`。
+> **`"$([double]0.0)"` 得到 `0`、`"$([decimal]0.0)"` 得到 `0.0`**——任何经由字符串的比较
+> 都会在这里再假红一次。
+>
+> 故本版**彻底不经过序列化**：字段清单取自契约 002 并由本文钉死顺序，逐字段用 `-eq` 比
+> （PowerShell 的 `-eq` 对 Decimal/Double 做数值比较、对 `$null` 两侧也安全）。
+> 键序与数值类型两个坑一起消掉。失配时打印 `DIFF item[i].field : 'x' vs 'y'`，
+> **下次若再不过，回执直接指出是哪个字段**，不必再猜。
 
 **用同一个 key、同一个 body 再发一次**：
 
@@ -297,12 +312,34 @@ $resp2.StatusCode
 $a = $resp.Content  | ConvertFrom-Json    # 首次
 $b = $resp2.Content | ConvertFrom-Json    # 重放
 
+# audited[] 的字段清单取自契约 002（AuditResult + product_id），**顺序由本文钉死**。
+# 逐字段用 -eq 比，**全程不经过任何序列化**——因此既不受 jsonb 打乱键序影响，
+# 也不受 Double/Decimal 字符串化差异影响（见下方 v4 修订说明）。
+$FIELDS = 'product_id','run_id','verdict','reject_level','llm_cost_usd','product_status'
+$A = @($a.audited); $B = @($b.audited)
+
+$same = $true
+if ($A.Count -ne $B.Count) {
+  $same = $false
+  "DIFF count: $($A.Count) vs $($B.Count)"
+} else {
+  for ($i = 0; $i -lt $A.Count; $i++) {
+    foreach ($f in $FIELDS) {
+      if ($A[$i].$f -ne $B[$i].$f) {
+        $same = $false
+        "DIFF item[$i].$f : '$($A[$i].$f)' vs '$($B[$i].$f)'"
+      }
+    }
+  }
+}
+
 "FIRST_HAS_REPLAY_FLAG=$($null -ne $a.idempotent_replay)"   # 期望 False
 "REPLAY_FLAG=$($b.idempotent_replay)"                        # 期望 True
-"AUDITED_SAME=$(($a.audited | ConvertTo-Json -Depth 5 -Compress) -eq ($b.audited | ConvertTo-Json -Depth 5 -Compress))"
-"COUNTS_SAME=$(($a.verdict_counts | ConvertTo-Json -Compress) -eq ($b.verdict_counts | ConvertTo-Json -Compress))"
+"AUDITED_SAME=$same"
+"COUNTS_SAME=$(($a.verdict_counts.pass -eq $b.verdict_counts.pass) -and ($a.verdict_counts.reject -eq $b.verdict_counts.reject) -and ($a.verdict_counts.needs_review -eq $b.verdict_counts.needs_review))"
 "COST_SAME=$($a.total_llm_cost_usd -eq $b.total_llm_cost_usd)"
 "COST_TYPE=$($b.total_llm_cost_usd.GetType().Name)"          # 期望数值型，不是 String
+"ITEM_COST_TYPE=$($B[0].llm_cost_usd.GetType().Name)"        # 同上，逐条那一层
 $resp2.Content
 ```
 
@@ -323,8 +360,13 @@ docker compose exec db psql -U postgres -d erp_all -c `
 | `REPLAY_FLAG` | **True**（重放自陈是重放） |
 | `AUDITED_SAME` | **True**（逐条结果原样重放） |
 | `COUNTS_SAME` / `COST_SAME` | **True** |
-| `COST_TYPE` | **数值型**（`Double`/`Int32`/`Decimal` 皆可，**不能是 `String`**） |
+| `COST_TYPE` / `ITEM_COST_TYPE` | **数值型**（`Double`/`Int32`/`Decimal` 皆可，**不能是 `String`**） |
+| `DIFF ...` 行 | **一行都不该出现**（出现即打印了具体失配字段，照抄回来） |
 | `audit_run` 中 `trigger_kind='batch'` 行数 | **与 4.2 之后相同**（不新建 run = 没重跑、没重复花钱） |
+
+> **两侧 `COST_TYPE` 不同不是缺陷**：首次是 FastAPI 现生成的 JSON（解析成 `Double`），
+> 重放来自 `jsonb`（解析成 `Decimal`）。判据只要求**两侧都是数值型**，不要求同型——
+> 要防的是「钱悄悄变成字符串」，不是「两边类型必须一模一样」。
 
 > `COST_TYPE` 这条不是吹毛求疵：存储走的是 `json.dumps(..., default=str)`，哪天
 > `llm_cost_usd` 变成 `Decimal`，重放响应里的钱就会**悄悄变成字符串**，而只比
