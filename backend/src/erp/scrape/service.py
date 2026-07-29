@@ -542,6 +542,16 @@ async def _deleted_refs(
 
     **墓碑查询的唯一实现**——预筛与入库前检查共用它，避免两处各写一份判定后漂移。
     键与 `uq_product` / 入库 `ON CONFLICT` 严格同形：`(team_id, source_channel, source_ref)`。
+
+    ⚠️ **这条查询受 RLS 管，而空结果被当作「没有墓碑」放行——「真没有」与「有但看不见」
+    是同一个绿。** `deleted_product` 的 SELECT 策略是
+    `team_id = app.current_team() OR app.is_super()`；采集链走 `system_tx`
+    （`core/db.py` 设 `app.is_super='on'`）故命中后半段，墓碑可见。
+
+    **谁要是把采集改成按团队会话跑而没设 `app.current_team`，回流保护会在零报错的
+    情况下整条消失**——判据照样全绿（测试里是带团队上下文的）。改采集会话上下文时，
+    必须同时验一次「删过的商品重采仍不入库」。本条由 PR #46 审查侧点出，
+    运维口径见 `.agent/evidence/R2-14/runbook.md`。
     """
     if not refs:
         return set()
