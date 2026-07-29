@@ -811,6 +811,11 @@
     "date": "2026-07-29",
     "kind": "progress",
     "text": "【增量3a 批量送审端点：三闸已过，等 Owner 授权合并】PR #43。①CI 四项绿；②独立审查三轮全过、无阻拦项（所审 c02328a / 9cb4e72 / ba3cbdd），其提出的两条已落地：内网 IP 写路径判据、正文越界清单补第三条；③部署机真机验证**通过**，取证见 .agent/evidence/R2-09/deploy-verify-pr43-receipt.md——四桶结构不变量、幂等重放（AUDITED_SAME=True、DIFF 0 行、audit_run 9→9 未新增）、B 段零成本（calls=0）、C 段真实付费链路（trigger_kind=batch、calls=1、cost=$0.001204）、切回 main 收尾均满足判据。**本单顺带修掉两处既有缺陷**：(a) levels 无枚举校验导致 levels=[\"L0\"] 大小写笔误即绕过 L0/L2/L3 整条合规闸（产品当场 audit_passed、零命中、cost=0），审查裁定不拆出去单提；(b) client.ts 用 crypto.randomUUID 生成幂等头，而该 API 只在安全上下文存在、nginx 只 listen 80，经 http://内网IP 访问时 main 上全部 api.post 抛 TypeError——该缺陷用 localhost 验证在原理上抓不到，故第三闸钉死必须经内网 IP 走一次写操作。**过程教训**：第三闸开了六轮，六次阻断全部是验证指令自身的错误、产品零缺陷（漏必填头／期望值写反／判据要求一个设计上不可能的等式／列名不存在／自己写下的结论没落实／PowerShell 变量名大小写碰撞）。根因是这份指令的判据全靠手写、没有任何东西验证过判据自身是否成立。已落地两道机器检查（SQL 列名对 information_schema 核验、psvarcheck.py 扫变量碰撞）；仍敞开的是 PowerShell 无法在云端沙箱执行，已提请审计侧排期「部署验证脚本需可在 CI 空跑」的独立欠账。"
+   },
+   {
+    "date": "2026-07-29",
+    "kind": "correction",
+    "text": "【更正：增量3b 并未被任何裁定阻塞】云端侧此前在多条消息与 PR 评论里声称「3b 阻塞于 A 组六条裁定 O-1..O-6，未裁定前不得开工」。**全仓搜索 `O-1` 零命中——那组编号只存在于会话上下文，从未进入仓库**，正是本项目第 6 条（状态在仓库不在会话）要防的情形。真正在册的待裁项是 `.agent/evidence/R2-09/owner-questions-20260727.md` 的三条，现状均已解：Q1 已由 Owner 2026-07-27 裁定选 (a)（三件同族商品各跑一档）并已写进本单 acceptance；Q2（新团队默认档模板）该文明写「不定则按现状实现、面板不做模板按钮」，增量2 已按此落地即默认已生效；Q3（enabled=false 是 fail-open）该文明写「属实现范畴，无异议即照此落地」，三条建议全部已落地——面板三态显性区分、闸类停用二次确认、以及读点告警（`core/automation.py:207` 的 `automation.policy_disabled_treated_as_manual`，本次复核在位）。**结论：3b 可自走开工，不需要新的 Owner 裁定。**【3b 考古结论】本单 acceptance 要求的四环 `scrape_to_audit / audit_to_listing / listing_dispatch / pricing_watch` 在 `FLOWS` 里均为 `_THREE + REALTIME`（三档、实时求值），而 `WIRED_FLOWS` 当前只有 `order_block / refund / cancel` 三条，census `_EXPECTED` 也只钉了 `aftersale/refund.py`、`order/procurement.py` 两个调用点——即四环**一条都未接线**，面板对它们显示「未接线（改档暂不生效）」是真话。候选消费点已定位：审核侧 `audit/router.py:106` 的 `audit_one` 与 3a 落地的 `batch.audit_batch`；上架侧 `listing/service.py:405` 的 `submit`；定价侧 `pricing/service.py` 的 `apply_price_*` 系列；beat 侧 `automation/tasks.py` 已注册 `item_pull/feed_poll/price_recon/maintenance_run` 等任务名可挂 auto 档。接线每增一处消费点必须同步三处（census `_EXPECTED`、`WIRED_FLOWS`、`test_automation_api.py` T1 的 wired 集合），这是增量2 设计好的边界闸。"
    }
   ]
  },
