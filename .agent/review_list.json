@@ -626,6 +626,11 @@
     "date": "2026-07-29",
     "kind": "ruling",
     "text": "【07c 重定范围＝邮箱底座，D-Q71】先建底座、AI 后置。底座四件：①账号池(mailbox 表,授权码加密,绑店铺,代理默认取店铺代理,同步水位)②拉取调度(挂 beat,UID 增量+去重,失败退避告警)③收发(正文附件落库;发信用该店铺自己邮箱经 SMTP 并留痕)④可观测(每账号最近成功/失败次数/状态一屏可见)。明确不做:IDLE长连接/文件夹全量同步/离线缓存/多协议抽象/通用邮件客户端UI。AI分类剥离为后续独立单,classification 列底座期一律 none。选型自建+imapclient(内置 id_()):EmailEngine($1450/年,内部自用亦收费)与 RustMailer 生产需商业许可且163未验证;Bichon 为2.0.0-alpha.1刚换存储引擎且163支持查无实据;isync/offlineimap 缺 IMAP ID 扩展连不上163;AI助手类全0★玩具。硬坑=163登录后SELECT前必须发 IMAP ID(RFC2971)否则 Unsafe Login(现象:认证成功一读就错)。个人163官方未公开连接数/频率上限,故保守设计:默认10分钟轮询+账号错峰相位+单连接用完登出+连续认证失败即停并告警(绝不重试撞墙)。参考:EthanYoQ/Invoice-Downloader(136★ Apache-2.0 生产级163消费者)。"
+   },
+   {
+    "date": "2026-07-29",
+    "kind": "landed",
+    "text": "【07c 前置实测·IMAP ID 必要性证实】Owner 真机 A/B 对照（同账号连两次，唯一变量=发不发 ID）：A 组不发 ID → SELECT INBOX 被拒，报 Unsafe Login；B 组登录后先发 ID → 正常打开收件箱(96 封)并只读取回最近 3 封信头。结论：163 的 IMAP ID(RFC 2971) 为**硬约束非建议**，实现不得省略、不得配置为可关闭；已写入 §09 mail 域连接纪律。探针为纯标准库 imaplib（手动注册 Commands['ID']=('AUTH',) 后 _simple_command 发送），只读、BODY.PEEK 不改已读标记、凭证走环境变量。⏳ 余项：探针 C 组（imap_tools 的 initial_folder=None + mb.client 发 ID + folder.set 形态）因环境未装 imap-tools 跳过，列为 07c 动工第一步；通过则按图纸用 imap_tools，不通过退回 imapclient(内置 id_())。"
    }
   ],
   "acceptance": "三片各自判据：①07a returns——A152 真实 returns 拉取与渠道后台对账一致(✅ 2026-07-25 验收通过)；②07b 封店——手工造 incident 演练：封店→品牌占用批量 released→beat 提醒送达(✅ PR#25 已并)；③07c 邮箱(剩余项，IMAP 凭证已具备)——真实邮箱收一封 Walmart 通知类邮件→LLM 自动分类(llm_usage.module=mail_classify)→生成 store_incident + 告警落库，全链可追溯。范围闸：会话线程/模板/附件/回信=MVP 后第一批(D-Q22)，本单不做。"

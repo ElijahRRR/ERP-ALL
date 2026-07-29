@@ -104,9 +104,17 @@
 
 **连接纪律（provider=netease_163/126 强制）**：登录成功后、`SELECT` 之前**必须发 IMAP ID
 命令（RFC 2971，自报 name/version/vendor/support-email）**，否则 163 对后续操作返回
-`Unsafe Login`——现象是「认证成功、一读邮件就报错」，坑在登录之后。选型定 `imapclient`
-库（内置 `id_()`）即为免除此偏方。**每账号一条连接、用完正常登出，不留悬空连接**
-（个人邮箱对并发连接最敏感）。
+`Unsafe Login`——现象是「认证成功、一读邮件就报错」，坑在登录之后。
+
+> ✅ **已实测证实（2026-07-29，Owner 真机 A/B 对照，非文档转述）**：同一账号连两次、
+> 唯一变量是发不发 ID —— **A 组不发：`SELECT INBOX` 被拒，报 `Unsafe Login`**；
+> **B 组先发 ID：正常打开收件箱（96 封），只读取回最近 3 封信头**。
+> 故本条为**硬约束而非防御性建议**，实现不得省略、不得配置为可关闭。
+> 探针脚本形态：纯标准库 `imaplib` + 手动注册 `imaplib.Commands['ID']=('AUTH',)`
+> 后 `_simple_command('ID', '("name" "..." "version" "..." "vendor" "..." "support-email" "...")')`
+> ——这也正是 `imapclient.id_()` 内部所做的事。
+
+**每账号一条连接、用完正常登出，不留悬空连接**（个人邮箱对并发连接最敏感）。
 
 ### mail_message 邮件（元数据永留，正文 30 天）
 

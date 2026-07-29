@@ -89,6 +89,12 @@ gemini-multi-account / gpt-batch-register / amazon-scraper-v2〔已被 v3 取代
   > 跳过自动 select（作者提供的正规参数，见 `mailbox.py` 的 `if initial_folder is not
   > None`），经 `mb.client`（原生 imaplib 实例）发 ID，再 `mb.folder.set('INBOX')`。
   > **退路**：若实测该形态不通，退回 `imapclient`（内置 `id_()`）。
+  > ✅ **IMAP ID 必要性已实测证实（2026-07-29 Owner 真机 A/B）**：不发 ID → `SELECT
+  > INBOX` 报 `Unsafe Login`；先发 ID → 正常打开收件箱（96 封）并取回信头。**升级为
+  > 硬约束**，实现不得省略。⏳ **仍未验证**：`imap_tools` 的
+  > `initial_folder=None` + `mb.client` 发 ID + `folder.set()` 这一形态（探针 C 组因
+  > 环境未装 `imap-tools` 跳过）——**列为动工第一步**，通过则按本图纸实现，
+  > 不通过即退 `imapclient`。
   > 可借鉴的一手参考：`EthanYoQ/Invoice-Downloader`（136★，**Apache-2.0 可商用**，
   > 生产级 163 IMAP 消费者）；分层思路另参 datawhale「163 邮箱助手实战」（脚本层出
   > 结构化数据／凭证层／提示词层／定时层四层分离，与我方 L0→L3 同构）。
