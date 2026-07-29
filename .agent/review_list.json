@@ -880,7 +880,7 @@
   "priority": "P1",
   "dimension": "data",
   "check": "合规数据供给持续化：USPTO日度增量(daily_update→RS-04A通道→refdata.trademark+revision失效)+TRO采集按日进tro_case并派生品牌断言+全店后台SKU拉取对账(GET /v3/items翻页↔本地listing集合,错误SKU落处置)+报错回收自动黑名单候选(source扩error_recycle)+合规中心页(四黑名单/商标查询/TRO/import_job) [Owner 2026-07-17 指出缺口，审计核实四链源码后立单，详见007]",
-  "status": "accepted",
+  "status": "in_progress",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md",
    "backend/src/erp/compliance/import_service.py",
@@ -919,6 +919,11 @@
     "date": "2026-07-29",
     "kind": "ruling",
     "text": "【审计侧验收判定 2026-07-29】四条判据全部有证据，整单收账：①三日连测 07-26/27/28 全 PASS（.agent/evidence/R2-12/uspto-3day-verification.md：第1日无数据日、第2日导入4901/0错、第3日导入67120/0错且 schtasks 直证 Last Result=0；ERP 商标 4,475,105→4,483,613，revision 204→210，双侧 newest 同步 lag_days=1）；②TRO 链增量2（PR#31）含 tro_case 入库→tro_sync 断言派生→L2 命中复现测试；③全店对账增量4a（PR#33）A152 真店跑通、missing_local 45 为真实发现；④合规页增量5（PR#35）部署机两段验证全 PASS（含 allow 压制后按主体追溯撤销的补验，6+2 图）。余下 FX-0727/FX-0727-B 两张 P2 小单独立跟踪，不阻塞本单收账。"
+   },
+   {
+    "date": "2026-07-29",
+    "kind": "correction",
+    "text": "【撤回收账——审计侧自身判错，Owner 使用中发现】2026-07-29 我判 R2-12 整单 accepted，其中判据②的证据写成「增量2 含 tro_case 入库→tro_sync 断言派生→**L2 命中复现测试**」，但判据②原文是「**真实**TRO采集→tro_case→品牌断言→L2命中复现」——**我把「测试通过」当成了「真实数据跑通」，漏掉了「真实」二字**。Owner 当日查看系统反馈「没有看到 tro 案件相关的数据，也没有相关定期入库的功能」，即为②未达成的直证。**核实结论**：管道通了但没通水——①`tro_case` 表已建(0035)、导入器已建(import_service TRO_DOMAIN='tro')、tro_sync 断言派生已建，均有测试；②但**存量基线 11,893 行从未导入**（R2-02 迁移只搬了黑名单四表/商标/类目映射/PT，TRO 不在其中）；③**beat 任务清单 20 项中无任何 TRO 任务**（对照：USPTO 链有 trademark_freshness），即无定期入库；④tro-scraper-matrix 的产物投递（部署机侧采集→交 ERP 导入）无人承接。**故状态回退 in_progress，判据①③④维持已达成，②未达成。**余项＝存量基线导入 + 定期采集入库链路（形态参照 USPTO 链：部署机跑采集→标准导入接口→beat 新鲜度告警）。"
    }
   ]
  },
