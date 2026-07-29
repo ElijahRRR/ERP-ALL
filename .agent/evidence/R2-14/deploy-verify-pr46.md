@@ -106,20 +106,63 @@ git diff --name-only origin/main...HEAD -- backend/alembic/
 > 即那 8 个 commit 的内容已被 #43 的 squash 合并一字不落地收进 main。
 > 但上面那条路本来就不依赖这个结论。）
 
-## ③ 全栈重建并起服务（**必须看到 0041 升级**）
+## ③ 全栈重建并起服务（**判据查库里的状态，不查日志**）
 
 ```powershell
 docker compose build
 docker compose up -d
-docker compose logs migrate --tail 40
+docker compose ps
+docker compose logs migrate --tail 40     # 贴回来即可；**看不到 Alembic 正文不算失败**，见下
 ```
 
-**判据**：migrate 日志中出现 `Running upgrade 0040 -> 0041`，且容器 `Exited (0)`；
-`api` / `beat` / `frontend` 为 `Up`，`db` / `redis` 为 `Up (healthy)`。
+### 迁移是否真的落地——**这一条是判据**
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/healthz   # 或按本机实际端口
+docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
+SELECT 'alembic_version=' || version_num FROM public.alembic_version;
+SELECT 'tombstone_table=' || coalesce(to_regclass('app.deleted_product')::text, 'MISSING');
+"
 ```
+
+**判据**：`alembic_version=0041` 且 `tombstone_table=app.deleted_product`。
+容器侧另需 migrate 为 `Exited (0)`、`api`/`beat`/`frontend` 为 `Up`、`db`/`redis` 为 `Up (healthy)`。
+
+> 〔2026-07-29 修订，起因是部署机在此停机第三次〕
+> v1 把判据写成「migrate 日志里出现 `Running upgrade 0040 -> 0041`」。**那是个坏判据**：
+>
+> - **日志会没有**——容器已退出、被重建、被截断，都会让正文取不到，而迁移其实跑成功了；
+> - **更要命的是它只在第一次成立**：迁移一旦应用，**重跑时 Alembic 本来就不会再打印
+>   `Running upgrade`**。而本次验证已经因为别的原因重跑过好几轮，这个判据从第二轮起
+>   就永远不可能通过。
+>
+> **日志是证据，库里的状态才是事实。** 换成查 `alembic_version` 与表是否存在，
+> 无论跑第几轮都成立，也不依赖日志有没有被留下。
+
+### 等 API 就绪（**不是立刻请求**）
+
+```powershell
+$HEALTH_OK = $false
+foreach ($tryIndex in 1..30) {
+  try {
+    $HEALTH_BODY = Invoke-RestMethod http://127.0.0.1:8000/healthz -TimeoutSec 3
+    $HEALTH_OK = $true
+    "healthz ok（第 $tryIndex 次）：$($HEALTH_BODY | ConvertTo-Json -Compress)"
+    break
+  } catch { Start-Sleep -Seconds 2 }
+}
+if (-not $HEALTH_OK) {
+  "STOP：60 秒内 healthz 仍未就绪。贴回下面两段再停手："
+  docker compose ps
+  docker compose logs api --tail 50
+}
+```
+
+**判据**：`healthz ok`，返回 `{"status":"ok", ...}`。
+
+> 〔同上修订〕v1 在 `up -d` 之后**紧接着**打一次 `healthz`，部署机拿到
+> 「基础连接已经关闭」而停手——**当时 api 容器启动不足 1 秒**。
+> 这不是环境问题，是我漏写了就绪等待：`docker compose up -d` 返回只代表容器被创建，
+> **不代表进程已经在监听**。轮询 30 次 × 2 秒足够覆盖冷启动。
 
 ## ④ 前端产物对拍（防「部署了但页面是旧的」）
 
