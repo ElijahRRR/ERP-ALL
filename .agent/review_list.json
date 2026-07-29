@@ -631,6 +631,11 @@
     "date": "2026-07-29",
     "kind": "landed",
     "text": "【07c 前置实测·IMAP ID 必要性证实】Owner 真机 A/B 对照（同账号连两次，唯一变量=发不发 ID）：A 组不发 ID → SELECT INBOX 被拒，报 Unsafe Login；B 组登录后先发 ID → 正常打开收件箱(96 封)并只读取回最近 3 封信头。结论：163 的 IMAP ID(RFC 2971) 为**硬约束非建议**，实现不得省略、不得配置为可关闭；已写入 §09 mail 域连接纪律。探针为纯标准库 imaplib（手动注册 Commands['ID']=('AUTH',) 后 _simple_command 发送），只读、BODY.PEEK 不改已读标记、凭证走环境变量。⏳ 余项：探针 C 组（imap_tools 的 initial_folder=None + mb.client 发 ID + folder.set 形态）因环境未装 imap-tools 跳过，列为 07c 动工第一步；通过则按图纸用 imap_tools，不通过退回 imapclient(内置 id_())。"
+   },
+   {
+    "date": "2026-07-29",
+    "kind": "progress",
+    "text": "【审计侧接收开发侧 07c 考古发现，转挂后续 AI 分片，防其随底座收单丢失】开发侧考古指出：channel/router.py 的 create_incident 把三件事内联在端点函数里——source 写死 'manual'、suspension 时置 store.status=suspended、brand.release_for_incident 批量释放品牌占用。邮件路径将来要建 source='mail' 且必须触发同一套封店联动，**若照抄一份则两条路径静默分叉，且分叉方向是邮件路径少做了品牌释放**，无任何判据会红（同 core/automation.py 模块头注记载的「面板与订单闸各算一份判读」同形）。建议处置：把 incident 创建抽成共用服务函数（签名带 source/mail_message_id/mail_body_snapshot），router 与 mail 任务共用，抽取时对现有 router 路径逐字等价；配套判据须断言**两条路径封店联动一致**（都置 suspended、都 brand_released_at 非空），只测新路径挡不住「后来有人只改一边」。**归属澄清（审计侧）**：该问题服务于「邮件→分类→自动开 incident」链路，而 D-Q71 已将 AI 分类整体后置——**故不属 07c 底座范围，不在底座期做**；记于此以便 AI 分片立单时直接取用。"
    }
   ],
   "acceptance": "三片各自判据：①07a returns——A152 真实 returns 拉取与渠道后台对账一致(✅ 2026-07-25 验收通过)；②07b 封店——手工造 incident 演练：封店→品牌占用批量 released→beat 提醒送达(✅ PR#25 已并)；③07c 邮箱(剩余项，IMAP 凭证已具备)——真实邮箱收一封 Walmart 通知类邮件→LLM 自动分类(llm_usage.module=mail_classify)→生成 store_incident + 告警落库，全链可追溯。范围闸：会话线程/模板/附件/回信=MVP 后第一批(D-Q22)，本单不做。"
