@@ -197,12 +197,15 @@ $H = @{ Authorization = "Bearer $($r.access_token)" }
 而不是各自的业务错误**，判据就失效了。用独立键把这条干扰彻底排除。
 
 ```powershell
+# 变量名一律避开与 $H 的大小写碰撞：**PowerShell 变量名不区分大小写**，
+# `$h = $H.Clone()` 里的 $h 与 $H 是同一个变量（此处靠函数作用域侥幸没出错，
+# 但同款写法在 4.3 就真的炸了——见那一节的 v5 修订）。
 function Try-Post($body, $key) {
-  $h = $H.Clone()
-  if ($key) { $h['Idempotency-Key'] = $key }
+  $hdr = $H.Clone()
+  if ($key) { $hdr['Idempotency-Key'] = $key }
   try {
     $resp = Invoke-WebRequest -Method Post -Uri "http://127.0.0.1/api/v1/products/audit" `
-            -Headers $h -ContentType "application/json" -Body $body -SkipHttpErrorCheck
+            -Headers $hdr -ContentType "application/json" -Body $body -SkipHttpErrorCheck
     "$($resp.StatusCode) $($resp.Content)"
   } catch { "EXCEPTION: $_" }
 }
@@ -296,6 +299,16 @@ $resp.Content
 > **`"$([double]0.0)"` 得到 `0`、`"$([decimal]0.0)"` 得到 `0.0`**——任何经由字符串的比较
 > 都会在这里再假红一次。
 >
+> **v5 再修（2026-07-29，第五轮）——v4 的比较逻辑本身是对的，但变量名把自己坑了**：
+> **PowerShell 变量名不区分大小写**，v4 里 `$a`/`$b` 是响应对象、`$A`/`$B` 是 audited
+> 数组，**后两行直接覆盖了前两个**。于是逐字段比较（读的是数组，正确）得出
+> `AUDITED_SAME=True`，而 replay flag / verdict_counts / total_llm_cost_usd 全都在数组上
+> 取值，实测症状：`FIRST_HAS_REPLAY_FLAG=True`、`REPLAY_FLAG=` 空、`COST_SAME=` 空、
+> **`COST_TYPE=Object[]`**（最后这条是铁证——数组的属性访问返回数组）。
+> 本版全部改用长名（`$first`/`$replay`/`$auditedFirst`/`$auditedReplay`/`$fieldNames`），
+> 并**用 `psvarcheck.py` 机器扫描全文 15 个 powershell 代码块，确认零大小写碰撞**
+> （4.1 里原有的 `$h`/`$H` 也一并改名——那处靠函数作用域侥幸没出错，是同款隐患）。
+>
 > 故本版**彻底不经过序列化**：字段清单取自契约 002 并由本文钉死顺序，逐字段用 `-eq` 比
 > （PowerShell 的 `-eq` 对 Decimal/Double 做数值比较、对 `$null` 两侧也安全）。
 > 键序与数值类型两个坑一起消掉。失配时打印 `DIFF item[i].field : 'x' vs 'y'`，
@@ -309,37 +322,42 @@ $resp2 = Invoke-WebRequest -Method Post -Uri "http://127.0.0.1/api/v1/products/a
          -Body $body -SkipHttpErrorCheck
 $resp2.StatusCode
 
-$a = $resp.Content  | ConvertFrom-Json    # 首次
-$b = $resp2.Content | ConvertFrom-Json    # 重放
+# ⚠️ **变量名全部用长名、彼此不构成大小写碰撞**——PowerShell 变量名**不区分大小写**，
+# 上一版写成 `$a`/`$b`（响应对象）与 `$A`/`$B`（audited 数组），**后者把前者覆盖了**，
+# 于是 replay flag / verdict_counts / total_llm_cost_usd 全在数组上取值
+# （实测症状：`COST_TYPE=Object[]`、`REPLAY_FLAG=` 空）。见本节 v5 修订说明。
+$first  = $resp.Content  | ConvertFrom-Json
+$replay = $resp2.Content | ConvertFrom-Json
 
 # audited[] 的字段清单取自契约 002（AuditResult + product_id），**顺序由本文钉死**。
 # 逐字段用 -eq 比，**全程不经过任何序列化**——因此既不受 jsonb 打乱键序影响，
-# 也不受 Double/Decimal 字符串化差异影响（见下方 v4 修订说明）。
-$FIELDS = 'product_id','run_id','verdict','reject_level','llm_cost_usd','product_status'
-$A = @($a.audited); $B = @($b.audited)
+# 也不受 Double/Decimal 字符串化差异影响（见 v4 修订说明）。
+$fieldNames    = 'product_id','run_id','verdict','reject_level','llm_cost_usd','product_status'
+$auditedFirst  = @($first.audited)
+$auditedReplay = @($replay.audited)
 
 $same = $true
-if ($A.Count -ne $B.Count) {
+if ($auditedFirst.Count -ne $auditedReplay.Count) {
   $same = $false
-  "DIFF count: $($A.Count) vs $($B.Count)"
+  "DIFF count: $($auditedFirst.Count) vs $($auditedReplay.Count)"
 } else {
-  for ($i = 0; $i -lt $A.Count; $i++) {
-    foreach ($f in $FIELDS) {
-      if ($A[$i].$f -ne $B[$i].$f) {
+  for ($i = 0; $i -lt $auditedFirst.Count; $i++) {
+    foreach ($fieldName in $fieldNames) {
+      if ($auditedFirst[$i].$fieldName -ne $auditedReplay[$i].$fieldName) {
         $same = $false
-        "DIFF item[$i].$f : '$($A[$i].$f)' vs '$($B[$i].$f)'"
+        "DIFF item[$i].$fieldName : '$($auditedFirst[$i].$fieldName)' vs '$($auditedReplay[$i].$fieldName)'"
       }
     }
   }
 }
 
-"FIRST_HAS_REPLAY_FLAG=$($null -ne $a.idempotent_replay)"   # 期望 False
-"REPLAY_FLAG=$($b.idempotent_replay)"                        # 期望 True
+"FIRST_HAS_REPLAY_FLAG=$($null -ne $first.idempotent_replay)"   # 期望 False
+"REPLAY_FLAG=$($replay.idempotent_replay)"                       # 期望 True
 "AUDITED_SAME=$same"
-"COUNTS_SAME=$(($a.verdict_counts.pass -eq $b.verdict_counts.pass) -and ($a.verdict_counts.reject -eq $b.verdict_counts.reject) -and ($a.verdict_counts.needs_review -eq $b.verdict_counts.needs_review))"
-"COST_SAME=$($a.total_llm_cost_usd -eq $b.total_llm_cost_usd)"
-"COST_TYPE=$($b.total_llm_cost_usd.GetType().Name)"          # 期望数值型，不是 String
-"ITEM_COST_TYPE=$($B[0].llm_cost_usd.GetType().Name)"        # 同上，逐条那一层
+"COUNTS_SAME=$(($first.verdict_counts.pass -eq $replay.verdict_counts.pass) -and ($first.verdict_counts.reject -eq $replay.verdict_counts.reject) -and ($first.verdict_counts.needs_review -eq $replay.verdict_counts.needs_review))"
+"COST_SAME=$($first.total_llm_cost_usd -eq $replay.total_llm_cost_usd)"
+"COST_TYPE=$($replay.total_llm_cost_usd.GetType().Name)"         # 期望数值型，不是 String / 不是 Object[]
+"ITEM_COST_TYPE=$($auditedReplay[0].llm_cost_usd.GetType().Name)" # 同上，逐条那一层
 $resp2.Content
 ```
 
