@@ -997,7 +997,14 @@
   "gate": "排 R2-09 之后（需 purchase_execute 三档护栏才敢开 auto）；13e 灰度切换红线=同一浏览器配置内绝不同时启用两个插件(会重复下单)",
   "acceptance": "①真实订单人工档由插件完成采购并回填,金额/单号/运单与亚马逊后台一致;②三档各跑一遍,auto 超 amount_ceiling 必转人工且零下单;③越权:A实例取不到B账号任务(必败);④并发下发同一订单不产生两个采购任务;⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练",
   "finding": "审计侧解包 v2.5.0 crx 并对比仓内 v2.4.1(2026-07-27)：实为完整自动采购机器人(加购→填址→结账→抓单号→回填 + 物流回填链 + 验证码人机接力),支持 com/ca/co.jp,两版差异仅日本地址选择两函数。安全实测：host_permissions=*://*/* + cookies 权限可读该浏览器任何站点 cookie(含 Walmart 后台/飞书)；updateBuyerCookie 将买家 cookie 上传厂商服务器。fork 时须收窄权限。性质=迁移非新建(现产线跑在 smallbee168.com)",
-  "last_checked_at": "2026-07-27"
+  "last_checked_at": "2026-07-29",
+  "updates": [
+   {
+    "date": "2026-07-29",
+    "kind": "progress",
+    "text": "【考古完成，未实现】见 .agent/evidence/R2-13/archaeology.md。**直接读了 fork 源仓**（ElijahRRR/AMZ-Purchase-Assistant @07282ed v2.4.1），拿到三条 007 转述里没有的事实：① **9 个端点分属两个路径前缀**（/system/amazonOrder/ 与 /system/amazonOrderPig/），007 只记「updateTrackingInfo×2」未说命名空间不同——ERP 要么两组都实现、要么 fork 时改写路径，而后者与 13e 要求保留的回切路径有张力，需一并定；② **插件请求封装默认不带任何认证头**（唯一 fetch 封装基础头只有 Content-Type），故「fork 后改 baseUrl」不足以完成 13a，**必须改插件代码**加实例 token 注入；③ manifest 的 host_permissions=*://*/* 而 content_scripts 已 amazon-scoped，**通配符只服务于 fetch/cookies 两条路径**，收窄不影响内容脚本注入——007 的安全要求依据更硬。ERP 侧：buyer_account/plugin_instance 零建表；procurement_order 回填列与状态机全部现成、缺 buyer_account_id；purchase_execute 仅是枚举且不在 WIRED_FLOWS。**新发现的耦合**：13c 的护栏是三件耦合——automation/router.py 现显式 422 拒写 config（AUTOMATION_CONFIG_NOT_WRITABLE），故必须同时交付「放开写入+消费点+判据」，该收窄的解除条件此前只写在那段注释里、未进工单。**gate 复核**：007 的「排 R2-09 之后」卡的是「开 auto」不是「开工」——13a/13b/13d 与护栏无关，建议精确为「auto 档排在 13c 之后」，**该口径改动请审计侧确认后再动工**。"
+   }
+  ]
  },
  {
   "id": "R2-14",
