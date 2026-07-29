@@ -75,6 +75,11 @@
 
 ## mail 邮件域（D-Q22 收发聚合；D-Q17 正文不长留）
 
+> **分期（Owner 2026-07-29 定，R2-07c）**：**先建底座、AI 后置**。底座 = 稳定的多店铺
+> 邮箱账号池 + 拉取调度 + 收发 + 可观测，**不含任何 AI 分类**。分类字段本域预留（见
+> `mail_message.classification`），但底座阶段一律写死 `none`，规则/LLM 分类另立后续单
+> （AI 层调研待底座跑稳后再做，D-Q22 备注原文「完整客户端体验＝MVP 后」同此精神）。
+
 ### mailbox 店铺邮箱
 
 | 列 | 类型 | 约束/默认 | 说明 |
@@ -83,15 +88,25 @@
 | team_id | BIGINT | NOT NULL | |
 | store_id | BIGINT | NULL REFERENCES store | 店铺绑定邮箱；NULL=团队公共箱 |
 | address | TEXT | NOT NULL UNIQUE | |
-| imap_host / imap_port / imap_ssl | TEXT/INT/BOOL | NOT NULL | |
-| smtp_host / smtp_port / smtp_ssl | TEXT/INT/BOOL | NOT NULL | 发信（D-Q22 要求收+发） |
+| provider | TEXT | NOT NULL DEFAULT 'netease_163' CHECK IN (netease_163, netease_126, outlook, other) | 决定连接怪癖处理（163=必发 IMAP ID，见下） |
+| imap_host / imap_port / imap_ssl | TEXT/INT/BOOL | NOT NULL | 163=`imap.163.com:993:true` |
+| smtp_host / smtp_port / smtp_ssl | TEXT/INT/BOOL | NOT NULL | 发信（D-Q22 收+发）；163=`smtp.163.com:465:true` |
 | username | TEXT | NOT NULL | |
-| password_encrypted | BYTEA | NOT NULL | 00 §10 |
+| auth_code_encrypted | BYTEA | NOT NULL | **授权码**（非登录密码；个人 163 必须授权码），00 §10 加密 |
+| proxy_id | BIGINT | NULL REFERENCES proxy | **代理出口（Owner 2026-07-29）**：默认取所绑店铺的代理（store.proxy_id 派生），使邮箱轮询与店铺同一出口 IP＝防关联延伸；店铺代理停用后由人工改挂其他代理。NULL=直连（团队公共箱或无代理场景） |
 | status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, error, disabled) | error=连续拉取失败（自动标记+通知） |
-| poll_interval_sec | INT | NOT NULL DEFAULT 300 | |
-| last_polled_at | timestamptz | NULL | |
+| poll_interval_sec | INT | NOT NULL DEFAULT 600 | **个人邮箱保守节流（Owner 2026-07-29）**：默认 10 分钟；邮件非秒级业务，慢轮询是首要防风控手段 |
+| poll_phase_offset_sec | INT | NOT NULL DEFAULT 0 | **错峰**：同周期内各账号打散的相位偏移，避免几十账号同秒并发 |
+| consecutive_auth_fail | INT | NOT NULL DEFAULT 0 | **连续认证失败计数**；达阈值即置 status=error 停轮询并告警——认证失败是风控生效信号，**绝不自动重试撞墙** |
+| last_polled_at / last_ok_at | timestamptz | NULL | 掉线可见 |
 | last_error | TEXT | NULL | |
 | +公共列 | | | |
+
+**连接纪律（provider=netease_163/126 强制）**：登录成功后、`SELECT` 之前**必须发 IMAP ID
+命令（RFC 2971，自报 name/version/vendor/support-email）**，否则 163 对后续操作返回
+`Unsafe Login`——现象是「认证成功、一读邮件就报错」，坑在登录之后。选型定 `imapclient`
+库（内置 `id_()`）即为免除此偏方。**每账号一条连接、用完正常登出，不留悬空连接**
+（个人邮箱对并发连接最敏感）。
 
 ### mail_message 邮件（元数据永留，正文 30 天）
 
@@ -104,7 +119,7 @@
 | subject | TEXT | NULL | |
 | from_addr / to_addr | TEXT | NULL | |
 | received_at | timestamptz | NOT NULL | |
-| classification | TEXT | NOT NULL DEFAULT 'none' CHECK IN (none, suspension, listing, order, payment, other) | mail_rule + LLM 兜底分类 |
+| classification | TEXT | NOT NULL DEFAULT 'none' CHECK IN (none, suspension, listing, order, payment, other) | **底座阶段一律 `none`**（AI 后置，Owner 2026-07-29）；列先建好，后续单接规则+LLM 兜底分类时无需改表 |
 | incident_id | BIGINT | NULL | → store_incident（suspension 自动开事件，02 号文档） |
 | body_ref | TEXT | NULL | 正文落盘引用；**清理任务 30 天后删文件并置 NULL**（D-Q17 落地；封店正文已转存 incident.mail_body_snapshot 永留） |
 | purge_after | DATE | NOT NULL | 默认 received_at + 30 天 |
