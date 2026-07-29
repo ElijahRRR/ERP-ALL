@@ -1,8 +1,18 @@
 # PR #46 第三闸真机验证指令（R2-14 14a+14c 产品删除 + 墓碑 + 列表折叠）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
-> 被验代码：分支 `claude/r2-03-launch-leg5n8`，本指令针对 **`b645901`**（若 head 已变，
-> 先贴回实际 sha 再问，不要自行往下走）。
+>
+> 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**。
+>
+> **本指令不把任何具体 sha 写成判据**——判据是「你在分支尖端」+「迁移清单只有 0041」，
+> 见②。你只需**把实际 sha 记进回执**。
+>
+> > 〔2026-07-29 修订，起因是部署机在第①步就撞上了：v1 把 `HEAD = b645901` 写成硬判据，
+> > 而此后指令自身又改了两版（`05ff491`、`f731123`），于是「最新评论叫你用 f731123」与
+> > 「正文要求 HEAD 必须是 b645901」直接打架，第②步必然停机。
+> > **这是 CLAUDE.md 刹车第 5 条（正文只写不变量、不写会漂的快照数字）的同一个错，
+> > 只是发生在部署指令而不是 PR 正文里**——我把那条纪律只用在了 PR 正文上，
+> > 漏了这个适用面。**部署机停得对。**〕
 >
 > ## 铁律（本次指令全程有效）
 >
@@ -29,11 +39,32 @@
 cd C:\ERP-ALL          # 若路径不同请以实际为准，并在回帖里说明
 git fetch origin
 git log --oneline -1 origin/main
-git status --short     # 应为空；非空先贴回来再说
+
+# 工作区判据分两类，**只有第一类是阻塞项**
+$TRACKED_DIRTY = @(git status --porcelain | Where-Object { $_ -notmatch '^\?\?' })
+$UNTRACKED_PATHS = @(git status --porcelain | Where-Object { $_ -match '^\?\?' } |
+                     ForEach-Object { $_.Substring(3).Trim() })
+$BRANCH_FILES = @(git ls-tree -r --name-only origin/claude/r2-03-launch-leg5n8)
+$COLLIDING = @($UNTRACKED_PATHS | Where-Object { $BRANCH_FILES -contains $_.TrimEnd('/') })
+
+"tracked_dirty = $($TRACKED_DIRTY.Count)   (必须 0)"
+$TRACKED_DIRTY
+"untracked     = $($UNTRACKED_PATHS -join ', ')   (不阻塞，除非下一行非空)"
+"colliding     = $($COLLIDING -join ', ')   (必须为空)"
 docker compose ps
 ```
 
-**贴回**：`origin/main` 的 sha、`git status` 是否干净、compose 各容器状态。
+**判据**：
+- `tracked_dirty = 0`——**有未提交的跟踪文件改动才是真阻塞**（切分支会丢改动或被拒）。
+- `colliding` 为空——未跟踪文件只有在**与分支里的同名跟踪文件撞路径**时才会让
+  `git checkout` 拒绝执行；不撞就既不挡路也不会被动到。
+
+> 〔2026-07-29 修订〕v1 这里只写「`git status --short` 应为空」，部署机因三个**既有的
+> 未跟踪文件**（`.codex/`、`AGENTS.md`、`RS-02a-runbook.md`）停机——**它按判据停是对的，
+> 是判据把「未跟踪」和「有改动」混为一谈了**。已实测这三者在本分支与 main 上都不是
+> 跟踪文件，故不构成阻塞；上面的写法把这个区分交给机器判，不再靠人临场拿捏。
+
+**贴回**：`origin/main` 的 sha、上面四行输出、compose 各容器状态。
 
 ## ② 切分支 + 自校验
 
@@ -41,13 +72,21 @@ docker compose ps
 git fetch origin claude/r2-03-launch-leg5n8
 git checkout claude/r2-03-launch-leg5n8
 git pull --ff-only origin claude/r2-03-launch-leg5n8
-$HEAD_SHA = (git rev-parse --short HEAD)
-"HEAD = $HEAD_SHA   (期望 b645901)"
+$HEAD_SHA   = (git rev-parse --short HEAD)
+$REMOTE_SHA = (git rev-parse --short origin/claude/r2-03-launch-leg5n8)
+"HEAD=$HEAD_SHA  REMOTE=$REMOTE_SHA  at_tip=$($HEAD_SHA -eq $REMOTE_SHA)"
 # 本单的迁移必须且只能有 0041
 git diff --name-only origin/main...HEAD -- backend/alembic/
 ```
 
-**判据**：`HEAD = b645901`；迁移文件清单**只有** `backend/alembic/versions/0041_deleted_product_tombstone.py`。
+**判据**：
+- `at_tip=True`（你在分支尖端）。**不比对任何写死的 sha**——指令自身还会修订，
+  写死就会像 v1 那样自相矛盾。
+- 迁移文件清单**只有** `backend/alembic/versions/0041_deleted_product_tombstone.py`。
+  **这一条才是「被测内容对不对」的真判据**：它不随指令修订而变。
+
+**把 `$HEAD_SHA` 记进回执第一行**，连同你所读指令的 sha。#43 那次改了五版指令，
+全靠回执里记着版本号才对得上是哪一版出的问题。
 
 ## ③ 全栈重建并起服务（**必须看到 0041 升级**）
 
