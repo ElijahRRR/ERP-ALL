@@ -70,8 +70,9 @@ docker compose ps
 
 ```powershell
 git fetch origin claude/r2-03-launch-leg5n8
-git checkout claude/r2-03-launch-leg5n8
-git pull --ff-only origin claude/r2-03-launch-leg5n8
+# **用一次性分支名 verify-pr46，不动你本地的 claude/r2-03-launch-leg5n8。**
+# 见下方「为什么不 checkout 同名分支」。-B 可反复执行，重跑不会累积状态。
+git checkout -B verify-pr46 origin/claude/r2-03-launch-leg5n8
 $HEAD_SHA   = (git rev-parse --short HEAD)
 $REMOTE_SHA = (git rev-parse --short origin/claude/r2-03-launch-leg5n8)
 "HEAD=$HEAD_SHA  REMOTE=$REMOTE_SHA  at_tip=$($HEAD_SHA -eq $REMOTE_SHA)"
@@ -87,6 +88,23 @@ git diff --name-only origin/main...HEAD -- backend/alembic/
 
 **把 `$HEAD_SHA` 记进回执第一行**，连同你所读指令的 sha。#43 那次改了五版指令，
 全靠回执里记着版本号才对得上是哪一版出的问题。
+
+> ### 为什么不 `checkout` 同名分支 + `pull --ff-only`
+>
+> 〔2026-07-29 修订，起因是部署机在此停机第二次〕
+>
+> **云端侧对该分支做过 force-push**：#45 squash 合并后，分支上的 commit 不再是 main 的
+> 祖先（squash 的固有后果），故重开分支时从 main 重建并强推。部署机本地仍停在 #43 那轮的
+> 尖端 `b1b0782`，于是 `ahead 8, behind 18`，`--ff-only` 必然 abort。
+>
+> **`git checkout -B verify-pr46 origin/...` 完全绕开这件事**：它只动一个一次性分支名，
+> 你本地的 `claude/r2-03-launch-leg5n8` **原封不动**——**即便我对「本地那些 commit 可以丢」
+> 的判断是错的，也不会丢任何东西**。这比先证明「丢了没关系」再执行 `reset --hard` 更稳：
+> **前者不需要我的判断正确，后者需要。**
+>
+> （供参考的实测：`git diff --stat b1b0782 28fc76a` 为**纯增量、零删除**，
+> 即那 8 个 commit 的内容已被 #43 的 squash 合并一字不落地收进 main。
+> 但上面那条路本来就不依赖这个结论。）
 
 ## ③ 全栈重建并起服务（**必须看到 0041 升级**）
 
@@ -455,6 +473,7 @@ docker compose exec db psql -U erp_migrator -d erp_all -tA -c "SELECT 'after_up=
 ```powershell
 git checkout main
 git pull --ff-only origin main
+git branch -D verify-pr46        # 一次性分支，用完删掉；删它不影响任何东西
 docker compose build
 docker compose up -d
 docker compose ps
