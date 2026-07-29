@@ -1344,13 +1344,73 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description 审核完成（run_id/verdict/reject_level/llm_cost_usd/product_status） */
+                /** @description 审核完成 */
                 201: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["AuditResult"];
+                    };
                 };
+                422: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量送审（同步逐条执行；等价于对每个 product_id 各调一次单品送审）
+         * @description 逐条调用与单品送审**同一段**三段式内核（`audit/service.py::audit_one`）， trigger_kind 由服务端恒写 `batch`——请求体不接受该字段，避免批量路径伪装成人工/自动。 入参按首次出现保序去重。
+         *
+         *     **部分成功正常返回 200，不整批失败**：每条自己 COMMIT 两次，第 N 条出事时前 N-1 条 的 run 已落库、LLM 的钱已花；此时返回 4xx 就成了「响应说失败、库里成功了 N-1 条」的谎， 且审核域无 DELETE 授权、补偿路径不存在。故除下方三类整批 4xx（**都在任何一条开审之前** 判定、零金钱代价）外，一律逐条进桶。
+         *
+         *     两道刹车会提前收尾，剩下的进 `remaining`：**墙钟预算**——每条开审**前**检查已耗时， 超预算即停，它限制的是「一次请求最多花多少钱、最多留多少条 run」。 ⚠️ 它**不保证**在网关超时内返回：预算只在开审前检查，最后放行的那条仍可跑满单条 最坏耗时（llm 超时 120s × 重试 2 次 = 240s），故本端点真实上界 = 预算 90s + 240s = **330s**，而 `frontend/nginx.conf` 的 `proxy_read_timeout` 是 120s。越界那次由 「504 → 客户端用**同一个** Idempotency-Key 重试 → 命中处理中(409)或存储响应」这条 链兜底，因此幂等占位的失效阈值（30min）必须大于 330s；**provider 熔断**——连续多条 needs_review 且这几条 run 都带 `rule_code='llm_unavailable'` 的 hit 才跳闸 （非连续、或 `l3_policy_missing` 这类真判定不跳闸）。两者覆盖不同故障： provider 挂死→墙钟先刹，provider 快速报错→只有熔断拦得住。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description **无数量上限**（Owner 2026-07-28 裁定，刻意不设 maxItems）——成本由墙钟预算约束，不由件数约束；超预算的部分进 remaining 由前端续跑 */
+                        product_ids: number[];
+                        /** @description 默认 l0/l2/l3。枚举**服务端强制**（`audit/router.py::_resolve_levels`，单品与批量共用一段）：非法值整批 422 AUDIT_LEVELS_INVALID，含 l4 整批 422 AUDIT_L4_DISABLED。为什么必须强制——审核编排里每层都是 `if "lN" in levels` 的精确匹配，`["L0"]` 这样的大小写笔误会一层都不命中而 verdict 保持初值 pass，整批产品零检查落 audit_passed */
+                        levels?: ("l0" | "l1" | "l2" | "l3" | "l4")[];
+                    };
+                };
+            };
+            responses: {
+                /** @description 逐条结果（部分成功即此码；只有下方两类 4xx 才是整批拒绝） */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AuditBatchResult"];
+                    };
+                };
+                /** @description 幂等键冲突（同键异载荷/处理中） */
+                409: components["responses"]["Error"];
+                /** @description 业务层整批拒绝仅此三类，都在开审之前判定、无任何一条已落库或已花钱：AUDIT_TEAM_REQUIRED（超管未带 X-Act-Team）/ AUDIT_LEVELS_INVALID（levels 含 l0..l4 之外的值，含大小写写错）/ AUDIT_L4_DISABLED（levels 含 l4）。**另有一类不到业务层的 422**：缺 product_ids、元素非整数、缺 Idempotency-Key 头由 FastAPI 请求校验直接拒，走默认 `{detail: [...]}` 信封而**非** 002 错误信封（无 error.code） */
                 422: components["responses"]["Error"];
             };
         };
@@ -5033,6 +5093,58 @@ export interface components {
         };
         AuditLogPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["AuditLog"][];
+        };
+        /** @description 一次审核的落库结果（`audit/service.py::audit_one` 的返回）。**单品送审 201 与批量 audited[] 同源于本 schema**——批量只是循环调同一段内核，结果形状不该有第二套。 `verdict=needs_review` 是**产生了 run** 的一种结果（判不下来，转人工复核），不是失败。 */
+        AuditResult: {
+            /** @description app.audit_run.id */
+            run_id: number;
+            /** @enum {string} */
+            verdict: "pass" | "reject" | "needs_review";
+            /**
+             * @description 首个否决层；verdict≠reject 时 null。**无 l2**——L2 是软证据只写 hit 不改 verdict；l4 未开放
+             * @enum {string|null}
+             */
+            reject_level: "l0" | "l1" | "l3" | null;
+            /** @description 本次运行的 LLM 花费；缓存命中不计费故为 0 */
+            llm_cost_usd: number;
+            /** @description 审核后的 product.status（audit_passed/audit_rejected/needs_review）；并发重审时本 run 让位于更新的 run，只留档不改状态，此时为 null */
+            product_status: string | null;
+        };
+        /** @description audited[] 的一条 = 单品送审的结果 + product_id（只多回带 id，其余逐字同源）。 */
+        AuditBatchItem: components["schemas"]["AuditResult"] & {
+            product_id: number;
+        };
+        /** @description 未产生可用结果的一条。`skipped` 与 `failed` 同形（都是 product_id + 错误码 + 人话）， 差别在代价而不在形状，故共用本 schema，取值范围见 AuditBatchResult 各字段的说明。 */
+        AuditBatchSkip: {
+            product_id: number;
+            /**
+             * @example AUDIT_PRODUCT_NOT_FOUND
+             * @example AUDIT_STATE_INVALID
+             * @example AUDIT_ITEM_FAILED
+             */
+            code: string;
+            message: string;
+        };
+        /** @description 批量送审的逐条结果。**结构不变量**：`len(audited)+len(skipped)+len(failed)+len(remaining)` 恒等于去重后的入参条数，四桶的 product_id 并集 == 去重入参、两两不交。 前端据此可直接断言「一个都没漏」，不必自己拿入参回比。 */
+        AuditBatchResult: {
+            /** @description 产生了 audit_run 的（含 verdict=needs_review） */
+            audited: components["schemas"]["AuditBatchItem"][];
+            /** @description 开审之前即被判掉、未建 run，**零金钱代价**。code **只可能是这两个**（服务端按白名单归桶，白名单外的业务异常一律进 failed——「可能已扣费」的方向更保守，响应绝不能对成本说谎）：AUDIT_PRODUCT_NOT_FOUND=不存在**或**越权（他团队的 id 故意不分码，否则本端点可被拿来探测他团队 product_id 是否存在）；AUDIT_STATE_INVALID=当前状态不可发起审核 */
+            skipped: components["schemas"]["AuditBatchSkip"][];
+            /** @description 已开审但中途异常中断（AUDIT_ITEM_FAILED）。可能已建 run、已发生花费，代价与 skipped 不同故分桶；失败一条不中断整批。**该产品会停在 status=auditing**（tx1 已置、tx2 未及回写），运维处置见 `.agent/evidence/R2-09/runbook-increment3a.md`。message 只含错误类名与固定人话，原始异常文本只进服务端日志（它常含 SQL 片段/连接参数，而本字段会原样显示给运营） */
+            failed: components["schemas"]["AuditBatchSkip"][];
+            /** @description **裸 id 数组**（保序）：因墙钟预算耗尽或 provider 熔断而**根本没轮到开审**的 product_id。不是失败、无任何代价，前端把它原样当作下一批的 product_ids 续跑即可。刻意不逐条生成 skipped 条目——剩余可能很多，逐条 message 只是把同一句话复制 N 遍 */
+            remaining: number[];
+            /** @description audited[] 按 verdict 的计数；三键恒在（无该结果时为 0），三值之和 == len(audited)。 */
+            verdict_counts: {
+                pass: number;
+                reject: number;
+                needs_review: number;
+            };
+            /** @description 本批已发生的 LLM 花费合计 = audited[] 各条 llm_cost_usd 之和 */
+            total_llm_cost_usd: number;
+            /** @description 幂等重放才出现（`core/idempotency.py` 给存储响应加的标记），首次执行**无此键**——故不列入 required。true=本次一条都没重跑、一分钱没花，返回的是上次的结果；前端不该把它当作「又审了一遍」 */
+            idempotent_replay?: boolean;
         };
         ScrapeJob: {
             id?: number;

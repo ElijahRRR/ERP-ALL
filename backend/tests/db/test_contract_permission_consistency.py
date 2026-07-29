@@ -67,9 +67,18 @@ CONTRACT_AHEAD_OF_CODE: dict[tuple[str, str], str] = {
     ("PATCH", f"{API_PREFIX}/products/{{}}"): "CT-0727",
     ("GET", f"{API_PREFIX}/listing-errors"): "CT-0727",
     ("PATCH", f"{API_PREFIX}/listing-errors/{{}}"): "CT-0727",
-    # 维护任务端点未建，属 R2-12（在做）本单范围。
-    ("GET", f"{API_PREFIX}/maintenance-tasks"): "R2-12",
-    ("POST", f"{API_PREFIX}/maintenance-tasks"): "R2-12",
+    # 维护任务端点（`GET/POST /maintenance-tasks`，x-permission: listing.read / listing.write）
+    # 未建。原挂 R2-12 名下，2026-07-29 审计侧整单收账（`9e57e0f`）后 R2-12 转 accepted，
+    # 下面那条反向不变量当场判红——**与上面那 7 条同形，处置也同**：复核 R2-12 的 acceptance
+    # 四条（①USPTO 三日连测 ②TRO→L2 命中复现 ③全店对账 ④合规页四项）**从无这两个端点**，
+    # 故不是误关账，是归属判断错了，改挂 CT-0727（无主欠账收容单，todo）。
+    # 需要留意的是它与上面 7 条来历不同：那 7 条是一开始就挂错了单，这 2 条是**挂对了单、
+    # 但那张单在端点没建成的情况下按另一套判据收了账**——功能域确属 R2-12（4b 的
+    # end_date_renewal 执行通道就在里面，runner 已建、API 面没建），只是验收口径没要求它。
+    # 〔若审计侧判定 R2-12 其实**不该**收账（即这两个端点本就属其交付范围），请把此处改回
+    #  "R2-12" 并重开该单——本次改挂只是按既有先例解 main 的红，不代替验收判定。〕
+    ("GET", f"{API_PREFIX}/maintenance-tasks"): "CT-0727",
+    ("POST", f"{API_PREFIX}/maintenance-tasks"): "CT-0727",
 }
 
 # ── D 类白名单：代码已建、契约未登记 ──
