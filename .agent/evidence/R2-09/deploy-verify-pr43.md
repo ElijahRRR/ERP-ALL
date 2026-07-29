@@ -15,6 +15,12 @@
 
 ---
 
+> **本文全部 SQL 的列名已过机器校验**（2026-07-29，v4）：起本地库 `alembic upgrade head`，
+> 抽出文中 6 条 SQL、对 `information_schema.columns` 逐个列名核验，**6/6 全部存在**。
+> 之所以补这道，是因为前三轮阻断**全部**是本指令自身的错（漏必填头、期望值写反、
+> 判据要求一个设计上不可能的等式、列名不存在），而**每一条都是我照记忆写、没对源码**。
+> 逐条人工复核显然不够可靠，故改用机器核。
+
 ## 本文分三段，**花钱的只有 C 段**
 
 | 段 | 内容 | 花钱 |
@@ -330,14 +336,30 @@ docker compose exec db psql -U postgres -d erp_all -c `
 
 ### 4.4 成本切片（应为 0）
 
+> **v4 修订（2026-07-29，部署机第三轮在此停手；第四次是本指令的错，不是产品缺陷）**：
+> 原 SQL 用的是 `llm_usage_log.created_at`，**该列不存在**。真实时间列是
+> `occurred_at`（`0008_audit_compliance.py:218`，且它同时是分区键
+> `PARTITION BY RANGE (occurred_at)`）。
+>
+> 顺带把过滤条件从**时间窗**换成**按 run id 精确圈定**：`audit/service.py:383/473`
+> 记账时写的是 `object_type='audit_run'` + `object_id=<run_id>`。时间窗会把后台 beat
+> 顺手跑的 LLM 调用一起算进来——那会造成**假红**（判据要求 0，而别的任务花了钱）。
+> 按 run id 圈定则与本次送审严格一一对应，没有这个干扰。
+
+把 4.2 响应里 `audited[].run_id` 那三个数字填进去（下面用 `R1,R2,R3` 占位）：
+
 ```powershell
 docker compose exec db psql -U postgres -d erp_all -c `
-  "SELECT count(*) AS calls, coalesce(sum(cost_usd),0) AS cost FROM app.llm_usage_log WHERE created_at > now() - interval '30 min';"
+  "SELECT count(*) AS calls, coalesce(sum(cost_usd),0) AS cost FROM app.llm_usage_log WHERE object_type = 'audit_run' AND object_id IN (R1,R2,R3);"
 ```
 
 **贴回⑫**：这一行。
-**判据**：**`calls=0` 且 `cost=0`**——B 段全程没传 `l3`，一分钱都不该花。
-**若非 0：停下贴回**，说明 levels 没被尊重，那是缺陷。
+**判据**：**`calls=0` 且 `cost=0`**——B 段全程只传了 `["l0","l2"]`，而 L0/L2 是纯规则/查库、
+不出网，**一分钱都不该花**。
+**若非 0：停下贴回**，说明 `levels` 没被尊重（默认档含 `l3`），那是真缺陷。
+
+> 想同时看一眼全库近况可以再跑一条**参考性**查询（**不作判据**，后台 beat 的调用会混进来）：
+> `SELECT count(*), coalesce(sum(cost_usd),0) FROM app.llm_usage_log WHERE occurred_at > now() - interval '30 min';`
 
 ---
 
@@ -352,14 +374,25 @@ UI 不传 `levels` → 后端默认 `["l0","l2","l3"]` → **L3 会真的调 LLM
 - 提交后有结果反馈，四桶数字之和 == 勾选件数；
 - 抽查一件，其审核详情能打开、能看到本次 run。
 
-再看成本切片（同 4.4 的 SQL）：**`calls > 0`、`cost > 0`**，且：
+再看成本切片。**先拿到本次 UI 送审那两条的 run_id**（页面上打开审核详情能看到，或按时间取最新两行）：
 
 ```powershell
 docker compose exec db psql -U postgres -d erp_all -c `
-  "SELECT trigger_kind, count(*) FROM app.audit_run WHERE created_at > now() - interval '30 min' GROUP BY 1;"
+  "SELECT id, product_id, trigger_kind, llm_cost_usd FROM app.audit_run WHERE trigger_kind = 'batch' ORDER BY id DESC LIMIT 2;"
 ```
 
-**判据**：出现 `trigger_kind='batch'` 的行——这是「批量送审的钱能按入口切片归因」的现场证据。
+再按这两个 run id 查花费（**注意时间列是 `occurred_at` 不是 `created_at`**，同 4.4）：
+
+```powershell
+docker compose exec db psql -U postgres -d erp_all -c `
+  "SELECT count(*) AS calls, coalesce(sum(cost_usd),0) AS cost FROM app.llm_usage_log WHERE object_type = 'audit_run' AND object_id IN (R4,R5);"
+```
+
+**判据**：
+- 第一条查询里两行 `trigger_kind='batch'`——这是「批量送审的钱能按入口切片归因」的现场证据
+  （若显示成 `manual`/`auto`，说明服务端没有恒写 `batch`，那是缺陷）；
+- 第二条 **`calls > 0` 且 `cost > 0`**——C 段走 UI、默认档含 `l3`，这里必须真的花了钱。
+  **若是 0，说明 L3 根本没跑**，那样 C 段等于什么都没验到，要停下贴回。
 
 **贴回⑬**：UI 三条判据的「过/不过」+ 两张表。
 
