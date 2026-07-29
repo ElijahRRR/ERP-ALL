@@ -571,28 +571,87 @@ docker compose exec db psql -U erp_migrator -d erp_all -tA -c "SELECT 'after_up=
 > 墓碑清空，所以不损失任何东西；**但正式环境若要降级，须先知悉这条语义损失**
 > （已写进 `.agent/evidence/R2-14/runbook.md`）。
 
-## ⑯ 收尾
+## ⑯ 收尾（**顺序不可换：先降库，后切分支**）
+
+> ### ⚠️ 为什么必须先降库
+>
+> 〔2026-07-29 修订，起因是部署机在此停机第六次，**且这一次把服务弄停了**〕
+>
+> v1 说「切回 main 后库停在 0041 也没关系，多一张没人用的表不影响 main 运行」。
+> **那句话是错的，而且错得代价很实**：问题不在多一张表，**在 alembic 的版本指针**。
+> main 的代码树里没有 `0041` 这个 revision 文件，于是 `alembic upgrade head` 报
+> `Can't locate revision identified by '0041'`，migrate 容器 `Exited (255)`，
+> **api / beat / frontend 全部起不来**。
+>
+> 我把「多一张表无害」当成了「版本指针无害」——**那是两件事**。
+>
+> **降库必须在仍处于验证分支时做**：alembic 要解析 0041，得先在代码树里找得到那个文件。
+> 一旦切回 main，两个方向（upgrade 和 downgrade）都解析不了，就得再切回来一趟。
+
+### ⑯-1 先确认墓碑表是空的（**否则降级会真的毁数据**）
+
+```powershell
+docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
+SELECT 'tombstones_total=' || count(*) FROM app.deleted_product;
+"
+```
+
+**判据**：`tombstones_total=0`。
+
+> **非 0 就停下来问，不要往下走。** 降级会 `DROP TABLE deleted_product`——若验证窗口里
+> 有人用删除端点删过**真实**产品，那些墓碑会被这一步销毁，而墓碑没了意味着那些商品
+> 下次采集会全部回流。⑮ 已清掉本指令自造的测试墓碑，所以正常情况下这里就是 0；
+> **不是 0 说明发生了本指令没预料到的事，那正是该停的时刻。**
+
+### ⑯-2 在验证分支上把库降回 main 认识的版本
+
+```powershell
+docker compose run --rm migrate alembic downgrade 0040
+docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
+SELECT 'alembic_version=' || version_num FROM public.alembic_version;
+SELECT 'tombstone_table=' || coalesce(to_regclass('app.deleted_product')::text, 'gone');
+"
+```
+
+**判据**：`alembic_version=0040`、`tombstone_table=gone`。
+
+### ⑯-3 切回 main 并起服务
 
 ```powershell
 git checkout main
 git pull --ff-only origin main
-git branch -D verify-pr46        # 一次性分支，用完删掉；删它不影响任何东西
+git branch -D verify-pr46        # 一次性分支，用完删掉
 docker compose build
 docker compose up -d
 docker compose ps
-Invoke-RestMethod http://127.0.0.1:8000/healthz
+```
+
+**判据**：migrate `Exited (0)`（**这次不该再有 `Can't locate revision`**）；
+`api`/`beat`/`frontend` 为 `Up`。
+
+### ⑯-4 就绪 + 残留清点
+
+```powershell
+$FINAL_OK = $false
+foreach ($finalTry in 1..30) {
+  try {
+    $FINAL_BODY = Invoke-RestMethod http://127.0.0.1:8000/healthz -TimeoutSec 3
+    $FINAL_OK = $true; "healthz ok（第 $finalTry 次）：$($FINAL_BODY | ConvertTo-Json -Compress)"; break
+  } catch { Start-Sleep -Seconds 2 }
+}
+if (-not $FINAL_OK) { "STOP：healthz 未就绪"; docker compose ps; docker compose logs api --tail 50 }
+
 docker compose exec db psql -U erp_migrator -d erp_all -tA -c "
 SELECT 'leftover_products=' || count(*) FROM app.product WHERE source_ref LIKE 'B0R214V%';
 SELECT 'leftover_listings=' || count(*) FROM app.listing WHERE channel_sku LIKE 'R214VERIFY-%';
-SELECT 'leftover_tombstones=' || count(*) FROM app.deleted_product WHERE source_ref LIKE 'B0R214V%';
 "
 ```
 
-**判据**：三个 leftover 全为 0；healthz 正常；未改码、未 push、未 merge。
+**判据**：两个 leftover 全为 0；healthz 正常；未改码、未 push、未 merge。
 
-> **注意**：切回 main 后数据库仍停在 0041（⑮ 最后一步 upgrade 到了 head）。
-> main 的代码不认识 `deleted_product`，但**多一张没人用的表不影响 main 运行**——
-> 不要为了「干净」再降一次，降级反而会在合并后需要重新升。
+> `leftover_tombstones` 这一条**从清单里去掉了**——⑯-2 之后 `deleted_product` 表已被
+> DROP，再去 `SELECT ... FROM app.deleted_product` 只会报「表不存在」。
+> 它的作用已由 ⑯-1 的 `tombstones_total=0` 承担，且那一条在降级**之前**，更有意义。
 
 ---
 
