@@ -500,8 +500,39 @@ ORDER BY occurred_at;
 
 ## ⑭ UI 真链路（浏览器，走**内网 IP** 不要用 localhost）
 
-1. **列表折叠（14c）**：产品页默认不出现「已下架」的产品；勾上「显示已下架」后出现；
-   在状态下拉里选「已下架」时，该勾选框**变灰不可点**并有 Tooltip 说明。
+### ⑭-0 先造一个 `retired` 样本（**否则折叠判据无从验起**）
+
+```powershell
+docker compose exec db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "
+INSERT INTO app.product (team_id, source_channel, source_ref, title, status)
+VALUES (<TEAM_ID>, 'amazon', 'B0R214V004', 'R2-14 verify - retired sample', 'retired');
+"
+docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
+SELECT 'retired_sample=' || id || ' ' || master_sku || ' ' || status
+FROM app.product WHERE team_id=<TEAM_ID> AND source_ref='B0R214V004';
+"
+```
+
+> 〔2026-07-29 修订，起因是部署机在此停机第六次〕
+> v1 默认现网存在 `retired` 产品，实际一个都没有——于是「勾选后出现」这条**无从验起**。
+> **把判据改成「无数据故跳过」是错的**：那正是「静默地什么都没测」，本单从头到尾
+> 都在防这个。造一个样本才是对的。
+>
+> **安全性**：该样本**不挂 listing**，且全仓**没有任何 beat 按 `product.status='retired'`
+> 扫描**（`retire_recon` 扫的是 `channel_command` 的 item_retire 命令，不是 product 状态）
+> ——它完全惰性。前缀 `B0R214V` 已被⑮的清理覆盖。
+
+### ⑭-1 逐条验（用刚造的 `B0R214V004`）
+
+| # | 操作 | 期望 |
+|---|---|---|
+| a | 产品页默认视图 | **看不到** `B0R214V004` |
+| b | 勾上「显示已下架」 | `B0R214V004` **出现**，状态标签为「已下架」 |
+| c | 清空勾选，状态下拉选「已下架」 | `B0R214V004` **出现**（这条防的是「选了已下架却空列表」） |
+| d | 保持状态筛选为「已下架」 | 勾选框**变灰不可点**，Tooltip 说明理由 |
+
+> d 的勾选框**勾没勾上不影响判据**——它此时是禁用的，状态无意义。
+> 真正要看的是「灰掉 + 有说明」，不是「勾着还是没勾」。
 2. **删除入口**：团管账号能看到行内红色「删除」按钮；点开弹窗，**逐字读一遍确认文案**，
    确认它写明了这四件事：物理删除无回收站 / 上过架的会留墓碑且重采不再入库 /
    **从未上架的不留墓碑、重采仍会入库、要彻底清掉需同时从采集清单去掉该 ASIN** /
