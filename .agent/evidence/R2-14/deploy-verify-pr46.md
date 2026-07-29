@@ -167,8 +167,19 @@ if (-not $HEALTH_OK) {
 ## ④ 前端产物对拍（防「部署了但页面是旧的」）
 
 ```powershell
-docker compose exec frontend sh -lc "ls /usr/share/nginx/html/assets | Select-String 'index-'"
+docker compose exec frontend sh -c "ls /usr/share/nginx/html/assets/index-*.js"
 ```
+
+> 〔2026-07-29 修订，起因是部署机在此停机第四次〕
+> v1 写的是 `sh -lc "ls ... | Select-String 'index-'"`——**`Select-String` 是 PowerShell
+> 的 cmdlet，而 `sh -lc` 里跑的是容器内的 Alpine sh**，报 `sh: Select-String: not found`。
+>
+> **#43 那份原本是对的**（`sh -c "ls .../index-*.js"`，无管道无 cmdlet），
+> 是我抄过来时顺手「改进」成管道 + cmdlet，把一条真机上跑通过的命令改坏了。
+> **抄一条已经验证过的命令时不要顺手优化它**——它跑通过，就是它当前形态的全部价值。
+>
+> 该失败类别已机器化：`.agent/evidence/R2-14/crossshellcheck.py`
+> （扫 `sh -c` / `bash -c` 的载荷里有没有 PowerShell 的 Verb-Noun cmdlet）。
 
 浏览器打开系统 → F12 Network 刷新首页 → 看加载的 `index-*.js` 文件名。
 
