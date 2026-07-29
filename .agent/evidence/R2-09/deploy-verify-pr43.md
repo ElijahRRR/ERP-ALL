@@ -249,7 +249,9 @@ docker compose exec db psql -U postgres -d erp_all -c `
 
 ```powershell
 $ids  = '[A,B,C,A]'          # 4 个元素、3 个不同 → 去重后 3
-$key  = "verify-pr43-batch-1"
+# **续跑时必须换一个没用过的键**（首轮已消费 verify-pr43-batch-1；沿用它会直接命中
+# 重放路径，4.2 的「首次」就不是首次了，后面 4.3 等于拿重放比重放，什么也验不到）。
+$key  = "verify-pr43-batch-2"
 $body = "{""product_ids"":$ids,""levels"":[""l0"",""l2""]}"
 $resp = Invoke-WebRequest -Method Post -Uri "http://127.0.0.1/api/v1/products/audit" `
         -Headers ($H + @{ 'Idempotency-Key' = $key }) -ContentType "application/json" `
@@ -267,6 +269,17 @@ $resp.Content
 
 ### 4.3 幂等重放（防重复扣费的承重件）
 
+> **v3 修订（2026-07-29，部署机第二轮在此停手；又是本指令的错，不是产品缺陷）**：
+> 原判据写的是 `SAME_BODY = ($resp2.Content -eq $resp.Content)` 要求为 `True`。
+> **这个条件在设计上永远不可能满足**——`core/idempotency.py:112` 是
+> `return {**existing.response, "idempotent_replay": True}`：**重放响应必然比首次多一个
+> `idempotent_replay: true` 字段**。该字段是契约 002 明文登记的
+> （`openapi-v0.yaml:1940`「幂等重放才出现……首次执行**无此键**——故不列入 required」），
+> 前端 `BatchAuditModal.tsx:144` 正靠它决定 `nonce` 要不要清除。
+> **整条链上只有我这份指令假设它不存在。**
+> 附带第二个原因：响应存在 `jsonb` 列里，**jsonb 不保留对象键序**，逐字节比较即便没有
+> 那个字段也不可靠。**判据必须比解析后的 JSON，不能比原始文本。**
+
 **用同一个 key、同一个 body 再发一次**：
 
 ```powershell
@@ -274,7 +287,17 @@ $resp2 = Invoke-WebRequest -Method Post -Uri "http://127.0.0.1/api/v1/products/a
          -Headers ($H + @{ 'Idempotency-Key' = $key }) -ContentType "application/json" `
          -Body $body -SkipHttpErrorCheck
 $resp2.StatusCode
-"SAME_BODY=$($resp2.Content -eq $resp.Content)"
+
+$a = $resp.Content  | ConvertFrom-Json    # 首次
+$b = $resp2.Content | ConvertFrom-Json    # 重放
+
+"FIRST_HAS_REPLAY_FLAG=$($null -ne $a.idempotent_replay)"   # 期望 False
+"REPLAY_FLAG=$($b.idempotent_replay)"                        # 期望 True
+"AUDITED_SAME=$(($a.audited | ConvertTo-Json -Depth 5 -Compress) -eq ($b.audited | ConvertTo-Json -Depth 5 -Compress))"
+"COUNTS_SAME=$(($a.verdict_counts | ConvertTo-Json -Compress) -eq ($b.verdict_counts | ConvertTo-Json -Compress))"
+"COST_SAME=$($a.total_llm_cost_usd -eq $b.total_llm_cost_usd)"
+"COST_TYPE=$($b.total_llm_cost_usd.GetType().Name)"          # 期望数值型，不是 String
+$resp2.Content
 ```
 
 再数一次审核运行行数（**重放不得新增**）：
@@ -284,9 +307,26 @@ docker compose exec db psql -U postgres -d erp_all -c `
   "SELECT trigger_kind, count(*) FROM app.audit_run WHERE created_at > now() - interval '30 min' GROUP BY 1;"
 ```
 
-**贴回⑪**：`$resp2.StatusCode`、`SAME_BODY`、以及这张计数表（**跑第二次之后**）。
-**判据**：状态 **200**、`SAME_BODY=True`、`audit_run` 里 `trigger_kind='batch'` 的行数
-**与 4.2 之后相同**（重放取回已存响应，不新建 run、不重复花钱）。
+**贴回⑪**：上面那七行输出 + 完整重放响应体 + 这张计数表（**跑第二次之后**）。
+**判据**（全部满足才算过）：
+
+| 判据 | 期望 |
+|---|---|
+| 状态码 | **200** |
+| `FIRST_HAS_REPLAY_FLAG` | **False**（首次不带这个字段） |
+| `REPLAY_FLAG` | **True**（重放自陈是重放） |
+| `AUDITED_SAME` | **True**（逐条结果原样重放） |
+| `COUNTS_SAME` / `COST_SAME` | **True** |
+| `COST_TYPE` | **数值型**（`Double`/`Int32`/`Decimal` 皆可，**不能是 `String`**） |
+| `audit_run` 中 `trigger_kind='batch'` 行数 | **与 4.2 之后相同**（不新建 run = 没重跑、没重复花钱） |
+
+> `COST_TYPE` 这条不是吹毛求疵：存储走的是 `json.dumps(..., default=str)`，哪天
+> `llm_cost_usd` 变成 `Decimal`，重放响应里的钱就会**悄悄变成字符串**，而只比
+> `audited[]` 的断言看不见（那一层两侧取自同一份存储响应，一起变也一起相等）。
+>
+> **行数不新增这条单独看是不够的**：若重放真的重跑了一遍编排，这批品已是
+> `audit_passed`，第二遍会全部落进 `skipped` 桶而**同样不新建 run**——所以
+> `AUDITED_SAME` 才是那条真正区分「取回存储响应」与「又跑了一遍」的判据。
 
 ### 4.4 成本切片（应为 0）
 
