@@ -94,9 +94,14 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 
 #### 补：四个权限里**三个是零调用**（PR #47 审查侧 N-c 提出，本轮扩大核实）
 
-审查侧指出 `scripting` 零调用可直接删。逐个核下来**范围比这更大**——把插件自有 JS
-与两个第三方库全扫了一遍（`js/popup.js`、`js/background.js`、`lib/jquery-3.3.1.min.js`、
-`layer/layer.js`，即 manifest 引到的全部 JS）：
+审查侧指出 `scripting` 零调用可直接删。逐个核下来**范围比这更大**——扫的是**仓里全部
+5 个 JS**：`js/popup.js`、`js/background.js`、`lib/jquery-3.3.1.min.js`、`layer/layer.js`、
+`layer/mobile/layer.js`。
+
+> 前 4 个是 manifest 引到的；第 5 个 `layer/mobile/layer.js` **manifest 并未引用**，
+> 是审查侧第二轮补扫的——**「零命中」这种全称结论就该连没被引用的一起排除**，
+> 我第一轮只扫了 manifest 引到的 4 个，口径偏窄。已复核：该文件全文无 `chrome.*`。
+> 另核 `popup.html`，其 `<script src>` 只有 `js/popup.js`，无 manifest 之外的加载路径。
 
 | 声明的权限 | 实际调用 | 处置 |
 |---|---|---|
@@ -117,6 +122,46 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 
 → 随 13a 的安全收窄一并处理：删 `storage` / `tabs` / `scripting` 三条 + 收窄
 `host_permissions`；`cookies` 留待 §四 第 3 条裁定。
+
+> **删 `storage` 会不会让它没地方存东西？不会**：状态存在 `localStorage`（popup.js 里 4 处），
+> 而 `chrome.storage` 零处。`localStorage` 不需要该权限，故那条是真闲置，删掉零影响。
+
+#### 补：cookie 调用链——收窄 `host_permissions` 与保留 `cookies` **相容**，且收窄是承重的
+
+（PR #47 审查侧第二轮提出前两条，本轮复算确认并补上第三条。三条都是给 13a 的。）
+
+**① 那两条安全建议此前从没人验过它们相不相容，现在验了：相容。**
+
+`background.js` 的 `chrome.cookies.getAll({url: request.url})`，`url` 取自消息载荷；
+唯一调用方是 popup.js 的 `getCookiesAsJson()`，传的是 `window.location.href.split("?")[0]`
+——**调用方自己所在页面的 URL**。故实际读到的只有 amazon 自己的 cookie。
+
+**即：把 `host_permissions` 收窄到 amazon 三站是零行为变更**，不会打断 `buyer_session`
+那条路径（若 §四 第 3 条裁定保留它）。收窄因此是个不需要回归测试的改动。
+
+**② 但正因如此，收窄是承重的，不是清洁工作。**
+
+`chrome.runtime.onMessage` 那个监听器**不校验 `sender`**，URL 直接取自消息。
+今天安全只是因为**约束在调用方，不在被调方**。fork 之后一旦出现第二个调用点
+（或注入面变化），它就是一个「任意域读 cookie」的原语，而**唯一还兜着它的就是
+`host_permissions`**。
+
+→ 13a 顺手把 `sender` 校验也加上：两道边界比一道稳，成本是一行。
+
+**③ 而「约束在调用方」比 ② 说的还要散——`popup.js` 有两个执行上下文。**
+
+它既是 manifest 的 `content_scripts.js`，又被 `popup.html` 以 `<script src>` 加载
+（`popup.html` 只加载这一个脚本，无 manifest 之外的加载路径）。两个上下文里
+`window.location.href` 完全不同：
+
+| 上下文 | URL | 谁把它限制在 amazon |
+|---|---|---|
+| 内容脚本 | amazon 订单页 | manifest 的 `content_scripts.matches` |
+| 扩展弹窗页 | `chrome-extension://<id>/popup.html` | `init()` 里的 `isAmazonOrderPage()`——不匹配就不建 UI，`getCookiesAsJson` 走不到 |
+
+**所以 amazon-only 这个性质靠的是两个不同上下文里的两套调用方约束，而 `background.js`
+里一套都没有。** 这让 ② 的结论更硬：不是「有一个调用方恰好传了安全的值」，而是
+「有两个各自独立的调用方约束，改任何一个都会破，而被调方对此一无所知」。
 
 ---
 
@@ -169,8 +214,10 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 | **13d** | 回填与异常 | 回填列与状态机**全部现成**，主要是服务层与对账 |
 | **13e** | 灰度切换（**最高风险片**） | 红线：同一浏览器配置内绝不同时启用两个插件——**会重复下单** |
 
-**安全项随 13a 强制**：收窄 `host_permissions`、**删掉 `storage`/`tabs`/`scripting` 三条
-零调用权限**（§〇③ 补）、按 `buyer_session` 决定是否删 `cookies` 权限与 `updateBuyerCookie`、
+**安全项随 13a 强制**：收窄 `host_permissions`（**零行为变更，且它同时是那个未校验
+`sender` 的读 cookie 原语的边界**）、**删掉 `storage`/`tabs`/`scripting` 三条零调用权限**、
+**给 `chrome.runtime.onMessage` 加 `sender` 校验**（成本一行，见 §〇③ 补）、
+按 `buyer_session` 决定是否删 `cookies` 权限与 `updateBuyerCookie`、
 ERP 不可达时插件 **fail-closed 不自行采购**。
 
 ---
@@ -241,6 +288,10 @@ ERP 不可达时插件 **fail-closed 不自行采购**。
 | 传了 headers 则 base 被整体替换 | 用 `{headers:{...base,...o.headers},...o}` 跑一次 node | 传 headers 时 base 键全丢 |
 | 四权限里三个零调用 | 对 4 个 JS 各数 `chrome.storage` / `chrome.tabs` / `chrome.scripting` / `chrome.cookies` | 前三个 0；`cookies` 仅 `background.js` 1 处 |
 | 插件自有 JS 就是两个文件 | `cat <插件仓>/manifest.json` 看 `content_scripts.js` 与 `background.service_worker` | `js/popup.js` + `js/background.js`（其余为 jquery/layer 库） |
+| 仓里共 5 个 JS，第 5 个未被 manifest 引用 | 列仓内 `*.js` 并与 manifest + `popup.html` 的加载项比对 | 多出 `layer/mobile/layer.js`；其全文无 `chrome.*` |
+| 状态存 `localStorage` 而非 `chrome.storage` | 各数一次 `localStorage` / `chrome.storage` | 4 / 0 |
+| `cookies` 的 url 来自调用方所在页 | 读 `getCookiesAsJson()` 与 `background.js` 的监听器 | `window.location.href.split("?")[0]`；监听器不校验 `sender` |
+| `popup.js` 有两个执行上下文 | manifest 的 `content_scripts.js` + `popup.html` 的 `<script src>` | 两处都指向 `js/popup.js`；弹窗页由 `isAmazonOrderPage()` 挡住 |
 | `daily_cap` 两个存储位置 | `grep -rn "daily_cap" specs/` | `07:144` 建列、`09:208` 护栏键，措辞同义 |
 
 > ⚠️ **复算这几条时不要用 GitHub 代码搜索**：它对本仓返回 `incomplete_results: true`，
