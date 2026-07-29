@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.catalog import delete as delete_service
 from erp.catalog import variant as variant_service
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
@@ -100,6 +101,28 @@ async def get_product(
     if row is None:
         raise BusinessError("PRODUCT_NOT_FOUND", "产品不存在")
     return dict(row)
+
+
+@catalog_router.delete("/products/{product_id}")
+async def delete_product(
+    product_id: int,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("catalog.product_delete"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    reason: str = Query(min_length=1, max_length=200, description="删除原因，落墓碑与审计留痕"),
+) -> dict[str, Any]:
+    """硬删除一个产品（§7.1 三级规则；R2-14 14a）。**全仓第一个 DELETE 端点。**
+
+    `reason` 走 query 而非请求体：DELETE 带 body 虽合法，但沿途代理与部分客户端会丢弃它，
+    而这里 `reason` 是必填的留痕字段——丢了就变成一条没有理由的不可逆操作记录。
+
+    **不消费 `Idempotency-Key`**：契约 002 的幂等头要求针对「批量提交类 + 渠道写路径」
+    （README §6），本端点两者都不是。重放语义天然清楚——第二次调用回 404，
+    而产品确已删除；再加一层幂等缓存只会把「已删除」伪装成「刚删除」。
+    """
+    return await delete_service.delete_product(
+        session, user=user, request=request, product_id=product_id, reason=reason
+    )
 
 
 # ── 变体组（R2-11 增量1；契约 002 /variant-groups；D-Q2/D-Q63）──

@@ -65,6 +65,35 @@ async def create_job(
     if not targets:
         raise BusinessError("SCRAPE_INPUT_INVALID", "input.targets 无有效目标")
 
+    # ── 墓碑预筛（R2-14 14a-3）──
+    #
+    # ⚠️ **这一层是优化，不是保证。** 真正的保证在 `product_upsert` 的入库前检查：
+    # 本次预筛之后、任务落地之前的那段时间里商品可能才被删，那样的任务照样会跑到入库点。
+    # 预筛在这里的价值是省掉真实抓取（代理带宽、时间、渠道风控暴露），并让运营在建作业
+    # 当场就看见「有几个被墓碑挡下」，而不是抓完一轮才发现白抓。
+    #
+    # 两处判读并存本身有漂移风险（同 core/automation.py 模块头注说的那类）。故此处
+    # **不复制判定逻辑**，与入库点共用同一个查询函数 `_deleted_refs`。
+    blocked = await _deleted_refs(session, team_id=team_id, source=source, refs=targets)
+    if blocked:
+        targets = [t for t in targets if t not in blocked]
+        log.info(
+            "scrape.targets_blocked_by_tombstone",
+            team_id=team_id,
+            source=source,
+            blocked=len(blocked),
+        )
+    if not targets:
+        # 不建空作业：0 任务的作业永远等不到 `_finish_job_if_complete`，会以 pending
+        # 僵在列表里，看起来像卡住的采集——而真相是没什么可采。
+        raise BusinessError(
+            "SCRAPE_ALL_TARGETS_DELETED",
+            "全部目标都已被删除并留有墓碑，不会重新入库",
+            {"blocked": sorted(blocked)},
+        )
+    if blocked:
+        input_ = {**input_, "targets": targets, "skipped_deleted": sorted(blocked)}
+
     row = (
         await session.execute(
             text(
@@ -506,6 +535,28 @@ async def reclaim(
 # ── product 入库（specs/001 §03 去重协议）──
 
 
+async def _deleted_refs(
+    session: AsyncSession, *, team_id: int, source: str, refs: list[str]
+) -> set[str]:
+    """这批 source_ref 里哪些已有墓碑（R2-14 14a）。
+
+    **墓碑查询的唯一实现**——预筛与入库前检查共用它，避免两处各写一份判定后漂移。
+    键与 `uq_product` / 入库 `ON CONFLICT` 严格同形：`(team_id, source_channel, source_ref)`。
+    """
+    if not refs:
+        return set()
+    rows = (
+        await session.execute(
+            text(
+                "SELECT source_ref FROM app.deleted_product"
+                " WHERE team_id = :t AND source_channel = :sc AND source_ref = ANY(:refs)"
+            ),
+            {"t": team_id, "sc": source, "refs": refs},
+        )
+    ).scalars()
+    return {str(r) for r in rows}
+
+
 async def product_upsert(
     session: AsyncSession,
     *,
@@ -517,6 +568,24 @@ async def product_upsert(
     title = str(payload.get("title") or "").strip()
     if not title:
         raise BusinessError("SCRAPE_PAYLOAD_INVALID", "payload 缺少 title，无法入库 product")
+
+    # ── 墓碑检查（R2-14 14a-3）——**验收②的承重件就是这一句** ──
+    #
+    # 无墓碑硬删 = 垃圾循环回流（§7.1 称之为「硬删除唯一的技术陷阱」）。检查放在
+    # INSERT 之前而不是靠约束挡：`deleted_product` 与 `product` 是两张表，数据库层面
+    # 没有任何东西会阻止重新插入——**挡住它的只有这里**。
+    #
+    # 不抛错、只跳过：采集任务本身没做错什么，抓回一个已删商品是正常输入。抛错会让
+    # 作业计数进 failed，运营看到的是「采集失败」，而事实是「按你的删除意愿没入库」。
+    if await _deleted_refs(session, team_id=team_id, source=source, refs=[source_ref]):
+        log.info(
+            "scrape.upsert_skipped_by_tombstone",
+            team_id=team_id,
+            source=source,
+            source_ref=source_ref,
+        )
+        return {"skipped": True, "reason": "deleted_tombstone", "source_ref": source_ref}
+
     row = (
         await session.execute(
             text(
