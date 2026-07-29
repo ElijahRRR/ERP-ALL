@@ -175,7 +175,7 @@ FROM app.product p WHERE p.team_id=<TEAM_ID> AND p.source_ref LIKE 'B0R214V%' OR
 
 ---
 
-## ⑦ ③级基线快照（**删除前**，与⑪对拍）
+## ⑦ ③级基线快照（**删除前**，与⑬对拍）
 
 ```powershell
 docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
@@ -194,7 +194,7 @@ SELECT t || '=' || n FROM (
 "
 ```
 
-**贴回整段**，这是⑪的基线。
+**贴回整段**，这是⑬的基线。
 
 ---
 
