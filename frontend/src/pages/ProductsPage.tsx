@@ -1,7 +1,27 @@
-import { Button, Form, Modal, Select, Space, Table, Tag, Typography, message } from 'antd'
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Form,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+  message,
+} from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, api, type AuditResult, type PageOf } from '@/api/client'
+import {
+  ApiError,
+  api,
+  type AuditResult,
+  type PageOf,
+  type ProductDeleteResult,
+} from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
 import AuditRunDrawer from '@/pages/products/AuditRunDrawer'
 import BatchAuditModal from '@/pages/products/BatchAuditModal'
@@ -16,10 +36,14 @@ export default function ProductsPage() {
   const { has } = useAuth()
   const canAudit = has('audit.run')
   const canAllocate = has('listing.allocate')
+  const canDelete = has('catalog.product_delete')
   const [data, setData] = useState<PageOf<Product> | null>(null)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<string | undefined>()
+  // 00-conventions §7.1 的「显示已停用」开关。产品域的「已停用/已归档」= `retired`
+  // （本页文案「已下架」）。默认关 = 默认折叠。
+  const [includeRetired, setIncludeRetired] = useState(false)
   const [auditDetail, setAuditDetail] = useState<AuditRunDetail | null>(null)
   const [allocate, setAllocate] = useState<{ ids: number[]; label: string } | null>(null)
   const [batch, setBatch] = useState<{ ids: number[]; excluded: number } | null>(null)
@@ -27,18 +51,23 @@ export default function ProductsPage() {
   const [stores, setStores] = useState<StoreOpt[]>([])
   const [detail, setDetail] = useState<ProductDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [toDelete, setToDelete] = useState<Product | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const qs = status ? `&status=${status}` : ''
+      // 后端语义：显式 status 时 include_retired 不生效（按状态精确筛选优先）。
+      // 故这里也只在无 status 时才发该参数——发一个后端会忽略的参数，等于在请求里
+      // 留一句假话，将来查日志的人会据此推断出错误的行为。
+      const qs = status ? `&status=${status}` : includeRetired ? '&include_retired=true' : ''
       setData(await api.get<PageOf<Product>>(`/products?page=${page}&size=20${qs}`))
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [page, status])
+  }, [page, status, includeRetired])
 
   useEffect(() => {
     void load()
@@ -48,7 +77,7 @@ export default function ProductsPage() {
   // 状态行，「有效数」和确认文案就会按不完整的信息算，用户会对着一个算错的数字掏钱。
   useEffect(() => {
     setSelected([])
-  }, [page, status])
+  }, [page, status, includeRetired])
 
   // 勾选框现在对两种批量动作放行（见下方 rowSelection），所以**两个批量按钮都必须
   // 各自算自己的有效数**：否则拿了「送审合格但不可分配」的行去点分配，按钮上的数字
@@ -94,6 +123,30 @@ export default function ProductsPage() {
       setAuditDetail(await api.get<AuditRunDetail>(`/audit-runs/${runId}`))
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '加载失败')
+    }
+  }
+
+  async function onDelete(values: { reason: string }) {
+    if (!toDelete) return
+    setDeleting(true)
+    try {
+      // 类型取自 codegen（008§5.4）：删除回执的 schema 随本单进契约。
+      const r = await api.del<ProductDeleteResult>(
+        `/products/${toDelete.id}?reason=${encodeURIComponent(values.reason)}`,
+      )
+      // 回执如实播报：①级与②级的后果不同，②级还带着「重采不会再入库」这层含义，
+      // 一句笼统的「删除成功」会让运营以为随时能采回来。
+      message.success(
+        r.tombstoned
+          ? `已删除 ${r.master_sku}（清理 ${r.listings_deleted} 条上架记录；已留墓碑，重新采集不会再入库）`
+          : `已删除 ${r.master_sku}（从未上架，未留墓碑——重新采集仍会入库）`,
+      )
+      setToDelete(null)
+      void load()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '删除失败')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -144,6 +197,21 @@ export default function ProductsPage() {
           }}
           options={Object.keys(STATUS_COLOR).map((s) => ({ value: s, label: STATUS_LABEL[s] ?? s }))}
         />
+        {/* 开关在选了状态时**禁用而非静默失效**：后端此时忽略 include_retired，
+            留一个点得动却不起作用的勾，正是本项目反复栽跟头的那类「看起来配着、
+            实际没生效」。禁用 + 说明理由，用户至少知道该去清空状态筛选。 */}
+        <Tooltip title={status ? '已按状态精确筛选，此时不再折叠——清空状态筛选后可用' : ''}>
+          <Checkbox
+            disabled={!!status}
+            checked={includeRetired}
+            onChange={(e) => {
+              setPage(1)
+              setIncludeRetired(e.target.checked)
+            }}
+          >
+            显示已下架
+          </Checkbox>
+        </Tooltip>
         <Button onClick={() => void load()}>刷新</Button>
         {canAudit && (
           <Button
@@ -234,6 +302,11 @@ export default function ProductsPage() {
                     分配上架
                   </Button>
                 )}
+                {canDelete && (
+                  <Button size="small" danger onClick={() => setToDelete(p)}>
+                    删除
+                  </Button>
+                )}
               </Space>
             ),
           },
@@ -277,6 +350,52 @@ export default function ProductsPage() {
           </Form.Item>
           <Button type="primary" htmlType="submit" block>
             分配
+          </Button>
+        </Form>
+      </Modal>
+      {/* 二次确认（§7.1「配套要求」）。**不可逆操作的确认必须说真话**：
+          ①/②级要到服务端才判得出，所以提示同时覆盖两种后果，不含糊其辞。 */}
+      <Modal
+        title={`删除产品：${toDelete?.master_sku ?? ''}`}
+        open={!!toDelete}
+        onCancel={() => setToDelete(null)}
+        footer={null}
+        destroyOnHidden
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="删除不可撤销"
+          description={
+            <>
+              产品行会被<b>物理删除</b>，标题/图片/属性一并消失，<b>没有回收站</b>。
+              <br />
+              若该产品<b>上过架</b>，还会留下墓碑——此后
+              <b>重新采集同一个 ASIN 也不会再入库</b>；其已下架的上架记录会一并清理，
+              占用的 GTIN 归还池中（已发到渠道的号码不回收）。
+              <br />
+              若该产品<b>从未上架</b>，按规则<b>不留墓碑</b>——
+              <b>之后再提交同一个 ASIN 采集，它会重新入库</b>。要让它彻底不再出现，
+              请同时把该 ASIN 从采集清单里去掉。
+              <br />
+              订单、审计、财务记录<b>不受影响</b>，一行都不会删。
+              <br />
+              在架或下架处理中的产品删不掉——请先完成下架。
+            </>
+          }
+        />
+        <Form layout="vertical" onFinish={onDelete}>
+          <Form.Item
+            name="reason"
+            label="删除原因"
+            rules={[{ required: true, message: '请填写删除原因（会写入墓碑与审计留痕）' }]}
+            extra="会写入墓碑与 audit_log，用于日后追溯是谁、为什么删的。"
+          >
+            <Input.TextArea rows={2} maxLength={200} showCount />
+          </Form.Item>
+          <Button type="primary" danger htmlType="submit" block loading={deleting}>
+            确认删除 {toDelete?.master_sku}
           </Button>
         </Form>
       </Modal>

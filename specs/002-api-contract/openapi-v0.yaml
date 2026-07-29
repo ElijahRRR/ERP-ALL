@@ -528,6 +528,13 @@ paths:
         - {name: status, in: query, schema: {type: string}}
         - {name: brand, in: query, schema: {type: string}}
         - {name: q, in: query, schema: {type: string}, description: 标题/ASIN/master_sku 搜索}
+        - name: include_retired
+          in: query
+          schema: {type: boolean, default: false}
+          description: >-
+            是否包含已下架（retired）产品。默认 false 即折叠（00-conventions §7.1：
+            列表默认隐藏已停用/已归档项）。**显式传 status 时本参数不生效**——
+            按状态精确筛选优先，否则选「已下架」会得到空列表。
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ProductPage'}}}}}
   /products/{productId}:
     get:
@@ -550,6 +557,35 @@ paths:
                 attrs: {type: object}
                 images: {type: array, items: {type: string, format: uri}}
       responses: {'200': {description: OK}}
+    delete:
+      tags: [Catalog]
+      summary: 硬删除产品（00-conventions §7.1 三级规则；R2-14 14a）
+      description: >-
+        ①无历史（无 listing）→ 物理删除、**不写墓碑**；②有历史 → 显式清理引用后物理删除
+        并写 `deleted_product` 墓碑，此后重新采集同 `(source_channel, source_ref)` 不再入库；
+        ③审计三族 / 财务表 / 订单与售后**一行不删**。
+
+
+        **不要求 `Idempotency-Key`**：002 §6 的幂等头针对批量提交类与渠道写路径，本端点
+        两者都不是；重放语义天然清楚（第二次回 404，而产品确已删除）。
+      x-permission: catalog.product_delete
+      parameters:
+        - {$ref: '#/components/parameters/productId'}
+        - name: reason
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 200}
+          description: 删除原因，写入墓碑与 audit_log
+      responses:
+        '200':
+          description: >-
+            已删除。`level` ∈ {no_history, with_history} 对应 §7.1 的①/②级；
+            `tombstoned` 为 true 时该商品重采不会再入库。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProductDeleteResult'}
+        '404': {description: 'PRODUCT_NOT_FOUND——不存在或不属于当前团队（**两者响应不可区分**，防资源存在性探测）', $ref: '#/components/responses/Error'}
+        '409': {description: 'PRODUCT_DELETE_LISTING_ACTIVE（仍有在架/在途上架记录，须先下架）/ PRODUCT_DELETE_TASK_RUNNING（维护任务执行中）/ PRODUCT_DELETE_LISTING_UNCLASSIFIED（listing 状态未分类，fail-closed）', $ref: '#/components/responses/Error'}
   /variant-groups:
     get:
       tags: [Catalog]
@@ -2054,6 +2090,23 @@ components:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
         - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Product'}}}}
+    ProductDeleteResult:
+      type: object
+      required: [product_id, master_sku, level, tombstoned, listings_deleted]
+      properties:
+        product_id: {type: integer}
+        master_sku: {type: string}
+        level:
+          type: string
+          enum: [no_history, with_history]
+          description: >-
+            §7.1 的①/②级。no_history=从未上架，未留墓碑（重采仍会入库）；
+            with_history=上过架，已留墓碑（重采不再入库）。**前端必须如实区分播报**——
+            一句笼统的「删除成功」会让运营以为随时能采回来。
+        tombstoned: {type: boolean, description: 是否写了 deleted_product 墓碑（== level 为 with_history）}
+        listings_deleted: {type: integer}
+        gtins_released: {type: integer, description: 归还回池的 held GTIN 数（used 永不回收）}
+        maintenance_tasks_skipped: {type: integer}
     VariantGroup:
       type: object
       properties:

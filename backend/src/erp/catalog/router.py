@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.catalog import delete as delete_service
 from erp.catalog import variant as variant_service
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser, require_permission
@@ -35,6 +36,10 @@ async def list_products(
     user: Annotated[CurrentUser, Depends(require_permission("catalog.product_read"))],
     session: Annotated[AsyncSession, Depends(get_session)],
     status: str | None = Query(default=None),
+    include_retired: bool = Query(
+        default=False,
+        description="是否包含已下架（retired）产品；默认折叠。显式传 status 时本参数不生效。",
+    ),
     q: str | None = Query(default=None, max_length=100),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
@@ -42,8 +47,16 @@ async def list_products(
     where = "WHERE team_id = :team"
     params: dict[str, Any] = {"team": user.team_id}
     if status:
+        # **显式筛选优先，折叠不叠加。** 否则运营在状态下拉里选「已下架」会得到空列表——
+        # 一个用户明确要求看某状态、系统却按默认把它过滤掉的行为，看起来就是功能坏了。
+        # 故 `status` 与 `include_retired` 是互斥的两条路，不是两个 AND 条件（§7.1 折叠
+        # 的语义是「默认视图不堆垃圾」，不是「retired 不可见」）。
         where += " AND status = :st"
         params["st"] = status
+    elif not include_retired:
+        # 00-conventions §7.1：列表默认隐藏已停用/已归档项 + 「显示已停用」开关。
+        # 产品域的「已归档」就是 `retired`（0012 状态机合法值，前端文案「已下架」）。
+        where += " AND status <> 'retired'"
     if q:
         where += " AND (title ILIKE :q OR source_ref ILIKE :q OR master_sku ILIKE :q)"
         params["q"] = f"%{q}%"
@@ -88,6 +101,28 @@ async def get_product(
     if row is None:
         raise BusinessError("PRODUCT_NOT_FOUND", "产品不存在")
     return dict(row)
+
+
+@catalog_router.delete("/products/{product_id}")
+async def delete_product(
+    product_id: int,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("catalog.product_delete"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    reason: str = Query(min_length=1, max_length=200, description="删除原因，落墓碑与审计留痕"),
+) -> dict[str, Any]:
+    """硬删除一个产品（§7.1 三级规则；R2-14 14a）。**全仓第一个 DELETE 端点。**
+
+    `reason` 走 query 而非请求体：DELETE 带 body 虽合法，但沿途代理与部分客户端会丢弃它，
+    而这里 `reason` 是必填的留痕字段——丢了就变成一条没有理由的不可逆操作记录。
+
+    **不消费 `Idempotency-Key`**：契约 002 的幂等头要求针对「批量提交类 + 渠道写路径」
+    （README §6），本端点两者都不是。重放语义天然清楚——第二次调用回 404，
+    而产品确已删除；再加一层幂等缓存只会把「已删除」伪装成「刚删除」。
+    """
+    return await delete_service.delete_product(
+        session, user=user, request=request, product_id=product_id, reason=reason
+    )
 
 
 # ── 变体组（R2-11 增量1；契约 002 /variant-groups；D-Q2/D-Q63）──

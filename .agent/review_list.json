@@ -1003,7 +1003,7 @@
   "id": "R2-14",
   "priority": "P0",
   "dimension": "product",
-  "status": "todo",
+  "status": "in_progress",
   "check": "生命周期出口（Owner 2026-07-28 指出「只有进没有出」）：硬删除三级规则(无历史直删/有历史删实体留墓碑/审计财务订单绝不删)+deleted_product 与 deleted_principal 两张墓碑表+列表默认折叠已停用项+删除权限点与二次确认与 audit_log 留痕。口径见 00-conventions §7.1，分片见 007",
   "evidence": [
    "specs/001-domain-model/00-conventions.md",
@@ -1011,8 +1011,30 @@
   ],
   "gate": "✅ Owner 2026-07-29 裁定：14a(产品删除+墓碑)+14c(列表折叠)进 MVP；14b(主体删除)+14d(权限留痕)紧随",
   "acceptance": "①删从未上架产品→物理行消失、无墓碑、列表不再出现；②删上过架产品→实体消失但重采同 ASIN 不再入库(墓碑保去重)；③删操作过的用户→其 audit_log 仍在且操作人显示「XX（已删除）」而非裸 id；④删除动作在 audit_log 可查(谁/何时/删了什么/before 快照)；⑤订单、审计三族、财务表在任何删除路径下行数不变；⑥列表默认不显示已停用项且开关可切",
-  "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类",
-  "last_checked_at": "2026-07-29"
+  "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类｜【2026-07-29 实现期补充实测，考古漏查的三条】① listing/listing_spec 对 erp_app **无 DELETE 授权**（0009:314），已由 0041 补授；② **无任何外键指向 app.listing(id)**——删 listing 不会被挡，但会在 listing_state_history/feed_item/maintenance_task/price_history/order_line 留悬挂 listing_id；③ gtin_pool.held_listing_id 仅 held 态可回收，删 listing 不归还即**池静默泄漏**。另：audit_run/audit_hit 的 product_id 是裸 bigint 无外键（③级得以成立的原因），但删完后审计页拿到的是解析不回任何东西的 id——故墓碑比图纸多存 product_id 与 master_sku，请审计侧确认。",
+  "last_checked_at": "2026-07-29",
+  "updates": [
+   {
+    "date": "2026-07-29",
+    "kind": "landed",
+    "text": "【14a+14c 落地，闸序中】增量 14c-1（产品列表默认折叠 retired + 「显示已下架」开关，显式 status 筛选优先不叠 AND）/ 14a-1（迁移 0041：deleted_product 墓碑表，键按 BR-CAT-002 展开为 (team_id, source_channel, source_ref) 与 uq_product 同形；catalog.product_delete 权限点授团管；**补授 listing/listing_spec 的 DELETE**——0009:314 只授了 SELECT/INSERT/UPDATE，不补则②级在图纸要它生效的场景下 100% 失败）/ 14a-2（删除服务 + 仓内**第一个 DELETE 端点**，三级判定、显式按序清理引用、GTIN held 归还 used 不回收、维护任务作废、audit_log 精简 before 快照）/ 14a-3（入库点 product_upsert 查墓碑 = 验收②承重件；create_job 预筛仅为优化，两处共用 _deleted_refs 且判据分开写）/ 14a-4（判据 16 条 + 前端删除入口二次确认 + 本条回写）。**已覆盖验收①②④⑤⑥；③（用户删除+deleted_principal）属 14b 不在本轮。**考古与批注见 .agent/evidence/R2-14/。"
+   },
+   {
+    "date": "2026-07-29",
+    "kind": "ruling",
+    "text": "【Owner 裁定：①级不写墓碑维持不变，改由界面说清后果】§7.1 把墓碑的两个用途（保历史可读 / 挡回流）合在一处论证，落到①级时只保住前者；而首批真实清理（对拍残留产品）全部落在①级，删完再提交同一份 ASIN 清单会全部回流且零报错。**Owner 2026-07-29 裁定维持图纸**：①级仍不留墓碑，前端二次确认与成功回执显式写出「从未上架的删除后重采仍会入库，要彻底清掉需同时从采集清单去掉该 ASIN」。理由：①级是批量场景（一次数百个），留墓碑等于一次性把数百个变成永久不可恢复，而墓碑目前无法撤销；且回流非自动——实测 scrape.create_job 全仓仅 router 一个调用方，无任何 beat 自动重建采集作业。**该理由依赖「墓碑不可撤销」仍成立**，将来若开「恢复采集」入口，本条口径应连带复议。详见 .agent/evidence/R2-14/owner-rulings-20260729.md"
+   },
+   {
+    "date": "2026-07-29",
+    "kind": "progress",
+    "text": "【PR #46 审查通过（所审 c441986），无阻拦项】审查侧起临时 PG 簇实跑 + 变异证伪：短路入库前的墓碑检查后，16 条判据中**仅验收②那条转红**，判据非空且红得精准。同时点出两条云端侧接下的：(1) **墓碑读取的 RLS 依赖**——_deleted_refs 受 RLS 管而空结果被当作「没有墓碑」放行，「真没有」与「有但看不见」是同一个绿；今天安全是因为采集走 system_tx 带 is_super，**将来谁把采集改成按团队会话跑，回流保护会零报错消失**（已落函数头注 + runbook 硬规则：改采集事务上下文必复验重采不入库）；(2) **墓碑多存 product_id/master_sku 的理由更强**——order_line.product_id 无外键，删产品后订单行要靠墓碑反查「卖的是哪个产品」，而 order_line 属③级绝不删，**去掉那两列损失的是③级数据的可追溯性，不只是审计页可读性**。"
+   },
+   {
+    "date": "2026-07-29",
+    "kind": "progress",
+    "text": "【第三闸真机验证通过（PR #46）】部署机执行 ①–⑯ 全过，回执见 .agent/evidence/R2-14/deploy-verify-pr46-receipt.md。被验代码产物 42623fa，指令终版 78b6bad。承重三条在真机成立：**验收②**墓碑键 (1,amazon,B0R214V002) 与 uq_product 同形且重采回 422 SCRAPE_ALL_TARGETS_DELETED；**0041 权限放宽的唯一边界**在架 409 且整体回滚（product_rows=1/listing_rows=1）；**验收⑤**audit_log 精确 +2 而其余九张③级表逐项相等、before_keys 无大字段。验收①墓碑 0 行、验收⑥折叠四条、验收④弹窗含 Owner 裁定的①级那句，均过。迁移 down→up 往返成立，收尾终态 main@18389b5 + alembic_version=0040 + 残留全 0。**过程：六轮阻断全部是验证指令自身缺陷，产品代码零缺陷**——其中第六轮性质最重（我在注里下了「切回 main 后库停在 0041 没关系」这个错误安全结论并劝阻了正确做法，导致部署机服务停机，已修为「先降库后切分支」并加墓碑非空即停守卫）。已机器化三道检查（psvarcheck/xrefcheck/payloadcheck，均带 self-test 且零命中报不适用），但**三道全绿之后仍被挡六次**——机器检查只覆盖已发生过的类别。已提请审计侧考虑两条：①部署指令里的命令必须真机或沙箱等价跑过才许进指令；②每修一类错必须在同一产物里全文扫同类。"
+   }
+  ]
  },
  {
   "id": "FX-0728",

@@ -24,6 +24,8 @@ export type AuditResult = Schemas['AuditResult']
 export type AuditBatchItem = Schemas['AuditBatchItem']
 export type AuditBatchSkip = Schemas['AuditBatchSkip']
 export type AuditBatchResult = Schemas['AuditBatchResult']
+// R2-14 14a 产品删除回执（同上）
+export type ProductDeleteResult = Schemas['ProductDeleteResult']
 export type PageOf<T> = { items: T[]; total: number; page: number; size: number }
 
 // ACCESS_KEY 导出给 AuthContext 监听跨标签页 token 变更（storage 事件按 key 过滤）
@@ -225,6 +227,9 @@ export const api = {
     request<T>(path, { method: 'PUT', body: JSON.stringify(data) }),
   patch: <T>(path: string, data: unknown) =>
     request<T>(path, { method: 'PATCH', body: JSON.stringify(data) }),
+  // **不带 Idempotency-Key**：契约 002 §6 的幂等头针对批量提交类与渠道写路径，
+  // DELETE 两者都不是；重放语义天然清楚（第二次回 404，而资源确已删除）。
+  del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 }
 
 export async function login(username: string, password: string): Promise<void> {

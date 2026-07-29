@@ -1,0 +1,138 @@
+# PR #46 第三闸真机验证回执（R2-14 14a+14c 产品删除 + 墓碑 + 列表折叠）
+
+> **结论：通过。** 部署机在 Win11 部署机执行 `.agent/evidence/R2-14/deploy-verify-pr46.md`
+> 全部步骤 ①–⑯，逐条判据均满足。本文是该次验证的取证留档。
+>
+> - **被验代码产物：`42623fa`**（此后所有 commit 只动 `.agent/` 下的指令与检查器，
+>   实测 `git diff 42623fa <后续 sha> -- backend/ frontend/ specs/` 为空，未重建镜像）
+> - **指令最终版本：`78b6bad`**（v7；过程中改了六版，见 §三）
+> - CI：`78b6bad` 四个 job 全绿
+> - 收尾终态：机器常驻 `main@18389b5`，`alembic_version=0040`，验证分支已删除
+
+---
+
+## 一、逐条判据结果
+
+| 步骤 | 内容 | 结果 |
+|---|---|---|
+| ① | 前置锚点（tracked_dirty=0 / colliding 空） | 过 |
+| ② | 一次性分支 `verify-pr46` 切到尖端 + 迁移清单只含 0041 | 过 |
+| ③ | 起服务 + **`alembic_version=0041`** + `tombstone_table=app.deleted_product` + healthz | 过 |
+| ④ | 前端产物对拍（`index-B_RDptJI.js` 镜像 == 浏览器） | 过 |
+| ⑤ | 迁移落地核对（列/唯一键/RLS/授权/权限码） | 过 |
+| ⑥ | 造一次性测试数据（`is_test=true` 的 A152test） | 过 |
+| ⑦ | ③级基线快照 | 过 |
+| ⑧ | 团管登录（非超管，`token_len=216`，未回显 token） | 过 |
+| ⑨ | **验收①**：①级删除 → 物理消失、**墓碑 0 行** | 过 |
+| ⑩ | **验收②**：②级删除 → 墓碑一行 + 重采被挡 | 过 |
+| ⑪ | **承重守卫**：在架 409 且整体回滚 | 过 |
+| ⑫ | reason 必填 422 / 幽灵 id 404 | 过 |
+| ⑬ | **验收⑤**：③级表行数对拍 | 过 |
+| ⑭ | **验收⑥ + 验收④**：UI 折叠四条 + 删除弹窗文案 | 过 |
+| ⑮ | 迁移可逆性 down→up 往返 | 过 |
+| ⑯ | 收尾（先降库、后切 main） | 过（**修订后**，见 §三第 6 行） |
+
+## 二、承重判据的实测输出
+
+### ⑩ 验收② —— 本单唯一不可省的判据
+
+```
+level=with_history  tombstoned=True  listings=1
+product_rows=0      listing_rows=0
+tomb=1/amazon/B0R214V002 pid=2484 sku=M0002484
+reingest status=422 code=SCRAPE_ALL_TARGETS_DELETED
+```
+
+墓碑键 `(team_id=1, source_channel=amazon, source_ref=B0R214V002)` **与 `uq_product` 同形**
+——这正是「墓碑能被入库去重查中」的全部前提。重采被 422 挡下，**回流保护在真机上成立**。
+
+> **覆盖边界如实标注**：真机验到的是**作业侧预筛**。承重的入库层（`product_upsert`
+> 的墓碑检查）在真机上没有不经真实抓取就能触发的路径，由 CI 覆盖——审查侧已做变异
+> 证伪（短路该检查后 16 条判据中**只有验收②那条转红**）。
+> **不要把本步的绿读成「回流保护整条都在真机上验过了」。**
+
+### ⑪ 0041 权限放宽的唯一边界
+
+```
+status=409  code=PRODUCT_DELETE_LISTING_ACTIVE
+product_rows=1   listing_rows=1
+```
+
+0041 给 `erp_app` 补了 `listing` / `listing_spec` 的 DELETE，**那条权限的全部边界就是这个
+409**。此前只在单元测试里成立过，现在真机上也成立，且**拒绝是整体回滚，没删一半**。
+
+### ⑬ 验收⑤ —— ③级「绝不删」
+
+基线 → 终态：`audit_log 190 → 192`（**精确 +2**，两次成功删除各一条留痕），
+`audit_run / audit_hit / channel_order / order_line / order_check / channel_return /
+channel_return_line / channel_return_event / refund_request` **九张逐项相等**。
+
+两条删除审计 `actor=9`（登录用户），`before_keys` **均不含 `attrs`/`images`/`price_snapshot`**
+——删除没有变成「把字节从 product 搬进永久保留的 audit_log」。
+
+### ⑤ 迁移落地
+
+```
+columns=id,team_id,source_channel,source_ref,product_id,master_sku,reason,deleted_at,deleted_by
+uq=UNIQUE (team_id, source_channel, source_ref)
+policies=deleted_product_ins:INSERT,deleted_product_sel:SELECT
+tombstone_grants=INSERT,SELECT          ← 追加式，无 UPDATE/DELETE
+listing_grants=DELETE,INSERT,SELECT,UPDATE
+listing_spec_grants=DELETE,INSERT,SELECT,UPDATE
+perm_seeded=1   granted_to_roles=2      ← 模板角色 + team 1 的既有副本（0041 头注所述的回填）
+```
+
+### ⑭ Owner 裁定的落点
+
+删除弹窗逐项写明四件事，含 **Owner 2026-07-29 裁定的那一句**：
+「从未上架不留墓碑、重采仍会入库、需同时从采集清单移除该 ASIN」。
+**裁定只写进代码不显示给运营等于没落**，故这一条单独列为判据。
+
+空原因点确认被表单挡住，且部署机用只读 SQL 补证 `retired_sample_still_present=1`
+——**没有删除请求落库**。这个补证是它自己加的，比只看 UI 强。
+
+---
+
+## 三、过程教训：**六轮阻断，六次全部是验证指令自身的缺陷，产品代码零缺陷**
+
+| 轮 | 指令写的 | 事实 | 类别 |
+|---|---|---|---|
+| 1 | `HEAD = b645901` 写死 sha 当判据 | 指令自身还会修订，写死必然与最新指示打架 | 拿易变表象当不变量 |
+| 2 | `git status --short` 应为空 | 三个**未跟踪**文件不构成阻塞；真阻塞是「跟踪文件有改动」或「路径冲突」 | 同上 |
+| 3 | migrate 日志出现 `Running upgrade` | **迁移一旦应用，重跑就不再打印**——该判据从第二轮起永远不可能通过 | 同上（日志 ≠ 状态） |
+| 4 | `sh -lc "... \| Select-String"` | cmdlet 越界进容器 sh。**#43 原本写的是对的，我抄来时顺手改坏了** | 把验证过的命令顺手优化 |
+| 5 | `psql -c "\n\d ...\n"` | `-c` 仅在载荷恰好是单条元命令时才当元命令；且 `\d` 是给人看的呈现，本就不该当判据 | 载荷语言错配 + 第 3 类残留 |
+| 6 | 「切回 main 后库停在 0041 没关系」 | **错，且有实际损害**：main 树里没有 0041 这个 revision，alembic 硬失败，**服务停机** | 给出错误的安全结论**并劝阻了正确做法** |
+
+**第 6 轮性质最重**：前五次是写错，第六次是**在注释里主动下了一个错误的安全判断，还加了
+一句「不要为了干净再降一次」把正确做法劝退**。部署机照着指令走却把服务弄停了。
+
+### 已机器化的三道检查（每识别一个失败类别就机器化一个）
+
+| 脚本 | 查什么 | 由哪一轮催生 |
+|---|---|---|
+| `R2-09/psvarcheck.py` | PowerShell 变量名大小写碰撞 | #43 第 6 轮 |
+| `R2-14/xrefcheck.py` | 步骤交叉引用的**互引一致性**（只查存在性抓不到） | 审查侧 N1 |
+| `R2-14/payloadcheck.py` | 载荷语言错配（PS cmdlet 进 sh / psql 元命令进 SQL） | 第 4、5 轮 |
+
+三者都带 `--self-test`，且**零命中时显式报「不适用」而不是判绿**。
+
+**但要如实说：三道检查全部通过之后，本轮仍被挡了六次。** 机器检查覆盖的是**已经发生过**
+的失败类别；第 1/2/3/6 轮那四条，落笔时三道检查全绿。**这不是检查器不够多的问题**——
+第 5 轮尤其说明问题：我在③把「不拿呈现当判据」改对了，**同一份文档的⑤里却原样留着一个
+`\d`**，修一个点没有回头扫同类。
+
+**已提请审计侧考虑的两条**（不自写进协议）：
+
+1. **部署指令里的每条命令，要么在真机上跑过、要么在沙箱里等价跑过，否则不许进指令。**
+   这才是把「未验证的东西」挡在生产机之外，而不是等部署机替我发现。
+2. **每次修掉一类错，必须在同一份产物里全文扫一遍同类。**
+
+---
+
+## 四、另记一笔：部署机
+
+**#43 六轮 + 本轮六轮 = 十二次阻断，十二次判断全部正确**，每次都把根因定位到「验证指令与
+实际不符」而非含糊报个失败，并完整贴回原始输出与「未做什么」清单。本轮它还两次**主动
+加了指令没要求的补证**（UI 空原因后用只读 SQL 确认无删除落库；⑯ 恢复后复查
+`alembic_version`）。**这条链上最可靠的一环是它。**
