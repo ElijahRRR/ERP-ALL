@@ -14,13 +14,26 @@
 > `deleted_product (team_id, **asin**, reason, deleted_at, deleted_by)`——……同时
 > **去重键 `(team_id, asin)` 仍认得该 ASIN，不会下次采集又抓回来**
 
-**实测（三条独立复算）**：
+> ## ⚠️ 本节 v1 的定性是错的，v2（2026-07-29 同日）已更正
+>
+> v1 称「图纸的墓碑键**指向一个不存在的列**」并与 `ERP_ENV`/`O-1..O-6` 并列。
+> **那个类比错了**：`asin` 在文档里**有明确定义**——`03-catalog.md:14` 写
+> 「`source_ref` = ASIN（或未来其他源主键）」，宪法 `business-rules-ledger.md:44`
+> （BR-CAT-002）写「**ASIN 降级为 `(source_channel, source_ref)` 属性**」。
+> v1 的检索面只覆盖 `00-conventions` 与迁移文件，**漏检了定义所在的那两处**。
+>
+> **技术结论未变**（键仍为 `(team_id, source_channel, source_ref)`），**依据变了**：
+> 从「纠正图纸错误」改为「**按宪法把简写展开**」。详见
+> `.agent/evidence/R2-14/annotation-tombstone-key.md` 的 v2 更正说明。
+
+**实测**：
 
 | 事实 | 复算命令 | 结果 |
 |---|---|---|
-| `product` 表**没有 `asin` 列** | `grep -n "asin" backend/alembic/versions/0007_scrape_catalog.py` | **零命中** |
-| 全仓 `asin` 只在合规黑名单 | `grep -rn "asin" backend/alembic/versions/*.py` | 全部是 `blacklist_asin`，与 product 无关 |
-| 真实去重键 | `grep -n "uq_product" backend/alembic/versions/0007_scrape_catalog.py` | `uq_product UNIQUE (team_id, source_channel, source_ref)` |
+| `product` 表无名为 `asin` 的列 | `psql -c "SELECT column_name FROM information_schema.columns WHERE table_schema='app' AND table_name='product'"` | 19 列，无 `asin` |
+| 「asin」的定义处① | `sed -n '14p' specs/001-domain-model/03-catalog.md` | `source_ref` = ASIN（或未来其他源主键） |
+| 「asin」的定义处②（宪法） | `sed -n '44p' specs/000-founding/business-rules-ledger.md` | ASIN 降级为 `(source_channel, source_ref)` 属性 |
+| 真实唯一键 | `grep -n "uq_product" backend/alembic/versions/0007_scrape_catalog.py` | `uq_product UNIQUE (team_id, source_channel, source_ref)` |
 
 入库点 `scrape/service.py:523` 的 upsert 也确认：
 
@@ -29,24 +42,31 @@ INSERT INTO app.product (team_id, source_channel, source_ref, ...)
 ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE SET ...
 ```
 
-**后果**：若照图纸字面建 `deleted_product (team_id, asin)`，
-① `asin` 这一列在 product 侧没有对应源，只能从 `source_ref` 派生（`source_channel='amazon'`
-时它恰好是 ASIN，但**这是巧合不是契约**——`source_channel` 这一列存在的意义就是将来会有别的渠道）；
-② 墓碑查不中真实去重键，**「删掉的商品下次采集又抓回来」照样发生**——而这正是验收②
-（「重新采集同 ASIN 不会再入库」）唯一要验的东西；
+**真正的风险不在图纸错，而在简写到了落地文档就只剩字面。** `§7.1` 是「三级删除规则」的
+落地口径文档——读它的人是要照着建表的，未必会回溯到 `03-catalog` 或宪法去查「asin」
+的定义，**而恰恰是那两处带着「（或未来其他源主键）」这个关键限定**。于是「照字面建一个
+`asin` 单列」成了一条自然而然的路，代价是：
+
+① `asin` 这一列在 product 侧没有对应源，只能从 `source_ref` 派生
+（`source_channel='amazon'` 时它恰好是 ASIN——**这正是 `03-catalog.md:14` 那句限定要防的**）；
+② 丢掉 `source_channel` 后墓碑查不中真实唯一键，**「删掉的商品下次采集又抓回来」照样发生**
+——而这正是验收②唯一要验的东西；
 ③ 多渠道时更糟：`(team_id, asin)` 会让**渠道 A 删的商品把渠道 B 的同号商品一起挡住**，
-这是静默误杀，比回流更难发现。
+**静默误杀比回流更难发现**（回流至少看得见，误杀是「本该进来的没进来」）。
 
 **云端侧处置（不擅改图纸，走批注回传）**：
-- 实现按**真实去重键**落地：`deleted_product (team_id, source_channel, source_ref, reason, deleted_at, deleted_by)`，
+- 实现按 BR-CAT-002 把简写展开落地：
+  `deleted_product (team_id, source_channel, source_ref, reason, deleted_at, deleted_by)`，
   唯一键与 `uq_product` 严格同形；
-- **另开批注回传请审计侧修订 §7.1 正文**（`.agent/evidence/R2-14/annotation-tombstone-key.md`）——
-  图纸正文归审计侧，云端侧只提请修订，不自己动笔；
-- 图纸表达的**意图**（墓碑保去重、不让删掉的商品回流）**完全保留**，改的只是键的拼法。
+- **另开批注回传请审计侧在 §7.1 补一句指向定义**
+  （`.agent/evidence/R2-14/annotation-tombstone-key.md`）——不是改结论，是防照字面实现；
+  图纸正文归审计侧，云端侧只提请，不自己动笔。
 
-> 这条与本项目反复出现的那类问题同形：**判据/契约写得像回事，但它指向的东西不存在**
-> ——`ERP_ENV` 从未注入而判据全绿、`compliance_block` 零消费点却被面板断言「拦截生效」、
-> 以及本会话刚更正过的 `O-1..O-6`。**共同点是「只要没人去对源码，它看起来永远是对的」。**
+> **前端佐证这层映射一直是自洽的**：`ProductsPage.tsx:197` 是
+> `{ title: 'ASIN', dataIndex: 'source_ref' }`；`ProductDetailDrawer.tsx:58` 用
+> `source_channel === 'amazon'` 做条件才拼亚马逊链接——**前端自己就知道
+> 「`source_ref` 只有在亚马逊渠道时才是 ASIN」**。契约 002 的 `Product` 同样只有
+> `source_channel` / `source_ref`。文档、契约、代码、前端四处一致。
 
 ---
 
