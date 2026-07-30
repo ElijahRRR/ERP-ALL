@@ -1065,6 +1065,11 @@
     "date": "2026-07-30",
     "kind": "progress",
     "text": "【Owner 反馈「前端看不到删除入口」——核实：代码在，部署机没更新】按序排除三种可能，落在第三种：①**前端有**——ProductsPage.tsx 的 canDelete 门控删除按钮 + 必填删除原因 + 按①/②级分别措辞的成功回执俱在 main；②**权限不是问题**——has() = me.user.is_super || permissions.includes(...)(AuthContext.tsx:69)，后端 CurrentUser.can() 同款短路(core/authn.py:47)，超管一律放行，0041 只授团管不影响 Owner；③**部署机跑的是旧代码**——R2-14 真机验证的收尾步骤⑯是「先降库、后切 main」，终态 main@18389b5 + alembic_version=0040，而 **PR #46 是验证通过之后才合并的**，此后部署机没有再拉一次。恢复=拉最新 main + alembic upgrade head(现 0042) + 重 build 前端。**这暴露一个流程缺陷**：验证收尾把机器恢复到验证前状态是对的，但「PR 合并后重新部署」这一步**不在任何人的清单里**，于是「验收通过」与「线上能用」之间断了一环——四闸走完，Owner 却在界面上看不到。已提请纳入 runbook：合并后由部署 AI 执行一次上线部署并回执，作为第四闸之后的固定收尾。**另落 14b 开工前三个坑（考古实测）**：(1) purchaser.user_id 是 REFERENCES app_user(id) 可空但**无 ON DELETE**(0025:96)，删当过采购方的用户会被外键直接拒，须在删除服务里显式先处置，不能指望 CASCADE(对照 user_role 对 app_user/role 都是 ON DELETE CASCADE，那两条没问题)；(2) deleted_principal 的 PK 必须是 (kind, id)——四类主体各有各的序列，跨表 id 必然撞号，单列 id 会把张三和某个角色写成同一行；(3) buyer_account 那一类**依赖 R2-13 的 13b 建表**，现库中不存在——14b 先做 user/role/purchaser 三类，勿为凑齐四类阻塞整片。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "landed",
+    "text": "【14b 落地，闸序中】迁移 0047：deleted_principal 墓碑表 PK=(kind,id)（坑2：四类主体各有自增序列，单列 id 跨类必撞）、kind 词表含 buyer_account（其删除路径随 13b 另补，坑3）、追加式只授 SELECT/INSERT（同 0041）；补 purchaser 的 DELETE 授权（0025:359 只授 SIU，14a 同形坑）与 RLS DELETE 策略（0025 的 TEAM_RLS 是三策略模板无 DELETE——无策略的 DELETE 静默匹配零行不报错，测试实撞：端点回 200、墓碑照写、实体行还在；服务层同步加 _delete_row_or_die 守卫把此类静默失败变响亮 500）；procurement_order.purchaser_id 外键改软引用（③级行保留原 id 供墓碑解析，同 audit_log.actor_id/order_line.product_id 既有取舍，迁移头注已请审计侧确认或改判）。identity/delete.py 三类删除服务：user（自删/超管拒绝；purchaser.user_id 显式置 NULL——坑1，无 ON DELETE 不处置则外键拒删）、role（在挂成员 409、全局模板 404）、purchaser（在途执行单非终态 409，fail-closed 词表）。验收③承重：/audit-logs 批量解析 actor_label——在册查主表、已删查墓碑显示「XX（已删除）」。三 DELETE 端点 + PrincipalDeleteResult/actor_label 进 002 契约；前端三页删除入口共用 PrincipalDeleteModal（二次确认+必填原因+分级播报），AuditPage 接 actor_label。判据测试 test_r2_14b_principal_delete.py 九条（坑1/坑2/验收③⑤各有承重用例）。验收③已覆盖；R2-14 四片全落，闸序（审查→真机→Owner）后可关单。"
    }
   ]
  },
@@ -1087,7 +1092,7 @@
   "id": "R2-15",
   "priority": "P0",
   "dimension": "product",
-  "status": "in_progress",
+  "status": "accepted",
   "check": "SKU 内外分离(D-Q72,修订D1)：listing.channel_sku 在 source_channel='amazon' 时取 ASIN(同店冲突加 -N 后缀,唯一约束仍为 (store_id,channel_sku) 故跨店同 ASIN 不冲突)；master_sku 保留为内部身份不再默认发渠道；master_sku 生成式由 'M'||lpad(...,7,'0') 改 'M'||to_char(...,'FM000000000') 修截断撞号缺陷",
   "evidence": [
    "specs/000-founding/DECISION-FORM.md",
@@ -1113,6 +1118,11 @@
     "date": "2026-07-30",
     "kind": "progress",
     "text": "【第三闸 PASS（PR #48 真机最终回执，锚点 HEAD=3fe960f）】①-⑬全过（⑨⑩按判据条件跳过）：判据①③⑤真机成立（channel_sku=ASIN 且库=API 回显；-2/-3 后缀；存量 67 行指纹前后逐字不变）；判据④真机 probe=M000002487（M+9 位）；⑪渠道写路径 dry-run 证据经 Owner 授权受控窗口取得——载荷 SKU=B0R215V001-3（ASIN 形态）、master_sku 0 次出现、MP_ITEM_MATCH v4.2，与云端沙箱同代码路径替证互证一致（channel_command id=16 留库为证）；⑫ 0042→0041→0042 可逆性演练全过。真机验证 5 次停机揪出 7 条缺陷全部在部署指令侧（compose 服务名/路径、PowerShell 引号拆参、验收账号权限、网关档位授权、match 缺 UPC、清理缺 listing_spec），产品代码零缺陷；指令迭代至 v7 并新增第 4 个检查器 psquotecheck。审查侧 N4（uq_listing 兜底前缀误匹配）已修码，N6（order_line 清理预期值判据）已入指令 v7；剩余闸：Owner 授权合并。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【关账】PR #48 经四闸（CI 绿 / 独立审查四轮 N1-N8 收口 / 部署机第三闸真机 PASS / Owner 授权）于 2026-07-30 合并，merge commit b001616。状态置 accepted。"
    }
   ]
  },
