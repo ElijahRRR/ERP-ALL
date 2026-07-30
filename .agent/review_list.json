@@ -1039,7 +1039,7 @@
   "gate": "✅ Owner 2026-07-29 裁定：14a(产品删除+墓碑)+14c(列表折叠)进 MVP；14b(主体删除)+14d(权限留痕)紧随",
   "acceptance": "①删从未上架产品→物理行消失、无墓碑、列表不再出现；②删上过架产品→实体消失但重采同 ASIN 不再入库(墓碑保去重)；③删操作过的用户→其 audit_log 仍在且操作人显示「XX（已删除）」而非裸 id；④删除动作在 audit_log 可查(谁/何时/删了什么/before 快照)；⑤订单、审计三族、财务表在任何删除路径下行数不变；⑥列表默认不显示已停用项且开关可切",
   "finding": "审计实测(2026-07-28)：全仓 API 契约 DELETE 端点=0；ProductsPage/ProxiesPage 零写操作(纯只读)；图纸有 retired/disabled 软态但从未接出口。审计 actor_id 无外键且不冗余用户名→删用户后留痕变裸 id，故需 deleted_principal 墓碑。产品被 variant_member/listing/listing_spec 三处 NOT NULL 外键引用。硬删除唯一技术陷阱=无墓碑则同 ASIN 会被重新采集回流。漏单成因：队列按能力模块切分，生命周期出口横切所有模块无人认领——同 R2-13 类｜【2026-07-29 实现期补充实测，考古漏查的三条】① listing/listing_spec 对 erp_app **无 DELETE 授权**（0009:314），已由 0041 补授；② **无任何外键指向 app.listing(id)**——删 listing 不会被挡，但会在 listing_state_history/feed_item/maintenance_task/price_history/order_line 留悬挂 listing_id；③ gtin_pool.held_listing_id 仅 held 态可回收，删 listing 不归还即**池静默泄漏**。另：audit_run/audit_hit 的 product_id 是裸 bigint 无外键（③级得以成立的原因），但删完后审计页拿到的是解析不回任何东西的 id——故墓碑比图纸多存 product_id 与 master_sku，请审计侧确认。",
-  "last_checked_at": "2026-07-29",
+  "last_checked_at": "2026-07-30",
   "updates": [
    {
     "date": "2026-07-29",
@@ -1060,6 +1060,11 @@
     "date": "2026-07-29",
     "kind": "progress",
     "text": "【第三闸真机验证通过（PR #46）】部署机执行 ①–⑯ 全过，回执见 .agent/evidence/R2-14/deploy-verify-pr46-receipt.md。被验代码产物 42623fa，指令终版 78b6bad。承重三条在真机成立：**验收②**墓碑键 (1,amazon,B0R214V002) 与 uq_product 同形且重采回 422 SCRAPE_ALL_TARGETS_DELETED；**0041 权限放宽的唯一边界**在架 409 且整体回滚（product_rows=1/listing_rows=1）；**验收⑤**audit_log 精确 +2 而其余九张③级表逐项相等、before_keys 无大字段。验收①墓碑 0 行、验收⑥折叠四条、验收④弹窗含 Owner 裁定的①级那句，均过。迁移 down→up 往返成立，收尾终态 main@18389b5 + alembic_version=0040 + 残留全 0。**过程：七次停机、九条指令缺陷，全部是验证指令自身问题，产品代码零缺陷**（原写「六轮」系低报，PR #47 按原始回帖重数并钉死口径：停机=部署机一条「已停手」回帖，缺陷=指令里被改掉的一处错；数 commit 数不出停机数）——其中第七次性质最重（我在注里下了「切回 main 后库停在 0041 没关系」这个错误安全结论并劝阻了正确做法，导致部署机服务停机，已修为「先降库后切分支」）。**墓碑非空即停守卫的位置已在 PR #47 前移**：原先只在⑯-1，而⑮ 的 downgrade→upgrade 已先把墓碑表 DROP 并重建，故⑯-1 读到 0 只因表刚重建、不承重（审查侧 N4）；承重的那条现落在⑮ 首块清理之后、downgrade 之前。已机器化三道检查（psvarcheck/xrefcheck/payloadcheck），但**三道全绿之后仍被挡七次**——机器检查只覆盖已发生过的类别；且「均带 self-test 且零命中报不适用」这句当时对 psvarcheck 为假（它既无 self-test 也无零命中守卫，零块时照样判绿），PR #47 已补真。已提请审计侧考虑两条：①部署指令里的命令必须真机或沙箱等价跑过才许进指令；②每修一类错必须在同一产物里全文扫同类。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【Owner 反馈「前端看不到删除入口」——核实：代码在，部署机没更新】按序排除三种可能，落在第三种：①**前端有**——ProductsPage.tsx 的 canDelete 门控删除按钮 + 必填删除原因 + 按①/②级分别措辞的成功回执俱在 main；②**权限不是问题**——has() = me.user.is_super || permissions.includes(...)(AuthContext.tsx:69)，后端 CurrentUser.can() 同款短路(core/authn.py:47)，超管一律放行，0041 只授团管不影响 Owner；③**部署机跑的是旧代码**——R2-14 真机验证的收尾步骤⑯是「先降库、后切 main」，终态 main@18389b5 + alembic_version=0040，而 **PR #46 是验证通过之后才合并的**，此后部署机没有再拉一次。恢复=拉最新 main + alembic upgrade head(现 0042) + 重 build 前端。**这暴露一个流程缺陷**：验证收尾把机器恢复到验证前状态是对的，但「PR 合并后重新部署」这一步**不在任何人的清单里**，于是「验收通过」与「线上能用」之间断了一环——四闸走完，Owner 却在界面上看不到。已提请纳入 runbook：合并后由部署 AI 执行一次上线部署并回执，作为第四闸之后的固定收尾。**另落 14b 开工前三个坑（考古实测）**：(1) purchaser.user_id 是 REFERENCES app_user(id) 可空但**无 ON DELETE**(0025:96)，删当过采购方的用户会被外键直接拒，须在删除服务里显式先处置，不能指望 CASCADE(对照 user_role 对 app_user/role 都是 ON DELETE CASCADE，那两条没问题)；(2) deleted_principal 的 PK 必须是 (kind, id)——四类主体各有各的序列，跨表 id 必然撞号，单列 id 会把张三和某个角色写成同一行；(3) buyer_account 那一类**依赖 R2-13 的 13b 建表**，现库中不存在——14b 先做 user/role/purchaser 三类，勿为凑齐四类阻塞整片。"
    }
   ]
  },
@@ -1122,10 +1127,17 @@
    "specs/007-mvp-completion-plan/README.md",
    "specs/001-domain-model/06-listing-pricing.md"
   ],
-  "gate": "待 Owner 定是否进 MVP。判断依据：ERP-ALL 是来替代 erpAPI 的，不做补挂则审核/改价/下架/订单回连对存量 SKU 全部够不着",
-  "acceptance": "①item_pull 跑完后 missing_local 每一条在库里有行（不是 stats 里截断到 50 的样例），带 store_id/channel_sku/首见时间/最近一次仍缺时间；②页面能看到「后台有本地无」清单并可按店铺筛，条数与 sync_state.stats.missing_local 对得上；③channel_sku 形如 ASIN 的条目可发起补挂：**走现役 scrape 链路**建 product（不新造拉取侧采集通道），成功后建 listing，channel_sku 保持后台原值不得改写（Walmart SKU 不可改）；④不得造半基线行——product 建档失败则整条不落，listing.product_id 恒非空；⑤channel_sku 不是 ASIN 的条目（存量 M 号/手工编码）显式标为「不可自动补挂」并给出原因，不得静默跳过；⑥补挂后重跑 item_pull，该 SKU 不再计入 missing_local（幂等，重跑零新增）；⑦**与 R2-14 墓碑共闸**：deleted_product 有墓碑的 ASIN 不得经补挂回流，且该判据要在补挂路径上单独测（不得只靠 scrape 侧那道）",
+  "gate": "待 Owner 定是否进 MVP（Owner 2026-07-30 已要求开工）。开工前三个设计裁定已落 007：①必须新建表 channel_orphan_sku——maintenance_task.listing_id NOT NULL 装不下无本地 listing 的对象；②补挂的 listing 用 offer_mode='adopt'(新增第三值)且不进提交链路，状态走 transition() 不直写；③补挂是两段式异步(提交采集→回来建 listing)，中间态须可见。并行须知见 007「三路并行开工须知」，迁移号预分配 0048-0049",
+  "acceptance": "①item_pull 跑完后 missing_local 每一条在库里有行（不是 stats 里截断到 50 的样例），带 store_id/channel_sku/首见时间/最近一次仍缺时间；②页面能看到「后台有本地无」清单并可按店铺筛，条数与 sync_state.stats.missing_local 对得上；③channel_sku 形如 ASIN 的条目可发起补挂：**走现役 scrape 链路**建 product（不新造拉取侧采集通道），成功后建 listing，channel_sku 保持后台原值不得改写（Walmart SKU 不可改）；④不得造半基线行——product 建档失败则整条不落，listing.product_id 恒非空；⑤channel_sku 不是 ASIN 的条目（存量 M 号/手工编码）显式标为「不可自动补挂」并给出原因，不得静默跳过；⑥补挂后重跑 item_pull，该 SKU 不再计入 missing_local（幂等，重跑零新增）；⑦**与 R2-14 墓碑共闸**：deleted_product 有墓碑的 ASIN 不得经补挂回流，且该判据要在补挂路径上单独测（不得只靠 scrape 侧那道）；⑧**`adopt` 的 listing 不进提交链路**：对一条接管来的 listing 走提交入口必须被显式拒绝（不得因 offer_mode 的 if build else match 分支被当作 item_match 提交——我们手里没有它的 spec）；⑨状态**经 transition() 落地**：补挂成功的 listing 在 listing_state_history 有一条 to_status='live'、reason_code='ADOPTED_FROM_CHANNEL' 的记录，不得直写 status",
   "finding": "【Owner 2026-07-30「拉取后台全部在线产品的功能没有」——审计核实：拉取有，落地没有】item_pull（R2-12 增量4a，PR #33）确为全量：按 publishedStatus 逐态扫、offset 翻页、跨页去重（nextCursor 恒定不可用于翻页），A152 真店跑通、missing_local=45 为真实发现。但三类差异按 P0-2 拍板「只发现不执行」，「后台有本地无」这一类的全部落点只有 sync_state.stats.missing_local 计数 + missing_sample 前 50 条 + 通知正文前 10 条 SKU——**既不落表也无页面，超 50 条即丢**；故 Owner 在他能操作到的层面说「没有」完全成立。当时不做的理由（listing.product_id NOT NULL、拉取侧无产品链路、不造半基线行）成立，但那是「本轮不做」不是「不用做」，**且未立后继单**。两条实现前提：①存量 SKU 99% 即 ASIN，与 R2-15 的 channel_sku=ASIN 同形，补挂可复用现役 scrape 链路而非新造通道；②item_pull 的 remote 字典只留 published_status/lifecycle/reasons，ItemResponse 的 wpid/gtin/price/productName 全丢，补挂需回取或扩采。缺单成因同 R2-13/R2-14：对账属横切能力，队列按模块切分时无人认领。",
-  "last_checked_at": "2026-07-30"
+  "last_checked_at": "2026-07-30",
+  "updates": [
+   {
+    "date": "2026-07-30",
+    "kind": "ruling",
+    "text": "【开工前三个未决设计点已裁定（考古实测后落定）】立单时只有判据没有形态，三条补齐：**①落表必须新建**——原设想复用 maintenance_task 不成立：其 listing_id 是 bigint NOT NULL(0009:272)，而补挂对象恰恰是本地没有 listing 的那些 SKU。新表 channel_orphan_sku(store_id, channel_sku 唯一，带 first_seen_at/last_seen_at/state 五态)，item_pull 每轮 upsert。**顺带发现 16a 的隐藏工作量**：item_pull 的 remote 字典只留 published_status/lifecycle/reasons，ItemResponse 的 wpid/gtin/price/title 全丢，要落表得先扩采。**②offer_mode 新增 adopt**——现 CHECK 只有 build/match(0009:82)，接管来的品两者都不是；**不能拿 match 顶替**：service.py:613 是 feed_kind = 'item_build' if offer_mode=='build' else 'item_match'、:643 是 skip_variant=(offer_mode!='match')，混用会让接管行被当成可重新提交的 match 单，而我们手里没有它的 spec。故新增第三值并立硬规则「adopt 不进提交链路」(判据⑧证伪)。状态则必须走 listing.service.transition()——它是状态迁移唯一出口、同事务写 listing_state_history，直写 status='live' 会绕过状态机留不下来源(判据⑨)。**③补挂是两段式异步**——product 走现役 scrape 链路建，而采集是异步作业，故补挂=提交采集→等回来→建 listing 并接管；中间态 state='adopting' 必须可见，采集失败整条不落(判据④)。"
+   }
+  ]
  },
  {
   "id": "FX-0729",

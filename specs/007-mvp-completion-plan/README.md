@@ -380,6 +380,33 @@ CI 绿 → 审查变异证伪 → 部署机 ①–⑯ 真机全过 → Owner 授
 **范围提醒**：现在能删的只有产品——listing / store / proxy / user 仍无删除出口
 （`FX-0729` 代理页零写即其中一例）。故 R2-14 整单仍挂 `in_progress`。
 
+⚠️ **"前端看不到删除入口"的成因（Owner 2026-07-30 反馈，已核实：代码在、部署机没更新）**：
+删除按钮与二次确认弹窗**都在 main 里**（`frontend/src/pages/ProductsPage.tsx`：`canDelete`
+门控的删除按钮、必填删除原因、按①/②级分别措辞的成功回执）；权限也不是问题——`has()`
+是 `me.user.is_super || permissions.includes(...)`（`AuthContext.tsx:69`），后端
+`CurrentUser.can()` 同款短路（`core/authn.py:47`），**超管一律放行**。
+**真正原因**：R2-14 真机验证的收尾步骤 ⑯ 是"先降库、后切 main"，终态为
+`main@18389b5` + `alembic_version=0040`（回执 §开头），而 **PR #46 是验证通过之后才合并的**
+——部署机此后没有再拉一次，跑的仍是 #46 之前的代码。
+→ **恢复步骤（部署机三件事）**：拉最新 `main` → `alembic upgrade head`（现 head=`0042`）
+→ 重新 build 前端。
+→ **流程缺陷（提请纳入 runbook）**：验证收尾把机器恢复到验证前状态是对的，但**"PR 合并后
+重新部署"这一步不在任何人的清单里**，于是"验收通过"与"线上能用"之间断了一环。
+建议：合并后由部署 AI 执行一次"上线部署"并回执，作为第四闸之后的固定收尾。
+
+### 14b 的三个实现坑（考古实测，2026-07-30，开工前先看）
+
+1. **`purchaser.user_id` 会挡住删用户**：`0025_order_domain.py:96` 是
+   `bigint REFERENCES app.app_user(id)`——可空但**无 `ON DELETE`**，即默认 `NO ACTION`。
+   删一个当过采购方的用户会被外键直接拒绝。须在删除服务里显式先处置（置 NULL 或连带），
+   不能指望 CASCADE。（对照：`user_role` 对 `app_user`/`role` 都是 `ON DELETE CASCADE`，那两条没问题。）
+2. **`deleted_principal` 的主键必须是 `(kind, id)`**：§7.1 写的是 `(kind, id, label, ...)`，
+   四类主体（user/role/purchaser/buyer_account）各有各的自增序列，**跨表 id 必然撞号**，
+   单列 `id` 做 PK 会把张三和某个角色写成同一行。
+3. **"买家账号"那一类依赖 R2-13**：`buyer_account` 表由 **13b 建**，现库中不存在。
+   → **14b 并行开工时先做 user / role / purchaser 三类**，`buyer_account` 分支挂在 13b 之后补，
+   不要为了凑齐四类而阻塞整片。
+
 ### R2-16 存量接管【L1】（后台在线产品补挂，Owner 2026-07-30 指出）
 
 **缺口来源**：Owner —— "拉取后台全部在线产品的功能没有"。
@@ -405,9 +432,87 @@ CI 绿 → 审查变异证伪 → 部署机 ①–⑯ 真机全过 → Owner 授
   `ItemResponse` 里的 `wpid`/`gtin`/`price`/`productName` **全部丢弃**，补挂需回取或扩采；
 - 墓碑闸必须共用：R2-14 删掉的产品不得从这条新路回流。
 
-**分片建议**：16a 落表 + 页面可见（把计数变成可操作对象）；16b 单条/批量补挂
+**分片**：16a 落表 + 页面可见（把计数变成可操作对象）；16b 单条/批量补挂
 （建 product → 建 listing，`channel_sku` 保持后台原值）；16c 不可自动补挂项的显式
 标注与人工通道。
+
+#### 开工前三个设计裁定（2026-07-30 考古后落定，原立单时未决）
+
+**裁定一：必须新建表，不能复用 `maintenance_task`。**
+`maintenance_task.listing_id` 是 `bigint NOT NULL`（`0009_listing.py:272`），而补挂对象
+**恰恰是本地没有 listing 的那些 SKU**——装不进去。新表建议 `app.channel_orphan_sku`：
+
+| 列 | 说明 |
+|---|---|
+| `team_id` / `store_id` | 冗余 + RLS |
+| `channel_sku` | 渠道侧 SKU 原值 |
+| `first_seen_at` / `last_seen_at` | 首次发现 / 最近一次仍缺（连续多轮不再出现即可判定渠道侧已消失） |
+| `published_status` / `lifecycle` | `item_pull` 已有，顺手落 |
+| `wpid` / `channel_item_id` / `gtin` / `title` / `price` | ⚠️ **`item_pull` 现在把这些全丢了**（`remote` 字典只留 `published_status`/`lifecycle`/`reasons`）——16a 须扩采 |
+| `state` | `pending` / `adopting` / `adopted` / `not_adoptable` / `ignored` |
+| `reason` | 不可补挂或忽略的原因 |
+
+约束 `uq_channel_orphan (store_id, channel_sku)`，`item_pull` 每轮 upsert（幂等，重跑零新增）。
+
+**裁定二：补挂出来的 listing 用 `offer_mode='adopt'`（新增第三值），状态走 `transition()` 不直写。**
+现 CHECK 只有 `build`/`match`（`0009_listing.py:82`），而接管来的品**两者都不是**——它既不是我们
+构建的，也不是我们匹配上架的。**不能拿 `match` 顶替**：`service.py:613` 是
+`feed_kind = "item_build" if offer_mode == "build" else "item_match"`、`:643` 是
+`skip_variant=(offer_mode != "match")`，混用会让接管来的行**被当成可重新提交的 match 单**，
+而我们手里根本没有它的 spec。
+→ 新增 `adopt` 值，并立一条硬规则：**`adopt` 的 listing 不进提交链路**，提交入口显式拒绝
+（判据里要证伪）。状态则**必须走 `listing.service.transition()`**——它是状态迁移唯一出口、
+同事务写 `listing_state_history`；直接 `INSERT ... status='live'` 会绕过状态机、留不下来源记录。
+落法：先按默认 `draft` 插入，再 `transition(..., 'live', reason_code='ADOPTED_FROM_CHANNEL')`。
+
+**裁定三：补挂天然是两段式异步，不是一个同步端点。**
+product 走**现役 scrape 链路**建（不新造采集通道），而采集是异步作业——所以补挂 =
+「提交采集 → 等回来 → 建 listing 并接管」。中间态必须可见（`state='adopting'`），
+否则运营点完按钮不知道发生了什么。**采集失败则整条不落**（判据④：不造半基线行）。
+
+## 三路并行开工须知（Owner 2026-07-30：R2-13 / R2-14 14b / R2-16 并行）
+
+> 三条线各自的设计都已可开工（R2-16 的三个未决点已由上文三条裁定补齐）。**并行的风险不在
+> 设计，在共享面**——下面五条是实测出来的碰撞点，开工前先按这个分。
+
+### 1. alembic 迁移号必须预分配（不分配 = 必撞）
+
+现 head = `0042`。三条线都要加迁移，各自从 `0042` 往下接就会生出三个 `0043`，
+`down_revision` 链分叉，**后合的两条都得改文件名 + 改链**。预分配区段：
+
+| 线 | 号段 | 预期内容 |
+|---|---|---|
+| R2-13 | `0043`–`0046` | `buyer_account` / `plugin_instance` / `procurement_order` 增列与 `status` CHECK 扩 `pending_review` / `procurement_logistics_event` |
+| R2-14 14b | `0047` | `deleted_principal`（PK `(kind,id)`）+ 主体删除权限点 |
+| R2-16 | `0048`–`0049` | `channel_orphan_sku` + `ck_listing_mode` 扩 `adopt` |
+
+用不完的号**留空不补**——号段连续不是不变量，链正确才是。
+
+### 2. 跨线依赖：只有一条，且方向单一
+
+**14b 的「买家账号」那一类依赖 13b 建表**。处置见上文「14b 的三个实现坑」第 3 条：
+14b 先做 user / role / purchaser 三类，`buyer_account` 分支挂在 13b 之后补。
+除此之外三条线**无依赖**——R2-16 判据⑦要用的 `deleted_product` 墓碑闸已随 14a 在库里（0041）。
+
+### 3. 文件冲突面（会同时被两条线改的）
+
+| 文件 | 谁碰 | 说明 |
+|---|---|---|
+| `backend/src/erp/catalog/router.py` | 14b、R2-16 | 一个加主体删除、一个加补挂端点；同文件不同段，冲突可控 |
+| `frontend/src/pages/ProductsPage.tsx` | 14b、R2-16 | 14b 基本不动它（主体删除在 Users/Roles 页），R2-16 若把 orphan 清单做成产品页的标签页则会撞——**建议 R2-16 单独开页**，见 008 §6「账本/投影独立入口底线」 |
+| `backend/src/erp/listing/service.py` | R2-16 | `offer_mode` 新增 `adopt` 后，`:613`/`:643` 两处分支要显式处置 —— **只有 R2-16 碰，但改的是上架主链**，须跑全量 listing 测试 |
+
+### 4. 三条线的验收都要真机，而部署机是单点
+
+R2-13 的 `live` 层要花真钱、R2-14 14b 要删真用户、R2-16 要连真店铺后台——**三条同时排队占
+部署机会互相堵**。建议按「可不花钱证伪的先在 CI/审查侧走完，真机验证串行排队」组织，
+且**每条线合并后各自补一次上线部署回执**（见上文 R2-14 那条流程缺陷）。
+
+### 5. 合并次序建议
+
+无强依赖，故按**改动主链的深浅**排：**14b（最独立）→ R2-13（新域，几乎不碰既有表）→
+R2-16（要动 `ck_listing_mode` 与上架主链分支，放最后，前面两条已稳）**。
+若 R2-16 先合，另两条 rebase 时要连带复验上架链——代价不对称。
 
 ### FE-DESIGN 前端设计打磨（D-Q53，Owner 触发制）
 
