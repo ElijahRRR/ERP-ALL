@@ -121,3 +121,29 @@ class TestSeeds:
                 ).fetchone()[0]
                 >= 4
             )
+
+
+class TestRlsDeleteInvariant:
+    def test_no_delete_grant_without_delete_policy(self, migrated_db: str) -> None:
+        """schema 不变量（PR #49 审查 N2）：不允许「授了 DELETE 却没有 DELETE 策略」。
+
+        RLS 下无 DELETE 策略的 DELETE **静默匹配零行、不报错**——R2-14 14b 实撞
+        （0025 的 TEAM_RLS 是三策略模板，purchaser 补授 DELETE 后端点回 200、
+        墓碑照写、实体行还在）。`_delete_row_or_die` 是调用点纪律，管不住将来
+        不用它的新删除路径；本条是结构性防线，天然覆盖所有未来的表。
+        """
+        with psycopg.connect(migrated_db) as conn:
+            rows = conn.execute(
+                "SELECT c.relname FROM pg_class c"
+                " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE n.nspname='app' AND c.relkind='r' AND c.relrowsecurity"
+                "   AND has_table_privilege('erp_app', c.oid, 'DELETE')"
+                "   AND NOT EXISTS (SELECT 1 FROM pg_policies p"
+                "                   WHERE p.schemaname='app' AND p.tablename=c.relname"
+                "                     AND p.cmd IN ('DELETE','ALL'))"
+                " ORDER BY 1"
+            ).fetchall()
+        assert rows == [], (
+            "以下表授了 erp_app 的 DELETE 却没有 DELETE 策略（删除会静默零行）："
+            f"{[r[0] for r in rows]}——补 CREATE POLICY 或收回授权，二选一"
+        )

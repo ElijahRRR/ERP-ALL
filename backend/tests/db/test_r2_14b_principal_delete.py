@@ -312,6 +312,46 @@ class TestPurchaserDelete:
             assert _tombstone(conn, "purchaser", pid) is None
 
 
+class TestZeroRowGuard:
+    def test_zero_row_delete_raises_and_rolls_back(
+        self, client: TestClient, seeded: dict, migrated_db: str
+    ) -> None:
+        """审查 N1：钉住 `_delete_row_or_die` 本体——本单唯一的类级防线。
+
+        它抓的场景（RLS 无 DELETE 策略 → 静默零行）在策略在位时永远不会发生，
+        故此前九条判据全绿也钉不住它（审查侧变异实测：掏空检查照样全绿）。
+        本用例把策略真拆掉复现「零行」，断言**炸得干净**：抛 RuntimeError、
+        事务回滚、墓碑没写、实体还在。跑完恢复策略（finally，失败也不留残局）。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                " VALUES (%s, '守卫测试采购方', 'external', 7.2) RETURNING id",
+                (seeded["team"],),
+            ).fetchone()[0]
+        auth = _login(client, ADMIN, PASSWORD)
+        try:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute("DROP POLICY purchaser_del ON app.purchaser")
+            with pytest.raises(RuntimeError, match="匹配零行"):
+                client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute(
+                    "CREATE POLICY purchaser_del ON app.purchaser FOR DELETE"
+                    " USING (team_id = app.current_team() OR app.is_super())"
+                )
+        with psycopg.connect(migrated_db) as conn:
+            # 炸得干净：实体还在、墓碑没写（事务整体回滚）
+            assert conn.execute(
+                "SELECT count(*) FROM app.purchaser WHERE id = %s", (pid,)
+            ).fetchone() == (1,)
+            assert _tombstone(conn, "purchaser", pid) is None
+        # 策略恢复后同一实体可正常删除（顺带证明 finally 恢复到位）
+        r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
+        assert r.status_code == 200 and r.json()["level"] == "no_history"
+
+
 class TestTombstonePk:
     def test_same_id_across_kinds(self, seeded: dict, migrated_db: str) -> None:
         """坑2承重：四类主体各有自增序列，跨类 id 必然撞号——PK 是 (kind, id) 才放得下。
