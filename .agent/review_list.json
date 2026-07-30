@@ -1086,7 +1086,7 @@
    },
    {
     "date": "2026-07-30",
-    "kind": "verified",
+    "kind": "progress",
     "text": "【第三闸 PASS（PR #48 真机最终回执，锚点 HEAD=3fe960f）】①-⑬全过（⑨⑩按判据条件跳过）：判据①③⑤真机成立（channel_sku=ASIN 且库=API 回显；-2/-3 后缀；存量 67 行指纹前后逐字不变）；判据④真机 probe=M000002487（M+9 位）；⑪渠道写路径 dry-run 证据经 Owner 授权受控窗口取得——载荷 SKU=B0R215V001-3（ASIN 形态）、master_sku 0 次出现、MP_ITEM_MATCH v4.2，与云端沙箱同代码路径替证互证一致（channel_command id=16 留库为证）；⑫ 0042→0041→0042 可逆性演练全过。真机验证 5 次停机揪出 7 条缺陷全部在部署指令侧（compose 服务名/路径、PowerShell 引号拆参、验收账号权限、网关档位授权、match 缺 UPC、清理缺 listing_spec），产品代码零缺陷；指令迭代至 v7 并新增第 4 个检查器 psquotecheck。审查侧 N4（uq_listing 兜底前缀误匹配）已修码，N6（order_line 清理预期值判据）已入指令 v7；剩余闸：Owner 授权合并。"
    }
   ]
