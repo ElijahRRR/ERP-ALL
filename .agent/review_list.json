@@ -1008,6 +1008,11 @@
     "date": "2026-07-30",
     "kind": "landed",
     "text": "【契约与图纸依 Owner 双份逆向报告落到列级】Owner 2026-07-30 交付两份实测报告(厂商面板字段级 12,963 单实数据+导入模板+状态实测分布；插件源码逐字段追踪接口契约/17条异常原文/物流事件结构)，审计侧据此补 §07：①**成本三分**——原模型仅 purchase_cost+freight_cost，**缺 tax_amount**，美亚采购必有销售税，不补则 R2-08 利润从第一天偏低；三项分列、合计算得、并以渠道 total 做回填自校验；②**金额解析纪律**——渠道回填是带$的字符串，须处理千分位/空串/null，解析失败不得静默写 0；③**异常六类+三特例**(address/stock/product/delivery/checkout/price_guard/channel_cancelled/order_not_found/other)，源自 17 条生产实测原文非凭空设计；其中非FBA与bundle属业务规则应前置拦截而非运行时报错；④**护栏卡点定为 pending_review**——取厂商「待审核」态的位置(其自身实测0条形同虚设,但位置对:校验失败应卡在派发前)；新增 delivery_days_limit 护栏(厂商默认7天,我方原设计缺失)；价格护栏三段式(服务端下发阈值→客户端判定→回填后二次校验)，因判定必须在结账页发生；⑤**事后核对不可前置化**——asinCheck/postCodeCheck 语义是拍单后比对，服务端回填时执行；⑥端点契约字段级落笔，含 state 与 receivingState 双字段名并存(插件取 order.state||order.receivingState，对外须都返回)；⑦新表 procurement_logistics_event(seq=0 为最新,渠道倒序)，并**明确不存 trackingHtml**(base64整页HTML,万单GB级,信息已被结构化承载)；⑧补 payment_card_last4/delivery_est_date/delivery_est_raw 三列。**报告间一处矛盾已裁**：本地报告将 91/92 归任务状态、面板报告实测 91 在物流状态枚举——我方不复制其双枚举结构，统一收进 exception_kind 两个细分。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "correction",
+    "text": "【图纸两处缺陷，开发侧批注核实属实，审计侧自身失误】②**pending_review 不在状态约束里**——我在新增的护栏节写「不合格的单停在 status='pending_review'」，但 procurement_order.status 的 CHECK IN 仍是 (unassigned,assigned,claimed,purchased,shipped,backfilled,exception,cancelled)，**图纸自相矛盾，13c 实现必撞 CHECK**。已补入约束，并定死语义：pending_review 是**护栏拦下的专用停留位、不是初始态**；DEFAULT 保持 unassigned 以免扰动已验收在跑的人工采购路径(R2-05)；仅当派发前护栏不过时由 unassigned 转入，人工处置(改地址/换ASIN/调阈值/显式放行)后转回 unassigned 重新评估。③**daily_cap 三处口径未统一**——buyer_account.daily_cap(账号列)、purchase_execute 的 flow config 键、护栏表指向账号列，三处并存但**未写团队策略与账号上限冲突时取谁**。已定：**两层并存、取更严者**——buyer_account.daily_cap=账号硬上限(风控属性随账号走,新号不宜猛跑)；automation_policy.config.daily_cap=团队策略上限(按业务节奏可调)；**实际生效=min(两者)**，任一 NULL 视为该层不限，皆 NULL 则不限。§07 护栏表/账号表/路由段与 §09 flow config 四处已同步同一措辞。**成因**：新增契约节时只顾写新语义，未回查既有约束与既有同名键——与本周另两次失误(R2-12 判据②把测试当真数据、R2-15 判据⑥引用不存在的表)同源：**写新内容时未回验既有定义**。"
    }
   ]
  },

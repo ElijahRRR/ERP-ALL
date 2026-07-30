@@ -205,7 +205,7 @@ flow_code 注册清单（**v2.1，2026-07-26 冻结 / 2026-07-27 补 `purchase_e
 | compliance_block | 合规闸 | **manual/auto（无 semi）** | 实时 | manual=纯软标记 / auto=block 拦截（D-Q14） | 按 severity 分档 |
 | refund | 退款 | manual/semi/auto | **创建快照** | 记录 / 审批 / 自动执行（D-Q29） | amount_ceiling（auto 档金额上限） |
 | cancel | 取消 | manual/semi/auto | **创建快照** | 同 refund（D-Q29） | amount_ceiling |
-| purchase_execute | 采购执行 | manual/semi/auto | **创建快照** | **采购任务下发给采购插件**：人工点采 / 半自动（待确认后下发）/ 全自动下发（R2-13，2026-07-27 补入 v2.1）。**auto 档花的是真金白银**，必须带护栏 | amount_ceiling（单单金额上限）、daily_cap（单账号日采购上限）、price_delta_pct（较预估涨价超阈值即转人工） |
+| purchase_execute | 采购执行 | manual/semi/auto | **创建快照** | **采购任务下发给采购插件**：人工点采 / 半自动（待确认后下发）/ 全自动下发（R2-13，2026-07-27 补入 v2.1）。**auto 档花的是真金白银**，必须带护栏 | amount_ceiling（单单金额上限）、daily_cap（**团队策略上限**；与 `buyer_account.daily_cap` 账号硬上限**取更严者**生效，见 §07 护栏表）、price_delta_pct（较预估涨价超阈值即转人工） |
 | maintenance_run | 维护执行 | manual/semi/auto | 实时 | maintenance_task runner 认领档位：人工点跑 / 半自动按 kind 白名单 / 自动执行。**D-Q65② 宪法级要求**：报错回收的 DELETE/republish 必须有人工闸 | kinds（**默认空=最保守**，不得 fail-open） |
 
 **四环映射**（007 R2-09 验收判据「采集→审核→上架→定价四环各自可停」的 flow 对应）：

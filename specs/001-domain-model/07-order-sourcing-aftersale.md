@@ -90,7 +90,7 @@
 | id | BIGINT | PK identity | 门户对外单号=id（零信息泄露） |
 | team_id / store_id | BIGINT | NOT NULL | |
 | order_id | BIGINT | NOT NULL | + order_date timestamptz（回连分区单） |
-| status | TEXT | NOT NULL DEFAULT 'unassigned' CHECK IN (unassigned, assigned, claimed, purchased, shipped, backfilled, exception, cancelled) | |
+| status | TEXT | NOT NULL DEFAULT 'unassigned' CHECK IN (unassigned, **pending_review**, assigned, claimed, purchased, shipped, backfilled, exception, cancelled) | `pending_review`＝**护栏拦下的专用停留位**（2026-07-30 补，原约束漏列致图纸自相矛盾，13c 实现必撞——开发侧批注核实采纳）。**不是初始态**：DEFAULT 仍为 `unassigned`，以免扰动已验收在跑的人工采购路径（R2-05）；仅当派发前护栏评估不通过时由 `unassigned` 转入，人工处置（改地址/换 ASIN/调阈值/显式放行）后转回 `unassigned` 重新评估 |
 | assignee_kind | TEXT | NOT NULL DEFAULT 'none' CHECK IN (none, internal, external) | none=不分配，运营代填路径（D-Q50②） |
 | purchaser_id | BIGINT | NULL REFERENCES purchaser | assigned 起必填（internal/external 均指 purchaser 行） |
 | assigned_by / assigned_at | | NULL | |
@@ -178,7 +178,7 @@
 | 护栏 | 判据 | 出处 |
 |---|---|---|
 | `amount_ceiling` | 单单金额上限 | 我方新增 |
-| `daily_cap` | 单账号日采购上限 | 我方新增（`buyer_account.daily_cap`） |
+| `daily_cap` | 单账号日采购上限 | **两层并存、取更严者**（2026-07-30 定，原三处口径未统一——开发侧批注核实采纳）：`buyer_account.daily_cap`＝**账号硬上限**（风控属性，随账号走，新号不宜猛跑）；`automation_policy.config.daily_cap`（flow=`purchase_execute`）＝**团队策略上限**（按业务节奏可调）。**实际生效 = min(两者)**，任一为 NULL 视为该层不限；两者皆 NULL 则不限 |
 | `price_delta_pct` | 实付较预估涨幅超阈值 | 厂商硬编码 50% 于插件、**面板 0 处引用**（`priceCheck` 字段前端未使用）——我方阈值下发可配 |
 | `delivery_days_limit` | 预计送达超 N 天（厂商默认 7） | 厂商实测有此规则，我方原设计缺失 |
 | `fba_only` / `no_bundle` | 非 FBA、捆绑商品**不可自动采购** | 厂商作为运行时错误暴露；**我方应前置拦截**（业务规则非故障） |
@@ -238,7 +238,7 @@
 | site | TEXT | NOT NULL CHECK IN (amazon_com, amazon_ca, amazon_co_jp) | 插件支持三站 |
 | external_customer_id | TEXT | NOT NULL | **插件侧 `customerId`**，任务路由主键 |
 | status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, paused, blocked, retired) | blocked=账号异常/风控 |
-| daily_cap | INT | NULL | 单日采购上限（风控，null=不限） |
+| daily_cap | INT | NULL | **账号硬上限**（风控属性，null=本层不限）。与 `automation_policy.config.daily_cap`（团队策略上限）**取更严者**生效——口径见上方护栏表，勿各自实现 |
 | last_seen_at | timestamptz | NULL | 该账号插件实例最近一次拉任务时间（掉线可见） |
 | note / +公共列 | | | |
 
@@ -246,7 +246,7 @@
 `procurement_order` 增列 `buyer_account_id BIGINT NULL REFERENCES buyer_account`
 （插件路径必填；人工/门户路径可空），索引 `(buyer_account_id, status)`。
 
-**任务路由**：采购任务按 `site` 与账号可用性（active + 未超 daily_cap）分配到具体
+**任务路由**：采购任务按 `site` 与账号可用性（active + 未超**生效 daily_cap**＝账号硬上限与团队策略上限取小）分配到具体
 buyer_account；**同一订单的任务只能派给一个账号**（防重复下单）。分配策略 v1 = 轮转 +
 容量约束；策略参数进配置中心，不写死。
 
