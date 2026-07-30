@@ -178,7 +178,7 @@
 | 护栏 | 判据 | 出处 |
 |---|---|---|
 | `amount_ceiling` | 单单金额上限 | 我方新增 |
-| `daily_cap` | 单账号日采购上限 | **两层并存、取更严者**（2026-07-30 定，原三处口径未统一——开发侧批注核实采纳）：`buyer_account.daily_cap`＝**账号硬上限**（风控属性，随账号走，新号不宜猛跑）；`automation_policy.config.daily_cap`（flow=`purchase_execute`）＝**团队策略上限**（按业务节奏可调）。**实际生效 = min(两者)**，任一为 NULL 视为该层不限；两者皆 NULL 则不限 |
+| `daily_cap` | 单账号日采购上限 | **唯一落点 = `buyer_account.daily_cap`**（2026-07-30 简化，Owner 裁定）。日采购上限是**账号物理属性**（该亚马逊账号一天下多少单不致触发风控），不是业务策略，故 **flow config 不再设同名键**；团队级「今天要不要采」由三档档位承担——人工档即不自动派发，比再加一个数字上限直接。NULL=不限 |
 | `price_delta_pct` | 实付较预估涨幅超阈值 | 厂商硬编码 50% 于插件、**面板 0 处引用**（`priceCheck` 字段前端未使用）——我方阈值下发可配 |
 | `delivery_days_limit` | 预计送达超 N 天（厂商默认 7） | 厂商实测有此规则，我方原设计缺失 |
 | `fba_only` / `no_bundle` | 非 FBA、捆绑商品**不可自动采购** | 厂商作为运行时错误暴露；**我方应前置拦截**（业务规则非故障） |
@@ -238,7 +238,7 @@
 | site | TEXT | NOT NULL CHECK IN (amazon_com, amazon_ca, amazon_co_jp) | 插件支持三站 |
 | external_customer_id | TEXT | NOT NULL | **插件侧 `customerId`**，任务路由主键 |
 | status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, paused, blocked, retired) | blocked=账号异常/风控 |
-| daily_cap | INT | NULL | **账号硬上限**（风控属性，null=本层不限）。与 `automation_policy.config.daily_cap`（团队策略上限）**取更严者**生效——口径见上方护栏表，勿各自实现 |
+| daily_cap | INT | NULL | 单日采购上限（**该账号的物理承受力，唯一落点**；null=不限）。**flow config 无同名键**，勿再引入第二处定义 |
 | last_seen_at | timestamptz | NULL | 该账号插件实例最近一次拉任务时间（掉线可见） |
 | note / +公共列 | | | |
 
@@ -246,7 +246,7 @@
 `procurement_order` 增列 `buyer_account_id BIGINT NULL REFERENCES buyer_account`
 （插件路径必填；人工/门户路径可空），索引 `(buyer_account_id, status)`。
 
-**任务路由**：采购任务按 `site` 与账号可用性（active + 未超**生效 daily_cap**＝账号硬上限与团队策略上限取小）分配到具体
+**任务路由**：采购任务按 `site` 与账号可用性（active + 未超 `buyer_account.daily_cap`）分配到具体
 buyer_account；**同一订单的任务只能派给一个账号**（防重复下单）。分配策略 v1 = 轮转 +
 容量约束；策略参数进配置中心，不写死。
 

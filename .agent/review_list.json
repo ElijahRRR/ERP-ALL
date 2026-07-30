@@ -1013,6 +1013,11 @@
     "date": "2026-07-30",
     "kind": "correction",
     "text": "【图纸两处缺陷，开发侧批注核实属实，审计侧自身失误】②**pending_review 不在状态约束里**——我在新增的护栏节写「不合格的单停在 status='pending_review'」，但 procurement_order.status 的 CHECK IN 仍是 (unassigned,assigned,claimed,purchased,shipped,backfilled,exception,cancelled)，**图纸自相矛盾，13c 实现必撞 CHECK**。已补入约束，并定死语义：pending_review 是**护栏拦下的专用停留位、不是初始态**；DEFAULT 保持 unassigned 以免扰动已验收在跑的人工采购路径(R2-05)；仅当派发前护栏不过时由 unassigned 转入，人工处置(改地址/换ASIN/调阈值/显式放行)后转回 unassigned 重新评估。③**daily_cap 三处口径未统一**——buyer_account.daily_cap(账号列)、purchase_execute 的 flow config 键、护栏表指向账号列，三处并存但**未写团队策略与账号上限冲突时取谁**。已定：**两层并存、取更严者**——buyer_account.daily_cap=账号硬上限(风控属性随账号走,新号不宜猛跑)；automation_policy.config.daily_cap=团队策略上限(按业务节奏可调)；**实际生效=min(两者)**，任一 NULL 视为该层不限，皆 NULL 则不限。§07 护栏表/账号表/路由段与 §09 flow config 四处已同步同一措辞。**成因**：新增契约节时只顾写新语义，未回查既有约束与既有同名键——与本周另两次失误(R2-12 判据②把测试当真数据、R2-15 判据⑥引用不存在的表)同源：**写新内容时未回验既有定义**。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "ruling",
+    "text": "【daily_cap 简化为单一落点——Owner 裁定，撤回审计侧数小时前的「两层取更严者」方案】Owner 问「为什么要设计团队策略上限」，指出得对：该团队级键是审计侧 2026-07-27 往 flow 清单加 purchase_execute 时**照其他 flow 的样子顺手列的，当时无业务理由**；今日开发侧指出三处口径冲突后，审计侧**发明「账号硬上限 vs 团队策略上限」的说辞把它保留下来，属合理化而非修正**。**定案**：日采购上限是**账号物理属性**（该亚马逊账号一天下多少单不致触发风控），不是业务策略——唯一落点 `buyer_account.daily_cap`，**flow config 移除同名键**；团队级「今天要不要采」由三档档位承担（人工档即不自动派发），无需再设数字上限。**保留在 flow config 的三个键是真业务策略**：amount_ceiling（单单愿付多少）、price_delta_pct（能容忍涨多少）、delivery_days_limit（能接受多慢送达）。由此定下划线原则：**账号属性归账号表，业务策略归 flow config**。"
    }
   ]
  },
