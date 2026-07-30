@@ -190,7 +190,28 @@
 **回填后核对（不可前置化）**：`asinCheck` / `postCodeCheck` 语义是「拍单**后**实际值与
 下单时是否一致」，属**事后核对**，服务端在回填时执行——买错东西必须能被发现。
 
+### 执行档位（Owner 2026-07-30，插件 fork 必备能力）
+
+现插件的流程是**一路走到下单完成**，没有中途停下的档。Owner 定的验收执行方式是
+「前面停在最后一步付款」，故 fork 必须补一个**走到付款页即停并回报**的档位，否则该执行方式
+无法落地。沿用本仓 `channel.gateway_mode` 同款三态：
+
+| 档 | 行为 | 用途 |
+|---|---|---|
+| `dry_run` | 只做校验与地址/购物车填充，**不进结账页** | CI 与本地 |
+| `stop_before_payment` | 走完结账页、抓到实付金额与预计送达，**在点付款前停下并回报** | **不花钱验收的主力档** |
+| `live` | 完整下单 | 真实订单收口 |
+
+`stop_before_payment` 之所以是主力档，是因为它能验到几件原以为必须花钱才能验的东西：
+**实付金额**（价格护栏三段式的客户端判定所需）、**预计送达**（`delivery_days_limit`）、
+**非 FBA / bundle 的前置拦截**。工单验收据此分两层，见 007 R2-13 节。
+
 ### 端点契约（字段级，源自插件源码实测）
+
+> **一手来源的权威边界（2026-07-30 精确化）**：Owner 的逆向报告对「**厂商实际怎么做**」
+> 是权威——字段名、调用形态、页面行为以它为准；但对「**我们该怎么做**」的**推荐不是权威**。
+> 已出现两处推荐失准：①「提取 customerId 按钮不需要」（实际是账号 ID 的唯一来源）；
+> ②「`asinCheck` 前置化」（照做会直接撞回填后核对那条判据）。引用 §7 的推荐前先过这道筛。
 
 **① 拉取待采购任务**（对应厂商 `getNeedPurchaseOrders?customerId=`）
 插件实际只读取以下字段，其余仅供展示：`id`／`orderNo`／`receivingName`／`receivingPhone`／
@@ -236,7 +257,7 @@
 | team_id | BIGINT | NOT NULL | |
 | label | TEXT | NOT NULL | 运营可读名（对应哪个指纹浏览器） |
 | site | TEXT | NOT NULL CHECK IN (amazon_com, amazon_ca, amazon_co_jp) | 插件支持三站 |
-| external_customer_id | TEXT | NOT NULL | **插件侧 `customerId`**，任务路由主键 |
+| external_customer_id | TEXT | NOT NULL | **插件侧 `customerId`**，任务路由主键。**来源=插件的「提取 customerId」按钮取出后人工录入**（Owner 2026-07-30：预配置的账号 ID 本身就是这么来的）——该按钮属**开账号阶段的一次性配置工具**，13b 必须保留这条录入通道，勿按一手来源 §7 的「不需要」删掉 |
 | status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, paused, blocked, retired) | blocked=账号异常/风控 |
 | daily_cap | INT | NULL | 单日采购上限（**该账号的物理承受力，唯一落点**；null=不限）。**flow config 无同名键**，勿再引入第二处定义 |
 | last_seen_at | timestamptz | NULL | 该账号插件实例最近一次拉任务时间（掉线可见） |
@@ -263,23 +284,35 @@ buyer_account；**同一订单的任务只能派给一个账号**（防重复下
 
 **不得使用全局共享密钥**——一台机器被盗即全量失守；实例级令牌让吊销粒度=单个浏览器。
 
-## buyer_session 买家会话凭证（R2-13，**默认不启用**）
+## buyer_session 买家会话凭证 —— ⛔ **不建（Owner 2026-07-30 裁定：先不收 cookie）**
 
-> Owner 2026-07-27 已同意 cookie 可落自有库。但**审计侧建议默认关**：插件在浏览器内
-> 执行采购，用的是该浏览器自身的登录态，**下单链路并不需要服务端持有 cookie**；
-> 厂商 SaaS 收集 cookie 是为其服务端能力，不是我们的需求。**先不收=零风险**。
+> **本节保留为判据，不是待建表。** 2026-07-27 曾按「默认不启用、启用条件二选一」写，
+> 2026-07-30 Owner 裁定直接**不收**，理由不是"暂时不用"而是**用途已被证伪**。
 
-启用条件（任一成立才建此表）：需服务端在浏览器关闭时查订单状态 / 需集中监测会话健康。
+**证伪过程（逐字读插件 `background.js` 的字段整形）**：
 
-| 列 | 类型 | 约束/默认 | 说明 |
-|---|---|---|---|
-| buyer_account_id | BIGINT | PK REFERENCES buyer_account | |
-| cookie_cipher | BYTEA | NOT NULL | **加密存储**（应用层密钥，密钥不入库） |
-| expires_at / updated_at | timestamptz | | |
+```js
+{ domain, expirationDate, hostOnly, httpOnly, name, path,
+  sameSite: cookie.sameSite || 'no_restriction',
+  secure, session, storeId: cookie.storeId || '1', value, id: index + 1 }
+```
 
-纪律：**永不入日志、永不进 API 响应体、永不进 dry_run 快照**（沿 R2-03 `request_snapshot`
-的凭证断言同款）；`erp_app` 无明文读取路径；每次解密访问写 `audit_log`。
-若最终不启用，则**插件 fork 一并删除 `cookies` 权限与 `updateBuyerCookie` 调用**。
+`hostOnly` / `sameSite:'no_restriction'` / `storeId:'1'` / `id:index+1` 这一组字段，**正是
+Cookie-Editor（EditThisCookie）那类插件的 JSON 导出格式**，而该格式存在的唯一目的是
+**被导入回浏览器**。所以那份 jar 不是"一个标识"，是**整套可搬运的登录态**，用途是会话搬运
+而非识别——识别由同一调用里的**独立参数** `customerId` 承载
+（`ApiService.updateBuyerCookie(customerId, country, cookieJson)`）。
+**目的既已另有达成路径，收 cookie 就只剩风险没有收益**：jar 一旦落库，持有者即可以买家身份下单。
+
+**处置（随 13a 执行）**：`cookies` 权限、`updateBuyerCookie`、`getCookiesAsJson()`、
+`background.js` 的 `onMessage` 监听器**全部删除**，fork 后 `permissions` 为空数组
+（`chrome.runtime` 无需声明）。连带作废此前那条"给 `onMessage` 加 `sender` 校验"——
+**整个监听器都删了，校验失去对象；删掉比"加校验 + 收窄 host_permissions"更强**。
+
+**将来若真要建，判据仍是原来那两条**（任一成立）：需服务端在浏览器关闭时查订单状态 /
+需集中监测会话健康。届时纪律照旧：加密存储（应用层密钥，密钥不入库）、**永不入日志、
+永不进 API 响应体、永不进 dry_run 快照**（沿 R2-03 `request_snapshot` 的凭证断言同款）、
+`erp_app` 无明文读取路径、每次解密访问写 `audit_log`。
 
 ### portal_procurement_v 门户视图（portal_app 角色唯一入口）
 

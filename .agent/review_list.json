@@ -988,14 +988,14 @@
   "priority": "P0",
   "dimension": "product",
   "status": "todo",
-  "check": "自动采购接入(Amazon 采购插件, D-Q69, MVP内)：fork 插件指向 ERP + 实现插件端点组(getNeedPurchaseOrders/purchaseOrderFinishUpdate/updateTrackingInfo 等9个)+buyer_account 账号池与任务路由+plugin_instance 实例令牌+purchase_execute 三档护栏(amount_ceiling/daily_cap/price_delta_pct)+回填对账+厂商SaaS逐账号灰度切换",
+  "check": "自动采购接入(Amazon 采购插件, D-Q69, MVP内)：fork 插件指向 ERP + 实现插件端点组(getNeedPurchaseOrders/purchaseOrderFinishUpdate/updateTrackingInfo 等9个)+buyer_account 账号池与任务路由+plugin_instance 实例令牌+purchase_execute 三档护栏(amount_ceiling/price_delta_pct/delivery_days_limit；daily_cap 不在 config，唯一落点为 buyer_account 列由 13b 消费)+回填对账+厂商SaaS逐账号灰度切换",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md",
    "specs/001-domain-model/07-order-sourcing-aftersale.md",
    "specs/001-domain-model/09-platform.md"
   ],
-  "gate": "排 R2-09 之后（需 purchase_execute 三档护栏才敢开 auto）；13e 灰度切换红线=同一浏览器配置内绝不同时启用两个插件(会重复下单)",
-  "acceptance": "①真实订单在人工档由插件完成采购并回填，金额/单号/运单与亚马逊后台一致，且 purchase_cost+tax_amount+freight_cost 与渠道 total 自校验相等；②三档各跑一遍，auto 档超 amount_ceiling/price_delta_pct/delivery_days_limit 任一护栏必停在 pending_review 且零下单；③越权：A 实例取不到 B 账号的任务(必败)；④并发下发同一订单不产生两个采购任务(claimed 原子锁)；⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练；⑥**金额解析证伪**：构造带千分位/空串/null 的回填，须落异常告警而非静默写 0；⑦**事后核对生效**：构造回填 ASIN 或邮编与下单时不一致的情形，系统必须发现并标记(不得只在下单前校验)；⑧非 FBA 与 bundle 商品在派发前即被拦截(不进插件执行)；⑨物流事件按 seq 存储且 seq=0 为最新，不误当时间序",
+  "gate": "13a/13b/13d 可立即开工，不必等 R2-09 收账；**auto 档开关锁死在 13c 交付并验收之后**（Owner 2026-07-30；原写「排 R2-09 之后」留了洞——R2-09 从未建护栏消费点）；13e 在 13c 验收之后。13e 回切方式=**换回厂商原版插件**而非改 baseUrl（插件路径已改成一组，指回厂商后端只会 404），回切演练须实测这条真路；红线=同一浏览器配置内绝不同时启用两个插件(会重复下单)",
+  "acceptance": "**分两层验（Owner 2026-07-30 定执行方式：先停在付款前一步，通了再拿真实订单收口）；插件 fork 必须带 stop_before_payment 档位，否则本表执行不了**。〔stop_before_payment 层·不花钱〕②三档各跑一遍，auto 档超 amount_ceiling/price_delta_pct/delivery_days_limit 任一护栏必停在 pending_review 且零下单；③越权：A 实例取不到 B 账号的任务(必败)；④并发下发同一订单不产生两个采购任务(claimed 原子锁)；⑥**金额解析证伪**：构造带千分位/空串/null 的回填，须落异常告警而非静默写 0；⑦**事后核对生效**：构造回填 ASIN 或邮编与下单时不一致的情形，系统必须发现并标记(不得只在下单前校验)；⑧非 FBA 与 bundle 商品在派发前即被拦截(不进插件执行)；⑨物流事件按 seq 存储且 seq=0 为最新，不误当时间序；⑩**cookie 链已删净**：fork 后 manifest permissions 为空数组，全仓无 updateBuyerCookie/getCookiesAsJson/onMessage 监听器残留，ERP 侧无 buyer_session 表。〔live 层·花真钱，Owner 亲自收口〕①真实订单在人工档由插件完成采购并回填，金额/单号/运单与亚马逊后台一致，且 purchase_cost+tax_amount+freight_cost 与渠道 total 自校验相等；⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练(按「换回原版插件」的真路)",
   "finding": "审计侧解包 v2.5.0 crx 并对比仓内 v2.4.1(2026-07-27)：实为完整自动采购机器人(加购→填址→结账→抓单号→回填 + 物流回填链 + 验证码人机接力),支持 com/ca/co.jp,两版差异仅日本地址选择两函数。安全实测：host_permissions=*://*/* + cookies 权限可读该浏览器任何站点 cookie(含 Walmart 后台/飞书)；updateBuyerCookie 将买家 cookie 上传厂商服务器。fork 时须收窄权限。性质=迁移非新建(现产线跑在 smallbee168.com)",
   "last_checked_at": "2026-07-30",
   "updates": [
@@ -1018,6 +1018,11 @@
     "date": "2026-07-30",
     "kind": "ruling",
     "text": "【daily_cap 简化为单一落点——Owner 裁定，撤回审计侧数小时前的「两层取更严者」方案】Owner 问「为什么要设计团队策略上限」，指出得对：该团队级键是审计侧 2026-07-27 往 flow 清单加 purchase_execute 时**照其他 flow 的样子顺手列的，当时无业务理由**；今日开发侧指出三处口径冲突后，审计侧**发明「账号硬上限 vs 团队策略上限」的说辞把它保留下来，属合理化而非修正**。**定案**：日采购上限是**账号物理属性**（该亚马逊账号一天下多少单不致触发风控），不是业务策略——唯一落点 `buyer_account.daily_cap`，**flow config 移除同名键**；团队级「今天要不要采」由三档档位承担（人工档即不自动派发），无需再设数字上限。**保留在 flow config 的三个键是真业务策略**：amount_ceiling（单单愿付多少）、price_delta_pct（能容忍涨多少）、delivery_days_limit（能接受多慢送达）。由此定下划线原则：**账号属性归账号表，业务策略归 flow config**。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "ruling",
+    "text": "【Owner 同日晚四条新裁定 + 云端侧提请的图纸改动，审计侧已全部落笔】**补-1 cookies 反转为「不收，删掉」**——同日白天曾裁「要，用途是识别买家号」，晚间查清那份 jar 到底是什么后反转：background.js 的字段整形(hostOnly/sameSite:'no_restriction'/storeId:'1'/id:index+1)正是 Cookie-Editor 那类插件的导出格式，**该格式唯一目的是被导入回浏览器**，所以它不是标识而是整套可搬运的登录态；识别由同一调用里的独立参数 customerId 承载。目的既已另有达成路径，收 cookie 只剩风险没有收益。→ cookies 权限/updateBuyerCookie/getCookiesAsJson/onMessage 监听器全删，fork 后 permissions 为空数组；**buyer_session 表不建**（§07 该节已改写为「不建+将来若要建的判据」，非删节）；连带作废「给 onMessage 加 sender 校验」——监听器都删了，校验失去对象。**补-2 提取 customerId 按钮保留**——预配置的账号 ID 本身就是用它提取的，是开账号阶段的一次性配置工具；这同时填上此前报的输入缺口「数十个账号的 external_customer_id 从哪来」。据此定下**一手来源的权威边界**：Owner 逆向报告对「厂商实际怎么做」是权威，对「我们该怎么做」的推荐不是权威（§7 已两处推荐失准：本条 + asinCheck 前置化，后者照做会直接撞判据⑦），已落 §07 端点契约节头。**补-3 日本站 MVP 不做** ⇒ fork 仓内 v2.4.1 即可（v2.5.0 的核心新增就是 JP_PREFECTURE_EN_TO_JA），但 receivingDistrict 与异常类 address 的 JP 分支保留代码路径，将来开 JP 只补映射表。**补-4 验收改「先停在付款前一步」**——这解开了「验收要真花钱」的死结，但引出图纸原先没有的必需能力：插件 fork 须带 dry_run/stop_before_payment/live 三档（沿用 channel.gateway_mode 同款），否则该执行方式无法落地。验收据此分两层，stop_before_payment 层能验到实付金额/预计送达/非FBA与bundle拦截。**另修 007:279-280（13c 分片定义句）**：护栏键三个里错两个（多 daily_cap、少 delivery_days_limit），该句是 13c 的范围定义处，照它实现会建错护栏集并引回刚被消除的「两处定义」失效模式；已改并订正紧随的「四个护栏键零命中」计数。云端侧 b72ffb3 对 da2a096 的三处复核通过，此为其指出的唯一残留。"
    }
   ]
  },
