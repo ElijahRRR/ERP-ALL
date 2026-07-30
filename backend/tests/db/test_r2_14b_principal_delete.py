@@ -322,6 +322,11 @@ class TestZeroRowGuard:
         故此前九条判据全绿也钉不住它（审查侧变异实测：掏空检查照样全绿）。
         本用例把策略真拆掉复现「零行」，断言**炸得干净**：抛 RuntimeError、
         事务回滚、墓碑没写、实体还在。跑完恢复策略（finally，失败也不留残局）。
+
+        ⚠️ **本用例依赖串行执行**（审查二轮附注）：DROP/CREATE POLICY 是共享库上的
+        临时 schema 改动，无策略窗口只有几毫秒，但并发下别的 purchaser 删除用例会
+        撞进去莫名回 500。当前 pytest 串行（无 xdist）安全；将来引入 `-n auto` 时
+        本用例须加 xdist_group 隔离，否则会成为看似无关的偶发红源头。
         """
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             pid = conn.execute(
