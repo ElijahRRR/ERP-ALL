@@ -1083,6 +1083,11 @@
     "date": "2026-07-30",
     "kind": "landed",
     "text": "【实现完码，闸序中】迁移 0042（master_sku 生成式改 app.next_master_sku() PL/pgSQL 函数：不足 9 位左填零、超出原样输出，**无上界**；只 SET DEFAULT 不动存量）+ listing/service.py（product SELECT 补 source_channel/source_ref；新增 _channel_sku_base 取 ASIN 并对非 amazon 显式回落 master_sku；新增 _insert_listing_with_sku 做后缀分配——**扫全状态**且靠 uq_listing 裁决后退格重试，不做先查后插的乐观假设；回显改取 INSERT...RETURNING channel_sku 的实际写入值）+ order/pull.py（判据⑦：order_line INSERT 加 RETURNING listing_id，落空则计数+结构化日志+warn 通知，计数经 unlinked_lines 落进店级 stats 与 sync_state；并给 ON CONFLICT 补 listing_id/product_id = coalesce(旧,新) 只填空不覆盖的自愈，否则告警是死信）。\n\n**踩点时两处提议被实测推翻，已改**：①锚点不是 D-Q72/工单写的 :393（那只是响应回显）而是 INSERT 参数，两处必须同源否则存储与回报静默分叉；②原提议用 to_char(nextval,'FM000000000')——PG16 实测溢出时返回 '#########' 而非变长，**不满足判据④**，故改用 PL/pgSQL 显式分支（纯 SQL 函数体带 FROM 有被内联从而两次调 nextval 的风险，不用）。lpad 撞号也已实测复现：lpad(1e7,7,'0')==lpad(1e6,7,'0')。\n\n**踩点文另一处错已在测试注释里更正**：跨店同 ASIN 不是「去重放行（店铺维度不同）」——团内去重 SQL 按 (product_id, team_id) 判、无 store_id 条件，故跨店需 dedup_exempt （D-Q31 店铺豁免）才走得通，判据③ 的用例据此构造。\n\n测试：tests/db/test_r2_15_sku_split.py 九条覆盖①–⑦ + 非 amazon 回落 + 重拉自愈；判据④ 直接把序列推到 999,999,998 / 999,999,999 / 99,999,999,999 各取一次并断言无 '#'、位数递增（判据明写不得只测小序号）。两条既有测试的旧口径断言已更新：test_listing_api 的 channel_sku.startswith('M')（被 D-Q72 推翻）、test_scrape_api 的 len(master_sku)==8（写死旧格式长度，改为断言不变量）。本机 PG16 全量 pytest 绿。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "verified",
+    "text": "【第三闸 PASS（PR #48 真机最终回执，锚点 HEAD=3fe960f）】①-⑬全过（⑨⑩按判据条件跳过）：判据①③⑤真机成立（channel_sku=ASIN 且库=API 回显；-2/-3 后缀；存量 67 行指纹前后逐字不变）；判据④真机 probe=M000002487（M+9 位）；⑪渠道写路径 dry-run 证据经 Owner 授权受控窗口取得——载荷 SKU=B0R215V001-3（ASIN 形态）、master_sku 0 次出现、MP_ITEM_MATCH v4.2，与云端沙箱同代码路径替证互证一致（channel_command id=16 留库为证）；⑫ 0042→0041→0042 可逆性演练全过。真机验证 5 次停机揪出 7 条缺陷全部在部署指令侧（compose 服务名/路径、PowerShell 引号拆参、验收账号权限、网关档位授权、match 缺 UPC、清理缺 listing_spec），产品代码零缺陷；指令迭代至 v7 并新增第 4 个检查器 psquotecheck。审查侧 N4（uq_listing 兜底前缀误匹配）已修码，N6（order_line 清理预期值判据）已入指令 v7；剩余闸：Owner 授权合并。"
    }
   ]
  },

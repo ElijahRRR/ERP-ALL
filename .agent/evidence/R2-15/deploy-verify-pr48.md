@@ -290,7 +290,10 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.feed_item WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing_spec WHERE product_id IN (SELECT id FROM app.product WHERE source_ref LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
 ```
 
-**判据**：整段成功（贴回六个 `DELETE n`，n 可以是 0）。
+**判据**：整段成功（贴回六个 `DELETE n`，n 可以是 0）。**其中 `order_line` 那条预期
+恒为 `DELETE 0`**（本单不造订单，⑩只读跳过）；若非 0 → **停手贴数**，那说明前缀圈到了
+不是本单造的行（审查 N6：`order_line` 在「一行不删」名单上，范围靠前缀是概率不是结构，
+预期值判据即把概率兜成结构）。
 
 > v6 起从四条扩成六条：⑪的 submit 会给产品缓存 `listing_spec` 模板行
 > （`product_id` 带 FK，不删则产品删除被挡——真机⑫实撞），并写 `feed_item`
@@ -588,6 +591,7 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 ```
 
 **判据**：六条 `DELETE n` + feed 行 `DELETE 1`（若本轮没跑⑪则为 `DELETE 0`）。
+`order_line` 那条同⑥-0 预期恒为 `DELETE 0`，非 0 即停（审查 N6）。
 `channel_command` 里⑪那行**保留不删**——它是 dry-run 快照的库内证据，
 `object_id` 是软引用无 FK，不产生悬挂约束。**beat 保持 stopped 直到⑬起回**。
 
