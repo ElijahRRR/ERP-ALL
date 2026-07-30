@@ -146,7 +146,12 @@ class TestChannelSku:
 
         这是后缀规则的**主场景**而不是边缘情形：`uq_listing` 不带状态过滤，而团内
         去重只挡在架的——两者叠起来就是「下架后重上：去重放行、唯一约束照撞」。
-        只扫在架的实现会在这里漏掉。
+
+        ⚠️ **本用例证明的是「结果」而不是「手段」**（PR #48 审查侧 N2 实测指出）：
+        给 `taken` 预扫加上状态过滤（只扫在架），本用例**仍然全绿**——因为真正的裁决在
+        `uq_listing` + 退格重试，预扫只用来定起点。**这不是缺陷，恰恰说明设计是稳的**
+        （手段可替换而结果不变）；但用例名容易被读成「钉住了扫全状态这个手段」，
+        故在此写明：它钉住的是「下架后重上能拿到 -2/-3」，预扫范围属可替换的实现细节。
         """
         first = await _allocate(seeded["team"], seeded["store"], [seeded[ASIN_B]])
         assert first["created"][0]["channel_sku"] == ASIN_B
@@ -229,10 +234,16 @@ class TestMasterSku:
         # 号码严格随序号单增（证明 nextval 只被调用一次、没有跳号或取到不同值）
         assert [int(got[k][1:]) for k in sorted(got)] == sorted(k for k in got)
 
-    def test_existing_untouched_and_never_collides(self, migrated_db: str) -> None:
+    def test_existing_untouched_and_never_collides(self, seeded: dict, migrated_db: str) -> None:
         """判据⑤：存量一行不改；且新式号**位数不同故永不等于**任何旧式号。
 
         旧式 `M` + 7 位，新式 `M` + ≥9 位。这条不靠推理，直接构造一个旧式号断言。
+
+        **必须依赖 `seeded`**（PR #48 审查侧 N1）：本用例按 `TEAM` 名查 team，而那个 team
+        是 `seeded` 建的。此前签名漏了它，于是**只在脏库上能单独跑通**——干净库上单跑
+        会 `fetchone()` 返回 None 再取 `[0]`，报 `TypeError` 而不是「存量被改动了」。
+        整文件跑时靠同文件先跑的用例留下的副作用蒙对，属隐藏依赖。
+        本仓要求「每条判据能被单独复算」，故补上。
         """
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             team_id = conn.execute("SELECT id FROM app.team WHERE name = %s", (TEAM,)).fetchone()[0]
@@ -260,6 +271,58 @@ class TestMasterSku:
         assert all(f != legacy for f in fresh)
         # 更强的一条：位数不同 ⇒ 不可能相等，与具体取值无关
         assert all(len(f) != len(legacy) for f in fresh)
+
+
+class _FakeDiag:
+    def __init__(self, name: str) -> None:
+        self.constraint_name = name
+
+
+class _FakeOrig(Exception):
+    """冒充 psycopg3 的原始异常：只需要 `.diag.constraint_name`。"""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f'duplicate key value violates unique constraint "{name}"')
+        self.diag = _FakeDiag(name)
+
+
+class TestUqListingViolationGuard:
+    """`_is_uq_listing_violation` 自己的守卫（PR #48 审查侧 N2）。
+
+    它是**专门写来防**「把 FK/CHECK 错误吞进后缀重试循环、连吞 50 次后报一个误导性的
+    `LISTING_SKU_SUFFIX_EXHAUSTED`」的。审查侧变异实测：把它改成恒真，九条判据**照样
+    全绿**——即这个守卫自己没有被任何测试守住。这正是本仓反复出现的那一类形状
+    （守卫补上了，守卫的守卫缺席），故补此用例。
+
+    纯单元断言，不需要真造一个 FK 冲突：真正要钉住的是「按约束名分流」这个判断本身。
+    """
+
+    def test_only_uq_listing_is_treated_as_retryable(self) -> None:
+        from sqlalchemy.exc import IntegrityError
+
+        from erp.listing.service import _is_uq_listing_violation
+
+        def _err(orig: Exception) -> IntegrityError:
+            return IntegrityError("INSERT ...", {}, orig)
+
+        # 带 diag 的正常路径（psycopg3）
+        assert _is_uq_listing_violation(_err(_FakeOrig("uq_listing"))) is True
+        # **其余约束一律不可重试，必须原样抛出**——这是本守卫存在的全部理由
+        assert _is_uq_listing_violation(_err(_FakeOrig("fk_listing_product"))) is False
+        assert _is_uq_listing_violation(_err(_FakeOrig("ck_listing_status"))) is False
+        assert _is_uq_listing_violation(_err(_FakeOrig("uq_listing_spec"))) is False
+
+    def test_falls_back_to_message_when_driver_gives_no_diag(self) -> None:
+        """驱动未给出 `diag` 时走字符串兜底——兜底也必须只认 uq_listing。"""
+        from sqlalchemy.exc import IntegrityError
+
+        from erp.listing.service import _is_uq_listing_violation
+
+        def _err(msg: str) -> IntegrityError:
+            return IntegrityError("INSERT ...", {}, Exception(msg))
+
+        assert _is_uq_listing_violation(_err('... unique constraint "uq_listing"')) is True
+        assert _is_uq_listing_violation(_err('... foreign key constraint "fk_x"')) is False
 
 
 class _FakeOrders:
