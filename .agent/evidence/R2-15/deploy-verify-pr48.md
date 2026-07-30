@@ -451,37 +451,105 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 ---
 
-## ⑪ 渠道写路径 dry-run：feed 载荷里的 SKU **是 ASIN**（铁律 4 证据）
+## ⑪ 渠道写路径 dry-run：feed 载荷里的 SKU **是 ASIN**（铁律 4 证据；v4 改受控窗口）
 
-**先确认网关是 dry_run 档**（本步绝不能真发到 Walmart）：
+**你上一轮在本步因网关为 `"live_test"` 停手，停得对。** 这台机器的网关档位是 Owner 的
+决定，不是指令能给的授权。v4 起本节改为**受控 dry_run 窗口**流程，且有硬闸：
+
+> **A-0 授权闸：只有在 PR #48 评论区看到 Owner 明文授权「开 dry_run 窗口」之后，
+> 才允许执行 A-2 起的任何写操作。没看到就停在这里，本节其余全部不做。**
+> 若 Owner 裁定采信云端沙箱替证（同一生产代码路径的载荷快照已在沙箱取得），
+> 本节整体跳过，回执写「⑪ 跳过（Owner 裁定采信沙箱替证）」。
+
+窗口的安全性依赖三件事：预检确认没有真实渠道命令在途（A-1）、停 beat 杜绝后台
+消费（A-2）、窗口审计确认窗口内只发生了本步这一条命令（A-9）。dry_run 比 live_test
+更保守（不发任何 HTTP），唯一风险是「窗口内真实命令被假完成」，三重措施正是堵它。
+
+**A-1 预检**（只读，可先跑）——记下 `cc_max_id_before`，并要求无在途命令：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT value FROM app.system_config WHERE key = 'channel.gateway_mode';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT coalesce(max(id),0) AS cc_max_id_before, count(*) FILTER (WHERE status IN ('pending','inflight','verify_pending')) AS cc_nonterminal FROM app.channel_command;"
 ```
 
-**判据**：值为 `"dry_run"`。**若不是 dry_run，停下来问**——不要自己改它。
+**判据**：`cc_nonterminal = 0`。不为 0 → **停**，把两个数贴回执（有真实命令在途，窗口不能开）。
 
-提交⑦造的那条 listing（取 `B0R215V001-3` 那条的 id，它是唯一非终态的）：
+**A-2 停 beat**（杜绝窗口内后台任务消费渠道命令）：
+
+```powershell
+docker compose -f infra/docker-compose.yml stop beat
+```
+
+**A-3 切 dry_run 并回读**（配置每请求现读库，**立即生效，不需要重启任何服务**）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.system_config SET value = to_jsonb('dry_run'::text) WHERE key = 'channel.gateway_mode'; SELECT value FROM app.system_config WHERE key = 'channel.gateway_mode';"
+```
+
+**判据**：回显为 `"dry_run"`。
+
+**A-4 给测试产品补 upc**（云端沙箱以同形态数据实跑撞出的墙——本单第 6 条指令缺陷）：
+match 模式构建器按 BR-LST-015 fail-closed：产品无 gtin/upc/ean 时 submit 直接
+`ERP_SPEC_BUILD_FAILED`。⑥-1 的造数没带 upc。修法（仍只写 `B0R215V*` 测试行，铁律内；
+upc 用校验位合法的标准测试号）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.product SET attrs = attrs || jsonb_build_object('upc', '012345678905') WHERE source_ref = 'B0R215V001'; SELECT source_ref, attrs->>'upc' AS upc FROM app.product WHERE source_ref = 'B0R215V001';"
+```
+
+**判据**：`upc = 012345678905`。
+
+> 若你在补 upc 之前已经试过 submit 并收到 `ERP_SPEC_BUILD_FAILED`：那条 listing 已转
+> `failed`，补完 upc 后先重投再继续（`POST /api/v1/listings/<LISTING_ID>/retry`，
+> 判据 202 且回包 `status = "queued"`），否则 submit 会报 `LISTING_STATE_INVALID`。
+
+**A-5 提交**⑦造的那条 listing（取 `B0R215V001-3` 那条的 id，它是唯一非终态的）：
 
 ```powershell
 $SUBMIT_BODY = @{ listing_ids = @(<LISTING_ID>) } | ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/listings/submit" -Method Post -Body $SUBMIT_BODY -ContentType "application/json" -Headers @{ Authorization = "Bearer $TOKEN"; "Idempotency-Key" = [guid]::NewGuid().ToString() } | ConvertTo-Json -Depth 6
 ```
 
-读库里那条渠道命令的载荷快照：
+**判据**：回包含 `dry_run: true` 且含 `request_snapshot`。submit 是请求内三段式，
+快照当场落库——**本步不依赖 beat**（beat 正停着，不影响）。
+
+**A-6 读库里那条渠道命令的载荷快照**：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, kind, status, jsonb_pretty(result) AS result FROM app.channel_command ORDER BY id DESC LIMIT 1;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, action, status, jsonb_pretty(result) AS result FROM app.channel_command ORDER BY id DESC LIMIT 1;"
 ```
 
-**判据**：`result` 里的 `request_snapshot` 存在，且其载荷中该商品的 SKU 字段
-**是 `B0R215V001-3` 这个 ASIN 形态的值，不是 M 号**。
+**判据**：`result.request_snapshot` 存在；其 `json_body` 里该商品的 SKU 字段
+**是 `B0R215V001-3` 这个 ASIN 形态的值**，且 **M 号（`M000002488`）0 次出现**；
+`endpoint_key` 含 `MP_ITEM_MATCH`。
 
 > 这是本单唯一触及渠道写路径的地方。**dry_run 档不会真的发出去**，但快照里就是「真发会发什么」
 > （该快照本就不含明文凭证：headers 只存字段名单、proxy 已脱敏）。
 
-**贴回**：submit 响应、`channel_command` 那一行的 `result`（**若含超长 base64 请截断，
-只保留能看清 SKU 的部分**）。
+**A-7 切回 live_test 并回读**（拿到 A-6 输出后立刻做，不要先写回执）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.system_config SET value = to_jsonb('live_test'::text) WHERE key = 'channel.gateway_mode'; SELECT value FROM app.system_config WHERE key = 'channel.gateway_mode';"
+```
+
+**判据**：回显为 `"live_test"`。
+
+**A-8 起回 beat**：
+
+```powershell
+docker compose -f infra/docker-compose.yml start beat
+```
+
+**A-9 窗口审计**——窗口内新增的渠道命令应当**只有 A-5 那一条**（`<CC_MAX_ID_BEFORE>`
+填 A-1 记下的数）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, action, status, created_at FROM app.channel_command WHERE id > <CC_MAX_ID_BEFORE> ORDER BY id;"
+```
+
+**判据**：恰好一行，`action = feed_submit`、`status = succeeded`。多于一行 → 全部贴回执并**停**。
+
+**贴回**：A-1 至 A-9 每步的关键输出；A-6 的 `result` **若含超长 base64 请截断，
+只保留能看清 SKU 的部分**。
 
 ---
 
@@ -529,15 +597,12 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 **判据**：两个都是 0。
 
-**是否切回 main**：**本单不要求切回**——0042 已在库里，而 main 的代码不认识
-`app.next_master_sku()` 这个默认值……**实际上认识**：默认值是数据库侧的，main 的代码
-照样能 INSERT（不显式给 master_sku 即走默认）。但**为稳妥起见，本单结束后请留在验证分支**，
-等 Owner 合并 PR #48 后再按常规切回 main。
-
-> **不要在库停在 0042 时把代码切回 main 并降库**——那是两个独立动作，混在一起做过一次
-> 就出过事（#46 第 7 次停机：指令说「切回 main 后库停在 0042 没关系」，实际 main 树里
-> 没有该 revision，alembic 硬失败、**服务停机**）。**本单的库与 main 兼容，故不需要降库；
-> 若你出于别的原因要切回 main，先降到 0041 再切。**
+**是否切回 main**：**本单结束时留在验证分支**，等 Owner 合并 PR #48 后再按常规切回。
+不切回**不是因为兼容**：库停在 0042 与 main 树**不兼容**——main 的迁移链到 0041、
+没有 0042 这个 revision，compose 起服务时 `migrate`（`alembic upgrade head`）遇到库里
+未知的 `version_num` 会**硬失败**，而 `api`/`beat` 都等它成功才启动 ⇒ **服务全停**
+（#46 第 7 次停机就是这个形状）。所以**任何**切回 main 的操作**之前必须先降到 0041**；
+「降库」与「切分支」是两个独立动作，顺序永远是**先降后切**。本单两个都不做。
 
 最后再确认①的两个 fingerprint 仍未变（**测试数据已清，应当与①、⑤三者一致**）：
 
@@ -567,7 +632,7 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 | ⑧ | `-2`/`-3` 依次分配，三条互不相同 | |
 | ⑨ | 跨店两边都是裸 ASIN（或跳过 + 原因） | |
 | ⑩ | 回连失败有信号（或跳过 + 原因） | |
-| ⑪ | dry-run 载荷里的 SKU 是 ASIN | |
+| ⑪ | A-0 授权闸后：A-1~A-9 全过、载荷 SKU 是 ASIN（或 Owner 裁定跳过） | |
 | ⑫ | 降级到 0041 → 默认值回旧式、函数消失 → 升回 0042 | |
 | ⑬ | 残留 0、fingerprint 与①一致 | |
 
