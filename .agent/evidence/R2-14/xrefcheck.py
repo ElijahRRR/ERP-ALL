@@ -27,8 +27,11 @@ PR #46 的 N1 就是反例：⑦ 写「这是⑪的基线」，而 ⑪ **确实�
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
@@ -37,6 +40,11 @@ CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 # 普通行文被当成步骤配对而误判。误判会让人开始整体忽略检查器，比漏判更伤。
 # 这四个词在本类文档里几乎只用于「基线↔对拍」这层关系，而 PR #46 的 N1
 # （「与⑪对拍」「这是⑪的基线」）靠前两个照样抓得到——**收紧没有削弱它**。
+#
+# 同一次收紧还去掉了「同一段」（审查侧 N3 指出这一处删除当时没有解释）。
+# 理由与「比」不同：它不是误判源，实测对当时的文档零影响——纯粹是它描述的是
+# **位置关系**而不是**成对的验证关系**，留着只会让这张表的语义变浑。
+# 记在这里是因为：**未声明的删除，下一个人无从判断它是有意还是手滑。**
 PAIRED_HINTS = ("基线", "对拍", "快照", "重跑")
 HEADING_RE = re.compile(rf"^#{{1,4}}\s*([{CIRCLED}])")
 
@@ -154,11 +162,27 @@ _BAD = """## ⑦ 基线快照（与⑪对拍）
 _GOOD = _BAD.replace("与⑪对拍", "与⑬对拍").replace("这是⑪的基线", "这是⑬的基线")
 
 
+def _prose_exit_code() -> int:
+    """把一份没有圈码步骤的文件真的喂给 `report()`，取它的退出码。
+
+    **零命中守卫（「不适用」出口）住在 `report()` 里，`check()` 够不着它**——
+    PR #47 审查侧实测：把 `report()` 的 `return 2` 改成 `return 0`，
+    三个检查器的 self-test 全绿。守卫本身没有被任何 self-test 保护。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "prose-only.md"
+        p.write_text("只有散文，没有任何圈码步骤标题。\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return report(p)
+
+
 def self_test() -> int:
     bad = check(_BAD)
     good = check(_GOOD)
-    ok = bool(bad) and not good
+    prose_exit = _prose_exit_code()
+    ok = bool(bad) and not good and prose_exit == 2
     print(f"self-test  修复前判红={bool(bad)}  修复后判绿={not good}")
+    print(f"           零命中出口 report()=={prose_exit}（须为 2，非 0）")
     for p in bad:
         print(f"  （修复前应报）{p}")
     print("self-test", "通过 ✅" if ok else "失败 ❌")

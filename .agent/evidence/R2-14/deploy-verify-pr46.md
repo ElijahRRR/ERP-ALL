@@ -178,8 +178,9 @@ docker compose exec frontend sh -c "ls /usr/share/nginx/html/assets/index-*.js"
 > 是我抄过来时顺手「改进」成管道 + cmdlet，把一条真机上跑通过的命令改坏了。
 > **抄一条已经验证过的命令时不要顺手优化它**——它跑通过，就是它当前形态的全部价值。
 >
-> 该失败类别已机器化：`.agent/evidence/R2-14/crossshellcheck.py`
-> （扫 `sh -c` / `bash -c` 的载荷里有没有 PowerShell 的 Verb-Noun cmdlet）。
+> 该失败类别已机器化：`.agent/evidence/R2-14/payloadcheck.py`
+> （扫 `sh -c` / `bash -c` 的载荷里有没有 PowerShell 的 Verb-Noun cmdlet；
+> 该脚本原名 `crossshellcheck.py`，合并 psql 元命令规则后改的名）。
 
 浏览器打开系统 → F12 Network 刷新首页 → 看加载的 `index-*.js` 文件名。
 
@@ -256,6 +257,32 @@ WHERE rp.permission_code='catalog.product_delete';
 ---
 
 ## ⑥ 造一次性测试数据（**本次唯一的写入，全部带前缀**）
+
+### ⑥-0 先清掉上一轮的残留（**每轮都要跑，哪怕你确信是第一轮**）
+
+```powershell
+docker compose exec db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "
+DELETE FROM app.listing         WHERE channel_sku LIKE 'R214VERIFY-%';
+DELETE FROM app.product         WHERE source_ref  LIKE 'B0R214V%';
+DELETE FROM app.deleted_product WHERE source_ref  LIKE 'B0R214V%';
+"
+```
+
+**贴回三个 `DELETE n`**——它们告诉你上一轮留下了什么（全 0 = 干净的一轮）。
+删除范围与⑮ 首块**逐字相同**，只碰 `B0R214V` / `R214VERIFY-` 两个前缀。
+
+> **为什么必须有这一步（审查侧 N1）。** 本单唯一的清理点原本在⑮，而部署机在本单
+> **停了七次**——只要有一次停在⑦–⑭之间，⑮ 就没跑到，残留会留在现网。下一轮
+> ⑥ 的 fixture 撞 `uq_product (team_id, source_channel, source_ref)`，
+> 而该块是 `-1 -v ON_ERROR_STOP=1`，**整块回滚**——于是下一轮停在⑥，
+> **连本轮要验的东西都到不了**。
+>
+> ⚠️ **不要改用 `ON CONFLICT DO NOTHING` 绕过。** 那会让上一轮的旧行冒充本轮 fixture，
+> 并且开出一个真出口：`catalog/delete.py` 的墓碑插入本身就是 `ON CONFLICT DO NOTHING`，
+> 于是**旧墓碑会让⑩的 `tombstone_rows=1` 在本轮一行都没写成的情况下照样判绿**。
+> **清干净再造，不要让判据分不清新旧。**
+
+### ⑥-1 挑测试店
 
 先挑一家**测试店**。**必须 `is_test = true`**；若查不到，停下来问，不要拿真实店凑数：
 
@@ -533,16 +560,23 @@ FROM app.product WHERE team_id=<TEAM_ID> AND source_ref='B0R214V004';
 
 > d 的勾选框**勾没勾上不影响判据**——它此时是禁用的，状态无意义。
 > 真正要看的是「灰掉 + 有说明」，不是「勾着还是没勾」。
-2. **删除入口**：团管账号能看到行内红色「删除」按钮；点开弹窗，**逐字读一遍确认文案**，
-   确认它写明了这四件事：物理删除无回收站 / 上过架的会留墓碑且重采不再入库 /
-   **从未上架的不留墓碑、重采仍会入库、要彻底清掉需同时从采集清单去掉该 ASIN** /
-   订单审计财务不受影响。
-3. **不填原因点确认**：应被表单挡住，不发请求。
-4. **不要在 UI 上删任何真实产品。** 想实际点一次的话，用⑥的方式再造一件
-   `B0R214V004` 再删它。
+### ⑭-2 删除入口与文案
 
-**贴回**：截图或逐条描述；特别确认第 2 条的**①级那句**在页面上真的存在——那是本次
-Owner 裁定的落点，只写进代码不显示给运营等于没落。
+| # | 操作 | 期望 |
+|---|---|---|
+| e | 团管账号看产品行 | 有行内红色「删除」按钮 |
+| f | 点开删除弹窗，**逐字读确认文案** | 写明四件事（见下） |
+| g | 不填原因直接点确认 | **被表单挡住，不发请求** |
+
+f 的四件事，**逐条对**：物理删除无回收站 / 上过架的会留墓碑且重采不再入库 /
+**从未上架的不留墓碑、重采仍会入库、要彻底清掉需同时从采集清单去掉该 ASIN** /
+订单审计财务不受影响。
+
+> ⚠️ **不要在 UI 上删任何真实产品。** 想实际点一次的话，用⑥-0/⑥ 的方式
+> 再造一件 `B0R214V004` 再删它。
+
+**贴回**：截图或逐条描述；特别确认 f 里的**①级那句**在页面上真的存在——那是本次
+Owner 裁定的落点，**只写进代码不显示给运营等于没落**。
 
 ---
 
@@ -557,6 +591,26 @@ DELETE FROM app.product      WHERE source_ref LIKE 'B0R214V%';
 DELETE FROM app.deleted_product WHERE source_ref LIKE 'B0R214V%';
 "
 ```
+
+**降级前的承重守卫**（**这一步不能省，也不能挪到⑯**）：
+
+```powershell
+docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
+SELECT 'tombstones_total=' || count(*) FROM app.deleted_product;
+"
+```
+
+**判据**：`tombstones_total=0`。**不是 0 就停下来贴回来，不要往下走。**
+
+> **为什么守卫必须在这里，而不是在⑯。** 下面那句 `alembic downgrade 0040` 会
+> **DROP 掉整张 `deleted_product`**。若验证窗口里有人用删除端点删过**真实**产品，
+> 那些墓碑会在这一步被销毁，而墓碑一没，对应商品下次采集就会全部回流——
+> **且没有任何东西会报错。**
+>
+> ⑯-1 也有一条同样的 count，但它站在**这一次 DROP 的下游**：本步的
+> `downgrade → upgrade` 已经把表 DROP 掉又建成空表，所以⑯-1 读到 0
+> **是因为表刚被重建，不是因为「没有真实墓碑」**。它只能当二次确认，
+> **承重的是这一条**（审查侧 N4）。
 
 ```powershell
 docker compose run --rm migrate alembic downgrade 0040
@@ -588,7 +642,7 @@ docker compose exec db psql -U erp_migrator -d erp_all -tA -c "SELECT 'after_up=
 > **降库必须在仍处于验证分支时做**：alembic 要解析 0041，得先在代码树里找得到那个文件。
 > 一旦切回 main，两个方向（upgrade 和 downgrade）都解析不了，就得再切回来一趟。
 
-### ⑯-1 先确认墓碑表是空的（**否则降级会真的毁数据**）
+### ⑯-1 再确认一次墓碑表是空的（**二次确认；承重的那一次在⑮**）
 
 ```powershell
 docker compose exec db psql -U erp_migrator -d erp_all -tA -v ON_ERROR_STOP=1 -c "
@@ -598,10 +652,16 @@ SELECT 'tombstones_total=' || count(*) FROM app.deleted_product;
 
 **判据**：`tombstones_total=0`。
 
-> **非 0 就停下来问，不要往下走。** 降级会 `DROP TABLE deleted_product`——若验证窗口里
-> 有人用删除端点删过**真实**产品，那些墓碑会被这一步销毁，而墓碑没了意味着那些商品
-> 下次采集会全部回流。⑮ 已清掉本指令自造的测试墓碑，所以正常情况下这里就是 0；
-> **不是 0 说明发生了本指令没预料到的事，那正是该停的时刻。**
+> **非 0 就停下来问，不要往下走。**
+>
+> ⚠️ **但要如实说清这一条的覆盖范围（审查侧 N4）**：⑮ 的 `downgrade → upgrade`
+> **已经把这张表 DROP 掉又建成空表了**。所以本条读到 0，**只证明「⑮ 的 upgrade 之后
+> 没有人再删过东西」，不证明「整个验证窗口里没有真实墓碑被销毁」**——后者已经在⑮
+> 被决定了，那里才是承重位置。
+>
+> 换句话说：本条覆盖的窗口只有「⑮ 结束」到「此刻」这几分钟。真正要防的窗口
+> （整个验证过程）由**⑮ 那条同名 count** 守着。两条都留是对的，但**别把本条的绿
+> 读成「整个过程都没毁过墓碑」**。
 
 ### ⑯-2 在验证分支上把库降回 main 认识的版本
 
@@ -651,7 +711,9 @@ SELECT 'leftover_listings=' || count(*) FROM app.listing WHERE channel_sku LIKE 
 
 > `leftover_tombstones` 这一条**从清单里去掉了**——⑯-2 之后 `deleted_product` 表已被
 > DROP，再去 `SELECT ... FROM app.deleted_product` 只会报「表不存在」。
-> 它的作用已由 ⑯-1 的 `tombstones_total=0` 承担，且那一条在降级**之前**，更有意义。
+> 它的作用已由**⑮ 首块清理之后、⑮ 的 `downgrade` 之前**那条 `tombstones_total=0` 承担
+> ——那里才是第一次 DROP 的正前方。⑯-1 的同名 count 保留为**二次确认**，
+> 但它读到 0 只说明「⑮ 刚把表重建过」，**不承重**（审查侧 N4）。
 
 ---
 
