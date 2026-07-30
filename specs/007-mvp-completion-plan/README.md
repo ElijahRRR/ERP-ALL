@@ -436,23 +436,85 @@ CI 绿 → 审查变异证伪 → 部署机 ①–⑯ 真机全过 → Owner 授
 （建 product → 建 listing，`channel_sku` 保持后台原值）；16c 不可自动补挂项的显式
 标注与人工通道。
 
-#### 开工前三个设计裁定（2026-07-30 考古后落定，原立单时未决）
+#### 开工前设计裁定（2026-07-30 考古后落定；**裁定一于同日修正**）
 
-**裁定一：必须新建表，不能复用 `maintenance_task`。**
-`maintenance_task.listing_id` 是 `bigint NOT NULL`（`0009_listing.py:272`），而补挂对象
-**恰恰是本地没有 listing 的那些 SKU**——装不进去。新表建议 `app.channel_orphan_sku`：
+**裁定一（修正版）：用图纸既有的 `sku_mapping`，不新建表。**
 
-| 列 | 说明 |
-|---|---|
-| `team_id` / `store_id` | 冗余 + RLS |
-| `channel_sku` | 渠道侧 SKU 原值 |
-| `first_seen_at` / `last_seen_at` | 首次发现 / 最近一次仍缺（连续多轮不再出现即可判定渠道侧已消失） |
-| `published_status` / `lifecycle` | `item_pull` 已有，顺手落 |
-| `wpid` / `channel_item_id` / `gtin` / `title` / `price` | ⚠️ **`item_pull` 现在把这些全丢了**（`remote` 字典只留 `published_status`/`lifecycle`/`reasons`）——16a 须扩采 |
-| `state` | `pending` / `adopting` / `adopted` / `not_adoptable` / `ignored` |
-| `reason` | 不可补挂或忽略的原因 |
+> ⚠️ **本条原写「必须新建 `channel_orphan_sku`」，是错的。** `maintenance_task` 装不下的
+> 推理没问题（`listing_id bigint NOT NULL`，`0009_listing.py:272`，而补挂对象恰恰没有本地
+> listing），但**结论跳过了一张早就为这件事设计的表**：`sku_mapping`（§03「渠道 SKU 映射
+> （存量桥）」）。其原文用途就是「**从 Walmart 重拉在线商品时（D-Q35）批量生成 legacy 行**」，
+> 且 `product_id` 一列明写 **NULL——「可空：重拉的历史在线品可能未入产品库」**。
+> **成因**：2026-07-29 我为 R2-15 判据⑥写下「`sku_mapping` 保留为设计意图，不作为任何工单的
+> 验收对象」，次日立 R2-16 时没有回头看它——**与前几次同源（写新内容时未回查既有定义），
+> 只是方向相反：那几次是引用了不存在之物，这次是没看见已存在之物。**
 
-约束 `uq_channel_orphan (store_id, channel_sku)`，`item_pull` 每轮 upsert（幂等，重跑零新增）。
+**为什么这张表是对的**——它把两个被 `listing` 混在一起的概念拆开了：
+
+| | 承载什么 | `product_id` |
+|---|---|---|
+| `listing` | **我们上架的东西** | `NOT NULL`（没有产品就不该有上架单） |
+| `sku_mapping` | **渠道上存在这个 SKU** | **NULL 可**（渠道上有，本地未必有） |
+
+Owner 2026-07-30 提的正是这个场景：「**有可能亚马逊端还没入库，但沃尔玛端的产品已经先进来了**」
+——`sku_mapping` 的 `product_id` 可空，天生就是为这个留的。
+
+**据此，「后台有本地无」不需要一张新的工作队列表**：它就是
+`sku_mapping WHERE product_id IS NULL` 这个查询。建两张表会让"渠道 SKU 的存在性"有两个真相。
+
+**图纸需改三处**（R2-16 落地时一并做）：
+
+1. **加显式 `team_id` 列**。原文写「+公共列（team_id 经 store）」，但全仓 RLS 策略一律是
+   `team_id = app.current_team() OR app.is_super()`**长在表自己身上**（`0009_listing.py:23-31`
+   模板），没有 team_id 列就套不上这套策略。与 `listing`/`maintenance_task` 同形，冗余一列。
+2. **补链接态与采集态列**：`link_state`（见下方阶梯）、`first_seen_at`/`last_seen_at`
+   （连续多轮不再出现即可判定渠道侧已消失）、`published_status`/`lifecycle`、
+   `wpid`/`gtin`/`title`/`price`（渠道侧原始信息）。
+   ⚠️ **这些渠道字段 `item_pull` 现在全丢了**——`remote` 字典只留
+   `published_status`/`lifecycle`/`reasons`，16a 须扩采。
+3. **去掉「不作为任何工单的验收对象」那句**——R2-16 就是它的落地工单，该句已过期。
+
+#### 对应关系怎么建立（Owner 2026-07-30 追问，本单的核心设计）
+
+给定一个 `missing_local` 的 `channel_sku`，按下面这个阶梯走。**关键是第 0 级与后面分离**：
+渠道侧存在性的入库**永不失败、不依赖亚马逊侧**，产品关联是后续可以慢慢补的事。
+
+| 级 | 条件 | 动作 | `product_id` |
+|---|---|---|---|
+| **0** | 一律 | upsert `sku_mapping(store_id, channel_sku, origin='legacy')` | 先留 NULL |
+| **1** | 形如 ASIN，且本地**已有** `product(team,'amazon',ASIN)` | **直接回填 `product_id`，零采集** | 立刻有 |
+| **2** | 形如 ASIN，本地无，亚马逊**可采** | scrape → 建 product → 回填 | 采完有 |
+| **3** | 形如 ASIN，亚马逊**采不回**（下架/失效/被封） | 建 `source_channel='walmart'` 占位产品（见下） | 占位行 |
+| **4** | **不形如 ASIN**（存量 M 号/手工编码，~1%） | 同级 3，并开人工填 ASIN 的通道 | 占位行 |
+
+**级 1 是我原设计整个漏掉的一级**，而它多半是命中率最高的一级——本地产品库里已经有这个
+ASIN、只是没建过 listing 的情况，比"完全没见过"常见。漏了它等于**对已有产品重复采集一遍**。
+
+**级 3 是这条链上最要紧的一级，也是最容易被"采集失败就整条不落"误伤的一级。**
+Walmart 上还挂着在卖、亚马逊侧 ASIN 已经死了——这在 dropshipping 里极常见，而且
+**这类品恰恰是最该被发现的（还在收单，但没货源）**。若照原判据④"采集失败整条不落"处理，
+它们会被永久挡在系统外，与本单的目的正好相反。
+
+出路是给它建一个 **`source_channel='walmart'`、`source_ref=channel_sku`** 的产品：
+`title` 取 Walmart 的 `productName`，`brand`/`gtin` 取 Walmart 侧。
+`source_channel` 本就是 §03 写明的「采集源（**多源扩展点**，D-Q4）」，且库层面
+**无 CHECK 约束**（`0007_scrape_catalog.py:55` 只有 `DEFAULT 'amazon'`），不需要迁移放开。
+
+> **为什么非要有个产品实体**：`listing.product_id NOT NULL` 是硬约束，而改价/下架/审核
+> 全都走 listing。**放宽它为 NULL 是不可取的**——会污染所有下游 join，代价远大于占位行。
+> 附带一个大收益：**存量在线品从来没过我们的合规审核**，进了产品库才能跑 TRO/黑名单，
+> 才可能发现"在卖的品里有该下架的"。
+
+**级 3/4 的后患与处置——两条 product 指同一实物**：占位行建完之后，亚马逊端若又采到同一个
+货，会建出 `('amazon', ASIN)` 那条，与占位的 `('walmart', SKU)` 因 `source_channel` 不同
+**不撞 `uq_product`，静默并存**。处置：**不做自动合并**（猜错了就是把两个货的历史搅在一起）。
+占位行带 `attrs.pending_asin_link=true` 显式标记，人工在产品页填入 ASIN 时触发一次**显式合并**
+——listing 改指 amazon 那条，占位行走 **R2-14 的硬删除 + 墓碑**清掉（14a 刚给的能力正好配套）。
+
+**并发竞争（异步补挂必然遇到）**：补挂的采集是异步的，期间用户可能从亚马逊端正常采了同一个
+ASIN。入库侧有 `ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE`
+（`scrape/service.py:606`）兜底，不会撞；但补挂侧回填 `sku_mapping.product_id` 时
+**必须回查取 id，不能用自己那条 INSERT 的 RETURNING**——那行可能是别人建的。
 
 **裁定二：补挂出来的 listing 用 `offer_mode='adopt'`（新增第三值），状态走 `transition()` 不直写。**
 现 CHECK 只有 `build`/`match`（`0009_listing.py:82`），而接管来的品**两者都不是**——它既不是我们
@@ -467,8 +529,14 @@ CI 绿 → 审查变异证伪 → 部署机 ①–⑯ 真机全过 → Owner 授
 
 **裁定三：补挂天然是两段式异步，不是一个同步端点。**
 product 走**现役 scrape 链路**建（不新造采集通道），而采集是异步作业——所以补挂 =
-「提交采集 → 等回来 → 建 listing 并接管」。中间态必须可见（`state='adopting'`），
-否则运营点完按钮不知道发生了什么。**采集失败则整条不落**（判据④：不造半基线行）。
+「提交采集 → 等回来 → 建 listing 并接管」。中间态必须可见（`link_state='adopting'`），
+否则运营点完按钮不知道发生了什么。
+
+⚠️ **「不造半基线行」的边界（对应关系阶梯落定后修正）**：这条纪律**只管 `listing`**——
+listing 要么带着非空 `product_id` 完整建成，要么不建。它**不适用于 `sku_mapping`**：
+级 0 那行**永远保留**，`product_id IS NULL` 是它的合法常态而不是半成品。
+原判据④若照字面读成「采集失败整条不落」，会把级 3（亚马逊侧已死、Walmart 上还在卖）
+的品永久挡在系统外——那正是本单最该捞出来的一类。判据④已按此改写。
 
 ## 三路并行开工须知（Owner 2026-07-30：R2-13 / R2-14 14b / R2-16 并行）
 
@@ -484,7 +552,7 @@ product 走**现役 scrape 链路**建（不新造采集通道），而采集是
 |---|---|---|
 | R2-13 | `0043`–`0046` | `buyer_account` / `plugin_instance` / `procurement_order` 增列与 `status` CHECK 扩 `pending_review` / `procurement_logistics_event` |
 | R2-14 14b | `0047` | `deleted_principal`（PK `(kind,id)`）+ 主体删除权限点 |
-| R2-16 | `0048`–`0049` | `channel_orphan_sku` + `ck_listing_mode` 扩 `adopt` |
+| R2-16 | `0048`–`0049` | `sku_mapping` 建表（§03，含 R2-16 补的 `link_state` 等列）+ `ck_listing_mode` 扩 `adopt` |
 
 用不完的号**留空不补**——号段连续不是不变量，链正确才是。
 

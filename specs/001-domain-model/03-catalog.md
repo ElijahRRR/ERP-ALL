@@ -204,25 +204,50 @@ required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤�
 索引：`(product_id, status)`。
 **占位声明**：1688 API 接入（R3+）后本表将扩列（供应商 ID/SKU 映射/起订量/时效），当前只承载「有货源才上架」闸门（D-Q25）与人工录入；旧 Excel 不导入（D-Q41 不可信）。
 
-## sku_mapping 渠道 SKU 映射（存量桥）—— ⚠️ **图纸态，代码未实现（2026-07-29 核实）**
+## sku_mapping 渠道 SKU 映射（存量桥）—— **R2-16 落地对象（2026-07-30 转正）**
 
-> **实现现状**：本表在 `backend/alembic/versions/` 与 `backend/src/erp/` 中**零命中**。
-> **订单回连的现役实现**是 `order/pull.py` 直接以 `(store_id, channel_sku)` 查 `listing`
-> 取 `listing_id`/`product_id`，不经本表。**该路径的失败是静默的**：子查询落空返回 NULL
-> 而 INSERT 仍成功，订单就此失去产品关联，下游仅由订单四检 `price_limit` 以
-> `source_missing` 间接暴露。
-> **处置**：本表保留为设计意图，**不作为任何工单的验收对象**；若将来确需（如多渠道
-> 或 channel_sku 与 listing 解耦），另行立单并同步本节。涉及订单回连的判据一律按
-> 现役 listing 直查路径书写。
+> **实现现状**：本表在 `backend/alembic/versions/` 与 `backend/src/erp/` 中仍**零命中**，
+> 但**已有落地工单**：R2-16 存量接管（后台在线产品补挂）以本表为核心表。
+>
+> **转正说明（撤回 2026-07-29 那句）**：昨日曾写「本表保留为设计意图，**不作为任何工单的
+> 验收对象**」——那是为 R2-15 判据⑥（误验图纸表）写的止损，**现已过期并撤回**。次日 Owner
+> 追问「沃尔玛在线产品与本地产品库怎么对应、**有可能亚马逊端还没入库而沃尔玛端先进来**」
+> 时才发现：本表原文用途正是「从 Walmart 重拉在线商品时（D-Q35）批量生成 legacy 行」，
+> 且 `product_id` 明写**可空——「重拉的历史在线品可能未入产品库」**，恰是该场景的设计。
+>
+> **本表与 `listing` 的分工**（它存在的理由）：
+>
+> | | 承载什么 | `product_id` |
+> |---|---|---|
+> | `listing` | **我们上架的东西** | `NOT NULL`——没有产品就不该有上架单 |
+> | `sku_mapping` | **渠道上存在这个 SKU** | **NULL 可**——渠道上有，本地未必有 |
+>
+> 故「后台有本地无」不需要单独的工作队列表，它就是 `WHERE product_id IS NULL` 这个查询。
+> 建第二张表会让「渠道 SKU 的存在性」有两个真相。
+>
+> **订单回连仍不经本表**：现役实现是 `order/pull.py` 以 `(store_id, channel_sku)` 直查
+> `listing`。**该路径的失败是静默的**（子查询落空返回 NULL 而 INSERT 仍成功，订单失去产品
+> 关联，下游仅由订单四检 `price_limit` 以 `source_missing` 间接暴露）——R2-15 判据⑦已要求
+> 显式信号。**涉及订单回连的判据一律仍按现役 listing 直查路径书写**，不因本表转正而改。
 
 | 列 | 类型 | 约束/默认 | 说明 |
 |---|---|---|---|
 | id | BIGINT | PK identity | |
+| team_id | BIGINT | NOT NULL | **显式冗余列（2026-07-30 补）**。原写「team_id 经 store」，但全仓 RLS 策略一律是 `team_id = app.current_team() OR app.is_super()` **长在表自己身上**（`0009_listing.py:23-31` 模板），无此列则套不上。与 `listing`/`maintenance_task` 同形 |
 | store_id | BIGINT | NOT NULL REFERENCES store | |
 | channel_sku | TEXT | NOT NULL | 渠道侧 SKU |
-| product_id | BIGINT | NULL REFERENCES product | 可空：重拉的历史在线品可能未入产品库 |
+| product_id | BIGINT | NULL REFERENCES product | **可空是本表的核心性质**：重拉的历史在线品可能未入产品库（渠道先于本地） |
 | origin | TEXT | NOT NULL CHECK IN (legacy, new) | legacy=存量（重拉在线品）；new=本系统上架。**D-Q72 后渠道侧统一为 ASIN 系**（`source_channel='amazon'` 时 `channel_sku`=ASIN，同店冲突加 `-N` 后缀），二者不再是两套编码体系，本列仅表来源不表编码规则 |
-| +公共列（team_id 经 store） | | | |
+| link_state | TEXT | NOT NULL DEFAULT 'pending' CHECK IN (pending, adopting, linked, source_dead, unresolvable, ignored) | **R2-16 补**。对应关系阶梯的落点：pending=待处理；adopting=采集在途；linked=已关联产品；source_dead=形如 ASIN 但亚马逊侧采不回（级 3）；unresolvable=不形如 ASIN（级 4）；ignored=人工判定不接管 |
+| first_seen_at / last_seen_at | timestamptz | NOT NULL | **R2-16 补**。首次发现 / 最近一轮仍在渠道侧——连续多轮不再出现即可判定渠道侧已消失 |
+| published_status / lifecycle | TEXT | NULL | **R2-16 补**。渠道侧状态原值 |
+| wpid / gtin / title / price | | NULL | **R2-16 补**。渠道侧原始信息。⚠️ **`item_pull` 现在把这些全丢了**——`remote` 字典只留 `published_status`/`lifecycle`/`reasons`，16a 须扩采 |
+| +公共列 | | | |
 
 约束：`uq_sku_mapping (store_id, channel_sku)`。
 用途：订单行/结算明细回连产品；从 Walmart 重拉在线商品时（D-Q35）批量生成 legacy 行。
+
+**对应关系阶梯**（R2-16 核心设计，详见 007 同名节）：级 0 无条件 upsert 本表（**永不失败、
+不依赖亚马逊侧**）→ 级 1 本地已有该 ASIN 的产品则直接回填 `product_id`（**零采集**）→
+级 2 走 scrape 建产品 → 级 3 亚马逊侧已死则建 `source_channel='walmart'` 占位产品
+（**不能就此丢弃：还在 Walmart 卖但没货源的品，正是最该被发现的**）→ 级 4 不形如 ASIN 同级 3。
