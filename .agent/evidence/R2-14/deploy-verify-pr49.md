@@ -104,6 +104,10 @@ git diff --name-only origin/main...HEAD -- backend/alembic/versions/
 
 ## ③ 重建并起服务（本 PR 动了 backend **和 frontend**）
 
+> **进入本步前确认①已完成并已把基线贴进回执**——本步的迁移一旦落地，①的基线
+> （perms=56 态的计数与指纹）就**再也取不到了**，⑤/⑨/⑫三条「与①相同」的判据将
+> 全部失去可比对象，失败形态是「没法验」而不是「验不过」。①未做请回到①，不要往下跑。
+
 ```powershell
 docker compose -f infra/docker-compose.yml build api beat migrate frontend
 docker compose -f infra/docker-compose.yml up -d db redis
