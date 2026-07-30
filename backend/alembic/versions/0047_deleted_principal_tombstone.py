@@ -108,8 +108,7 @@ def upgrade() -> None:
 
     # ③级软引用化（头注「唯一的结构变更」）。约束名为 PG 自动命名的默认形态。
     op.execute(
-        "ALTER TABLE app.procurement_order"
-        " DROP CONSTRAINT procurement_order_purchaser_id_fkey;"
+        "ALTER TABLE app.procurement_order DROP CONSTRAINT procurement_order_purchaser_id_fkey;"
     )
 
     # ②级删除的必要授权（头注「唯一的权限放宽」）。
