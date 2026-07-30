@@ -474,47 +474,76 @@ Owner 2026-07-30 提的正是这个场景：「**有可能亚马逊端还没入�
    `published_status`/`lifecycle`/`reasons`，16a 须扩采。
 3. **去掉「不作为任何工单的验收对象」那句**——R2-16 就是它的落地工单，该句已过期。
 
-#### 对应关系怎么建立（Owner 2026-07-30 追问，本单的核心设计）
+#### 对应关系怎么建立（Owner 2026-07-30 两轮追问 + 旧仓 `erp-core` 考古，本单核心设计）
 
-给定一个 `missing_local` 的 `channel_sku`，按下面这个阶梯走。**关键是第 0 级与后面分离**：
-渠道侧存在性的入库**永不失败、不依赖亚马逊侧**，产品关联是后续可以慢慢补的事。
+> **Owner 裁定**：「**ASIN 是唯一的，不应该并存两条 product 指同一实物。**我目前沃尔玛的
+> SKU 编码也是 ASIN，拉下来以后直接同步 SKU 和 ASIN 就可以了。然后为沃尔玛拉取下来数据
+> 也建档，erp-core 中有部分实现，可以参考他的运作机理。」
+>
+> ⚠️ **这条推翻了我上一版的「`source_channel='walmart'` 占位产品 + 人工合并」**——那个方案
+> 是在给自己造合并负担：先造出重复实体，再设计怎么把它合掉。**Owner 是对的，且旧仓
+> `erp-core` 早就是这么做的**（`backend/app/api/v1/store_sync.py`，生产验证过）。
+
+**核心一句话：产品身份就是 ASIN，与数据从哪来无关。**
+从 Walmart 后台拉回来的数据，直接写进 `product(team_id, 'amazon', ASIN)` **那一行**——
+不是另建一行。`source_channel` 表的是**身份命名空间**，不是"这次数据从哪个网站抓的"。
+
+**旧仓的做法（`store_sync.py:520-570`，逐字可移植）**：
+
+```python
+if not real_asin:
+    continue                     # 提不出 ASIN 的：只入 listings，不建产品行
+# 以 ASIN 唯一确定：同 ASIN 跨多店铺 = 同一个 products_master 行
+existing = SELECT id FROM products_master WHERE asin = :a
+UPDATE products_master SET
+    title = COALESCE(:t, title),          # ← 关键：只补空，不覆盖
+    brand = COALESCE(:brand, brand),
+    extra = COALESCE(extra,'{}') || :extra
+```
+
+`COALESCE(:新值, 现有值)` 是整个机制的关键：**Walmart 侧拿到的稀数据只填本地为空的列，
+绝不覆盖亚马逊采集来的好数据**；后来采集补全时自然接管。**先到的占位，后到的补全，
+自始至终只有一行。** 不需要 `pending_asin_link`，不需要人工合并，不需要墓碑清理。
+
+**ASIN 怎么从 SKU 里拿到——旧仓是 regex `search` 不是相等判断**（`store_sync.py:239`）：
+
+```python
+asin_match = re.search(r"B[A-Z0-9]{9}", str(sku).upper())
+```
+
+用 `search` 而非 `fullmatch`，所以 **SKU 里"含有"ASIN 就能提出来**——这一条同时覆盖了
+R2-15 的 `ASIN-2` 后缀、以及历史上各种把 ASIN 编进 SKU 的写法（`前缀-B0XXXXXXXX`）。
+比我原设计"channel_sku 形如 ASIN"的相等判断宽得多，也实用得多。
+> 建议收紧为 `B0[A-Z0-9]{8}`：真实 ASIN 除书籍（ISBN 10 位数字）外一律 `B0` 开头，
+> 而 `B[A-Z0-9]{9}` 用 `search` 会在长 SKU 里误命中一段。**这一条要在真实 SKU 集上先验一遍
+> 再改**——若存量里有非 `B0` 开头的 ASIN，收紧就会漏。
+
+**于是五级阶梯塌缩成三级**：
 
 | 级 | 条件 | 动作 | `product_id` |
 |---|---|---|---|
 | **0** | 一律 | upsert `sku_mapping(store_id, channel_sku, origin='legacy')` | 先留 NULL |
-| **1** | 形如 ASIN，且本地**已有** `product(team,'amazon',ASIN)` | **直接回填 `product_id`，零采集** | 立刻有 |
-| **2** | 形如 ASIN，本地无，亚马逊**可采** | scrape → 建 product → 回填 | 采完有 |
-| **3** | 形如 ASIN，亚马逊**采不回**（下架/失效/被封） | 建 `source_channel='walmart'` 占位产品（见下） | 占位行 |
-| **4** | **不形如 ASIN**（存量 M 号/手工编码，~1%） | 同级 3，并开人工填 ASIN 的通道 | 占位行 |
+| **1** | 从 SKU **提得出 ASIN** | upsert `product(team,'amazon',ASIN)`：已有则 `COALESCE` 补空列，没有则用 Walmart 侧字段建行 → 回填 `product_id` | **立刻有** |
+| **2** | 提不出 ASIN（存量手工编码，~1%） | 不建产品（旧仓 `if not real_asin: continue` 同款），`link_state='unresolvable'`，开人工填 ASIN 通道 | NULL |
 
-**级 1 是我原设计整个漏掉的一级**，而它多半是命中率最高的一级——本地产品库里已经有这个
-ASIN、只是没建过 listing 的情况，比"完全没见过"常见。漏了它等于**对已有产品重复采集一遍**。
+**这个塌缩消掉了三个我上一版自造的问题**：
 
-**级 3 是这条链上最要紧的一级，也是最容易被"采集失败就整条不落"误伤的一级。**
-Walmart 上还挂着在卖、亚马逊侧 ASIN 已经死了——这在 dropshipping 里极常见，而且
-**这类品恰恰是最该被发现的（还在收单，但没货源）**。若照原判据④"采集失败整条不落"处理，
-它们会被永久挡在系统外，与本单的目的正好相反。
+- **"亚马逊采不回怎么办"不再是问题**——建档根本不经亚马逊。Walmart 上还在卖、ASIN 已经死了
+  的品（dropshipping 里极常见，且**最该被发现：还在收单但没货源**）照样建档、照样能下架、
+  照样进合规审核。原设计把「建档」和「采集」耦在一起，导致亚马逊采不到就卡死，是设计错误。
+- **"两条 product 指同一实物"不再存在**——一个 ASIN 一行，`uq_product` 直接保证。
+- **"并发竞争"退化为普通 upsert**——补挂与亚马逊采集写的是同一行，
+  `ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE`（`scrape/service.py:606`）天然兜住。
+  仍保留一条纪律：回填 `sku_mapping.product_id` 时**回查取 id，不用自己那条 INSERT 的 RETURNING**。
 
-出路是给它建一个 **`source_channel='walmart'`、`source_ref=channel_sku`** 的产品：
-`title` 取 Walmart 的 `productName`，`brand`/`gtin` 取 Walmart 侧。
-`source_channel` 本就是 §03 写明的「采集源（**多源扩展点**，D-Q4）」，且库层面
-**无 CHECK 约束**（`0007_scrape_catalog.py:55` 只有 `DEFAULT 'amazon'`），不需要迁移放开。
+**"再去亚马逊采一次"变成独立的可选后续动作**（补全详情 + 过合规审核），
+**不是补挂的前置条件**。这是本轮最大的简化。
 
-> **为什么非要有个产品实体**：`listing.product_id NOT NULL` 是硬约束，而改价/下架/审核
-> 全都走 listing。**放宽它为 NULL 是不可取的**——会污染所有下游 join，代价远大于占位行。
-> 附带一个大收益：**存量在线品从来没过我们的合规审核**，进了产品库才能跑 TRO/黑名单，
-> 才可能发现"在卖的品里有该下架的"。
-
-**级 3/4 的后患与处置——两条 product 指同一实物**：占位行建完之后，亚马逊端若又采到同一个
-货，会建出 `('amazon', ASIN)` 那条，与占位的 `('walmart', SKU)` 因 `source_channel` 不同
-**不撞 `uq_product`，静默并存**。处置：**不做自动合并**（猜错了就是把两个货的历史搅在一起）。
-占位行带 `attrs.pending_asin_link=true` 显式标记，人工在产品页填入 ASIN 时触发一次**显式合并**
-——listing 改指 amazon 那条，占位行走 **R2-14 的硬删除 + 墓碑**清掉（14a 刚给的能力正好配套）。
-
-**并发竞争（异步补挂必然遇到）**：补挂的采集是异步的，期间用户可能从亚马逊端正常采了同一个
-ASIN。入库侧有 `ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE`
-（`scrape/service.py:606`）兜底，不会撞；但补挂侧回填 `sku_mapping.product_id` 时
-**必须回查取 id，不能用自己那条 INSERT 的 RETURNING**——那行可能是别人建的。
+**Walmart 侧能拿到什么字段**（旧仓 `fetch_my_walmart_items.py:60-82` + `store_sync.py:229-235` 实测）：
+`sku` / `wpid` / `itemId` / `upc` / `gtin` / `productType` / `productName` / `brand` /
+`manufacturer` / `shelf` / `mart` / `price.amount`+`currency` / `lifecycleStatus` /
+`publishedStatus` / `availableToSellQuantity` / `mainImageUrl` / `wfsEnabled`+`shipNode`（推 WFS/SELLER）。
+**足够建一条能用的产品行**（`product.title NOT NULL` 由 `productName` 满足）。
 
 **裁定二：补挂出来的 listing 用 `offer_mode='adopt'`（新增第三值），状态走 `transition()` 不直写。**
 现 CHECK 只有 `build`/`match`（`0009_listing.py:82`），而接管来的品**两者都不是**——它既不是我们
@@ -527,16 +556,38 @@ ASIN。入库侧有 `ON CONFLICT (team_id, source_channel, source_ref) DO UPDATE
 同事务写 `listing_state_history`；直接 `INSERT ... status='live'` 会绕过状态机、留不下来源记录。
 落法：先按默认 `draft` 插入，再 `transition(..., 'live', reason_code='ADOPTED_FROM_CHANNEL')`。
 
-**裁定三：补挂天然是两段式异步，不是一个同步端点。**
-product 走**现役 scrape 链路**建（不新造采集通道），而采集是异步作业——所以补挂 =
-「提交采集 → 等回来 → 建 listing 并接管」。中间态必须可见（`link_state='adopting'`），
-否则运营点完按钮不知道发生了什么。
+**裁定三（修正版）：补挂是同步的，不经采集。**
 
-⚠️ **「不造半基线行」的边界（对应关系阶梯落定后修正）**：这条纪律**只管 `listing`**——
-listing 要么带着非空 `product_id` 完整建成，要么不建。它**不适用于 `sku_mapping`**：
-级 0 那行**永远保留**，`product_id IS NULL` 是它的合法常态而不是半成品。
-原判据④若照字面读成「采集失败整条不落」，会把级 3（亚马逊侧已死、Walmart 上还在卖）
-的品永久挡在系统外——那正是本单最该捞出来的一类。判据④已按此改写。
+> ⚠️ **本条原写「补挂天然是两段式异步（提交采集 → 等回来 → 建 listing）」，已作废。**
+> 那是「product 必须由 scrape 建」这个错误前提的推论。按 Owner 裁定与旧仓做法，
+> 产品行**由 Walmart 侧字段直接 upsert**（身份=ASIN），一个事务内完成，
+> 没有等待、没有中间态、没有"点完按钮不知道发生了什么"的问题。
+> `link_state` 因此不需要 `adopting` 这个态。
+
+**「再去亚马逊采一次」是独立的可选后续**：补全详情、跑合规审核。它失败不影响补挂已完成的事实。
+
+⚠️ **「不造半基线行」的边界**：这条纪律**只管 `listing`**——listing 要么带着非空
+`product_id` 完整建成，要么不建。它**不适用于 `sku_mapping`**：级 0 那行**永远保留**，
+`product_id IS NULL`（级 2，提不出 ASIN）是它的合法常态而不是半成品。
+
+#### 旧仓 `erp-core` 里现役 `item_pull` 没有的东西（16a 逐条对照）
+
+Owner 指的「erp-core 中有部分实现，可以参考他的运作机理」——考古 `store_sync.py`
+（1559 行，注释里带大量「用户校正 N 次」的生产教训）后，列出**现役 `item_pull` 的实际缺口**：
+
+| # | 旧仓有 | 现役 `item_pull` | 影响 |
+|---|---|---|---|
+| 1 | 轮次含 **`STAGE`**（待 GoLive） | `statuses` 只有 PUBLISHED/UNPUBLISHED/SYSTEM_PROBLEM | **漏一类**在架品 |
+| 2 | 单跑一轮 **`lifecycleStatus=RETIRED`** | 完全不扫 | 卖家已 RETIRE 的历史记录看不见 |
+| 3 | **`OFFSET_CAP = 9800`**，超了显式报 error | `max_pages=100 × 200 = 20000`，无上限判断 | 单状态超 9800 时**静默截断**——循环按"本页 < limit"终止，会**误以为扫完**，于是超出部分全被算成 `gone_remote` |
+| 4 | ⚠️ **同时传 `lifecycleStatus` + `publishedStatus=UNPUBLISHED/SYSTEM_PROBLEM/STAGE` → Walmart 返 404**（实测 2026-05-06） | 现役只传 `publishedStatus`，**恰好避开了** | 无缺口，但**扩 RETIRED 轮时必须知道这条**，否则一加 `lifecycleStatus` 就 404 |
+| 5 | `unpublishedReasons` 兼容 dict / list / str 三种形态 | `_reasons()` 只取 `dict.reason` | 渠道换形态时静默取空 |
+| 6 | **`gone_remote` 的收敛机制**：`orphan_miss_count` 计数器，看到就重置，**连续 3 次全量未见才推 deleted**（"避免 walmart 偶发分页漏拉就误删"） | 只计数，永不收敛 | 现役的"保守不迁移"是对的，但**没有出路**——旧仓给出了完整的安全收敛法 |
+| 7 | **`_reconcile_lifecycle` 不限 `store_id`，全库扫**——"一个 ASIN 任一店成功上架就算 listed"（用户校正八次） | 无此概念 | 跨店状态联动缺失 |
+| 8 | 库存字段**四级优先级**（`availableToSellQuantity` → `inventory.quantity` → `inventory.availableToSellQuantity` → `inventoryCount`，实测 2026-04-29） | 不取库存 | 补挂要写 `current_inventory` 时会踩 |
+
+> **第 3 条是唯一的现役正确性缺陷**（其余是缺功能），建议**独立于 R2-16 先修**：
+> 一个店铺单状态超 9800 SKU 就会拉不全，而失败方式是静默的。
 
 ## 三路并行开工须知（Owner 2026-07-30：R2-13 / R2-14 14b / R2-16 并行）
 

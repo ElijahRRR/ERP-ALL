@@ -238,7 +238,7 @@ required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤�
 | channel_sku | TEXT | NOT NULL | 渠道侧 SKU |
 | product_id | BIGINT | NULL REFERENCES product | **可空是本表的核心性质**：重拉的历史在线品可能未入产品库（渠道先于本地） |
 | origin | TEXT | NOT NULL CHECK IN (legacy, new) | legacy=存量（重拉在线品）；new=本系统上架。**D-Q72 后渠道侧统一为 ASIN 系**（`source_channel='amazon'` 时 `channel_sku`=ASIN，同店冲突加 `-N` 后缀），二者不再是两套编码体系，本列仅表来源不表编码规则 |
-| link_state | TEXT | NOT NULL DEFAULT 'pending' CHECK IN (pending, adopting, linked, source_dead, unresolvable, ignored) | **R2-16 补**。对应关系阶梯的落点：pending=待处理；adopting=采集在途；linked=已关联产品；source_dead=形如 ASIN 但亚马逊侧采不回（级 3）；unresolvable=不形如 ASIN（级 4）；ignored=人工判定不接管 |
+| link_state | TEXT | NOT NULL DEFAULT 'pending' CHECK IN (pending, linked, unresolvable, ignored) | **R2-16 补**。对应关系阶梯的落点：pending=待处理；linked=已关联产品（级 1）；unresolvable=从 SKU 提不出 ASIN（级 2）；ignored=人工判定不接管。**无 `adopting` 态**——补挂是同步的、不经采集；**无 `source_dead` 态**——建档不依赖亚马逊可采，ASIN 死没死不影响本地建档 |
 | first_seen_at / last_seen_at | timestamptz | NOT NULL | **R2-16 补**。首次发现 / 最近一轮仍在渠道侧——连续多轮不再出现即可判定渠道侧已消失 |
 | published_status / lifecycle | TEXT | NULL | **R2-16 补**。渠道侧状态原值 |
 | wpid / gtin / title / price | | NULL | **R2-16 补**。渠道侧原始信息。⚠️ **`item_pull` 现在把这些全丢了**——`remote` 字典只留 `published_status`/`lifecycle`/`reasons`，16a 须扩采 |
@@ -247,7 +247,17 @@ required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤�
 约束：`uq_sku_mapping (store_id, channel_sku)`。
 用途：订单行/结算明细回连产品；从 Walmart 重拉在线商品时（D-Q35）批量生成 legacy 行。
 
-**对应关系阶梯**（R2-16 核心设计，详见 007 同名节）：级 0 无条件 upsert 本表（**永不失败、
-不依赖亚马逊侧**）→ 级 1 本地已有该 ASIN 的产品则直接回填 `product_id`（**零采集**）→
-级 2 走 scrape 建产品 → 级 3 亚马逊侧已死则建 `source_channel='walmart'` 占位产品
-（**不能就此丢弃：还在 Walmart 卖但没货源的品，正是最该被发现的**）→ 级 4 不形如 ASIN 同级 3。
+**对应关系阶梯**（R2-16 核心设计，详见 007 同名节；Owner 2026-07-30 裁定 + 旧仓
+`erp-core/store_sync.py` 移植）：
+
+- **级 0**：无条件 upsert 本表（**永不失败、不依赖亚马逊侧**）；
+- **级 1**：从 `channel_sku` 用 regex `search` 提得出 ASIN（含 `ASIN-2` 后缀与
+  `前缀-ASIN` 等历史嵌法）→ upsert `product(team,'amazon',ASIN)` 并回填 `product_id`。
+  **已有则 `COALESCE` 只补空列**——Walmart 侧稀数据绝不覆盖亚马逊采集来的好数据；
+- **级 2**：提不出 ASIN（存量手工编码，~1%）→ 不建产品行，`link_state='unresolvable'`，
+  开人工填 ASIN 通道。
+
+> **身份即 ASIN，与数据从哪来无关。** `source_channel` 表的是**身份命名空间**，
+> 不是"这次数据从哪个网站抓的"——故**不存在 `source_channel='walmart'` 的产品行**，
+> 一个 ASIN 恒一行，由 `uq_product` 直接保证。建档**不经采集**：Walmart 上还在卖、
+> 亚马逊侧 ASIN 已死的品照样建档、照样能下架、照样进合规审核。
