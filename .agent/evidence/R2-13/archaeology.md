@@ -36,6 +36,10 @@ vs `amazonOrderPig`）。这不是命名细节——它意味着厂商 SaaS 那�
 物流链走的是另一套。**ERP 实现时必须先定：两组路径都实现，还是 fork 时把路径改写成一组。**
 后者更干净，但属于改插件代码，与「只换 baseUrl」不是一个工作量。
 
+> **Owner 2026-07-30 裁定：把插件改成一组。** 故 13a 含改插件路径。
+> **下游后果**：fork 版路径与厂商后端从此不一致，**13e 的回切不能靠「改 baseUrl」，
+> 必须写成「换回厂商原版插件」**，且回切演练要实测这条路。详见 `owner-rulings-20260730.md` §三。
+
 ### ② 插件的请求封装**默认不带任何认证头**
 
 ```
@@ -89,6 +93,10 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 `cookies` 权限与 `updateBuyerCookie`）**依据成立且可以更硬**：收窄不会影响内容脚本注入，
 因为那部分本来就没依赖通配符。
 
+> **但后半句已被 Owner 2026-07-30 裁定覆盖**：`buyer_session` **要启用**（用途=识别买家号），
+> 故 `cookies` 与 `updateBuyerCookie` **保留**。收窄 `host_permissions` 那半句不变，
+> 且因保留 cookies 而**更承重**（见下方「cookie 调用链」补节 ②）。
+
 > 现状风险的具体形状：该扩展可读取**装它的那个浏览器访问过的任何站点**的 cookie——
 > 包括 Walmart 卖家后台与飞书。这台机器同时是运营日常用的浏览器，故这不是理论风险。
 
@@ -108,7 +116,7 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 | `storage` | **0** | 可删 |
 | `tabs` | **0** | 可删 |
 | `scripting` | **0** | 可删 |
-| `cookies` | 1（`background.js` 的 `chrome.cookies.getAll`） | 按 `buyer_session` 裁定 |
+| `cookies` | 1（`background.js` 的 `chrome.cookies.getAll`） | **保留**（Owner 2026-07-30 裁定：用于识别买家号） |
 
 `chrome.runtime`（popup.js 的 `sendMessage`/`lastError`、layer.js 的 `chrome.runtime.id`）
 **不需要声明权限**，故不构成对上表的反例。
@@ -121,7 +129,8 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 > 上表是逐文件取回原文后计数得出的。
 
 → 随 13a 的安全收窄一并处理：删 `storage` / `tabs` / `scripting` 三条 + 收窄
-`host_permissions`；`cookies` 留待 §四 第 3 条裁定。
+`host_permissions`。**`cookies` 保留**——Owner 2026-07-30 裁定要用（识别买家号），故
+三条零调用权限照删、收窄照做，但 `cookies` 不动。
 
 > **删 `storage` 会不会让它没地方存东西？不会**：状态存在 `localStorage`（popup.js 里 4 处），
 > 而 `chrome.storage` 零处。`localStorage` 不需要该权限，故那条是真闲置，删掉零影响。
@@ -137,7 +146,8 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 ——**调用方自己所在页面的 URL**。故实际读到的只有 amazon 自己的 cookie。
 
 **即：把 `host_permissions` 收窄到 amazon 三站是零行为变更**，不会打断 `buyer_session`
-那条路径（若 §四 第 3 条裁定保留它）。收窄因此是个不需要回归测试的改动。
+那条路径——而 Owner 2026-07-30 已裁定**保留**它，故这条相容性正是必需的前提，
+不再是「若保留则……」的假设。收窄因此是个不需要回归测试的改动。
 
 **② 但正因如此，收窄是承重的，不是清洁工作。**
 
@@ -228,7 +238,8 @@ if (!country) { ...; return }              // ← 非 amazon 域返回 null，�
 **安全项随 13a 强制**：收窄 `host_permissions`（**零行为变更，且它同时是那个未校验
 `sender` 的读 cookie 原语的边界**）、**删掉 `storage`/`tabs`/`scripting` 三条零调用权限**、
 **给 `chrome.runtime.onMessage` 加 `sender` 校验**（成本一行，见 §〇③ 补）、
-按 `buyer_session` 决定是否删 `cookies` 权限与 `updateBuyerCookie`、
+**保留 `cookies` 权限与 `updateBuyerCookie`**（Owner 2026-07-30 裁定；细节待其本地分析
+结果，在此之前 13a 不动 cookie 相关代码）、
 ERP 不可达时插件 **fail-closed 不自行采购**。
 
 ---
@@ -252,29 +263,21 @@ ERP 不可达时插件 **fail-closed 不自行采购**。
 
 ---
 
-## 四、待 Owner / 审计侧裁定
+## 四、四条待裁定 —— **Owner 2026-07-30 已全部裁定**
 
-1. **两个路径前缀怎么处置**（§〇①）：ERP 两组都实现，还是 fork 时改写为一组？
-   后者更干净但要改插件代码，且与厂商 SaaS 的回切路径会分叉——**而 13e 明确要求保留回切**。
-   这两件事有张力，需要一并定。
-2. **gate 口径**（§三）：是否接受「13a/13b/13d 先行，auto 档卡在 13c 之后」。
-3. **`buyer_session` 用不用**——决定 `cookies` 权限与 `updateBuyerCookie` 的去留（007 已列，
-   但没定）。这条影响 13a 的安全收窄范围。
-4. **`daily_cap` 在图纸里有两个存储位置，谁是权威？**（PR #47 审查侧 N-a 提出；本文
-   原先引了两处却没发现是同一个名字）
+> 裁定原文与逐条影响见 **`owner-rulings-20260730.md`**（含需审计侧改图纸正文的清单）。
+> 本节只留结论，避免两处各写一份而漂移。
 
-   | 位置 | 出处 | 措辞 |
-   |---|---|---|
-   | `buyer_account.daily_cap` INT 列 | `07-order-sourcing-aftersale.md:144` | 「单日采购上限（风控，null=不限）」，路由按它走（`07:152`、`007:278`） |
-   | `automation_policy.config.daily_cap` 护栏键 | `09-platform.md:208` | 「**单账号**日采购上限」，`007:280` 同 |
+| # | 议题 | 裁定 |
+|---|---|---|
+| 1 | 两个路径前缀 | **把插件改成一组**（推翻本文原推荐的「ERP 两组都实现」）。→ 下游后果：**13e 的回切方式必须写成「换回厂商原版插件」而非「改 baseUrl」**，因 fork 版路径已与厂商后端不一致 |
+| 2 | gate 口径 | **接受**「13a/13b/13d 先行，auto 档锁在 13c 交付并验收之后」 |
+| 3 | `buyer_session` / cookies | **要，保留**（推翻本文原推荐的「删掉」）。用途限定为**识别买家号**；**细节待 Owner 的本地分析结果，在此之前 13a 不动 cookie 相关代码**。三条零调用权限该删照删、`host_permissions` 收窄照做、`sender` 校验**因保留 cookies 而更必要** |
+| 4 | `daily_cap` 权威方 | **账号列唯一权威；自动化策略不配这个值**——`automation_policy.config.daily_cap` **取消**，不进护栏键清单。→ **13c 护栏从三键降为两键**（`amount_ceiling` + `price_delta_pct`） |
 
-   **两处措辞是同一语义**，而本文 §二 把它们分给了两个增量：13b 建列并按它路由、
-   13c 建护栏消费点。**若不先定谁是权威，运营在一处设了限、以为封住了，另一处照旧放行**
-   ——这正是「护栏有出口」的形状，而且落在**花真金白银的 auto 档**上。
-
-   可选口径：(a) 列为权威、护栏键读列；(b) 护栏键为权威、列降为缓存；(c) 二者语义拆开
-   （如列=账号硬上限、护栏=策略软上限，取两者较小值）。**必须在 13b 动工前定**——
-   13b 一旦按列路由落码，改口径就要动数据。
+> **本文提的三个 `daily_cap` 口径（列为权威 / 护栏为权威 / 取较小值）均未被采纳**，
+> Owner 选的是更简的第四种：护栏键根本不存在。这比「取较小值」更彻底——取较小值仍要求
+> 两处都被正确查询，而「只有一处」连查漏的可能都没有。
 
 ## 五、开工前已确认的事实清单（供审查复算）
 
@@ -304,7 +307,7 @@ ERP 不可达时插件 **fail-closed 不自行采购**。
 | `cookies` 的 url 来自调用方所在页 | 读 `getCookiesAsJson()` 与 `background.js` 的监听器 | `window.location.href.split("?")[0]`；监听器不校验 `sender` |
 | `popup.js` 有两个执行上下文 | manifest 的 `content_scripts.js` + `popup.html` 的 `<script src>` | 两处都指向 `js/popup.js` |
 | 非 amazon 上下文有**三道**独立约束 | ①`matches` ②`init()` 的 `isAmazonOrderPage()` ③`sendBuyerCookie()` 开头的 `getCurrentCountryCode()` 早退 | 三道各自成立；另 popup.js 内 `onMessage` 为 0，无外部消息入口 |
-| `daily_cap` 两个存储位置 | `grep -rn "daily_cap" specs/` | `07:144` 建列、`09:208` 护栏键，措辞同义 |
+| `daily_cap` 两个存储位置 | `grep -rn "daily_cap" specs/` | `07:144` 建列、`09:208` 护栏键，措辞同义。⚠️ **本行是截至 2026-07-29 的图纸态**；Owner 已裁定取消护栏键，审计侧改完 `09:208`/`007:280` 后本行的期望值变为「仅 `07:144`/`07:152`/`007:278` 的账号列」 |
 
 > ⚠️ **复算这几条时不要用 GitHub 代码搜索**：它对本仓返回 `incomplete_results: true`，
 > **不能用作「零命中」的证据**。上表全部是逐文件取回原文后计数得出的。
