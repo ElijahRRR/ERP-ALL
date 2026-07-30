@@ -289,22 +289,30 @@ async def delete_purchaser(
     # 落锁，procurement.py:199/:224，D-Q32），将来新增的领单前状态自动落进退回侧。
     # 同时把渠道订单的 internal_status 从 assigned 推回 checked（审查五轮 E：
     # assign_po 推上去的，退回就对称退回来，否则「已分配」口径多计）。
+    # 退回同时是全系统唯一离开 exception 的路径（状态机无出边缺口见 FX-0730B），
+    # 且它是删除的副作用——按审查六轮 F 显式化：exception_reason 一并清（不把陈旧
+    # 异常语句带回待分配池），被解除异常的单号单独记进审计。老状态经子查询捕获
+    # （RETURNING 只给新值）。
     returned_rows = [
-        (int(r[0]), int(r[1]), r[2])
+        (int(r[0]), int(r[1]), r[2], str(r[3]))
         for r in await session.execute(
             text(
-                "UPDATE app.procurement_order"
+                "UPDATE app.procurement_order po"
                 " SET status = 'unassigned', purchaser_id = NULL, assignee_kind = 'none',"
-                "     assigned_by = NULL, assigned_at = NULL"
-                " WHERE purchaser_id = :p AND exchange_rate_locked IS NULL"
-                "   AND status <> ALL (ARRAY['backfilled', 'cancelled'])"
-                " RETURNING id, order_id, order_date"
+                "     assigned_by = NULL, assigned_at = NULL, exception_reason = NULL"
+                " FROM (SELECT id, status AS old_status FROM app.procurement_order"
+                "       WHERE purchaser_id = :p AND exchange_rate_locked IS NULL"
+                "         AND status <> ALL (ARRAY['backfilled', 'cancelled'])"
+                "       FOR UPDATE) prev"
+                " WHERE po.id = prev.id"
+                " RETURNING po.id, po.order_id, po.order_date, prev.old_status"
             ),
             {"p": purchaser_id},
         )
     ]
     returned = [r[0] for r in returned_rows]
-    for _, oid, od in returned_rows:
+    exceptions_released = [r[0] for r in returned_rows if r[3] == "exception"]
+    for _, oid, od, _old in returned_rows:
         await session.execute(
             text(
                 "UPDATE app.channel_order SET internal_status = 'checked'"
@@ -330,9 +338,12 @@ async def delete_purchaser(
         ).scalar_one()
     )
     if in_flight:
+        # 文案不承诺不存在的出口（审查六轮 F）：procurement_order 无 cancelled 写入
+        # 路径、exception 无出边（FX-0730B）——能等到的终态只有回填。
         raise BusinessError(
             "PURCHASER_DELETE_IN_FLIGHT",
-            "该采购方仍有执行中的采购单（已领单未完结），请等其到终态（回填/取消）后再删除",
+            "该采购方仍有执行中的采购单（已领单未完结），请等其回填完结后再删除；"
+            "exception 单请先在采购单侧处置",
             {"in_flight": in_flight},
             http_status=409,
         )
@@ -378,6 +389,7 @@ async def delete_purchaser(
             "tombstoned": has_history,
             "orders_returned": returned,
             "orders_retained": retained,
+            "exceptions_released": exceptions_released,
         },
     )
     return {

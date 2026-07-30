@@ -323,7 +323,8 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
   被 WHERE 自然排除）；
 - `channel_orders_now` / `order_lines_now` 与①相同；
 - **条件式公式**：`audit_rows_now = ①的 audit_rows_before + 1（⑥-1 直插）+ ⑧里
-  成功的删除动作数`。按上文全过的话删除成功 4 次（⑧-1/2/4/5），即 `+5`；若⑧有步骤
+  成功的删除动作数`。按上文全过的话删除成功 4 次（⑧-1/2/4b/5——4a 是被拒不写
+  audit），即 `+5`；若⑧有步骤
   未过或重试过，按实际成功次数算并在回执写明算式。
 
 ---

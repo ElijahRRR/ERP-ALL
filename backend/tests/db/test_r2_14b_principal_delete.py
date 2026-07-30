@@ -355,6 +355,45 @@ class TestPurchaserDelete:
             ).fetchone() == ("checked",)
             assert _tombstone(conn, "purchaser", pid) is None
 
+    def test_unlocked_exception_returned_reason_cleared(
+        self, client: TestClient, seeded: dict, migrated_db: str
+    ) -> None:
+        """审查六轮 F 显式化承重：未锁汇率的 exception 单被退回时，exception_reason
+        一并清（不留陈旧异常语句在待分配池）、被解除的单号记进审计 after——
+        退回是全系统唯一离开 exception 的路径（FX-0730B），副作用必须可审计。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                " VALUES (%s, '外协异常样本', 'external', 7.2) RETURNING id",
+                (seeded["team"],),
+            ).fetchone()[0]
+            po = conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id,"
+                "  exception_reason)"
+                " VALUES (%s, 1, 990005, now(), 'exception', 'external', %s, '样品损坏待处置')"
+                " RETURNING id",
+                (seeded["team"], pid),
+            ).fetchone()[0]
+        auth = _login(client, ADMIN, PASSWORD)
+        r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
+        assert r.status_code == 200, r.text
+        assert r.json()["orders_returned"] == 1
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT status, purchaser_id, exception_reason"
+                " FROM app.procurement_order WHERE id = %s",
+                (po,),
+            ).fetchone()
+            assert row == ("unassigned", None, None)
+            after = conn.execute(
+                "SELECT after FROM app.audit_log"
+                " WHERE action = 'procurement.purchaser_delete' AND object_id = %s"
+                " ORDER BY occurred_at DESC LIMIT 1",
+                (str(pid),),
+            ).fetchone()[0]
+        assert after["exceptions_released"] == [po]
+
     def test_mixed_in_flight_rolls_back_return(
         self, client: TestClient, seeded: dict, migrated_db: str
     ) -> None:

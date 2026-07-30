@@ -1212,5 +1212,18 @@
   "acceptance": "①存在 AI 只读角色模板，其权限点集合为各域 *_read 的最小子集，写权限一个不含(越权测试必败)；②AI 发起的调用在 audit_log 中 actor 可辨识，不与人工混淆；③对该角色独立限流，超限拒绝而非拖垮库；④凭证可单独吊销不影响其他账号",
   "finding": "【现状核实 2026-07-29】能力面其实已具备——全部业务能力都在 REST API 之后，有完整 OpenAPI 契约(002)与权限点系统，给受限角色发 token 即可读数。缺的是三样配套：无专为 AI 设的最小只读角色模板(现权限点按域分读写)、审计日志无法区分调用主体是 AI 还是人、无针对性限流(AI 循环可能拖垮库)",
   "last_checked_at": "2026-07-29"
+ },
+ {
+  "id": "FX-0730B",
+  "priority": "P2",
+  "dimension": "product",
+  "status": "todo",
+  "check": "procurement_order 状态机 exception 无出边：assign 前置集 unassigned/assigned、claim 前置 assigned、backfill 前置 unassigned/assigned/claimed/purchased——三条都不含 exception；cancelled 更无任何写入路径。异常单一旦标记即永久卡死，无人工处置回流通道。需给 exception 增显式出边（重派/取消/恢复之一，口径归 order 域，图纸归审计侧落笔）",
+  "evidence": [
+   "backend/src/erp/order/procurement.py"
+  ],
+  "finding": "PR #49 审查六轮 F 实测（2026-07-30）：status 写入点仅 assigned/claimed/backfilled/exception 四处（procurement.py:176/198/221/255）。14b 删除路径两处受累已就地补：409 文案原承诺「回填/取消」两条不存在的出口（已改为「等回填；exception 先处置」）；未锁汇率的 exception 单经删除副作用被退回池（已显式化：exception_reason 一并清 + 审计 after 记 exceptions_released + 专用测试）。但「人工处置异常单」的正路仍缺——已锁汇率的 exception 单会让其采购方永久删不掉（守卫永不放行），这是既有状态机缺口，不该在删除路径顺手补，故立本单。",
+  "last_checked_at": "2026-07-30",
+  "acceptance": "exception 单存在至少一条显式人工出边（重新分配或取消，含权限点与审计留痕）；出边落地后 14b 删除路径的 409 文案与退回行为复核一遍口径仍自洽"
  }
 ]
