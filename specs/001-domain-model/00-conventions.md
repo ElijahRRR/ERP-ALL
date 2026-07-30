@@ -107,6 +107,54 @@ team_id = current_team OR EXISTS (SELECT 1 FROM shared_resource sr
 （谁在何时删了什么，before 快照留在日志里）；列表默认隐藏已停用/已归档项并提供
 「显示已停用」开关——**折叠比删除更快见效，二者都要**。
 
+### 7.1.1 `procurement_order.purchaser_id` 改软引用 —— **审计侧确认（2026-07-30）**
+
+开发侧在写 0047 时提出：②级要求「干过活的采购方删实体」，③级要求「订单一行不删」，
+**在原外键（`bigint REFERENCES app.purchaser(id)`，默认 `NO ACTION`）下二者不可能同时成立**
+——删主体会被外键直接挡住。**该矛盾属实，解法只能是删外键。裁定：确认删。**
+
+**为什么不是 `ON DELETE SET NULL`**（开发侧已排除，此处补上判据）：置 NULL 把 id 本身抹掉，
+而**墓碑正是靠 id 才能反查出名字**——id 一没，「当时是谁采购的」就永久丢失。
+软引用保留 id，墓碑把它还原成名字。**SET NULL 严格劣于删外键，不是更安全的折中。**
+
+**为什么删外键是安全的——三条实测**：
+
+1. **同一节早已两次做过同样的取舍**。上文 `deleted_principal` 的必要性论证写的就是
+   「`audit_log.actor_id` **无外键**、且不冗余用户名……UI 解析操作人时先查主表、查不到再查
+   墓碑」。0041 落 `deleted_product` 时又做了两次：`product_id` **无外键**（注释原文
+   「实体已被物理删除，有外键就建不出这一行」）、`deleted_by` **无外键指向 `app_user`**
+   （「14b 之后用户本身也可被删，同 `audit_log.actor_id` 的取舍」）。
+   **0047 是同一取舍再往外推一层，不是新开先例。**
+2. **财务不会因此失真——承重值早已快照**。`purchaser` 上唯一被下游依赖的是 `exchange_rate`，
+   而它**在领单时就锁进了 `procurement_order.exchange_rate_locked`**
+   （`order/procurement.py:196`：`coalesce(exchange_rate_locked, SELECT exchange_rate FROM purchaser…)`；
+   D-Q32「汇率后改不影响已锁单」）。**删采购方动不了任何已锁单的结算口径。**
+3. **爆炸半径是一列**。全仓 `REFERENCES app.purchaser` 只此一处（`0025:232`）。
+
+**确认删，但附三条强制条件**——删外键等于把完整性保证从数据库搬到应用代码，必须有东西接住：
+
+- **(a) 唯一出口 + 同事务**：主体删除只能经删除服务，**墓碑写入与实体物理删除必须同一事务**。
+  没有这条，一次漏写墓碑就产生永久无法解析的悬空 id，而数据库不再会报错。
+- **(b) 机器守卫**：须有测试证伪「删掉一个干过活的采购方后，其历史执行单仍在、且
+  `purchaser_id` 能经墓碑解析出名字」；并加一条一致性检查——**任何非空 `purchaser_id`
+  都必须能在 主表 或 墓碑 命中其一**。
+- **(c) 删除前先处置未锁汇率的在途单**：`exchange_rate_locked` 是**领单时**才锁的，故该采购方
+  名下**尚未进入 `claimed`** 的执行单（`assigned` / `pending_review`）**汇率源会随主体一起消失**。
+  删除服务须先把这些单**退回 `unassigned` 并清空 `purchaser_id`**；`claimed` 及其后的保留
+  `purchaser_id`（汇率已锁，历史可读）。**这条不做，删完会留下一批永远锁不上汇率的孤单。**
+
+**顺带三条**：
+
+- `deleted_principal` **须带 `team_id`**（与 `deleted_product` 同形，0041 已按
+  `team_id NOT NULL REFERENCES app.team(id)` 建）。`purchaser` 是 team 域且带 RLS，
+  墓碑无 `team_id` 则套不上同款策略，A 团队会解析出 B 团队已删采购方的名字。
+- **不要再加 `purchaser_name` 冗余列当双保险**。那会造出第二个真相源，与本节「靠墓碑而非
+  冗余」的取舍相悖（`audit_log.actor_id` 的先例正是"不冗余用户名"）。一个机制做到位，
+  好过两个机制互相兜底。
+- `purchaser.id` 是 `GENERATED ALWAYS AS IDENTITY`，**序列不复用**，故不存在「新采购方继承
+  已删采购方历史」的撞号风险，`deleted_principal` 的 PK `(kind, id)` 也因此稳。
+  **谁都不要为了"整理序号"去 reset 这个 identity。**
+
 ## 8. 分区与保留策略（NFR 对账表）
 
 | 表 | 分区键 | 粒度 | 保留 |
