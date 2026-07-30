@@ -995,14 +995,19 @@
    "specs/001-domain-model/09-platform.md"
   ],
   "gate": "排 R2-09 之后（需 purchase_execute 三档护栏才敢开 auto）；13e 灰度切换红线=同一浏览器配置内绝不同时启用两个插件(会重复下单)",
-  "acceptance": "①真实订单人工档由插件完成采购并回填,金额/单号/运单与亚马逊后台一致;②三档各跑一遍,auto 超 amount_ceiling 必转人工且零下单;③越权:A实例取不到B账号任务(必败);④并发下发同一订单不产生两个采购任务;⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练",
+  "acceptance": "①真实订单在人工档由插件完成采购并回填，金额/单号/运单与亚马逊后台一致，且 purchase_cost+tax_amount+freight_cost 与渠道 total 自校验相等；②三档各跑一遍，auto 档超 amount_ceiling/price_delta_pct/delivery_days_limit 任一护栏必停在 pending_review 且零下单；③越权：A 实例取不到 B 账号的任务(必败)；④并发下发同一订单不产生两个采购任务(claimed 原子锁)；⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练；⑥**金额解析证伪**：构造带千分位/空串/null 的回填，须落异常告警而非静默写 0；⑦**事后核对生效**：构造回填 ASIN 或邮编与下单时不一致的情形，系统必须发现并标记(不得只在下单前校验)；⑧非 FBA 与 bundle 商品在派发前即被拦截(不进插件执行)；⑨物流事件按 seq 存储且 seq=0 为最新，不误当时间序",
   "finding": "审计侧解包 v2.5.0 crx 并对比仓内 v2.4.1(2026-07-27)：实为完整自动采购机器人(加购→填址→结账→抓单号→回填 + 物流回填链 + 验证码人机接力),支持 com/ca/co.jp,两版差异仅日本地址选择两函数。安全实测：host_permissions=*://*/* + cookies 权限可读该浏览器任何站点 cookie(含 Walmart 后台/飞书)；updateBuyerCookie 将买家 cookie 上传厂商服务器。fork 时须收窄权限。性质=迁移非新建(现产线跑在 smallbee168.com)",
-  "last_checked_at": "2026-07-29",
+  "last_checked_at": "2026-07-30",
   "updates": [
    {
     "date": "2026-07-29",
     "kind": "progress",
     "text": "【考古完成，未实现】见 .agent/evidence/R2-13/archaeology.md。**直接读了 fork 源仓**（ElijahRRR/AMZ-Purchase-Assistant @07282ed v2.4.1），拿到三条 007 转述里没有的事实：① **9 个端点分属两个路径前缀**（/system/amazonOrder/ 与 /system/amazonOrderPig/），007 只记「updateTrackingInfo×2」未说命名空间不同——ERP 要么两组都实现、要么 fork 时改写路径，而后者与 13e 要求保留的回切路径有张力，需一并定；② **插件请求封装默认不带任何认证头**（唯一 fetch 封装基础头只有 Content-Type），故「fork 后改 baseUrl」不足以完成 13a，**必须改插件代码**加实例 token 注入；③ manifest 的 host_permissions=*://*/* 而 content_scripts 已 amazon-scoped，**通配符只服务于 fetch/cookies 两条路径**，收窄不影响内容脚本注入——007 的安全要求依据更硬。ERP 侧：buyer_account/plugin_instance 零建表；procurement_order 回填列与状态机全部现成、缺 buyer_account_id；purchase_execute 仅是枚举且不在 WIRED_FLOWS。**新发现的耦合**：13c 的护栏是三件耦合——automation/router.py 现显式 422 拒写 config（AUTOMATION_CONFIG_NOT_WRITABLE），故必须同时交付「放开写入+消费点+判据」，该收窄的解除条件此前只写在那段注释里、未进工单。**gate 复核**：007 的「排 R2-09 之后」卡的是「开 auto」不是「开工」——13a/13b/13d 与护栏无关，建议精确为「auto 档排在 13c 之后」，**该口径改动请审计侧确认后再动工**。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "landed",
+    "text": "【契约与图纸依 Owner 双份逆向报告落到列级】Owner 2026-07-30 交付两份实测报告(厂商面板字段级 12,963 单实数据+导入模板+状态实测分布；插件源码逐字段追踪接口契约/17条异常原文/物流事件结构)，审计侧据此补 §07：①**成本三分**——原模型仅 purchase_cost+freight_cost，**缺 tax_amount**，美亚采购必有销售税，不补则 R2-08 利润从第一天偏低；三项分列、合计算得、并以渠道 total 做回填自校验；②**金额解析纪律**——渠道回填是带$的字符串，须处理千分位/空串/null，解析失败不得静默写 0；③**异常六类+三特例**(address/stock/product/delivery/checkout/price_guard/channel_cancelled/order_not_found/other)，源自 17 条生产实测原文非凭空设计；其中非FBA与bundle属业务规则应前置拦截而非运行时报错；④**护栏卡点定为 pending_review**——取厂商「待审核」态的位置(其自身实测0条形同虚设,但位置对:校验失败应卡在派发前)；新增 delivery_days_limit 护栏(厂商默认7天,我方原设计缺失)；价格护栏三段式(服务端下发阈值→客户端判定→回填后二次校验)，因判定必须在结账页发生；⑤**事后核对不可前置化**——asinCheck/postCodeCheck 语义是拍单后比对，服务端回填时执行；⑥端点契约字段级落笔，含 state 与 receivingState 双字段名并存(插件取 order.state||order.receivingState，对外须都返回)；⑦新表 procurement_logistics_event(seq=0 为最新,渠道倒序)，并**明确不存 trackingHtml**(base64整页HTML,万单GB级,信息已被结构化承载)；⑧补 payment_card_last4/delivery_est_date/delivery_est_raw 三列。**报告间一处矛盾已裁**：本地报告将 91/92 归任务状态、面板报告实测 91 在物流状态枚举——我方不复制其双枚举结构，统一收进 exception_kind 两个细分。"
    }
   ]
  },

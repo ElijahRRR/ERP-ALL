@@ -97,15 +97,20 @@
 | claimed_at | timestamptz | NULL | 领单（门户或内部界面） |
 | purchase_platform | TEXT | NULL | 1688/拼多多/其他 |
 | purchase_order_ref | TEXT | NULL | 采购平台单号 |
-| purchase_cost | NUMERIC(12,2) | NULL | 原币成本 |
-| purchase_currency | CHAR(3) | NOT NULL DEFAULT 'CNY' | |
+| purchase_cost | NUMERIC(12,2) | NULL | **税前商品额**（对应插件回填 `totalBeforeTax`）——口径见下方「成本三分」 |
+| tax_amount | NUMERIC(12,2) | NULL | **销售税**（插件回填 `tax`）。**2026-07-30 补**：美亚采购必有销售税，原模型缺此列 → 利润核算从第一天就会偏低 |
+| purchase_currency | CHAR(3) | NOT NULL DEFAULT 'CNY' | 美亚采购为 USD（同币种分支见上节） |
 | exchange_rate_locked | NUMERIC(12,6) | NULL | 领单/回填时从 purchaser.exchange_rate 锁定快照（D-Q32；汇率后改不影响已锁单） |
-| freight_cost | NUMERIC(12,2) | NULL | |
-| carrier / tracking_no | TEXT | NULL | 物流回填（现阶段手动，D-Q28） |
+| freight_cost | NUMERIC(12,2) | NULL | 运费（插件回填 `shipping`） |
+| payment_card_last4 | TEXT | NULL | **付款卡后四位**（插件回填 `creditCardNumber`）——资金来源可追溯，财务对账用 |
+| delivery_est_date | DATE | NULL | 预计送达（插件回填 `deliveryTime`，已格式化） |
+| delivery_est_raw | TEXT | NULL | 渠道原文（`origDeliveryTime`，如 `Thursday, August 7`）——解析出错时可回溯，**存原文比重新抓便宜** |
+| carrier / tracking_no | TEXT | NULL | 物流回填（现阶段手动，D-Q28；插件路径由 R2-13 自动回填） |
 | purchased_at / shipped_at / backfilled_at | timestamptz | NULL | |
 | backfill_actor_kind | TEXT | NULL CHECK IN (internal, external, op_direct) | **op_direct=运营在订单页直接代填**（D-Q50②） |
 | backfill_actor_id | BIGINT | NULL | app_user.id 或 portal_account.id（按 kind 解读） |
-| exception_reason | TEXT | NULL | 缺货/涨价/无法发货… |
+| exception_kind | TEXT | NULL CHECK IN (address, stock, product, delivery, checkout, price_guard, channel_cancelled, order_not_found, other) | **异常六类 + 三特例**（2026-07-30 立，源自厂商插件生产实测 17 条 `failContent`，非凭空设计） |
+| exception_reason | TEXT | NULL | 异常原文（保留渠道/插件原始措辞，便于运营辨识与后续归类） |
 | note | TEXT | NULL | |
 | +公共列 | | | |
 
@@ -127,6 +132,98 @@
   同币种，`exchange_rate_locked` 记 1.0 且**不做折算**；财务域（§08）过账时按
   `fx_source=settlement_native`、`fx_rate=1` 处理，**不得走采购方锁定汇率路径**
   ——否则 R2-08 会对同币种金额做一次无谓换算并引入舍入误差。
+
+## 采购插件契约与成本口径（R2-13，2026-07-30 依 Owner 双份逆向报告落笔）
+
+> 来源：Owner 2026-07-30 两份实测报告——厂商面板字段级分析（12,963 单实数据、导入模板、
+> 状态实测分布）+ 插件源码逐字段追踪（接口契约、17 条异常原文、物流事件结构）。
+> **本节所有字段与枚举均有一手出处，非推演。**
+
+### 成本三分（不得合并为单一 total）
+
+`purchase_cost`（税前商品额）· `tax_amount`（销售税）· `freight_cost`（运费）**三项分列存储**，
+合计由计算得出、不落库。理由：①渠道回填本就是分开的四项
+（`totalBeforeTax`/`tax`/`shipping`/`total`）；②只存 total 则**税额永久丢失**，而财务域
+（§08）过账需要区分商品成本与税费；③`total` 可用于回填后自校验
+（`purchase_cost + tax_amount + freight_cost == total`，不等即落 `exception_kind=other` 告警）。
+
+⚠️ **金额解析纪律**：渠道回填的金额是**带货币符号的字符串**（`"$10.79"`、`"$0.00"`），
+入库前必须解析为 `NUMERIC`。**须处理千分位与空串**（`"$1,234.56"`、`""`、`null`），
+解析失败**不得静默写 0**——落异常并告警。这是最容易埋隐蔽账目错误的一处。
+
+### 异常分类（`exception_kind`，源自 17 条生产实测原文）
+
+| 类 | 覆盖的渠道原文 | 典型处置 |
+|---|---|---|
+| `address` | 地址保存超时／地址列表加载超时／地址信息不完整缺少区（JP）／未匹配到洲信息 | 修正地址后重投；反复出现疑似账号触发验证码 |
+| `stock` | 商品无库存／商品库存不足或已售罄／未找到加入购物车按钮／加入购物车失败页面未跳转 | 换 ASIN／转人工／取消 |
+| `product` | 配送方式非 FBA／**属于捆绑商品(bundle)请手动拍单**／无法修改商品购买数量 | **非 FBA 与 bundle 属业务规则不是故障**——应在派发前拦截，见下方护栏 |
+| `delivery` | 预计送达时间超过 N 天／预计送达时间解析失败 | 调阈值或取消 |
+| `checkout` | 商品验证失败／下单验证超时／回传订单失败请手动回填 | 重投；回传失败需人工补 AMZ 单号 |
+| `price_guard` | （渠道侧不写原文，代码层直接取消） | 见下方价格护栏 |
+| `channel_cancelled` | 渠道侧订单被取消/退款 | 对应厂商 `updateAmzOrderStatus(91)` |
+| `order_not_found` | 渠道侧查不到该订单 | 对应厂商 `updateAmzOrderStatus(92)` |
+| `other` | 通用处理失败／金额自校验不平 | 人工查看原文 |
+
+> **归属澄清**：厂商的 `91/92` 在其面板中落在**物流状态**枚举（实测 `91=已取消` 10 条），
+> 而插件函数名为 `updateAmzOrderStatus`。我方**不复制其双枚举结构**——统一收进
+> `exception_kind` 的两个细分，物流状态另走 §07 既有 `shipment`/行级字段。
+
+### 护栏与卡点（三档 `purchase_execute` 的实际停驻位）
+
+**护栏在任务放行前评估，不合格的单停在 `status='pending_review'`，不得放给插件执行。**
+（该设计取自厂商「待审核」态的位置——他们自己形同虚设〔实测 0 条〕，但**位置对**：
+校验失败的单应当卡在派发前，而不是让插件拍完才发现。）
+
+| 护栏 | 判据 | 出处 |
+|---|---|---|
+| `amount_ceiling` | 单单金额上限 | 我方新增 |
+| `daily_cap` | 单账号日采购上限 | 我方新增（`buyer_account.daily_cap`） |
+| `price_delta_pct` | 实付较预估涨幅超阈值 | 厂商硬编码 50% 于插件、**面板 0 处引用**（`priceCheck` 字段前端未使用）——我方阈值下发可配 |
+| `delivery_days_limit` | 预计送达超 N 天（厂商默认 7） | 厂商实测有此规则，我方原设计缺失 |
+| `fba_only` / `no_bundle` | 非 FBA、捆绑商品**不可自动采购** | 厂商作为运行时错误暴露；**我方应前置拦截**（业务规则非故障） |
+
+**价格护栏三段式（判定必须在客户端，因为只有结账页知道实付）**：
+服务端下发阈值（不硬编码）→ 客户端判定并拒绝下单 → **回填后服务端二次校验**，
+超限落 `exception_kind=price_guard` 并告警。双保险，防客户端被绕过或版本落后。
+
+**回填后核对（不可前置化）**：`asinCheck` / `postCodeCheck` 语义是「拍单**后**实际值与
+下单时是否一致」，属**事后核对**，服务端在回填时执行——买错东西必须能被发现。
+
+### 端点契约（字段级，源自插件源码实测）
+
+**① 拉取待采购任务**（对应厂商 `getNeedPurchaseOrders?customerId=`）
+插件实际只读取以下字段，其余仅供展示：`id`／`orderNo`／`receivingName`／`receivingPhone`／
+`receivingAddress`／`receivingCity`／`receivingDistrict`(JP 必填，缺则中止)／`receivingPostCode`／
+`receivingCountry`(驱动地址填写分支)／**`state` 与 `receivingState` 两个字段名并存**
+（插件取 `order.state || order.receivingState`，**对外须两个都返回同值**）／
+`products[]`（**只用 `asin` 与 `quantity`**）。
+
+**② 采购完成回填**（对应 `purchaseOrderFinishUpdate`）：`id`／`platformOrderNo`（渠道单号）／
+`asins`（逗号分隔）／`deliveryTime`+`origDeliveryTime`／`creditCardNumber`／
+`mainPostCode`+`extPostCode`（美国 zip+4 扩展位）／`shipping`+`totalBeforeTax`+`tax`+`total`／
+`products[]`（`unitPrice`／`totalPrice`／`productImage`）。
+
+## procurement_logistics_event 采购物流事件（R2-13，2026-07-30）
+
+| 列 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| id | BIGINT | PK identity | |
+| procurement_order_id | BIGINT | NOT NULL REFERENCES procurement_order | |
+| team_id | BIGINT | NOT NULL | 冗余 |
+| occurred_at | timestamptz | NULL | 由渠道原文 `day`+`time` 解析；**解析失败不丢事件**，原文仍入库 |
+| raw_day / raw_time | TEXT | NULL | 渠道原文（英文，如 `July 28, 2026` / `8:42 AM`） |
+| description | TEXT | NOT NULL | 事件描述（`tracking_info`） |
+| city / state_code | TEXT | NULL | 由位置串解析 |
+| seq | INT | NOT NULL | 渠道数组下标，**0 = 最新**（渠道倒序，勿按 seq 升序当时间序） |
+| created_at | | | |
+
+约束：`uq_proc_logistics_event (procurement_order_id, seq)`。
+承运商／运单号／预计送达存 `procurement_order` 主表，**不重复存本表**。
+
+> **明确不存 `trackingHtml`**（渠道回传的 base64 整页 HTML）：其信息已由本表结构化承载，
+> 单条数十至数百 KB、万单即 GB 级，**存储代价与价值不成比例**；确需回溯时重新抓取。
+> 此条为**明确的不做决定**，防实现侧照抄厂商字段。
 
 ## buyer_account 亚马逊买家账号池（R2-13，2026-07-27）
 
