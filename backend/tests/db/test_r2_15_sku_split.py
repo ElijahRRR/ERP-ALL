@@ -323,6 +323,8 @@ class TestUqListingViolationGuard:
 
         assert _is_uq_listing_violation(_err('... unique constraint "uq_listing"')) is True
         assert _is_uq_listing_violation(_err('... foreign key constraint "fk_x"')) is False
+        # uq_listing 是 uq_listing_spec 的前缀——兜底若用裸子串匹配会误判（审查 N4）
+        assert _is_uq_listing_violation(_err('... unique constraint "uq_listing_spec"')) is False
 
 
 class _FakeOrders:

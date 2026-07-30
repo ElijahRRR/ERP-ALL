@@ -264,8 +264,10 @@ def _is_uq_listing_violation(exc: IntegrityError) -> bool:
     name = getattr(diag, "constraint_name", None)
     if name is not None:
         return str(name) == "uq_listing"
-    # 驱动未给出 diag 时的兜底（不同 DBAPI 的异常形态不一致）
-    return "uq_listing" in str(getattr(exc, "orig", exc))
+    # 驱动未给出 diag 时的兜底（不同 DBAPI 的异常形态不一致）。
+    # 必须带引号闭合匹配：裸子串 "uq_listing" 是 uq_listing_spec 的前缀，会把
+    # 那个约束的冲突也吞进重试循环（审查 N4）——而兜底恰恰是最可能没 diag 的场景。
+    return 'constraint "uq_listing"' in str(getattr(exc, "orig", exc))
 
 
 async def _insert_listing_with_sku(
