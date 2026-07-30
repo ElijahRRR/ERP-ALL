@@ -461,9 +461,19 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 > 若 Owner 裁定采信云端沙箱替证（同一生产代码路径的载荷快照已在沙箱取得），
 > 本节整体跳过，回执写「⑪ 跳过（Owner 裁定采信沙箱替证）」。
 
+> **A-0b 回滚不变量（审查 N7）：A-3 一旦执行，无论后续哪一步成败或停手，
+> 第一件事永远是先执行 A-7 把档位切回 `live_test` 并回读确认、再起回 beat（A-8），
+> 然后才写回执或报错。停手报告可以慢，档位不能留。**——这台机器在本单已多次
+> 中途停手，「停在窗口里」是基准情形不是假想；留在 dry_run 意味着全系统渠道写
+> 从此静默变假成功，且没有任何东西会提醒它还开着。
+
 窗口的安全性依赖三件事：预检确认没有真实渠道命令在途（A-1）、停 beat 杜绝后台
 消费（A-2）、窗口审计确认窗口内只发生了本步这一条命令（A-9）。dry_run 比 live_test
-更保守（不发任何 HTTP），唯一风险是「窗口内真实命令被假完成」，三重措施正是堵它。
+更保守（不发任何 HTTP），唯一风险是「窗口内真实命令被假完成」。注意（审查 N8）：
+前两件是**阻断**，A-9 只是**检测**——它挡不住的一类是窗口期间有人从 UI 发起真实
+渠道操作，那会被静默 dry_run 成 `succeeded` 并留下快照，**业务上以为发出去了、
+实际什么都没发**。Owner 授权本窗口即包含知悉这一点；窗口应选无人操作的时段，
+从 A-2 到 A-8 一气呵成，越短越好。
 
 **A-1 预检**（只读，可先跑）——记下 `cc_max_id_before`，并要求无在途命令：
 
@@ -546,7 +556,10 @@ docker compose -f infra/docker-compose.yml start beat
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, action, status, created_at FROM app.channel_command WHERE id > <CC_MAX_ID_BEFORE> ORDER BY id;"
 ```
 
-**判据**：恰好一行，`action = feed_submit`、`status = succeeded`。多于一行 → 全部贴回执并**停**。
+**判据**：恰好一行，`action = feed_submit`、`status = succeeded`。多于一行 → 全部贴回执并
+**停**，并把多出各行的 `id`/`action`/`object_id` 单独列出——**这些命令已在窗口内被假完成
+（快照留了、HTTP 没发），档位切回 live_test 后需要逐条重发；怎么重发等 Owner 指示，
+不要自行动手**（审查 N8）。
 
 **贴回**：A-1 至 A-9 每步的关键输出；A-6 的 `result` **若含超长 base64 请截断，
 只保留能看清 SKU 的部分**。
