@@ -149,23 +149,46 @@ class TestRlsDeleteInvariant:
         )
 
 
-class TestSoftReferenceInvariant:
-    def test_no_dangling_purchaser_id(self, migrated_db: str) -> None:
-        """§7.1.1(b) 后半（PR #49 审查 N6）：任何非空 purchaser_id 必须命中主表或墓碑。
+_DANGLING_PURCHASER_SQL = (
+    "SELECT po.id, po.purchaser_id FROM app.procurement_order po"
+    " WHERE po.purchaser_id IS NOT NULL"
+    "   AND NOT EXISTS (SELECT 1 FROM app.purchaser p WHERE p.id = po.purchaser_id)"
+    "   AND NOT EXISTS (SELECT 1 FROM app.deleted_principal dp"
+    "                   WHERE dp.kind = 'purchaser' AND dp.id = po.purchaser_id)"
+    " ORDER BY po.id"
+)
 
-        0047 删外键后完整性从数据库搬进应用代码：①级无单故无悬空、②级必写墓碑
-        （同事务），故本不变量恒应成立；它抓的是「漏写墓碑 / 绕过删除服务直删」
-        这两类把历史变成认不出数字的路径。
+
+class TestSoftReferenceInvariant:
+    def test_query_catches_bypass_delete_then_clean(self, migrated_db: str) -> None:
+        """§7.1.1(b) 后半（PR #49 审查 N6，判据形状按五轮 C 重做）。
+
+        空库上只断言「结果为空」是空判据（空 ⊆ 空恒绿，五轮 C 实测：注释掉
+        _write_tombstone 它照样绿）。故本用例**先自己造 violation**——绕过删除服务
+        直删一个有单的采购方（migrator 连接，模拟坏路径）——断言查询**抓得到**；
+        清掉后再断言全库干净。前半证「查询有牙齿」，后半才是对现库的不变量。
         """
-        with psycopg.connect(migrated_db) as conn:
-            rows = conn.execute(
-                "SELECT po.id, po.purchaser_id FROM app.procurement_order po"
-                " WHERE po.purchaser_id IS NOT NULL"
-                "   AND NOT EXISTS (SELECT 1 FROM app.purchaser p WHERE p.id = po.purchaser_id)"
-                "   AND NOT EXISTS (SELECT 1 FROM app.deleted_principal dp"
-                "                   WHERE dp.kind = 'purchaser' AND dp.id = po.purchaser_id)"
-                " ORDER BY po.id"
-            ).fetchall()
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                " SELECT id, 'N6违例样本', 'external', 7.2 FROM app.team LIMIT 1 RETURNING id"
+            ).fetchone()[0]
+            po = conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status, purchaser_id,"
+                "  exchange_rate_locked)"
+                " SELECT team_id, 1, 998877, now(), 'backfilled', id, 7.2"
+                " FROM app.purchaser WHERE id = %s RETURNING id",
+                (pid,),
+            ).fetchone()[0]
+            try:
+                # 绕过删除服务直删——不写墓碑，制造悬空引用
+                conn.execute("DELETE FROM app.purchaser WHERE id = %s", (pid,))
+                caught = conn.execute(_DANGLING_PURCHASER_SQL).fetchall()
+                assert (po, pid) in caught, "查询没抓到人为制造的悬空引用——不变量无牙齿"
+            finally:
+                conn.execute("DELETE FROM app.procurement_order WHERE id = %s", (po,))
+            rows = conn.execute(_DANGLING_PURCHASER_SQL).fetchall()
         assert rows == [], (
             f"以下执行单的 purchaser_id 在主表与墓碑都查不到（永久无法解析）：{rows}"
             "——多半是绕过删除服务的直删或墓碑漏写"

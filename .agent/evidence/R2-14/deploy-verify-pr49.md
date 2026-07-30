@@ -264,22 +264,29 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 **判据**：至少一条（那条 `r14b.noop`），其 `actor_label` **= `R14B验证用户乙（已删除）`**。
 
-**⑧-4 采购方删除（§7.1.1(c)+(b)：claimed 单保留原 id + 墓碑可解析出名字）**
+**⑧-4 采购方：执行中拒删 → 终态可删 + 保留原 id + 墓碑解析出名字**
 
 ```powershell
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.procurement_order SET status = 'claimed', exchange_rate_locked = 7.2 WHERE purchase_order_ref = 'R14B0730-PO1';"
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reason=R14B-14b-acceptance-4" -Method Delete -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
+try { Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reason=R14B-14b-acceptance-4a" -Method Delete -Headers @{ Authorization = "Bearer $TOKEN" } } catch { $_.ErrorDetails.Message }
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.procurement_order SET status = 'backfilled' WHERE purchase_order_ref = 'R14B0730-PO1';"
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reason=R14B-14b-acceptance-4b" -Method Delete -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.purchaser WHERE id = <P2>) AS purchaser_left, (SELECT purchaser_id FROM app.procurement_order WHERE purchase_order_ref = 'R14B0730-PO1') AS po_purchaser_id, (SELECT label FROM app.deleted_principal WHERE kind = 'purchaser' AND id = <P2>) AS tombstone_label;"
 (Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/procurement-orders?purchaser_id=<P2>" -Headers @{ Authorization = "Bearer $TOKEN" }).items | Select-Object id, status, purchaser_id, purchaser_label | ConvertTo-Json
 ```
 
-**判据**：删除回包 `level = with_history`、`orders_returned = 0`、`orders_retained = 1`
-（该单已 claimed，汇率已锁——§7.1.1(c) 只退回未锁汇率的 assigned/pending_review 单，
-真机不造那类单，退回分支由 CI 用例覆盖）；`purchaser_left = 0`、
+**判据**：第一次删（claimed，执行中）被拒且报文含 `PURCHASER_DELETE_IN_FLIGHT`
+（在途守卫，审查五轮 A 口径）；第二次（backfilled 终态）回包 `level = with_history`、
+`orders_returned = 0`、`orders_retained = 1`；`purchaser_left = 0`、
 **`po_purchaser_id = <P2> 原值**（不是 NULL——软引用，③级行保留原 id）、
 `tombstone_label = R14B外协丙`；采购单列表该行
 **`purchaser_label = R14B外协丙（已删除）`**（§7.1.1(b) 前半的真机承重——
 墓碑不是只写不读，历史单据解析得出「当时是谁采的」）。
+
+> **退回分支（§7.1.1(c)，未锁汇率单退回池）真机不跑**：需要另造 assigned 态渠道订单链，
+> 而该路径是本 PR 唯一 UPDATE `procurement_order` 的删除支路，由 CI 三条用例覆盖
+> （退回+internal_status 对称回推 / 混合并存整体回滚 / 事实谓词）。**回执里写明
+> 「⑧-4 退回分支未真机执行，CI 覆盖」**（审查五轮 D 的要求）。
 
 **⑧-5 角色删除（判据条件式）**
 

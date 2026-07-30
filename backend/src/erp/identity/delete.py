@@ -284,28 +284,62 @@ async def delete_purchaser(
     target = dict(row)
 
     # §7.1.1(c)（审计侧 2026-07-30 强制条件）：**未锁汇率的在途单先退回池**。
-    # 汇率在领单（claimed）时才锁进 exchange_rate_locked（procurement.py:196，D-Q32）；
-    # assigned / pending_review 的汇率源是 purchaser.exchange_rate——随主体一起消失，
-    # 不退回则删完留下一批永远锁不上汇率的孤单。claimed 及其后汇率已锁，保留
-    # purchaser_id（软引用，0047）供墓碑解析，历史可读。pending_review 现库 CHECK
-    # 词表尚无（随 R2-13 13b 引入），先写进谓词是零成本的向前兼容。
-    returned = [
-        int(r[0])
+    # 判据按事实不按状态名单（审查五轮 B：白名单枚举未来状态是 fail-open）——
+    # 「未锁汇率」= exchange_rate_locked IS NULL（只在 claim/backfill 两处 coalesce
+    # 落锁，procurement.py:199/:224，D-Q32），将来新增的领单前状态自动落进退回侧。
+    # 同时把渠道订单的 internal_status 从 assigned 推回 checked（审查五轮 E：
+    # assign_po 推上去的，退回就对称退回来，否则「已分配」口径多计）。
+    returned_rows = [
+        (int(r[0]), int(r[1]), r[2])
         for r in await session.execute(
             text(
                 "UPDATE app.procurement_order"
                 " SET status = 'unassigned', purchaser_id = NULL, assignee_kind = 'none',"
                 "     assigned_by = NULL, assigned_at = NULL"
-                " WHERE purchaser_id = :p AND status IN ('assigned', 'pending_review')"
-                " RETURNING id"
+                " WHERE purchaser_id = :p AND exchange_rate_locked IS NULL"
+                "   AND status <> ALL (ARRAY['backfilled', 'cancelled'])"
+                " RETURNING id, order_id, order_date"
             ),
             {"p": purchaser_id},
         )
     ]
+    returned = [r[0] for r in returned_rows]
+    for _, oid, od in returned_rows:
+        await session.execute(
+            text(
+                "UPDATE app.channel_order SET internal_status = 'checked'"
+                " WHERE id = :o AND order_date = :d AND internal_status = 'assigned'"
+            ),
+            {"o": oid, "d": od},
+        )
 
-    # 「接过单」= 退回后仍有执行单引用（claimed 及其后 + 终态行）。③级行一行不删、
-    # id 原样保留——这正是墓碑能解析回「当时是谁」的前提（§7.1.1(b)）。
-    # 只被 assigned 单引用过的采购方退回后无任何残留引用 → ①级直删无墓碑，自洽。
+    # 在途守卫（审查五轮 A 补回）：退回后仍非终态的单全部是**已锁汇率的执行中单**
+    # （claimed/purchased/shipped/exception）——删掉执行方会让外部门户的 mine 过滤
+    # 当场失单（D-Q50 身份落点是 purchaser.user_id）、exception 单永久无法重分配。
+    # §7.1.1(c)「claimed 及其后保留 purchaser_id」是 id 保留规则，不是在途可删授权；
+    # 等单走到终态（回填/取消）再删，代价只是等。守卫抛错即整事务回滚，退回一并撤销。
+    in_flight = int(
+        (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM app.procurement_order WHERE purchaser_id = :p"
+                    "   AND status <> ALL (ARRAY['backfilled', 'cancelled'])"
+                ),
+                {"p": purchaser_id},
+            )
+        ).scalar_one()
+    )
+    if in_flight:
+        raise BusinessError(
+            "PURCHASER_DELETE_IN_FLIGHT",
+            "该采购方仍有执行中的采购单（已领单未完结），请等其到终态（回填/取消）后再删除",
+            {"in_flight": in_flight},
+            http_status=409,
+        )
+
+    # 「接过单」= 退回后仍有执行单引用（终态行保留原 id）。③级行一行不删——
+    # 这正是墓碑能解析回「当时是谁」的前提（§7.1.1(b)）。
+    # 只被未锁汇率单引用过的采购方退回后无任何残留引用 → ①级直删无墓碑，自洽。
     retained = int(
         (
             await session.execute(

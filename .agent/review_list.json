@@ -1075,6 +1075,11 @@
     "date": "2026-07-30",
     "kind": "progress",
     "text": "【§7.1.1 三条强制条件对齐（审查四轮 N5/N6/N7）】审计侧 8221203 在 main 落 §7.1.1 确认 0047 外键改软引用并附三条强制条件，本单逐条落地：(a) 同事务墓碑——原实现已满足；(b) 前半——采购单列表接 purchaser_label 两段式解析（主表→墓碑「XX（已删除）」，与 audit-logs 操作人共用 deleted_labels helper；§7.1.1 明令不加 purchaser_name 冗余列），墓碑 label 测试改逐字断言；(b) 后半——test_baseline 新增 TestSoftReferenceInvariant（任何非空 purchaser_id 必须命中主表或墓碑）；(c)——按铁律 1「实现与图纸冲突改代码」把拒删路线改为图纸的退回路线：assigned/pending_review 单退回 unassigned 清空 purchaser_id（汇率未锁）、claimed 及其后保留原 id（汇率已锁），PURCHASER_DELETE_IN_FLIGHT 移除，回执带 orders_returned/orders_retained；契约与前端（OrdersPage 解析优先、PurchasersPage 文案）同步。部署指令 v3：⑧-4 按新语义重写 + ⑤判据按 N8 改具名比对。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【审查五轮 A/B/C/E 落地】A：在途守卫补回——退回未锁汇率单后仍有非终态单（已锁汇率执行中）→ 409 PURCHASER_DELETE_IN_FLIGHT；§7.1.1(c)「claimed 及其后保留 purchaser_id」按 id 保留规则理解，不作在途可删授权（审查点出门户 mine 失单与 exception 死路两个具体后果；若审计侧明文认可在途可删再放开）。B：退回谓词改事实判（exchange_rate_locked IS NULL AND 非终态），fail-open 白名单消除，未来新增领单前状态自动落进退回侧。C：N6 不变量测试重做为有牙齿版——用例内绕过删除服务直删制造悬空引用，断言查询抓得到，清理后再断言全库干净。E：退回时 channel_order.internal_status 对称退回 checked（assign_po 的逆操作），测试内联断言。D：真机⑧-4 恢复两段式（claimed 拒删→backfilled 删+label 解析），退回分支 CI 覆盖并要求回执写明。契约（409 恢复、DELETE 语义按守卫+退回组合重写）、前端弹窗、指令 v4 同步。"
    }
   ]
  },

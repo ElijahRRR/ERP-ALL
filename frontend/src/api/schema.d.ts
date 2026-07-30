@@ -4110,7 +4110,7 @@ export interface paths {
         post?: never;
         /**
          * 硬删除采购方（00-conventions §7.1 + §7.1.1；R2-14 14b）
-         * @description §7.1.1(c)：删除前把该采购方名下 assigned/pending_review 的执行单**退回 unassigned 并清空 purchaser_id**（汇率未锁，源随主体消失）；claimed 及其后的 执行单一行不删、`purchaser_id` 原值保留（软引用），经墓碑解析显示「XX（已删除）」。 退回后仍有引用（接过单）= ②级写 `deleted_principal (kind='purchaser')` 墓碑； 无残留引用 = ①级直删无墓碑。回执带 `orders_returned` / `orders_retained`。
+         * @description §7.1.1(c)：删除前把该采购方名下**未锁汇率**（`exchange_rate_locked IS NULL`）的 非终态执行单**退回 unassigned 并清空 purchaser_id**（汇率源随主体消失），渠道订单 `internal_status` 对称退回 `checked`；退回后仍有**非终态**单（已锁汇率、执行中） → 409 拒删（在途守卫——删掉执行方会让门户失单、exception 单无法重分配）。 终态（backfilled/cancelled）单一行不删、`purchaser_id` 原值保留（软引用）， 经墓碑解析显示「XX（已删除）」。有残留引用 = ②级写墓碑；无 = ①级直删。 回执带 `orders_returned` / `orders_retained`。
          */
         delete: {
             parameters: {
@@ -4137,7 +4137,7 @@ export interface paths {
                 };
                 /** @description PURCHASER_NOT_FOUND */
                 404: components["responses"]["Error"];
-                /** @description （预留）当前无 409 分支——§7.1.1(c) 用退回而非拒删处置在途单 */
+                /** @description PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其到终态再删） */
                 409: components["responses"]["Error"];
             };
         };

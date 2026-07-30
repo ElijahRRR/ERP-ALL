@@ -245,12 +245,13 @@ class TestRoleDelete:
 
 
 class TestPurchaserDelete:
-    def test_claimed_retained_and_label_resolvable(
+    def test_in_flight_refused_then_terminal_retained_and_resolvable(
         self, client: TestClient, seeded: dict, migrated_db: str
     ) -> None:
-        """§7.1.1(c) 后半 + (b) 前半承重：claimed 单（汇率已锁）一行不删、purchaser_id
-        原值保留（软引用），且**能经墓碑解析出名字**——采购单列表返回
-        「外协老李（已删除）」，墓碑 label 逐字断言（label 写错或写空的墓碑不许过）。"""
+        """在途守卫（审查五轮 A）+ §7.1.1(b) 前半承重：claimed（已锁汇率、执行中）
+        拒删——删掉执行方会让门户 mine 过滤失单；到终态（backfilled）后可删，
+        ③级行一行不删、purchaser_id 原值保留，且**能经墓碑解析出名字**——
+        采购单列表返回「外协老李（已删除）」，墓碑 label 逐字断言。"""
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             pid = conn.execute(
                 "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
@@ -268,6 +269,13 @@ class TestPurchaserDelete:
                 "SELECT count(*) FROM app.procurement_order WHERE team_id = %s", (seeded["team"],)
             ).fetchone()[0]
         auth = _login(client, ADMIN, PASSWORD)
+        r0 = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
+        assert r0.status_code == 409
+        assert r0.json()["error"]["code"] == "PURCHASER_DELETE_IN_FLIGHT"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.procurement_order SET status = 'backfilled' WHERE id = %s", (po,)
+            )
         r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
         assert r.status_code == 200, r.text
         body = r.json()
@@ -303,8 +311,9 @@ class TestPurchaserDelete:
     def test_assigned_returned_to_pool_no_tombstone(
         self, client: TestClient, seeded: dict, migrated_db: str
     ) -> None:
-        """§7.1.1(c) 前半承重：assigned 单汇率未锁，删除前退回 unassigned 并清空
-        purchaser_id（行保留，不是删除——验收⑤同时内联）；退回后无残留引用 → ①级
+        """§7.1.1(c) 前半承重：汇率未锁（事实谓词，审查五轮 B）的在途单退回
+        unassigned 并清空 purchaser_id（行保留不是删除——验收⑤内联）；渠道订单
+        internal_status 对称退回 checked（审查五轮 E）；退回后无残留引用 → ①级
         直删无墓碑。"""
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             pid = conn.execute(
@@ -312,12 +321,20 @@ class TestPurchaserDelete:
                 " VALUES (%s, '外协小周', 'external', 7.2) RETURNING id",
                 (seeded["team"],),
             ).fetchone()[0]
+            co = conn.execute(
+                "INSERT INTO app.channel_order (team_id, store_id, channel_order_no,"
+                " order_date, channel_status, internal_status, ship_to, order_total,"
+                " item_count, pulled_at)"
+                " VALUES (%s, 1, 'R14B-CO-1', now(), 'Acknowledged', 'assigned',"
+                " '{}', 10.0, 1, now()) RETURNING id, order_date",
+                (seeded["team"],),
+            ).fetchone()
             po = conn.execute(
                 "INSERT INTO app.procurement_order"
                 " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id,"
                 "  assigned_at)"
-                " VALUES (%s, 1, 990002, now(), 'assigned', 'external', %s, now()) RETURNING id",
-                (seeded["team"], pid),
+                " VALUES (%s, 1, %s, %s, 'assigned', 'external', %s, now()) RETURNING id",
+                (seeded["team"], co[0], co[1], pid),
             ).fetchone()[0]
         auth = _login(client, ADMIN, PASSWORD)
         r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
@@ -332,7 +349,51 @@ class TestPurchaserDelete:
                 (po,),
             ).fetchone()
             assert row == ("unassigned", None, "none", None)
+            # E：assign_po 推上去的 internal_status 对称退回
+            assert conn.execute(
+                "SELECT internal_status FROM app.channel_order WHERE id = %s", (co[0],)
+            ).fetchone() == ("checked",)
             assert _tombstone(conn, "purchaser", pid) is None
+
+    def test_mixed_in_flight_rolls_back_return(
+        self, client: TestClient, seeded: dict, migrated_db: str
+    ) -> None:
+        """对抗性：assigned（未锁）+ claimed（已锁）并存 → 守卫 409，**退回一并回滚**
+        ——assigned 单原封不动（守卫抛错即整事务回滚，不留「退了一半」的中间态）。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                " VALUES (%s, '外协混合', 'external', 7.2) RETURNING id",
+                (seeded["team"],),
+            ).fetchone()[0]
+            po_a = conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id,"
+                "  assigned_at)"
+                " VALUES (%s, 1, 990003, now(), 'assigned', 'external', %s, now()) RETURNING id",
+                (seeded["team"], pid),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id,"
+                "  exchange_rate_locked)"
+                " VALUES (%s, 1, 990004, now(), 'claimed', 'external', %s, 7.2)",
+                (seeded["team"], pid),
+            )
+        auth = _login(client, ADMIN, PASSWORD)
+        r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "PURCHASER_DELETE_IN_FLIGHT"
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT status, purchaser_id FROM app.procurement_order WHERE id = %s", (po_a,)
+            ).fetchone() == ("assigned", pid)
+            assert (
+                conn.execute("SELECT count(*) FROM app.purchaser WHERE id = %s", (pid,)).fetchone()[
+                    0
+                ]
+                == 1
+            )
 
     def test_never_assigned_no_tombstone(
         self, client: TestClient, seeded: dict, migrated_db: str
