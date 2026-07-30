@@ -93,9 +93,11 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 `cookies` 权限与 `updateBuyerCookie`）**依据成立且可以更硬**：收窄不会影响内容脚本注入，
 因为那部分本来就没依赖通配符。
 
-> **但后半句已被 Owner 2026-07-30 裁定覆盖**：`buyer_session` **要启用**（用途=识别买家号），
-> 故 `cookies` 与 `updateBuyerCookie` **保留**。收窄 `host_permissions` 那半句不变，
-> 且因保留 cookies 而**更承重**（见下方「cookie 调用链」补节 ②）。
+> **007 这句最终成立（Owner 2026-07-30 二次裁定：不收 cookie）**：`buyer_session` 不启用，
+> `cookies` 权限与 `updateBuyerCookie` **一并删除**。收窄 `host_permissions` 那半句不变。
+>
+> 中途曾有一次相反的裁定（「要，用途=识别买家号」），**在查清 cookie 实际是什么之后被推翻**
+> ——见 §四 第 3 条与 `owner-rulings-20260730.md` §四的更正。
 
 > 现状风险的具体形状：该扩展可读取**装它的那个浏览器访问过的任何站点**的 cookie——
 > 包括 Walmart 卖家后台与飞书。这台机器同时是运营日常用的浏览器，故这不是理论风险。
@@ -116,7 +118,7 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 | `storage` | **0** | 可删 |
 | `tabs` | **0** | 可删 |
 | `scripting` | **0** | 可删 |
-| `cookies` | 1（`background.js` 的 `chrome.cookies.getAll`） | **保留**（Owner 2026-07-30 裁定：用于识别买家号） |
+| `cookies` | 1（`background.js` 的 `chrome.cookies.getAll`） | **删除**（Owner 2026-07-30 二次裁定：不收 cookie） |
 
 `chrome.runtime`（popup.js 的 `sendMessage`/`lastError`、layer.js 的 `chrome.runtime.id`）
 **不需要声明权限**，故不构成对上表的反例。
@@ -129,13 +131,15 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 > 上表是逐文件取回原文后计数得出的。
 
 → 随 13a 的安全收窄一并处理：删 `storage` / `tabs` / `scripting` 三条 + 收窄
-`host_permissions`。**`cookies` 保留**——Owner 2026-07-30 裁定要用（识别买家号），故
-三条零调用权限照删、收窄照做，但 `cookies` 不动。
+`host_permissions`。**`cookies` 也删**——Owner 2026-07-30 二次裁定不收 cookie，故
+四个权限**全部删除**（前三个零调用、`cookies` 随 `updateBuyerCookie` 一并去掉），收窄照做。
+
+> 即 fork 后 `permissions` 应为空数组：`chrome.runtime` 不需要声明，而其余四条已无消费点。
 
 > **删 `storage` 会不会让它没地方存东西？不会**：状态存在 `localStorage`（popup.js 里 4 处），
 > 而 `chrome.storage` 零处。`localStorage` 不需要该权限，故那条是真闲置，删掉零影响。
 
-#### 补：cookie 调用链——收窄 `host_permissions` 与保留 `cookies` **相容**，且收窄是承重的
+#### 补：cookie 调用链——**该能力已裁定删除**，本节保留为「删之前它是什么」的取证
 
 （PR #47 审查侧第二轮提出前两条，本轮复算确认并补上第三条。三条都是给 13a 的。）
 
@@ -146,8 +150,11 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 ——**调用方自己所在页面的 URL**。故实际读到的只有 amazon 自己的 cookie。
 
 **即：把 `host_permissions` 收窄到 amazon 三站是零行为变更**，不会打断 `buyer_session`
-那条路径——而 Owner 2026-07-30 已裁定**保留**它，故这条相容性正是必需的前提，
-不再是「若保留则……」的假设。收窄因此是个不需要回归测试的改动。
+那条路径。
+
+> **但该路径最终不启用**（Owner 二次裁定不收 cookie），故这条相容性结论**已无适用对象**
+> ——`cookies` 权限连同 `updateBuyerCookie` 整条删掉，比收窄更彻底。本节其余内容
+> （尤其 ② 的未校验 `sender`）保留为取证：**它正是「为什么删掉比留着收窄更好」的理由**。
 
 **② 但正因如此，收窄是承重的，不是清洁工作。**
 
@@ -156,7 +163,11 @@ token」，**这一条调用会静默丢掉认证头 → 401，而它恰好是�
 （或注入面变化），它就是一个「任意域读 cookie」的原语，而**唯一还兜着它的就是
 `host_permissions`**。
 
-→ 13a 顺手把 `sender` 校验也加上：两道边界比一道稳，成本是一行。
+→ **原建议**：13a 顺手加 `sender` 校验（两道边界比一道稳，成本一行）。
+> **已作废，因为整条路径被删掉了**：Owner 二次裁定不收 cookie ⇒ `updateBuyerCookie`、
+> `getCookiesAsJson()`、`background.js` 的 `onMessage` 监听器与 `cookies` 权限全部删除。
+> **没有读 cookie 的原语，就不需要给它加边界**——删掉是比「加校验 + 收窄」更强的处置。
+> 13a 的实际动作因此从「加一行校验」变成「删掉一个 service worker」。
 
 **③ 而「约束在调用方」比 ② 说的还要散——`popup.js` 有两个执行上下文。**
 
@@ -238,8 +249,7 @@ if (!country) { ...; return }              // ← 非 amazon 域返回 null，�
 **安全项随 13a 强制**：收窄 `host_permissions`（**零行为变更，且它同时是那个未校验
 `sender` 的读 cookie 原语的边界**）、**删掉 `storage`/`tabs`/`scripting` 三条零调用权限**、
 **给 `chrome.runtime.onMessage` 加 `sender` 校验**（成本一行，见 §〇③ 补）、
-**保留 `cookies` 权限与 `updateBuyerCookie`**（Owner 2026-07-30 裁定；细节待其本地分析
-结果，在此之前 13a 不动 cookie 相关代码）、
+**删除 `cookies` 权限与 `updateBuyerCookie`**（Owner 2026-07-30 二次裁定：不收 cookie）、
 ERP 不可达时插件 **fail-closed 不自行采购**。
 
 ---
@@ -272,7 +282,7 @@ ERP 不可达时插件 **fail-closed 不自行采购**。
 |---|---|---|
 | 1 | 两个路径前缀 | **把插件改成一组**（推翻本文原推荐的「ERP 两组都实现」）。→ 下游后果：**13e 的回切方式必须写成「换回厂商原版插件」而非「改 baseUrl」**，因 fork 版路径已与厂商后端不一致 |
 | 2 | gate 口径 | **接受**「13a/13b/13d 先行，auto 档锁在 13c 交付并验收之后」 |
-| 3 | `buyer_session` / cookies | **要，保留**（推翻本文原推荐的「删掉」）。用途限定为**识别买家号**；**细节待 Owner 的本地分析结果，在此之前 13a 不动 cookie 相关代码**。三条零调用权限该删照删、`host_permissions` 收窄照做、`sender` 校验**因保留 cookies 而更必要** |
+| 3 | `buyer_session` / cookies | **不收，删掉 `cookies` 权限与 `updateBuyerCookie`**（同日两次裁定：先「要」后「不要」，反转原因见下）。四个权限全删、`host_permissions` 收窄照做；**`sender` 校验随 `onMessage` 监听器一并删除即失去对象**——没有读 cookie 的原语就不需要给它加边界 |
 | 4 | `daily_cap` 权威方 | **账号列唯一权威；自动化策略不配这个值**——`automation_policy.config.daily_cap` **取消**，不进护栏键清单。→ **13c 护栏从三键降为两键**（`amount_ceiling` + `price_delta_pct`） |
 
 > **本文提的三个 `daily_cap` 口径（列为权威 / 护栏为权威 / 取较小值）均未被采纳**，
