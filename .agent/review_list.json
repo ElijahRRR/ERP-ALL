@@ -1164,6 +1164,21 @@
   "last_checked_at": "2026-07-29"
  },
  {
+  "id": "FX-0730",
+  "priority": "P1",
+  "dimension": "correctness",
+  "status": "todo",
+  "check": "item_pull 无 offset 上限判断，单状态超 9800 条时静默截断：max_pages=100 × page_limit=200 = 20000，而 Walmart /v3/items 的 offset 上限是 9800（旧仓 erp-core store_sync.py 实测并硬编码 OFFSET_CAP=9800，超了显式报 error）。现役循环终止条件是「本页 < limit 或 offset ≥ totalItems」——越过 9800 后渠道侧返空即触发终止，代码会**误以为整店扫完**",
+  "evidence": [
+   "backend/src/erp/listing/item_pull.py",
+   "specs/007-mvp-completion-plan/README.md"
+  ],
+  "gate": "独立于 R2-16，宜先修——R2-16 的 sku_mapping 落表建立在 item_pull 的扫描结果之上，扫不全则补挂也不全",
+  "acceptance": "①构造单状态结果集超过 9800 的用例，扫描须**显式报错或告警**，不得当作扫完静默返回；②该情形下 gone_remote **不得**把未扫到的部分计入（现实现会把超出 9800 的本地在架 listing 全算成「渠道全扫不见」）；③修复后 stats 中能区分「扫完」与「扫到上限被截断」两种终止原因",
+  "finding": "【R2-16 考古旧仓 erp-core 时顺带查出，2026-07-30】旧仓 store_sync.py 有 `OFFSET_CAP = 9800` 且超限时 `errors.append(f'[{round_key}] reached offset cap')` 显式记账；现役 item_pull 无此判断。影响是**静默的**：终止条件 `len(items) < page_limit` 在越过上限后同样成立，于是一个 SKU 数超 9800 的店铺会被当作扫完，missing_local 漏算、gone_remote 虚高。分状态扫描（每个 publishedStatus 独立 offset 序列）已天然缓解——须单个状态自身超 9800 才触发，故当前店铺规模下大概率未暴露，属定时炸弹而非现症",
+  "last_checked_at": "2026-07-30"
+ },
+ {
   "id": "RS-12",
   "priority": "P1",
   "dimension": "architecture",
