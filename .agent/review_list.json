@@ -1107,6 +1107,22 @@
   ]
  },
  {
+  "id": "R2-16",
+  "priority": "P0",
+  "dimension": "product",
+  "status": "todo",
+  "check": "存量接管——后台在线产品补挂（Owner 2026-07-30 指出「拉取后台全部在线产品的功能没有」）：item_pull 已能全量扫出「后台有本地无」（A152 实测 45 条）但只发现不入库、不落表、无页面，新系统因此只能管新上架的品，存量在线 SKU 整体在 ERP 之外。本单把 missing_local 从一个计数变成可操作对象：落表 + 页面可见 + 建产品与 listing 的补挂通道。口径见 007",
+  "evidence": [
+   "backend/src/erp/listing/item_pull.py",
+   "specs/007-mvp-completion-plan/README.md",
+   "specs/001-domain-model/06-listing-pricing.md"
+  ],
+  "gate": "待 Owner 定是否进 MVP。判断依据：ERP-ALL 是来替代 erpAPI 的，不做补挂则审核/改价/下架/订单回连对存量 SKU 全部够不着",
+  "acceptance": "①item_pull 跑完后 missing_local 每一条在库里有行（不是 stats 里截断到 50 的样例），带 store_id/channel_sku/首见时间/最近一次仍缺时间；②页面能看到「后台有本地无」清单并可按店铺筛，条数与 sync_state.stats.missing_local 对得上；③channel_sku 形如 ASIN 的条目可发起补挂：**走现役 scrape 链路**建 product（不新造拉取侧采集通道），成功后建 listing，channel_sku 保持后台原值不得改写（Walmart SKU 不可改）；④不得造半基线行——product 建档失败则整条不落，listing.product_id 恒非空；⑤channel_sku 不是 ASIN 的条目（存量 M 号/手工编码）显式标为「不可自动补挂」并给出原因，不得静默跳过；⑥补挂后重跑 item_pull，该 SKU 不再计入 missing_local（幂等，重跑零新增）；⑦**与 R2-14 墓碑共闸**：deleted_product 有墓碑的 ASIN 不得经补挂回流，且该判据要在补挂路径上单独测（不得只靠 scrape 侧那道）",
+  "finding": "【Owner 2026-07-30「拉取后台全部在线产品的功能没有」——审计核实：拉取有，落地没有】item_pull（R2-12 增量4a，PR #33）确为全量：按 publishedStatus 逐态扫、offset 翻页、跨页去重（nextCursor 恒定不可用于翻页），A152 真店跑通、missing_local=45 为真实发现。但三类差异按 P0-2 拍板「只发现不执行」，「后台有本地无」这一类的全部落点只有 sync_state.stats.missing_local 计数 + missing_sample 前 50 条 + 通知正文前 10 条 SKU——**既不落表也无页面，超 50 条即丢**；故 Owner 在他能操作到的层面说「没有」完全成立。当时不做的理由（listing.product_id NOT NULL、拉取侧无产品链路、不造半基线行）成立，但那是「本轮不做」不是「不用做」，**且未立后继单**。两条实现前提：①存量 SKU 99% 即 ASIN，与 R2-15 的 channel_sku=ASIN 同形，补挂可复用现役 scrape 链路而非新造通道；②item_pull 的 remote 字典只留 published_status/lifecycle/reasons，ItemResponse 的 wpid/gtin/price/productName 全丢，补挂需回取或扩采。缺单成因同 R2-13/R2-14：对账属横切能力，队列按模块切分时无人认领。",
+  "last_checked_at": "2026-07-30"
+ },
+ {
   "id": "FX-0729",
   "priority": "P2",
   "dimension": "product",
