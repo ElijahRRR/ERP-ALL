@@ -287,10 +287,15 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 ### ⑥-0 先清掉上一轮的残留（**每轮都要跑，哪怕你确信是第一轮**）
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.feed_item WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing_spec WHERE product_id IN (SELECT id FROM app.product WHERE source_ref LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
 ```
 
-**判据**：整段成功（贴回四个 `DELETE n`，n 可以是 0）。
+**判据**：整段成功（贴回六个 `DELETE n`，n 可以是 0）。
+
+> v6 起从四条扩成六条：⑪的 submit 会给产品缓存 `listing_spec` 模板行
+> （`product_id` 带 FK，不删则产品删除被挡——真机⑫实撞），并写 `feed_item`
+> 行（分区表无 FK，删 listing 不会连带清它）。两条新 DELETE 都按
+> `B0R215V` 模式圈定，跑过⑪之前它们恒为 `DELETE 0`。
 
 > **为什么每轮都要跑**：本指令若在中途某步停机，下一轮重跑时⑥-1 的 INSERT 会撞
 > `uq_product`，**整段回滚，于是你会停在本轮内容之前**。
@@ -568,11 +573,23 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 ## ⑫ 迁移可逆性演练（在测试数据清完之后做）
 
-先清测试数据（与⑥-0 逐字相同的四条）：
+先清测试数据（与⑥-0 逐字相同的六条——v6 起含 `feed_item` 与 `listing_spec`，
+后者正是真机⑫首跑被 `listing_spec_product_id_fkey` 挡下的原因，本单第 7 条指令缺陷）：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.feed_item WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing_spec WHERE product_id IN (SELECT id FROM app.product WHERE source_ref LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
 ```
+
+再清⑪留下的 feed 行（`<FEED_ID>` 填 A-5 回包里的 `feed_id`；`channel_feed_id IS NULL`
+是保险杠——真发过的 feed 该值非空，id 抄错也删不动它）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "DELETE FROM app.feed WHERE id = <FEED_ID> AND channel_feed_id IS NULL;"
+```
+
+**判据**：六条 `DELETE n` + feed 行 `DELETE 1`（若本轮没跑⑪则为 `DELETE 0`）。
+`channel_command` 里⑪那行**保留不删**——它是 dry-run 快照的库内证据，
+`object_id` 是软引用无 FK，不产生悬挂约束。**beat 保持 stopped 直到⑬起回**。
 
 ```powershell
 docker compose -f infra/docker-compose.yml run --rm migrate alembic downgrade 0041
