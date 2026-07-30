@@ -204,7 +204,16 @@ required_count / required_fields。**L1 候选必须 INNER JOIN pt_meta 过滤�
 索引：`(product_id, status)`。
 **占位声明**：1688 API 接入（R3+）后本表将扩列（供应商 ID/SKU 映射/起订量/时效），当前只承载「有货源才上架」闸门（D-Q25）与人工录入；旧 Excel 不导入（D-Q41 不可信）。
 
-## sku_mapping 渠道 SKU 映射（存量桥）
+## sku_mapping 渠道 SKU 映射（存量桥）—— ⚠️ **图纸态，代码未实现（2026-07-29 核实）**
+
+> **实现现状**：本表在 `backend/alembic/versions/` 与 `backend/src/erp/` 中**零命中**。
+> **订单回连的现役实现**是 `order/pull.py` 直接以 `(store_id, channel_sku)` 查 `listing`
+> 取 `listing_id`/`product_id`，不经本表。**该路径的失败是静默的**：子查询落空返回 NULL
+> 而 INSERT 仍成功，订单就此失去产品关联，下游仅由订单四检 `price_limit` 以
+> `source_missing` 间接暴露。
+> **处置**：本表保留为设计意图，**不作为任何工单的验收对象**；若将来确需（如多渠道
+> 或 channel_sku 与 listing 解耦），另行立单并同步本节。涉及订单回连的判据一律按
+> 现役 listing 直查路径书写。
 
 | 列 | 类型 | 约束/默认 | 说明 |
 |---|---|---|---|

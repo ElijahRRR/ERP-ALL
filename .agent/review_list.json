@@ -1063,9 +1063,16 @@
    "specs/001-domain-model/06-listing-pricing.md"
   ],
   "gate": "无闸门；改动小但影响此后每一个新上架，且截断缺陷属定时炸弹，建议插在下一个上架相关增量前做掉",
-  "acceptance": "①新上架产品的 channel_sku 等于其 ASIN，Walmart 侧与 99% 存量编码统一；②同店重复上架同 ASIN 自动取 -2/-3 后缀且不撞唯一约束；③跨店同 ASIN 各自上架互不冲突；④master_sku 生成在序号超 999,999,999 时**自动变长不截断**（测试直接断言，不得只测小序号）；⑤既有 listing 的 channel_sku 一律不动(Walmart SKU 不可改)；⑥sku_mapping 回连订单/结算在两种编码下均可用",
+  "acceptance": "①新上架产品的 channel_sku 等于其 ASIN，Walmart 侧与 99% 存量编码统一；②同店重复上架同 ASIN 自动取 -2/-3 后缀且不撞唯一约束；③跨店同 ASIN 各自上架互不冲突；④master_sku 生成在序号超 999,999,999 时**自动变长不截断**（测试直接断言，不得只测小序号）；⑤既有 listing 的 channel_sku 一律不动(Walmart SKU 不可改)；⑥**订单回连按现役实现验，不验图纸表**：真实路径是 order/pull.py 用 (store_id, channel_sku) 直查 listing 取 listing_id/product_id（sku_mapping 仅存在于图纸，代码从未建，本单不要求建）。判据：拉取一张**改造前编码(M号)**的订单与一张**改造后编码(ASIN)**的订单，两者 order_line.listing_id 与 product_id 均正确回连非空；⑦**回连失败不得静默**：现实现中两个子查询落空时返回 NULL 而 INSERT 仍成功，订单静默失去产品关联（下游仅由四检 price_limit 以 source_missing 间接暴露）。两套编码并存期该风险升高，须给出显式信号（回连失败计数/告警或落 order_line 标记），并以「构造一个查不到 listing 的订单行」测试证伪",
   "finding": "【Owner 2026-07-29 指出 SKU 长度不足 + 在线产品 99% 已用 ASIN】审计核实两点：①**截断撞号缺陷**——现生成式 'M'||lpad(nextval::text,7,'0')，PostgreSQL lpad 在串长超出时从右截断，序号达 1000 万时 lpad('10000000',7,'0')='1000000' 与第 100 万号相同，master_sku 唯一约束报错、产品入库整体停摆(硬停非劣化)；②**channel_sku 本就是独立列**(listing.channel_sku)，现仅由 listing/service.py:393 一行 \"channel_sku\": product[\"master_sku\"] 绑死，拆开成本极小。防关联论据因存量 99% 已暴露而基本作废；保留 master_sku 是因 Walmart SKU 不可改，内外绑死则单向门锁住整个身份体系",
-  "last_checked_at": "2026-07-29"
+  "last_checked_at": "2026-07-29",
+  "updates": [
+   {
+    "date": "2026-07-29",
+    "kind": "correction",
+    "text": "【判据⑥写错——开发侧批注核实属实，审计侧自身失误】我原判据⑥要求「sku_mapping 表在两种编码下都能把订单接回来」，但实测 sku_mapping 在 backend/alembic/versions 与 backend/src/erp 中**零命中——纯图纸表，代码从未建**；订单回连的现役实现在 order/pull.py:172-175，直接 `SELECT l.id/l.product_id FROM app.listing l WHERE l.store_id=:store AND l.channel_sku=:sku`。**即我写了一条去验不存在之物的判据，而真正有风险的活路径没写。**更要紧的是该路径的失败是静默的：子查询落空返回 NULL 而 INSERT 仍成功，订单就此失去产品关联，下游只有四检 price_limit 以 source_missing 间接暴露——而 R2-15 之后库中将同时存在 M 号与 ASIN 两套编码，静默失联概率上升。判据已改为按现役实现验（两种编码各拉一单验回连非空）并新增⑦要求回连失败可见。**成因与改进**：我写判据时引用图纸而未核实实现是否存在——今日第二次同类失误（前一次是 R2-12 判据②把「测试通过」当「真实数据跑通」）。此后写验收判据前，逐条先确认「该对象在代码里存在吗、这条路现在是怎么跑的」。"
+   }
+  ]
  },
  {
   "id": "FX-0729",
