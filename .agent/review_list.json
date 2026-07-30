@@ -1077,7 +1077,7 @@
   "id": "R2-15",
   "priority": "P0",
   "dimension": "product",
-  "status": "todo",
+  "status": "in_progress",
   "check": "SKU 内外分离(D-Q72,修订D1)：listing.channel_sku 在 source_channel='amazon' 时取 ASIN(同店冲突加 -N 后缀,唯一约束仍为 (store_id,channel_sku) 故跨店同 ASIN 不冲突)；master_sku 保留为内部身份不再默认发渠道；master_sku 生成式由 'M'||lpad(...,7,'0') 改 'M'||to_char(...,'FM000000000') 修截断撞号缺陷",
   "evidence": [
    "specs/000-founding/DECISION-FORM.md",
@@ -1087,12 +1087,22 @@
   "gate": "无闸门；改动小但影响此后每一个新上架，且截断缺陷属定时炸弹，建议插在下一个上架相关增量前做掉",
   "acceptance": "①新上架产品的 channel_sku 等于其 ASIN，Walmart 侧与 99% 存量编码统一；②同店重复上架同 ASIN 自动取 -2/-3 后缀且不撞唯一约束；③跨店同 ASIN 各自上架互不冲突；④master_sku 生成在序号超 999,999,999 时**自动变长不截断**（测试直接断言，不得只测小序号）；⑤既有 listing 的 channel_sku 一律不动(Walmart SKU 不可改)；⑥**订单回连按现役实现验，不验图纸表**：真实路径是 order/pull.py 用 (store_id, channel_sku) 直查 listing 取 listing_id/product_id（sku_mapping 仅存在于图纸，代码从未建，本单不要求建）。判据：拉取一张**改造前编码(M号)**的订单与一张**改造后编码(ASIN)**的订单，两者 order_line.listing_id 与 product_id 均正确回连非空；⑦**回连失败不得静默**：现实现中两个子查询落空时返回 NULL 而 INSERT 仍成功，订单静默失去产品关联（下游仅由四检 price_limit 以 source_missing 间接暴露）。两套编码并存期该风险升高，须给出显式信号（回连失败计数/告警或落 order_line 标记），并以「构造一个查不到 listing 的订单行」测试证伪",
   "finding": "【Owner 2026-07-29 指出 SKU 长度不足 + 在线产品 99% 已用 ASIN】审计核实两点：①**截断撞号缺陷**——现生成式 'M'||lpad(nextval::text,7,'0')，PostgreSQL lpad 在串长超出时从右截断，序号达 1000 万时 lpad('10000000',7,'0')='1000000' 与第 100 万号相同，master_sku 唯一约束报错、产品入库整体停摆(硬停非劣化)；②**channel_sku 本就是独立列**(listing.channel_sku)，现仅由 listing/service.py:393 一行 \"channel_sku\": product[\"master_sku\"] 绑死，拆开成本极小。防关联论据因存量 99% 已暴露而基本作废；保留 master_sku 是因 Walmart SKU 不可改，内外绑死则单向门锁住整个身份体系",
-  "last_checked_at": "2026-07-29",
+  "last_checked_at": "2026-07-30",
   "updates": [
    {
     "date": "2026-07-29",
     "kind": "correction",
     "text": "【判据⑥写错——开发侧批注核实属实，审计侧自身失误】我原判据⑥要求「sku_mapping 表在两种编码下都能把订单接回来」，但实测 sku_mapping 在 backend/alembic/versions 与 backend/src/erp 中**零命中——纯图纸表，代码从未建**；订单回连的现役实现在 order/pull.py:172-175，直接 `SELECT l.id/l.product_id FROM app.listing l WHERE l.store_id=:store AND l.channel_sku=:sku`。**即我写了一条去验不存在之物的判据，而真正有风险的活路径没写。**更要紧的是该路径的失败是静默的：子查询落空返回 NULL 而 INSERT 仍成功，订单就此失去产品关联，下游只有四检 price_limit 以 source_missing 间接暴露——而 R2-15 之后库中将同时存在 M 号与 ASIN 两套编码，静默失联概率上升。判据已改为按现役实现验（两种编码各拉一单验回连非空）并新增⑦要求回连失败可见。**成因与改进**：我写判据时引用图纸而未核实实现是否存在——今日第二次同类失误（前一次是 R2-12 判据②把「测试通过」当「真实数据跑通」）。此后写验收判据前，逐条先确认「该对象在代码里存在吗、这条路现在是怎么跑的」。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "landed",
+    "text": "【实现完码，闸序中】迁移 0042（master_sku 生成式改 app.next_master_sku() PL/pgSQL 函数：不足 9 位左填零、超出原样输出，**无上界**；只 SET DEFAULT 不动存量）+ listing/service.py（product SELECT 补 source_channel/source_ref；新增 _channel_sku_base 取 ASIN 并对非 amazon 显式回落 master_sku；新增 _insert_listing_with_sku 做后缀分配——**扫全状态**且靠 uq_listing 裁决后退格重试，不做先查后插的乐观假设；回显改取 INSERT...RETURNING channel_sku 的实际写入值）+ order/pull.py（判据⑦：order_line INSERT 加 RETURNING listing_id，落空则计数+结构化日志+warn 通知，计数经 unlinked_lines 落进店级 stats 与 sync_state；并给 ON CONFLICT 补 listing_id/product_id = coalesce(旧,新) 只填空不覆盖的自愈，否则告警是死信）。\n\n**踩点时两处提议被实测推翻，已改**：①锚点不是 D-Q72/工单写的 :393（那只是响应回显）而是 INSERT 参数，两处必须同源否则存储与回报静默分叉；②原提议用 to_char(nextval,'FM000000000')——PG16 实测溢出时返回 '#########' 而非变长，**不满足判据④**，故改用 PL/pgSQL 显式分支（纯 SQL 函数体带 FROM 有被内联从而两次调 nextval 的风险，不用）。lpad 撞号也已实测复现：lpad(1e7,7,'0')==lpad(1e6,7,'0')。\n\n**踩点文另一处错已在测试注释里更正**：跨店同 ASIN 不是「去重放行（店铺维度不同）」——团内去重 SQL 按 (product_id, team_id) 判、无 store_id 条件，故跨店需 dedup_exempt （D-Q31 店铺豁免）才走得通，判据③ 的用例据此构造。\n\n测试：tests/db/test_r2_15_sku_split.py 九条覆盖①–⑦ + 非 amazon 回落 + 重拉自愈；判据④ 直接把序列推到 999,999,998 / 999,999,999 / 99,999,999,999 各取一次并断言无 '#'、位数递增（判据明写不得只测小序号）。两条既有测试的旧口径断言已更新：test_listing_api 的 channel_sku.startswith('M')（被 D-Q72 推翻）、test_scrape_api 的 len(master_sku)==8（写死旧格式长度，改为断言不变量）。本机 PG16 全量 pytest 绿。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【第三闸 PASS（PR #48 真机最终回执，锚点 HEAD=3fe960f）】①-⑬全过（⑨⑩按判据条件跳过）：判据①③⑤真机成立（channel_sku=ASIN 且库=API 回显；-2/-3 后缀；存量 67 行指纹前后逐字不变）；判据④真机 probe=M000002487（M+9 位）；⑪渠道写路径 dry-run 证据经 Owner 授权受控窗口取得——载荷 SKU=B0R215V001-3（ASIN 形态）、master_sku 0 次出现、MP_ITEM_MATCH v4.2，与云端沙箱同代码路径替证互证一致（channel_command id=16 留库为证）；⑫ 0042→0041→0042 可逆性演练全过。真机验证 5 次停机揪出 7 条缺陷全部在部署指令侧（compose 服务名/路径、PowerShell 引号拆参、验收账号权限、网关档位授权、match 缺 UPC、清理缺 listing_spec），产品代码零缺陷；指令迭代至 v7 并新增第 4 个检查器 psquotecheck。审查侧 N4（uq_listing 兜底前缀误匹配）已修码，N6（order_line 清理预期值判据）已入指令 v7；剩余闸：Owner 授权合并。"
    }
   ]
  },

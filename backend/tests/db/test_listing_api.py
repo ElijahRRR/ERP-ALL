@@ -213,7 +213,10 @@ class TestAllocate:
         assert len(body["created"]) == 2
         assert all(c["gtin"] and len(c["gtin"]) == 13 for c in body["created"])
         assert all(c["current_price"] == 19.99 for c in body["created"])
-        assert all(c["channel_sku"].startswith("M") for c in body["created"])
+        # R2-15 判据①（D-Q72）：channel_sku 等于产品 ASIN，不再是 master_sku。
+        # 本断言原为 `.startswith("M")`——那正是被 D-Q72 推翻的旧口径
+        # （对外发 M 号，与已在线的 99% ASIN 编码对不上）。
+        assert {c["channel_sku"] for c in body["created"]} == {"B0LIST0001", "B0LIST0002"}
         assert body["rejected"][0]["code"] == "PRODUCT_NOT_READY"
 
         # 同 product 再分配 → 团队内去重拒绝
