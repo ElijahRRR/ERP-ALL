@@ -21,6 +21,21 @@
 > > **部署机停得对，而且停得干净**：它没有自行把 `backend→api`、`worker→scraper`，
 > > 也没有自行补 `-f`——**那正是「指令写错即停」该有的样子**。若它猜着改了，这三处缺陷
 > > 就会被掩盖，下一次换人执行还会撞。#46 那七次停机的价值也在这里。
+>
+> > 〔**v3 修订，2026-07-30，起因是部署机在⑥-1 停机——缺陷仍在指令自身**〕
+> >
+> > v2 的⑥-1 把 JSON 字面量（`'{\"wpt\":...}'::jsonb`）塞进 PowerShell 双引号字符串，
+> > 用 `\"` 转义内层双引号。**PowerShell 的转义字符是反引号（`` ` ``），不是反斜杠**——
+> > 内层 `"` 直接终止了参数，psql 收到的是碎块（实测报
+> > `extra command-line argument ... ignored` + `syntax error at end of input`）。
+> >
+> > **修法不是换转义，而是让双引号根本不出现**：改用 `jsonb_build_object` /
+> > `jsonb_build_array` 构造 JSON——整条 SQL 只含单引号，PowerShell 双引号字符串
+> > 原样透传，无转义可言。顺手消掉 `<TEAM_ID>` 手抄占位符：team_id 直接从
+> > `$STORE_A` 那行 store 里 SELECT 出来，少一处抄错的机会。
+> > 新写法已在沙箱干净库全程实跑通过（`INSERT 0 3`，三行 `master_sku` 均为 M+9 位）。
+> > 全文同类扫描（PowerShell 双引号串内含 `\"`）：仅⑥-1 这一处，其余命令行要么无内层
+> > 引号、要么引号全为单引号。
 
 ## 铁律（本次全程有效）
 
@@ -240,8 +255,8 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 **判据（承重）**：两个 fingerprint 与①**逐字相同**，`product_rows` / `listing_rows` 也相同。
 
-> **v2 补：①已在 2026-07-30 由部署机实测，基线值记录在此**——若本轮①未重跑（例如从③继续），
-> 直接与下表对拍即可；若①重跑过则以本轮①的输出为准。
+> **v2 补：①已在 2026-07-30 由部署机实测，基线值记录在此**——若本轮①未重跑
+> （例如本轮是从中途某步续跑的），直接与下表对拍即可；若①重跑过则以本轮①的输出为准。
 >
 > ```
 > product_rows = 67   distinct_sku = 67   min_len = 8   max_len = 8
@@ -292,11 +307,17 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 若还有第二个 `is_test = true` 且 `dedup_exempt = true` 的店，记作 `$STORE_B`（⑨要用）；
 **没有第二个就跳过⑨并在回帖说明**——不要为此新建店铺。
 
-造产品（**把 `<TEAM_ID>` 换成 `$STORE_A` 所属的 team_id，`<STORE_A>` 换成实际 id**）：
+造产品（**只需把 `<STORE_A>` 换成测试店实际 id**；team_id 由 SQL 自己从该店取，
+不用你抄。`-c` 后包住整条 SQL 的那对双引号是本命令**仅有的**双引号——
+**SQL 载荷内只有单引号，不含任何 `\"`**。若你拿到的版本载荷里有 `\"`，
+那是已修掉的 v2 旧版，停下来问）：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.product (team_id, source_channel, source_ref, title, attrs, price_snapshot, status) VALUES (<TEAM_ID>, 'amazon', 'B0R215V001', 'R2-15 验证品一', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed'), (<TEAM_ID>, 'amazon', 'B0R215V002', 'R2-15 验证品二', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed'), (<TEAM_ID>, '1688', 'B0R215V003', 'R2-15 非amazon货源', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed');"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.product (team_id, source_channel, source_ref, title, attrs, price_snapshot, status) SELECT s.team_id, v.chan, v.ref, v.title, jsonb_build_object('wpt','Drinkware','bullets',jsonb_build_array('x'),'description','y'), jsonb_build_object('list',19.99), 'audit_passed' FROM app.store s, (VALUES ('amazon','B0R215V001','R2-15 验证品一'), ('amazon','B0R215V002','R2-15 验证品二'), ('1688','B0R215V003','R2-15 非amazon货源')) AS v(chan, ref, title) WHERE s.id = <STORE_A>;"
 ```
+
+**判据**：`INSERT 0 3`。若是 `INSERT 0 0`，说明 `<STORE_A>` 填错（WHERE 没匹配到店），
+**不要**改成不带 WHERE 的写法硬插——回⑥-1 开头重新确认店 id。
 
 ```powershell
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, source_channel, source_ref, master_sku, length(master_sku) AS len FROM app.product WHERE source_ref LIKE 'B0R215V%' ORDER BY source_ref;"
