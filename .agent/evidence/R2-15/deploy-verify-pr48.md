@@ -5,6 +5,22 @@
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**。
 > **本指令不把任何具体 sha 写成判据**——判据是「你在分支尖端」+「迁移清单只多 0042」，见②。
 > 你只需**把实际 sha 记进回执**。（#46 v1 把 sha 写死当判据，第①步就必然停机。）
+>
+> > 〔**v2 修订，2026-07-30，起因是部署机在第③步停机——三处缺陷全在指令自身**〕
+> >
+> > 1. **compose 服务名是我凭空写的**：v1 写 `build backend frontend worker beat` /
+> >    `up -d backend worker beat frontend`，而本仓实际服务是
+> >    `db` / `redis` / `migrate` / `api` / `beat` / `scraper` / `frontend`——
+> >    **根本没有 `backend`，也没有 `worker`**。
+> > 2. **compose 文件不在仓库根**：它在 `infra/docker-compose.yml`，而 v1 所有命令都是
+> >    裸 `docker compose`，在仓库根执行必然 `no configuration file provided: not found`。
+> >    v2 起**每条命令都写死 `-f infra/docker-compose.yml`**（不用 `$env:COMPOSE_FILE`
+> >    也不用变量——零状态，会话重启也不会失效）。
+> > 3. 路径写的是 `C:\ERP-ALL`，实际是 `D:\项目文件\ERP-ALL`。
+> >
+> > **部署机停得对，而且停得干净**：它没有自行把 `backend→api`、`worker→scraper`，
+> > 也没有自行补 `-f`——**那正是「指令写错即停」该有的样子**。若它猜着改了，这三处缺陷
+> > 就会被掩盖，下一次换人执行还会撞。#46 那七次停机的价值也在这里。
 
 ## 铁律（本次全程有效）
 
@@ -46,7 +62,7 @@ master_sku 直接跳到 10 位**——序号按 D1「终身不变不回收」，
 那次动作的下游。）本快照在⑤与①对拍。
 
 ```powershell
-cd C:\ERP-ALL          # 若路径不同请以实际为准，并在回帖里说明
+cd 'D:\项目文件\ERP-ALL'   # 本机实际路径（部署机 2026-07-30 回帖确认）；若不同以实际为准
 git fetch origin
 git log --oneline -1 origin/main
 
@@ -60,21 +76,21 @@ $COLLIDING = @($UNTRACKED_PATHS | Where-Object { $BRANCH_FILES -contains $_.Trim
 "tracked_dirty = $($TRACKED_DIRTY.Count)   (必须 0)"
 $TRACKED_DIRTY
 "colliding     = $($COLLIDING -join ', ')   (必须为空)"
-docker compose ps
+docker compose -f infra/docker-compose.yml ps
 ```
 
 取快照（**纯读**）：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS product_rows, count(DISTINCT master_sku) AS distinct_sku, min(length(master_sku)) AS min_len, max(length(master_sku)) AS max_len, md5(string_agg(id || ':' || master_sku, ',' ORDER BY id)) AS sku_fingerprint FROM app.product;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS product_rows, count(DISTINCT master_sku) AS distinct_sku, min(length(master_sku)) AS min_len, max(length(master_sku)) AS max_len, md5(string_agg(id || ':' || master_sku, ',' ORDER BY id)) AS sku_fingerprint FROM app.product;"
 ```
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS listing_rows, md5(string_agg(id || ':' || channel_sku, ',' ORDER BY id)) AS channel_sku_fingerprint FROM app.listing;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS listing_rows, md5(string_agg(id || ':' || channel_sku, ',' ORDER BY id)) AS channel_sku_fingerprint FROM app.listing;"
 ```
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT last_value AS seq_before FROM app.master_sku_seq;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT last_value AS seq_before FROM app.master_sku_seq;"
 ```
 
 **判据**：`tracked_dirty = 0`、`colliding` 为空、三条查询都有输出。
@@ -126,16 +142,28 @@ git diff --name-only origin/main...HEAD -- backend/alembic/versions/
 ## ③ 全栈重建并起服务（**判据查库里的状态，不查日志**）
 
 ```powershell
-docker compose build backend frontend worker beat
-docker compose up -d db redis
-docker compose run --rm migrate
-docker compose up -d backend worker beat frontend
+docker compose -f infra/docker-compose.yml build api beat migrate
+docker compose -f infra/docker-compose.yml up -d db redis
+docker compose -f infra/docker-compose.yml run --rm migrate
+docker compose -f infra/docker-compose.yml up -d api beat
 ```
+
+> **为什么只重建 `api` / `beat` / `migrate`**：这三个都 `build: ../backend`，而本 PR 的代码
+> 改动**全部在 `backend/`**。另两个不需要重建，**也不要动它们**：
+>
+> | 服务 | build 来源 | 本 PR 改动 | 处置 |
+> |---|---|---|---|
+> | `api` / `beat` / `migrate` | `../backend` | 6 个文件 | **重建** |
+> | `scraper` | `../workers` | **0 个文件** | 不重建，保持运行 |
+> | `frontend` | `../frontend` | **0 个文件** | 不重建，保持运行 |
+>
+> 可自行复算：`git diff --name-only origin/main...HEAD -- workers/ frontend/` **应为空**。
+> 故本单**没有** #46 那样的「前端产物对拍」步骤——前端一行没改，不存在「部署了但页面是旧的」。
 
 ### 迁移是否真的落地——**这一条是判据，且不看日志**
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM public.alembic_version;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM public.alembic_version;"
 ```
 
 **判据**：`version_num = 0042`。
@@ -168,20 +196,20 @@ foreach ($i in 1..30) {
 ## ④ 迁移 0042 落地核对（**判据落在库里的实际定义与实际行为**）
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT pg_get_functiondef('app.next_master_sku()'::regprocedure) AS fn_def;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT pg_get_functiondef('app.next_master_sku()'::regprocedure) AS fn_def;"
 ```
 
 **判据**：函数存在，且定义里能看到 `IF length(s) < 9` 这个分支
 （**不是** `to_char(...)`、**不是**无条件 `lpad(s, 9, ...)`）。
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT pg_get_expr(adbin, adrelid) AS master_sku_default FROM pg_attrdef WHERE adrelid = 'app.product'::regclass AND adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'app.product'::regclass AND attname = 'master_sku');"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT pg_get_expr(adbin, adrelid) AS master_sku_default FROM pg_attrdef WHERE adrelid = 'app.product'::regclass AND adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'app.product'::regclass AND attname = 'master_sku');"
 ```
 
 **判据**：默认值是 `app.next_master_sku()`，**不是** `'M'::text || lpad(...)`。
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT app.next_master_sku() AS probe;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT app.next_master_sku() AS probe;"
 ```
 
 **判据**：形如 `M` + **至少 9 位纯数字**（例 `M000012345`），**不含任何 `#`**。
@@ -191,7 +219,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 > 记下探针返回值与下面的 `seq_after`**，以便与①的 `seq_before` 对上（差值应为 1）。
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT last_value AS seq_after FROM app.master_sku_seq;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT last_value AS seq_after FROM app.master_sku_seq;"
 ```
 
 **贴回**：`fn_def` 全文、`master_sku_default`、`probe`、`seq_after`。
@@ -203,14 +231,33 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 ## ⑤ 判据⑤：存量一行没动（**与①的快照对拍**）
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS product_rows, count(DISTINCT master_sku) AS distinct_sku, min(length(master_sku)) AS min_len, max(length(master_sku)) AS max_len, md5(string_agg(id || ':' || master_sku, ',' ORDER BY id)) AS sku_fingerprint FROM app.product;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS product_rows, count(DISTINCT master_sku) AS distinct_sku, min(length(master_sku)) AS min_len, max(length(master_sku)) AS max_len, md5(string_agg(id || ':' || master_sku, ',' ORDER BY id)) AS sku_fingerprint FROM app.product;"
 ```
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS listing_rows, md5(string_agg(id || ':' || channel_sku, ',' ORDER BY id)) AS channel_sku_fingerprint FROM app.listing;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS listing_rows, md5(string_agg(id || ':' || channel_sku, ',' ORDER BY id)) AS channel_sku_fingerprint FROM app.listing;"
 ```
 
 **判据（承重）**：两个 fingerprint 与①**逐字相同**，`product_rows` / `listing_rows` 也相同。
+
+> **v2 补：①已在 2026-07-30 由部署机实测，基线值记录在此**——若本轮①未重跑（例如从③继续），
+> 直接与下表对拍即可；若①重跑过则以本轮①的输出为准。
+>
+> ```
+> product_rows = 67   distinct_sku = 67   min_len = 8   max_len = 8
+> sku_fingerprint         = 6891e1e85ead793ba7822645bd5234b1
+> listing_rows = 25
+> channel_sku_fingerprint = ee988913afa56508ccb26daa484d7c94
+> seq_before = 2486
+> ```
+>
+> **这组数字顺带把判据⑤的前提坐实了**：`min_len = max_len = 8` 说明现存 67 行**全部是
+> 旧式 `M`+7**；而 `seq_before = 2486` ⇒ 新号将是 `M000002487`（`M`+9 = 10 字符）。
+> **长度不同 ⇒ 新号不可能等于任何存量号**——这条在本机测试里是构造出来的，
+> 在这台机器上是真实数据自己成立的。
+>
+> 另：`seq_before = 2486` 也说明**截断撞号那颗炸弹离得很远**（要到 1000 万才撞），
+> 本单的近期价值是编码对齐而不是拆弹。
 
 > 这是本单**唯一必须真机、CI 测不到**的一条：本机测试库里的「存量」是构造的，
 > 而生产库里的存量是真的（含各种历史格式的 M 号、已在架 listing 的渠道 SKU）。
@@ -225,7 +272,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 ### ⑥-0 先清掉上一轮的残留（**每轮都要跑，哪怕你确信是第一轮**）
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
 ```
 
 **判据**：整段成功（贴回四个 `DELETE n`，n 可以是 0）。
@@ -238,7 +285,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 
 ### ⑥-1 挑测试店 + 造三个产品
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, code, name, is_test, dedup_exempt FROM app.store WHERE is_test = true ORDER BY id;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, code, name, is_test, dedup_exempt FROM app.store WHERE is_test = true ORDER BY id;"
 ```
 
 **判据**：至少有一个 `is_test = true` 的店。**记下它的 `id` 作 `$STORE_A`**。
@@ -248,11 +295,11 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 造产品（**把 `<TEAM_ID>` 换成 `$STORE_A` 所属的 team_id，`<STORE_A>` 换成实际 id**）：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.product (team_id, source_channel, source_ref, title, attrs, price_snapshot, status) VALUES (<TEAM_ID>, 'amazon', 'B0R215V001', 'R2-15 验证品一', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed'), (<TEAM_ID>, 'amazon', 'B0R215V002', 'R2-15 验证品二', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed'), (<TEAM_ID>, '1688', 'B0R215V003', 'R2-15 非amazon货源', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed');"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.product (team_id, source_channel, source_ref, title, attrs, price_snapshot, status) VALUES (<TEAM_ID>, 'amazon', 'B0R215V001', 'R2-15 验证品一', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed'), (<TEAM_ID>, 'amazon', 'B0R215V002', 'R2-15 验证品二', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed'), (<TEAM_ID>, '1688', 'B0R215V003', 'R2-15 非amazon货源', '{\"wpt\":\"Drinkware\",\"bullets\":[\"x\"],\"description\":\"y\"}'::jsonb, '{\"list\":19.99}'::jsonb, 'audit_passed');"
 ```
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, source_channel, source_ref, master_sku, length(master_sku) AS len FROM app.product WHERE source_ref LIKE 'B0R215V%' ORDER BY source_ref;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, source_channel, source_ref, master_sku, length(master_sku) AS len FROM app.product WHERE source_ref LIKE 'B0R215V%' ORDER BY source_ref;"
 ```
 
 **判据**：三行；**`master_sku` 都是 `M` + ≥9 位**（即新生成式已生效，这是④的第二重证据）。
@@ -287,7 +334,7 @@ $ALLOC_RESP.rejected | ConvertTo-Json -Depth 4
 回库对拍（**这一步不可省**）：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT l.id, l.channel_sku, p.master_sku, p.source_ref FROM app.listing l JOIN app.product p ON p.id = l.product_id WHERE p.source_ref = 'B0R215V001';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT l.id, l.channel_sku, p.master_sku, p.source_ref FROM app.listing l JOIN app.product p ON p.id = l.product_id WHERE p.source_ref = 'B0R215V001';"
 ```
 
 **判据（承重）**：库里的 `channel_sku` **等于 API 回显的那个值，且等于 `source_ref`**。
@@ -303,7 +350,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 ## ⑧ 判据②：同店下架后重上 → 自动取 `-2`、`-3`
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "UPDATE app.listing SET status = 'delisted' WHERE channel_sku = 'B0R215V001';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "UPDATE app.listing SET status = 'delisted' WHERE channel_sku = 'B0R215V001';"
 ```
 
 再分配同一个产品到同一个店（命令同⑦，`Idempotency-Key` 换一个新 guid）：
@@ -313,7 +360,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 
 再把这条置 `retired`，第三次分配：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "UPDATE app.listing SET status = 'retired' WHERE channel_sku = 'B0R215V001-2';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "UPDATE app.listing SET status = 'retired' WHERE channel_sku = 'B0R215V001-2';"
 ```
 
 **判据**：第三次拿到 **`B0R215V001-3`**。
@@ -321,7 +368,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 
 汇总核对：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT channel_sku, status FROM app.listing WHERE channel_sku LIKE 'B0R215V001%' ORDER BY id;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT channel_sku, status FROM app.listing WHERE channel_sku LIKE 'B0R215V001%' ORDER BY id;"
 ```
 
 **判据**：三行，`channel_sku` 分别是 `B0R215V001` / `-2` / `-3`，**互不相同**。
@@ -342,7 +389,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 先把它也分配到 `$STORE_A`，再分配到 `$STORE_B`，两边都应拿到裸 `B0R215V002`：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT store_id, channel_sku FROM app.listing WHERE channel_sku LIKE 'B0R215V002%' ORDER BY store_id;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT store_id, channel_sku FROM app.listing WHERE channel_sku LIKE 'B0R215V002%' ORDER BY store_id;"
 ```
 
 **判据**：两行、两个不同 `store_id`、`channel_sku` 都是 `B0R215V002` 不带后缀。
@@ -359,7 +406,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 ## ⑩ 判据⑦：回连失败**不得静默**（证伪型，构造一个查不到 listing 的订单行）
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS notif_before FROM app.notification WHERE dedupe_key LIKE 'order_line_unlinked:%';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS notif_before FROM app.notification WHERE dedupe_key LIKE 'order_line_unlinked:%';"
 ```
 
 构造：往一个测试订单里塞一个**库里没有对应 listing** 的 `channel_sku`。
@@ -373,7 +420,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 - `sync_state` 里该店 `order_pull` 的 `stats` **含 `unlinked_lines >= 1`**：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT ref_id, stats->>'unlinked_lines' AS unlinked FROM app.sync_state WHERE scope = 'order_pull' ORDER BY ref_id;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT ref_id, stats->>'unlinked_lines' AS unlinked FROM app.sync_state WHERE scope = 'order_pull' ORDER BY ref_id;"
 ```
 
 > **原实现是完全静默的**：两个子查询落空返回 NULL 而 INSERT 仍成功，订单就此失去产品
@@ -388,7 +435,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 **先确认网关是 dry_run 档**（本步绝不能真发到 Walmart）：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT value FROM app.system_config WHERE key = 'channel.gateway_mode';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT value FROM app.system_config WHERE key = 'channel.gateway_mode';"
 ```
 
 **判据**：值为 `"dry_run"`。**若不是 dry_run，停下来问**——不要自己改它。
@@ -403,7 +450,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/listings/submit" -Method Po
 读库里那条渠道命令的载荷快照：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, kind, status, jsonb_pretty(result) AS result FROM app.channel_command ORDER BY id DESC LIMIT 1;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, kind, status, jsonb_pretty(result) AS result FROM app.channel_command ORDER BY id DESC LIMIT 1;"
 ```
 
 **判据**：`result` 里的 `request_snapshot` 存在，且其载荷中该商品的 SKU 字段
@@ -422,28 +469,28 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 先清测试数据（与⑥-0 逐字相同的四条）：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.order_line WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.listing_state_history WHERE listing_id IN (SELECT id FROM app.listing WHERE channel_sku LIKE 'B0R215V%'); DELETE FROM app.listing WHERE channel_sku LIKE 'B0R215V%'; DELETE FROM app.product WHERE source_ref LIKE 'B0R215V%';"
 ```
 
 ```powershell
-docker compose run --rm migrate alembic downgrade 0041
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM public.alembic_version;"
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT pg_get_expr(adbin, adrelid) AS default_after_downgrade FROM pg_attrdef WHERE adrelid = 'app.product'::regclass AND adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'app.product'::regclass AND attname = 'master_sku');"
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS fn_exists FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'app' AND p.proname = 'next_master_sku';"
+docker compose -f infra/docker-compose.yml run --rm migrate alembic downgrade 0041
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM public.alembic_version;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT pg_get_expr(adbin, adrelid) AS default_after_downgrade FROM pg_attrdef WHERE adrelid = 'app.product'::regclass AND adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'app.product'::regclass AND attname = 'master_sku');"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS fn_exists FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'app' AND p.proname = 'next_master_sku';"
 ```
 
 **判据**：`version_num = 0041`；默认值回到 `lpad(...)` 形态；`fn_exists = 0`（函数已删）。
 
 ```powershell
-docker compose run --rm migrate
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM public.alembic_version;"
+docker compose -f infra/docker-compose.yml run --rm migrate
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM public.alembic_version;"
 ```
 
 **判据**：回到 `0042`。
 
 > ⚠️ **降级期间不要让任何产品入库**（回滚后的生成式带着原截断缺陷）。本演练在测试数据
 > 清完后立即做完并升回来，窗口只有几分钟。若这台机器上有 beat 在跑采集，**先停 beat**：
-> `docker compose stop beat`，⑬再起回来。
+> `docker compose -f infra/docker-compose.yml stop beat`，⑬再起回来。
 
 **贴回**：四条判据的输出。
 
@@ -454,9 +501,9 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 ⑫已升回 0042。现在：
 
 ```powershell
-docker compose start beat        # 若⑫停过
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS leftover_products FROM app.product WHERE source_ref LIKE 'B0R215V%';"
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS leftover_listings FROM app.listing WHERE channel_sku LIKE 'B0R215V%';"
+docker compose -f infra/docker-compose.yml start beat        # 若⑫停过
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS leftover_products FROM app.product WHERE source_ref LIKE 'B0R215V%';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS leftover_listings FROM app.listing WHERE channel_sku LIKE 'B0R215V%';"
 ```
 
 **判据**：两个都是 0。
@@ -474,7 +521,7 @@ docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c 
 最后再确认①的两个 fingerprint 仍未变（**测试数据已清，应当与①、⑤三者一致**）：
 
 ```powershell
-docker compose exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS product_rows, md5(string_agg(id || ':' || master_sku, ',' ORDER BY id)) AS sku_fingerprint FROM app.product;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS product_rows, md5(string_agg(id || ':' || master_sku, ',' ORDER BY id)) AS sku_fingerprint FROM app.product;"
 ```
 
 **判据**：与①的 `sku_fingerprint` 相同。
