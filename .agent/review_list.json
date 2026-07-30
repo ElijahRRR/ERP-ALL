@@ -1070,6 +1070,11 @@
     "date": "2026-07-30",
     "kind": "landed",
     "text": "【14b 落地，闸序中】迁移 0047：deleted_principal 墓碑表 PK=(kind,id)（坑2：四类主体各有自增序列，单列 id 跨类必撞）、kind 词表含 buyer_account（其删除路径随 13b 另补，坑3）、追加式只授 SELECT/INSERT（同 0041）；补 purchaser 的 DELETE 授权（0025:359 只授 SIU，14a 同形坑）与 RLS DELETE 策略（0025 的 TEAM_RLS 是三策略模板无 DELETE——无策略的 DELETE 静默匹配零行不报错，测试实撞：端点回 200、墓碑照写、实体行还在；服务层同步加 _delete_row_or_die 守卫把此类静默失败变响亮 500）；procurement_order.purchaser_id 外键改软引用（③级行保留原 id 供墓碑解析，同 audit_log.actor_id/order_line.product_id 既有取舍，迁移头注已请审计侧确认或改判）。identity/delete.py 三类删除服务：user（自删/超管拒绝；purchaser.user_id 显式置 NULL——坑1，无 ON DELETE 不处置则外键拒删）、role（在挂成员 409、全局模板 404）、purchaser（在途执行单非终态 409，fail-closed 词表）。验收③承重：/audit-logs 批量解析 actor_label——在册查主表、已删查墓碑显示「XX（已删除）」。三 DELETE 端点 + PrincipalDeleteResult/actor_label 进 002 契约；前端三页删除入口共用 PrincipalDeleteModal（二次确认+必填原因+分级播报），AuditPage 接 actor_label。判据测试 test_r2_14b_principal_delete.py 九条（坑1/坑2/验收③⑤各有承重用例）。验收③已覆盖；R2-14 四片全落，闸序（审查→真机→Owner）后可关单。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【§7.1.1 三条强制条件对齐（审查四轮 N5/N6/N7）】审计侧 8221203 在 main 落 §7.1.1 确认 0047 外键改软引用并附三条强制条件，本单逐条落地：(a) 同事务墓碑——原实现已满足；(b) 前半——采购单列表接 purchaser_label 两段式解析（主表→墓碑「XX（已删除）」，与 audit-logs 操作人共用 deleted_labels helper；§7.1.1 明令不加 purchaser_name 冗余列），墓碑 label 测试改逐字断言；(b) 后半——test_baseline 新增 TestSoftReferenceInvariant（任何非空 purchaser_id 必须命中主表或墓碑）；(c)——按铁律 1「实现与图纸冲突改代码」把拒删路线改为图纸的退回路线：assigned/pending_review 单退回 unassigned 清空 purchaser_id（汇率未锁）、claimed 及其后保留原 id（汇率已锁），PURCHASER_DELETE_IN_FLIGHT 移除，回执带 orders_returned/orders_retained；契约与前端（OrdersPage 解析优先、PurchasersPage 文案）同步。部署指令 v3：⑧-4 按新语义重写 + ⑤判据按 N8 改具名比对。"
    }
   ]
  },

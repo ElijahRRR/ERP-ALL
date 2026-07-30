@@ -171,8 +171,10 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.audit_log) AS audit_rows, (SELECT count(*) FROM app.app_user) AS users, (SELECT count(*) FROM app.role) AS roles, (SELECT count(*) FROM app.purchaser) AS purchasers, (SELECT count(*) FROM app.channel_order) AS channel_orders, (SELECT count(*) FROM app.order_line) AS order_lines;"
 ```
 
-**判据**：六个数与①**逐个相同**（0047 的 DML 只动 permission / role_permission，
-上面六张表一行不该动）。
+**判据**（N8 口径，按名对不按位对）：`users / roles / purchasers / channel_orders /
+order_lines` 五个计数与①**同名项相同**；`audit_rows` 与①第一条查询的
+`audit_rows_before` 相同。`perms` 不在本步比（它 56→59 本就该变，见④）。
+0047 的 DML 只动 permission / role_permission，上面六张表一行不该动。
 
 ---
 
@@ -262,19 +264,22 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 **判据**：至少一条（那条 `r14b.noop`），其 `actor_label` **= `R14B验证用户乙（已删除）`**。
 
-**⑧-4 采购方：在途拒删 → 终态可删 + ③级行 id 原值保留（0047 软引用承重）**
+**⑧-4 采购方删除（§7.1.1(c)+(b)：claimed 单保留原 id + 墓碑可解析出名字）**
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.procurement_order SET status = 'claimed' WHERE purchase_order_ref = 'R14B0730-PO1';"
-try { Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reason=R14B-14b-acceptance-4a" -Method Delete -Headers @{ Authorization = "Bearer $TOKEN" } } catch { $_.ErrorDetails.Message }
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.procurement_order SET status = 'backfilled' WHERE purchase_order_ref = 'R14B0730-PO1';"
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reason=R14B-14b-acceptance-4b" -Method Delete -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.purchaser WHERE id = <P2>) AS purchaser_left, (SELECT purchaser_id FROM app.procurement_order WHERE purchase_order_ref = 'R14B0730-PO1') AS po_purchaser_id, (SELECT count(*) FROM app.deleted_principal WHERE kind = 'purchaser' AND id = <P2>) AS tombstone;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.procurement_order SET status = 'claimed', exchange_rate_locked = 7.2 WHERE purchase_order_ref = 'R14B0730-PO1';"
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reason=R14B-14b-acceptance-4" -Method Delete -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.purchaser WHERE id = <P2>) AS purchaser_left, (SELECT purchaser_id FROM app.procurement_order WHERE purchase_order_ref = 'R14B0730-PO1') AS po_purchaser_id, (SELECT label FROM app.deleted_principal WHERE kind = 'purchaser' AND id = <P2>) AS tombstone_label;"
+(Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/procurement-orders?purchaser_id=<P2>" -Headers @{ Authorization = "Bearer $TOKEN" }).items | Select-Object id, status, purchaser_id, purchaser_label | ConvertTo-Json
 ```
 
-**判据**：第一次删被拒且报文含 `PURCHASER_DELETE_IN_FLIGHT`；第二次回包
-`level = with_history`；`purchaser_left = 0`、**`po_purchaser_id = <P2> 原值**
-（不是 NULL——外键已改软引用，③级行保留原 id 供墓碑解析）、`tombstone = 1`。
+**判据**：删除回包 `level = with_history`、`orders_returned = 0`、`orders_retained = 1`
+（该单已 claimed，汇率已锁——§7.1.1(c) 只退回未锁汇率的 assigned/pending_review 单，
+真机不造那类单，退回分支由 CI 用例覆盖）；`purchaser_left = 0`、
+**`po_purchaser_id = <P2> 原值**（不是 NULL——软引用，③级行保留原 id）、
+`tombstone_label = R14B外协丙`；采购单列表该行
+**`purchaser_label = R14B外协丙（已删除）`**（§7.1.1(b) 前半的真机承重——
+墓碑不是只写不读，历史单据解析得出「当时是谁采的」）。
 
 **⑧-5 角色删除（判据条件式）**
 
@@ -311,7 +316,7 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
   被 WHERE 自然排除）；
 - `channel_orders_now` / `order_lines_now` 与①相同；
 - **条件式公式**：`audit_rows_now = ①的 audit_rows_before + 1（⑥-1 直插）+ ⑧里
-  成功的删除动作数`。按上文全过的话删除成功 4 次（⑧-1/2/4b/5），即 `+5`；若⑧有步骤
+  成功的删除动作数`。按上文全过的话删除成功 4 次（⑧-1/2/4/5），即 `+5`；若⑧有步骤
   未过或重试过，按实际成功次数算并在回执写明算式。
 
 ---

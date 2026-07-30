@@ -18,8 +18,10 @@ purchaser 属 order 域，落在本模块是因为三类共享 §7.1 的同一�
 - `user_role` / `role_permission`：`ON DELETE CASCADE`（0002:154/173-174），数据库连带；
 - `purchaser.user_id`：可空但**无 ON DELETE**（0025:96）——删用户前显式置 NULL，
   否则外键直接拒绝（不能指望 CASCADE，007 坑 1 原文）；
-- `procurement_order.purchaser_id`：0047 起为软引用——③级行保留原 id，
-  UI 先查主表、查不到再查墓碑显示「XX（已删除）」。
+- `procurement_order.purchaser_id`：0047 起为软引用（§7.1.1 审计侧确认，附三条
+  强制条件）——(c) 删除前把 assigned/pending_review 单**退回 unassigned 并清空
+  purchaser_id**（汇率未锁，源随主体消失）；claimed 及其后保留原 id（汇率已锁），
+  经 `deleted_labels` 解析显示「XX（已删除）」（(b) 前半的读者）。
 """
 
 from typing import Any
@@ -31,11 +33,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from erp.core.audit import AuditWriter
 from erp.core.authn import CurrentUser
 from erp.core.errors import BusinessError
-
-# procurement_order 的非终态（ck_procurement_status 全集减去终态两个）。
-# fail-closed 方向同 14a 的 listing 状态分类：将来 CHECK 加了新状态而这里没跟上，
-# 新状态自动落进「非终态」→ 拒绝删除——宁可拒绝，不可把在途单删成无主。
-_PROC_TERMINAL = frozenset({"backfilled", "cancelled"})
 
 
 async def _delete_row_or_die(session: AsyncSession, table: str, entity_id: int) -> None:
@@ -286,37 +283,38 @@ async def delete_purchaser(
         raise BusinessError("PURCHASER_NOT_FOUND", "采购方不存在", http_status=404)
     target = dict(row)
 
-    # 在途执行单指着它（认领中/已下单/在运……）：删了就是把跑着的单删成无主。
-    # fail-closed：非终态一律拒绝，等单走完再删，代价只是等（同 14a 维护任务守卫）。
-    in_flight = int(
-        (
-            await session.execute(
-                text(
-                    "SELECT count(*) FROM app.procurement_order"
-                    " WHERE purchaser_id = :p AND NOT (status = ANY(:t))"
-                ),
-                {"p": purchaser_id, "t": list(_PROC_TERMINAL)},
-            )
-        ).scalar_one()
-    )
-    if in_flight:
-        raise BusinessError(
-            "PURCHASER_DELETE_IN_FLIGHT",
-            "该采购方仍有未走完的采购执行单，请等其到终态（回填/取消）后再删除",
-            {"in_flight": in_flight},
-            http_status=409,
+    # §7.1.1(c)（审计侧 2026-07-30 强制条件）：**未锁汇率的在途单先退回池**。
+    # 汇率在领单（claimed）时才锁进 exchange_rate_locked（procurement.py:196，D-Q32）；
+    # assigned / pending_review 的汇率源是 purchaser.exchange_rate——随主体一起消失，
+    # 不退回则删完留下一批永远锁不上汇率的孤单。claimed 及其后汇率已锁，保留
+    # purchaser_id（软引用，0047）供墓碑解析，历史可读。pending_review 现库 CHECK
+    # 词表尚无（随 R2-13 13b 引入），先写进谓词是零成本的向前兼容。
+    returned = [
+        int(r[0])
+        for r in await session.execute(
+            text(
+                "UPDATE app.procurement_order"
+                " SET status = 'unassigned', purchaser_id = NULL, assignee_kind = 'none',"
+                "     assigned_by = NULL, assigned_at = NULL"
+                " WHERE purchaser_id = :p AND status IN ('assigned', 'pending_review')"
+                " RETURNING id"
+            ),
+            {"p": purchaser_id},
         )
+    ]
 
-    # 「接过单」= 有执行单引用（终态行也是历史）。③级行一行不删、id 原样保留，
-    # 0047 已把外键改软引用——这正是墓碑能解析回「当时是谁」的前提。
-    has_history = bool(
+    # 「接过单」= 退回后仍有执行单引用（claimed 及其后 + 终态行）。③级行一行不删、
+    # id 原样保留——这正是墓碑能解析回「当时是谁」的前提（§7.1.1(b)）。
+    # 只被 assigned 单引用过的采购方退回后无任何残留引用 → ①级直删无墓碑，自洽。
+    retained = int(
         (
             await session.execute(
-                text("SELECT EXISTS (SELECT 1 FROM app.procurement_order WHERE purchaser_id = :p)"),
+                text("SELECT count(*) FROM app.procurement_order WHERE purchaser_id = :p"),
                 {"p": purchaser_id},
             )
         ).scalar_one()
     )
+    has_history = retained > 0
 
     await _delete_row_or_die(session, "purchaser", purchaser_id)
 
@@ -341,11 +339,35 @@ async def delete_purchaser(
             "status": target["status"],
             "created_at": target["created_at"].isoformat(),
         },
-        after={"reason": reason, "tombstoned": has_history},
+        after={
+            "reason": reason,
+            "tombstoned": has_history,
+            "orders_returned": returned,
+            "orders_retained": retained,
+        },
     )
     return {
         "purchaser_id": purchaser_id,
         "name": target["name"],
         "level": "with_history" if has_history else "no_history",
         "tombstoned": has_history,
+        "orders_returned": len(returned),
+        "orders_retained": retained,
+    }
+
+
+async def deleted_labels(session: AsyncSession, *, kind: str, ids: list[int]) -> dict[int, str]:
+    """批量取已删主体的显示名，返回 {id: 「label（已删除）」}（§7.1.1(b) 前半的读者）。
+
+    调用方先查各自的主表，未命中的再来查墓碑——「先主表后墓碑」的两段式解析
+    （§7.1 原文），audit-logs 的操作人与采购单的采购方共用本函数。
+    """
+    if not ids:
+        return {}
+    return {
+        int(r[0]): f"{r[1]}（已删除）"
+        for r in await session.execute(
+            text("SELECT id, label FROM app.deleted_principal WHERE kind = :k AND id = ANY(:ids)"),
+            {"k": kind, "ids": ids},
+        )
     }

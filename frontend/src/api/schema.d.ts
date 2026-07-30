@@ -4109,8 +4109,8 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * 硬删除采购方（00-conventions §7.1；R2-14 14b）
-         * @description 在途执行单（状态非 backfilled/cancelled）拒删；②级（接过单）写 `deleted_principal (kind='purchaser')` 墓碑。`procurement_order` 一行不删、 `purchaser_id` 原值保留（0047 起为软引用），历史单据经墓碑解析显示「XX（已删除）」。
+         * 硬删除采购方（00-conventions §7.1 + §7.1.1；R2-14 14b）
+         * @description §7.1.1(c)：删除前把该采购方名下 assigned/pending_review 的执行单**退回 unassigned 并清空 purchaser_id**（汇率未锁，源随主体消失）；claimed 及其后的 执行单一行不删、`purchaser_id` 原值保留（软引用），经墓碑解析显示「XX（已删除）」。 退回后仍有引用（接过单）= ②级写 `deleted_principal (kind='purchaser')` 墓碑； 无残留引用 = ①级直删无墓碑。回执带 `orders_returned` / `orders_retained`。
          */
         delete: {
             parameters: {
@@ -4137,7 +4137,7 @@ export interface paths {
                 };
                 /** @description PURCHASER_NOT_FOUND */
                 404: components["responses"]["Error"];
-                /** @description PURCHASER_DELETE_IN_FLIGHT（在途执行单未走完） */
+                /** @description （预留）当前无 409 分支——§7.1.1(c) 用退回而非拒删处置在途单 */
                 409: components["responses"]["Error"];
             };
         };
@@ -5412,6 +5412,10 @@ export interface components {
             role_id?: number;
             purchaser_id?: number;
             name?: string;
+            /** @description 删采购方时退回 unassigned 的未锁汇率执行单数（§7.1.1(c)） */
+            orders_returned?: number;
+            /** @description 删采购方后保留 purchaser_id 的执行单数（claimed 及其后 + 终态） */
+            orders_retained?: number;
         };
         ProductDeleteResult: {
             product_id: number;
@@ -5839,6 +5843,7 @@ export interface components {
             status?: string;
             assignee_kind?: string;
             purchaser_id?: number | null;
+            purchaser_label?: string | null;
             purchase_platform?: string | null;
             purchase_order_ref?: string | null;
             purchase_cost?: number | null;

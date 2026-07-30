@@ -8,7 +8,7 @@
 | 验收⑤：audit_log / procurement_order 行数不变 | 上述两用例内联断言 |
 | 自删守卫 | `TestUserDelete::test_self_delete_refused` |
 | 在挂角色拒删 → 解绑后可删 + 模板 404 | `TestRoleDelete` |
-| 在途执行单拒删 → 终态后可删 + ③级 id 保留 | `TestPurchaserDelete` |
+| §7.1.1(c)：assigned 退回池 / claimed 保留+墓碑解析 | `TestPurchaserDelete` |
 | 坑2：(kind,id) 复合 PK 跨类不撞 | `TestTombstonePk::test_same_id_across_kinds` |
 
 buyer_account 类不在本轮（表由 R2-13 13b 建，007「三个实现坑」第 3 条）。
@@ -60,7 +60,7 @@ def seeded(migrated_db: str) -> dict[str, int]:
         for code in (
             "identity.user_read", "identity.user_write", "identity.user_delete",
             "identity.role_write", "identity.role_delete",
-            "procurement.purchaser_delete", "identity.audit_read",
+            "procurement.purchaser_delete", "procurement.read", "identity.audit_read",
         ):  # fmt: skip
             conn.execute(
                 "INSERT INTO app.role_permission (role_id, permission_code) VALUES (%s, %s)",
@@ -245,11 +245,12 @@ class TestRoleDelete:
 
 
 class TestPurchaserDelete:
-    def test_in_flight_refused_then_terminal_ok(
+    def test_claimed_retained_and_label_resolvable(
         self, client: TestClient, seeded: dict, migrated_db: str
     ) -> None:
-        """在途执行单拒删；终态后可删。③级行一行不删且 purchaser_id 原值保留
-        （0047 外键改软引用的承重证明——外键仍在的话这里删除会直接被拒）。"""
+        """§7.1.1(c) 后半 + (b) 前半承重：claimed 单（汇率已锁）一行不删、purchaser_id
+        原值保留（软引用），且**能经墓碑解析出名字**——采购单列表返回
+        「外协老李（已删除）」，墓碑 label 逐字断言（label 写错或写空的墓碑不许过）。"""
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             pid = conn.execute(
                 "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
@@ -258,24 +259,20 @@ class TestPurchaserDelete:
             ).fetchone()[0]
             po = conn.execute(
                 "INSERT INTO app.procurement_order"
-                " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id)"
-                " VALUES (%s, 1, 990001, now(), 'claimed', 'external', %s) RETURNING id",
+                " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id,"
+                "  exchange_rate_locked)"
+                " VALUES (%s, 1, 990001, now(), 'claimed', 'external', %s, 7.2) RETURNING id",
                 (seeded["team"], pid),
             ).fetchone()[0]
-        auth = _login(client, ADMIN, PASSWORD)
-        r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
-        assert r.status_code == 409
-        assert r.json()["error"]["code"] == "PURCHASER_DELETE_IN_FLIGHT"
-        with psycopg.connect(migrated_db, autocommit=True) as conn:
-            conn.execute(
-                "UPDATE app.procurement_order SET status = 'backfilled' WHERE id = %s", (po,)
-            )
             po_count_before = conn.execute(
                 "SELECT count(*) FROM app.procurement_order WHERE team_id = %s", (seeded["team"],)
             ).fetchone()[0]
-        r2 = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
-        assert r2.status_code == 200, r2.text
-        assert r2.json()["level"] == "with_history" and r2.json()["tombstoned"] is True
+        auth = _login(client, ADMIN, PASSWORD)
+        r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["level"] == "with_history" and body["tombstoned"] is True
+        assert body["orders_returned"] == 0 and body["orders_retained"] == 1
         with psycopg.connect(migrated_db) as conn:
             assert (
                 conn.execute("SELECT count(*) FROM app.purchaser WHERE id = %s", (pid,)).fetchone()[
@@ -294,7 +291,48 @@ class TestPurchaserDelete:
             assert conn.execute(
                 "SELECT purchaser_id FROM app.procurement_order WHERE id = %s", (po,)
             ).fetchone() == (pid,)
-            assert _tombstone(conn, "purchaser", pid) is not None
+            # N5：label 逐字断言，不是 is not None
+            ts = _tombstone(conn, "purchaser", pid)
+            assert ts is not None and ts[0] == "外协老李"
+        # (b) 前半的读者：采购单列表经墓碑解析出名字
+        items = client.get(f"/api/v1/procurement-orders?purchaser_id={pid}", headers=auth).json()[
+            "items"
+        ]
+        assert items and all(i["purchaser_label"] == "外协老李（已删除）" for i in items)
+
+    def test_assigned_returned_to_pool_no_tombstone(
+        self, client: TestClient, seeded: dict, migrated_db: str
+    ) -> None:
+        """§7.1.1(c) 前半承重：assigned 单汇率未锁，删除前退回 unassigned 并清空
+        purchaser_id（行保留，不是删除——验收⑤同时内联）；退回后无残留引用 → ①级
+        直删无墓碑。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                " VALUES (%s, '外协小周', 'external', 7.2) RETURNING id",
+                (seeded["team"],),
+            ).fetchone()[0]
+            po = conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id,"
+                "  assigned_at)"
+                " VALUES (%s, 1, 990002, now(), 'assigned', 'external', %s, now()) RETURNING id",
+                (seeded["team"], pid),
+            ).fetchone()[0]
+        auth = _login(client, ADMIN, PASSWORD)
+        r = client.delete(f"/api/v1/purchasers/{pid}{_q()}", headers=auth)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["level"] == "no_history" and body["tombstoned"] is False
+        assert body["orders_returned"] == 1 and body["orders_retained"] == 0
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT status, purchaser_id, assignee_kind, assigned_at"
+                " FROM app.procurement_order WHERE id = %s",
+                (po,),
+            ).fetchone()
+            assert row == ("unassigned", None, "none", None)
+            assert _tombstone(conn, "purchaser", pid) is None
 
     def test_never_assigned_no_tombstone(
         self, client: TestClient, seeded: dict, migrated_db: str

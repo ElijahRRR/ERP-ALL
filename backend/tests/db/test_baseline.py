@@ -147,3 +147,26 @@ class TestRlsDeleteInvariant:
             "以下表授了 erp_app 的 DELETE 却没有 DELETE 策略（删除会静默零行）："
             f"{[r[0] for r in rows]}——补 CREATE POLICY 或收回授权，二选一"
         )
+
+
+class TestSoftReferenceInvariant:
+    def test_no_dangling_purchaser_id(self, migrated_db: str) -> None:
+        """§7.1.1(b) 后半（PR #49 审查 N6）：任何非空 purchaser_id 必须命中主表或墓碑。
+
+        0047 删外键后完整性从数据库搬进应用代码：①级无单故无悬空、②级必写墓碑
+        （同事务），故本不变量恒应成立；它抓的是「漏写墓碑 / 绕过删除服务直删」
+        这两类把历史变成认不出数字的路径。
+        """
+        with psycopg.connect(migrated_db) as conn:
+            rows = conn.execute(
+                "SELECT po.id, po.purchaser_id FROM app.procurement_order po"
+                " WHERE po.purchaser_id IS NOT NULL"
+                "   AND NOT EXISTS (SELECT 1 FROM app.purchaser p WHERE p.id = po.purchaser_id)"
+                "   AND NOT EXISTS (SELECT 1 FROM app.deleted_principal dp"
+                "                   WHERE dp.kind = 'purchaser' AND dp.id = po.purchaser_id)"
+                " ORDER BY po.id"
+            ).fetchall()
+        assert rows == [], (
+            f"以下执行单的 purchaser_id 在主表与墓碑都查不到（永久无法解析）：{rows}"
+            "——多半是绕过删除服务的直删或墓碑漏写"
+        )

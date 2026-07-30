@@ -565,14 +565,7 @@ async def list_audit_logs(
             labels[int(r[0])] = str(r[1])
         gone = [u for u in uids if u not in labels]
         if gone:
-            for r in await session.execute(
-                text(
-                    "SELECT id, label FROM app.deleted_principal"
-                    " WHERE kind = 'user' AND id = ANY(:ids)"
-                ),
-                {"ids": gone},
-            ):
-                labels[int(r[0])] = f"{r[1]}（已删除）"
+            labels.update(await principal_delete.deleted_labels(session, kind="user", ids=gone))
     items = [
         AuditLogOut(
             **r,
