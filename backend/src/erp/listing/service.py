@@ -17,7 +17,8 @@ from collections.abc import Mapping
 from typing import Any
 
 import structlog
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from erp.catalog import variant as variant_svc
@@ -229,6 +230,133 @@ async def _occupy_brand(
     )
 
 
+# ── D-Q72：渠道 SKU 对外用 ASIN，master_sku 退为内部身份 ──────────────────
+
+# 后缀上限：正常业务一个店同一 ASIN 不会重上几十次；给一个有限上界，是为了让
+# 「某种没想到的情形导致永远撞」表现为一条明确的业务拒绝，而不是无限循环。
+_SKU_SUFFIX_MAX = 50
+
+
+def _channel_sku_base(product: RowMapping | Mapping[str, Any]) -> str:
+    """新 listing 的 `channel_sku` 基值（不含 `-N` 后缀）。
+
+    D-Q72：对外编码统一到 ASIN——在线产品 99% 已是 ASIN，继续发 master_sku 只会让
+    新上架的与存量对不上。ASIN 的存储位置是 `(source_channel, source_ref)`
+    （BR-CAT-002 把 ASIN 降级为该属性对），不是独立列。
+
+    **非 amazon 货源显式回落 master_sku**：D-Q72 只规定了 amazon 取 ASIN，其余
+    （将来 1688 等）图纸写「另给规则」。规则落地前必须有确定行为，且这个分支要被
+    测试覆盖——不能靠「反正现在只有 amazon」，那等于把一个静默错误寄存在
+    「现状恰好如此」上面，等第二个货源接进来时才炸。
+    """
+    if product["source_channel"] == "amazon" and product["source_ref"]:
+        return str(product["source_ref"])
+    return str(product["master_sku"])
+
+
+def _is_uq_listing_violation(exc: IntegrityError) -> bool:
+    """是否 `uq_listing` 的唯一冲突——其余（FK / CHECK / 别的唯一键）必须原样抛出。
+
+    宽泛地 catch 所有 `IntegrityError` 会让下面的重试循环把真正的错误连吞 50 次，
+    最后报一个误导性的「后缀耗尽」——那比直接 500 更难查。
+    """
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    name = getattr(diag, "constraint_name", None)
+    if name is not None:
+        return str(name) == "uq_listing"
+    # 驱动未给出 diag 时的兜底（不同 DBAPI 的异常形态不一致）
+    return "uq_listing" in str(getattr(exc, "orig", exc))
+
+
+async def _insert_listing_with_sku(
+    session: AsyncSession,
+    *,
+    team_id: int,
+    store_id: int,
+    product_id: int,
+    offer_mode: str,
+    base_sku: str,
+    price: Any,
+    actor_id: int | None,
+) -> tuple[int, str]:
+    """插入 listing 并分配 `channel_sku`，返回 `(listing_id, 实际写入的 channel_sku)`。
+
+    ## 后缀必须扫全状态，「下架后重上」是主场景而不是边缘情形
+
+    `uq_listing UNIQUE (store_id, channel_sku)`（`0009_listing.py:104`）**不带状态
+    过滤**，故 delisted / retired / failed 的旧 listing 照样占着那个 SKU；而团内去重
+    只挡「在架」的（`status NOT IN ('delisted','retired','failed')`）。两者叠起来的
+    结果是：**同店下架后重新上架，去重放行、唯一约束照撞**——只扫在架的会漏掉它。
+
+    ## 为什么靠唯一约束裁决、不做「先查后插」的乐观假设
+
+    先查一个空位再插，在并发下两个请求会算出同一个 `-2`。这里的查询只用来定起点，
+    真正的裁决交给唯一约束：**撞了就退回 SAVEPOINT 试下一格**。查询结果在下一毫秒
+    就可能过期，唯一约束是唯一不会过期的判据。
+
+    （`allocate` 顶部的 `pg_advisory_xact_lock(team_id, product_id)` 已经串行化了
+    同一 (团队, 产品) 的并发，同店同 ASIN 因此本就不易真撞；但不能把正确性建立在
+    「上游恰好加了把锁」上——那把锁是为去重协议加的，不是为这里加的。）
+    """
+    # 起点扫描：本店所有以 base_sku 开头的占用。用 left() 比较而不是 LIKE，
+    # 免掉 base_sku 里若含 % / _ 时的转义问题（ASIN 与 M 号目前都不含，但不该依赖这点）。
+    taken = {
+        str(r[0])
+        for r in (
+            await session.execute(
+                text(
+                    "SELECT channel_sku FROM app.listing"
+                    " WHERE store_id = :s"
+                    "   AND (channel_sku = :b OR left(channel_sku, length(:b) + 1) = :b || '-')"
+                ),
+                {"s": store_id, "b": base_sku},
+            )
+        ).all()
+    }
+    for n in range(1, _SKU_SUFFIX_MAX + 1):
+        candidate = base_sku if n == 1 else f"{base_sku}-{n}"
+        if candidate in taken:
+            continue
+        try:
+            # SAVEPOINT 只包这一条 INSERT：撞号时回滚的是这次尝试，
+            # 不牵连调用方 savepoint 里已做的事。
+            async with session.begin_nested():
+                row = (
+                    await session.execute(
+                        text(
+                            "INSERT INTO app.listing"
+                            " (team_id, store_id, product_id, offer_mode, channel_sku,"
+                            "  current_price, created_by)"
+                            " VALUES (:t, :s, :p, :m, :sku, :pr, :u)"
+                            " RETURNING id, channel_sku"
+                        ),
+                        {
+                            "t": team_id,
+                            "s": store_id,
+                            "p": product_id,
+                            "m": offer_mode,
+                            "sku": candidate,
+                            "pr": price,
+                            "u": actor_id,
+                        },
+                    )
+                ).one()
+            # 回显取 RETURNING 的实际写入值，**不是再算一遍 candidate**：
+            # 「同一个值算两遍」正是存储与回报静默分叉的种子（D-Q72 与工单都把锚点
+            # 指成响应回显那一行，只改那里就会造出这种分叉）。
+            return int(row[0]), str(row[1])
+        except IntegrityError as exc:
+            if not _is_uq_listing_violation(exc):
+                raise
+            taken.add(candidate)  # 并发下别人刚占走：记下来，试下一格
+            continue
+    raise BusinessError(
+        "LISTING_SKU_SUFFIX_EXHAUSTED",
+        f"店内 {base_sku} 的后缀已用到 -{_SKU_SUFFIX_MAX}，无法再分配渠道 SKU",
+        detail={"base_sku": base_sku, "max_suffix": _SKU_SUFFIX_MAX},
+    )
+
+
 async def allocate(
     session: AsyncSession,
     *,
@@ -268,8 +396,12 @@ async def allocate(
             (
                 await session.execute(
                     text(
+                        # source_channel / source_ref 是 D-Q72 取 ASIN 的来源
+                        # （BR-CAT-002：ASIN 即 (source_channel, source_ref)）——
+                        # 本查询原先没取这两列，不补则 channel_sku 无从算起。
                         "SELECT id, team_id, master_sku, title, brand, brand_norm, images,"
-                        " attrs, price_snapshot, status, variant_group_id FROM app.product"
+                        " attrs, price_snapshot, status, variant_group_id,"
+                        " source_channel, source_ref FROM app.product"
                         " WHERE id = :p AND team_id = :t"
                     ),
                     {"p": pid, "t": team_id},
@@ -325,26 +457,16 @@ async def allocate(
             # 真机教训：此前用 DELETE 补偿，而 erp_app 无 DELETE 权限（最小权限，
             # listing 本就不允许物理删）——权限错误把池空业务提示覆盖成 500。
             async with session.begin_nested():
-                listing_id = (
-                    await session.execute(
-                        text(
-                            "INSERT INTO app.listing"
-                            " (team_id, store_id, product_id, offer_mode, channel_sku,"
-                            "  current_price, created_by)"
-                            " VALUES (:t, :s, :p, :m, :sku, :pr, :u)"
-                            " RETURNING id"
-                        ),
-                        {
-                            "t": team_id,
-                            "s": store_id,
-                            "p": pid,
-                            "m": offer_mode,
-                            "sku": product["master_sku"],
-                            "pr": price,
-                            "u": actor_id,
-                        },
-                    )
-                ).scalar_one()
+                listing_id, written_sku = await _insert_listing_with_sku(
+                    session,
+                    team_id=team_id,
+                    store_id=store_id,
+                    product_id=pid,
+                    offer_mode=offer_mode,
+                    base_sku=_channel_sku_base(product),
+                    price=price,
+                    actor_id=actor_id,
+                )
                 if offer_mode == "build":
                     # 品牌占用（001 §03 :89；match 豁免——不携带品牌绑定语义）。
                     # 异店占用抛 BRAND_OCCUPIED_OTHER_STORE → savepoint 回滚本品、归 rejected。
@@ -390,7 +512,11 @@ async def allocate(
             {
                 "id": listing_id,
                 "product_id": pid,
-                "channel_sku": product["master_sku"],
+                # 取 INSERT ... RETURNING 拿回的**实际写入值**，不重算。
+                # D-Q72 与工单都把实现锚点指成这一行，但它只是响应回显；真正的落库
+                # 绑定在上面的 INSERT 参数里。若只改这里，库里存 master_sku 而 API
+                # 回报 ASIN——**存储与回报静默分叉，且分叉方向恰好是「看起来成功了」**。
+                "channel_sku": written_sku,
                 "gtin": gtin_val,
                 "status": "draft",
                 "current_price": price,

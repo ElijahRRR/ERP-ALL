@@ -134,8 +134,15 @@ class TestWorkerLoop:
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["accepted"] is True
-        assert body["product"]["master_sku"].startswith("M")
-        assert len(body["product"]["master_sku"]) == 8
+        # R2-15 判据④⑤：master_sku 生成式改为「不足 9 位左填零、超出原样输出」，
+        # 故最短是 M+9=10 字符。原断言写死 == 8（M+7），那是被修掉的截断式的长度。
+        # 这里断言**不变量**而不是某个具体长度：M 前缀 + 纯数字 + 至少 9 位。
+        # 「越过 9 位后仍不截断」由 test_master_sku_no_truncate.py 直接断言（判据④
+        # 明写不得只测小序号），本处只保证常规路径的格式。
+        master_sku = body["product"]["master_sku"]
+        assert master_sku.startswith("M")
+        assert master_sku[1:].isdigit()
+        assert len(master_sku[1:]) >= 9
 
         # ASIN2 连续失败 3 次（每次失败归还→重领，attempt 递增）→ dead
         task2 = t2

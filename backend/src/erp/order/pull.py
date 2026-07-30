@@ -132,7 +132,11 @@ def map_order(raw: dict[str, Any]) -> dict[str, Any]:
 async def _upsert_order(
     session: AsyncSession, *, team_id: int, store_id: int, mapped: dict[str, Any]
 ) -> dict[str, Any]:
-    """单订单 upsert（BR-ORD-003：同步列覆盖，内部列不触碰）。返回 {order_id, cancelled_now}。"""
+    """单订单 upsert（BR-ORD-003：同步列覆盖，内部列不触碰）。
+
+    返回 `{order_id, cancelled_now, unlinked_lines}`——`unlinked_lines` 是 R2-15 判据⑦
+    的计数出口：有多少行的 `(store_id, channel_sku)` 在本店 listing 里查不到，
+    因而没能接上 `listing_id`/`product_id`。"""
     row = (
         await session.execute(
             text(
@@ -162,39 +166,87 @@ async def _upsert_order(
         )
     ).one()
     order_id = int(row.id)
+    # R2-15 判据⑦：回连失败不得静默。
+    #
+    # 回连（订单行 → listing → product）走的是 (store_id, channel_sku) 直查，
+    # **不经图纸表 `sku_mapping`**（该表纯图纸、代码从未建，见 001/03-catalog.md 该节附注）。
+    # 原实现的失败是**完全静默**的：两个子查询落空返回 NULL 而 INSERT 仍然成功，
+    # 订单就此失去产品关联，下游只有订单四检的 `price_limit` 以 `source_missing`
+    # 间接暴露——即「查不到货源」被当成价格问题报出来，而真因是订单压根没接上 listing。
+    #
+    # D-Q72 之后库中同时存在 M 号与 ASIN 两套 channel_sku 编码，静默失联的概率上升，
+    # 故此处把它变成显式信号：计数 + 结构化日志 + 一条 warn 级通知。
+    unlinked: list[str] = []
     for ln in mapped["lines"]:
-        await session.execute(
-            text(
-                "INSERT INTO app.order_line"
-                " (order_id, order_date, team_id, channel_line_no, channel_sku, listing_id,"
-                "  product_id, qty, unit_price, line_status, carrier, tracking_no, shipped_at)"
-                " VALUES (:o, :d, :t, :ln, :sku,"
-                "   (SELECT l.id FROM app.listing l WHERE l.store_id = :store"
-                "     AND l.channel_sku = :sku ORDER BY l.id DESC LIMIT 1),"
-                "   (SELECT l.product_id FROM app.listing l WHERE l.store_id = :store"
-                "     AND l.channel_sku = :sku ORDER BY l.id DESC LIMIT 1),"
-                "   :q, :p, :st, :ca, :tn, :sa)"
-                " ON CONFLICT (order_id, channel_line_no, order_date) DO UPDATE SET"
-                "   channel_sku = excluded.channel_sku, qty = excluded.qty,"
-                "   unit_price = excluded.unit_price, line_status = excluded.line_status,"
-                "   carrier = coalesce(excluded.carrier, app.order_line.carrier),"
-                "   tracking_no = coalesce(excluded.tracking_no, app.order_line.tracking_no),"
-                "   shipped_at = coalesce(excluded.shipped_at, app.order_line.shipped_at)"
+        line_row = (
+            await session.execute(
+                text(
+                    "INSERT INTO app.order_line"
+                    " (order_id, order_date, team_id, channel_line_no, channel_sku, listing_id,"
+                    "  product_id, qty, unit_price, line_status, carrier, tracking_no, shipped_at)"
+                    " VALUES (:o, :d, :t, :ln, :sku,"
+                    "   (SELECT l.id FROM app.listing l WHERE l.store_id = :store"
+                    "     AND l.channel_sku = :sku ORDER BY l.id DESC LIMIT 1),"
+                    "   (SELECT l.product_id FROM app.listing l WHERE l.store_id = :store"
+                    "     AND l.channel_sku = :sku ORDER BY l.id DESC LIMIT 1),"
+                    "   :q, :p, :st, :ca, :tn, :sa)"
+                    " ON CONFLICT (order_id, channel_line_no, order_date) DO UPDATE SET"
+                    "   channel_sku = excluded.channel_sku, qty = excluded.qty,"
+                    "   unit_price = excluded.unit_price, line_status = excluded.line_status,"
+                    "   carrier = coalesce(excluded.carrier, app.order_line.carrier),"
+                    "   tracking_no = coalesce(excluded.tracking_no, app.order_line.tracking_no),"
+                    "   shipped_at = coalesce(excluded.shipped_at, app.order_line.shipped_at),"
+                    # 补回连自愈：**只填空，不覆盖**。原先 listing_id/product_id 不在
+                    # SET 里，故首次拉取没接上的订单行，即便 listing 后来建好了，
+                    # 重拉也永远补不上——那会让上面那条告警变成「只能人工改库」的死信。
+                    # coalesce(旧, 新) 保证已接好的链接不会被后来的查询结果改写。
+                    "   listing_id = coalesce(app.order_line.listing_id, excluded.listing_id),"
+                    "   product_id = coalesce(app.order_line.product_id, excluded.product_id)"
+                    " RETURNING listing_id"
+                ),
+                {
+                    "o": order_id,
+                    "d": mapped["order_date"],
+                    "t": team_id,
+                    "store": store_id,
+                    "ln": ln["channel_line_no"],
+                    "sku": ln["channel_sku"],
+                    "q": ln["qty"],
+                    "p": ln["unit_price"],
+                    "st": ln["line_status"],
+                    "ca": ln["carrier"],
+                    "tn": ln["tracking_no"],
+                    "sa": ln["shipped_at"],
+                },
+            )
+        ).one()
+        if line_row.listing_id is None:
+            unlinked.append(str(ln["channel_sku"]))
+    if unlinked:
+        log.warning(
+            "order_pull.line_unlinked",
+            store_id=store_id,
+            team_id=team_id,
+            channel_order_no=mapped["channel_order_no"],
+            order_id=order_id,
+            unlinked_count=len(unlinked),
+            channel_skus=unlinked,
+        )
+        await notify(
+            session,
+            team_id=team_id,
+            severity="warn",
+            category="order_flag",
+            title=(f"订单 {mapped['channel_order_no']} 有 {len(unlinked)} 行未接上 listing"),
+            body=(
+                "这些行的 channel_sku 在本店 listing 里查不到，订单因此没有产品关联："
+                + "、".join(unlinked)
+                + "。常见成因：该 SKU 的 listing 已被硬删、或渠道侧 SKU 与本店记录不一致。"
+                "补建/修正 listing 后重新拉单即可自动补上关联。"
             ),
-            {
-                "o": order_id,
-                "d": mapped["order_date"],
-                "t": team_id,
-                "store": store_id,
-                "ln": ln["channel_line_no"],
-                "sku": ln["channel_sku"],
-                "q": ln["qty"],
-                "p": ln["unit_price"],
-                "st": ln["line_status"],
-                "ca": ln["carrier"],
-                "tn": ln["tracking_no"],
-                "sa": ln["shipped_at"],
-            },
+            object_type="channel_order",
+            object_id=str(order_id),
+            dedupe_key=f"order_line_unlinked:{order_id}",
         )
     # 拉单→四检（PRD:84 主流程；仅未检的 pulled 单，取消单跳过）
     if row.internal_status == "pulled" and mapped["channel_status"] != "Cancelled":
@@ -227,7 +279,12 @@ async def _upsert_order(
             object_id=str(order_id),
             dedupe_key=f"order_cancelled:{order_id}",
         )
-    return {"order_id": order_id, "cancelled_now": cancelled_now}
+    # unlinked_lines 是判据⑦ 的可断言出口：测试据此证伪，不必去解析日志。
+    return {
+        "order_id": order_id,
+        "cancelled_now": cancelled_now,
+        "unlinked_lines": len(unlinked),
+    }
 
 
 async def pull_store_orders(
@@ -265,7 +322,9 @@ async def pull_store_orders(
         "limit": str(page_limit),
     }
 
-    stats = {"orders": 0, "lines": 0, "cancelled": 0, "pages": 0}
+    # unlinked_lines（判据⑦）：本店本轮有多少订单行没接上 listing。计到店级
+    # stats 里会随 sync_state 落库，故它不只是一条会滚走的日志。
+    stats = {"orders": 0, "lines": 0, "cancelled": 0, "pages": 0, "unlinked_lines": 0}
     path = "/v3/orders"
     for _ in range(max_pages):
         resp = await gateway.request_prepared(
@@ -290,6 +349,7 @@ async def pull_store_orders(
                 stats["orders"] += 1
                 stats["lines"] += len(mapped["lines"])
                 stats["cancelled"] += 1 if outcome["cancelled_now"] else 0
+                stats["unlinked_lines"] += int(outcome["unlinked_lines"])
         cursor = ((resp.data.get("list") or {}).get("meta") or {}).get("nextCursor")
         if not cursor or "hasMoreElements=false" in str(cursor) or not orders:
             break
