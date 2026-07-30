@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { ApiError, api, type Permission, type Role } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
+import { PrincipalDeleteModal } from '@/components/PrincipalDeleteModal'
 
 export default function RolesPage() {
   const { has } = useAuth()
@@ -11,6 +12,7 @@ export default function RolesPage() {
   const [loading, setLoading] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<Role | null>(null)
+  const [toDelete, setToDelete] = useState<Role | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -94,14 +96,42 @@ export default function RolesPage() {
           {
             title: '操作',
             render: (_, r) =>
-              has('identity.role_write') &&
               r.team_id != null && (
-                <Button size="small" onClick={() => setEditing(r)}>
-                  设置权限
-                </Button>
+                <Space>
+                  {has('identity.role_delete') && (
+                    <Button size="small" danger onClick={() => setToDelete(r)}>
+                      删除
+                    </Button>
+                  )}
+                  {has('identity.role_write') && (
+                    <Button size="small" onClick={() => setEditing(r)}>
+                      设置权限
+                    </Button>
+                  )}
+                </Space>
               ),
           },
         ]}
+      />
+
+      <PrincipalDeleteModal
+        open={!!toDelete}
+        title={`删除角色：${toDelete?.name ?? ''}`}
+        endpoint={`/roles/${toDelete?.id ?? 0}`}
+        consequences={
+          <>
+            角色会被<b>物理删除</b>，其权限配置一并消失，<b>没有回收站</b>。
+            <br />
+            <b>仍挂有成员的角色删不掉</b>——请先在成员管理里把成员的该角色解绑。
+            <br />
+            有变更历史的角色会留下墓碑，审计里的历史记录仍可读；模板角色不可删。
+          </>
+        }
+        successOf={(r) =>
+          r.tombstoned ? '角色已删除（有历史，已留墓碑）' : '角色已删除（无历史，未留墓碑）'
+        }
+        onClose={() => setToDelete(null)}
+        onDeleted={() => void load()}
       />
 
       <Drawer
