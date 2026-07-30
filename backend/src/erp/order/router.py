@@ -17,6 +17,7 @@ from erp.core.authn import CurrentUser, require_permission
 from erp.core.db import get_session, get_session_factory
 from erp.core.errors import BusinessError
 from erp.core.idempotency import run_idempotent
+from erp.identity import delete as principal_delete
 from erp.identity.schemas import Page
 from erp.order import checks as order_checks
 from erp.order import procurement
@@ -477,6 +478,24 @@ async def update_purchaser(
         "purchaser.update", "purchaser", purchaser_id, after=body.model_dump(exclude_none=True)
     )
     return {"id": purchaser_id}
+
+
+@order_router.delete("/purchasers/{purchaser_id}")
+async def delete_purchaser(
+    purchaser_id: int,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.purchaser_delete"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    reason: str = Query(min_length=1, max_length=200, description="删除原因，落墓碑与审计留痕"),
+) -> dict[str, Any]:
+    """硬删除一个采购方（§7.1；R2-14 14b）。在途执行单未走完一律拒删。
+
+    `reason` 走 query、不消费 `Idempotency-Key`——理由同 catalog/identity 的
+    DELETE 端点（DELETE body 沿途会被丢；重放第二次 404 而实体确已删除）。
+    """
+    return await principal_delete.delete_purchaser(
+        session, user=user, request=request, purchaser_id=purchaser_id, reason=reason
+    )
 
 
 # ── 发货回传（增量4；Idempotency-Key required——RS-03b 尾账收账）──
