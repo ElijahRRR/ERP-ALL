@@ -375,8 +375,11 @@ PERMISSIONLESS_OPS: dict[tuple[str, str], str] = {
     ("POST", f"{API_PREFIX}/worker/v1/tasks/result"): "node 认证域",
     # 采购插件回调面：走**第四认证域**（X-Plugin-Instance + X-Plugin-Token 双头部
     # `_plugin_auth`），**实例专属令牌、禁全局共享密钥**。同 worker，不是没保护而是
-    # 保护在另一条道上——且比 worker 多两层：服务层 SQL 谓词 `buyer_account_id = :bound`
+    # 保护在另一条道上——且比 worker 多两层：服务层 SQL 谓词 `team_id = :t`
     # 与 `ctx_tx` 的 RLS 团队边界（插件绑定唯一团队，不像 worker 那样跨团队跑 system_tx）。
+    # 〔2026-07-31 更正：原文写的是 `buyer_account_id = :bound`。身份模型更正后
+    #  （Owner 2026-07-30，图纸 07:288-340）令牌绑一台授权浏览器而不绑买家账号，
+    #  越权边界改为**跨团队必败**，谓词随之改成显式 `team_id = :t`。〕
     # **本组只有 6 条**：厂商 9 端点 − `updateBuyerCookie`（裁定不实现，cookies 整条链删净）
     # − `amazonOrderPig` 那 2 条（Jc 平台轨迹同步，我方无消费者）。
     ("GET", f"{API_PREFIX}/purchase-plugin/getNeedPurchaseOrders"): "plugin 认证域（双头部令牌）",

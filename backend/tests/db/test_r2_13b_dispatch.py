@@ -11,6 +11,7 @@
 | `daily_cap` 唯一落点＝账号列，按**派发数**计 | `TestDailyCap` |
 | 并发拉同一账号不得超 cap（账号行锁，审查 B1） | `test_concurrent_pulls_do_not_exceed_cap` |
 | 签发端点**不收 `live`**（升实盘只能 PATCH，审查 B2） | `test_issue_refuses_live` |
+| 账号状态机：认领缺 site 422 / 驳回是终态 / 不许回 pending_claim | `test_status_transition_guard` |
 | 站点路由 + 无收货国不猜（fail-closed + 告警） | `TestSiteRouting` 三例 |
 | 账号闸只挡拉取（写路径不受影响见下注） | `TestAccountGate` |
 | 应用层对偶：已派机器人的单不许再派人工/领单/回填 | `TestAssignInterlock` 前三例 |
@@ -19,7 +20,8 @@
 | 插件异常单的显式出边（释放回池 → 可重新派发） | `TestPluginRelease` 四例 |
 | 14b 耦合：退回池必须一并清 `buyer_account_id` | `test_pool_return_clears_buyer_account` |
 | 令牌散列链：明文不入库、列表与审计不回显 | `test_issue_instance_token_only_once` |
-| 日界与批量上限不写死（配置中心） | `TestDispatchConfig` 两例 |
+| 日界 / 批量上限 / 待认领上限不写死（配置中心） | `TestDispatchConfig` 两例 |
+| **F2 的结构性继任者**：解析按团队隔离 + 行锁带 team 谓词 | `TestLockIntegrity` |
 
 **不在本文件**（属 13a/13d）：双头部认证与越权（A 实例取不到 B 账号的任务）、
 六端点 401、插件侧回填/异常/物流语义。本文件只测服务层与管理面。
@@ -45,6 +47,8 @@ from sqlalchemy import text
 from erp.core.db import ctx_tx, get_session_factory
 from erp.core.security import hash_password
 from erp.order import dispatch
+from erp.plugin import identity
+from erp.plugin.auth import PluginPrincipal
 
 from .test_identity_api import PASSWORD, _login
 
@@ -59,7 +63,7 @@ def seeded(migrated_db: str) -> dict[str, int]:
             "INSERT INTO app.team (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (TEAM,)
         )
         team_id = conn.execute("SELECT id FROM app.team WHERE name = %s", (TEAM,)).fetchone()[0]
-        # 先清依赖方再清被依赖方（plugin_instance → buyer_account 是硬外键）
+        # 顺序保留（实例与账号之间的硬外键已随身份模型更正删除，先清依赖方仍无害）
         for t in ("plugin_instance", "buyer_account", "procurement_order", "order_check",
                   "order_line", "channel_order", "purchaser", "deleted_principal",
                   "automation_policy", "store"):  # fmt: skip
@@ -187,6 +191,12 @@ def _mk_account(
     status: str = "active",
     daily_cap: int | None = None,
 ) -> int:
+    """造一个**已认领可派单**的买家账号。
+
+    `status` 默认 `'active'` 且**显式传进 INSERT**：0043 本轮把列默认值改成
+    `'pending_claim'`（首见自动登记的归宿）。依赖列默认值的话，本文件全部派发用例会静默
+    变成「绿的空判据」——建出来的都是待认领账号，闸① 一律不派，而断言只查「拿到了空」。
+    """
     tag = uuid.uuid4().hex[:8]
     return int(
         conn.execute(
@@ -198,7 +208,11 @@ def _mk_account(
 
 
 async def _pull(team_id: int, account_id: int, *, limit: int = 20) -> tuple[list[int], str | None]:
-    """按账号真实属性调派发内核（形状与 13a 的拉取端点将来要用的一致）。"""
+    """按账号真实属性调派发内核。
+
+    真实链路里这个 `account_id` 由 `plugin/identity.py` 从请求带的 `customerId` **在本团队
+    内解析**而来（不再来自实例绑定）；本文件测的是派发内核本身，故直接给 id。
+    """
     async with ctx_tx(get_session_factory(), team_id=team_id) as s:
         acc = (
             (
@@ -506,6 +520,38 @@ class TestSiteRouting:
         claimed, _ = await _pull(seeded["team"], account, limit=10)
         assert claimed == [ca]
 
+    async def test_null_site_is_fail_closed(self, migrated_db: str, seeded: dict) -> None:
+        """`site IS NULL`（待认领/已驳回行）⇒ 返回空 + 不抛。
+
+        正常路径到不了这里（active ⇒ `ck_buyer_account_claimed` 保证 site 非空），钉的是
+        **闸① 被谁删掉时的第二响**：没有站点就不知道该去哪个亚马逊站买，猜一个就是买错国家。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            tag = uuid.uuid4().hex[:8]
+            account = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, external_customer_id, status)"
+                    " VALUES (%s, %s, 'pending_claim') RETURNING id",
+                    (seeded["team"], f"A{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        async with ctx_tx(get_session_factory(), team_id=seeded["team"]) as s:
+            claimed, reason = await dispatch.claim_tasks_for_account(
+                s,
+                team_id=seeded["team"],
+                buyer_account_id=account,
+                site=None,
+                # 刻意传 active：把闸① 让开，才测得到站点那一层的 fail-closed
+                account_status="active",
+                daily_cap=None,
+                limit=5,
+            )
+        assert claimed == []
+        assert reason == dispatch.REASON_ACCOUNT_NOT_ACTIVE
+
     def test_site_country_map_keeps_jp(self) -> None:
         """铁律 9：日本站 MVP 不做，但代码路径保留——将来开 JP 只补映射表。"""
         assert dispatch.site_country("amazon_co_jp") == "JP"
@@ -516,10 +562,18 @@ class TestSiteRouting:
 
 
 class TestAccountGate:
-    @pytest.mark.parametrize("status", ["paused", "blocked", "retired"])
+    @pytest.mark.parametrize(
+        "status", ["paused", "blocked", "retired", "pending_claim", "rejected"]
+    )
     async def test_non_active_pulls_nothing(
         self, migrated_db: str, seeded: dict, status: str
     ) -> None:
+        """闸① 只认「是不是 active」。
+
+        `pending_claim`（首见自动登记的待认领行）与 `rejected`（已驳回）本轮加进参数化：
+        **未认领一律不派单**是图纸 `07:261` 的硬要求，而 `dispatch.py` 刻意**不知道**这两个
+        身份态存在——它们天然落在非 active 一侧，这条用例钉的正是「不需要额外分支」。
+        """
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
             account = _mk_account(conn, seeded, status=status)
@@ -891,7 +945,8 @@ class TestBuyerAccountCrud:
         assert r.status_code == 201, r.text
         account_id = r.json()["id"]
 
-        # 缺 external_customer_id（人工录入通道，必填）
+        # 缺 external_customer_id（本端点是可选预建捷径，仍必填——一条解析不到的账号行
+        # 永远收不到任务；不知道 customerId 时的正解是走首见自动登记，不是在这里留空）
         r = client.post(
             "/api/v1/buyer-accounts",
             headers=auth,
@@ -924,7 +979,10 @@ class TestBuyerAccountCrud:
         page = client.get("/api/v1/buyer-accounts", headers=auth, params={"q": tag}).json()
         assert page["total"] == 1
         assert page["items"][0]["daily_cap"] is None
-        assert page["items"][0]["active_instance_count"] == 0
+        assert "active_instance_count" not in page["items"][0], (
+            "实例不再属于账号（令牌绑浏览器），这个计数没有意义——留着会让运营以为"
+            "「这个号有 N 台机器在跑」"
+        )
         # 改了不该动的列没被顺手改掉
         assert page["items"][0]["external_customer_id"] == f"A{tag.upper()}"
 
@@ -937,11 +995,13 @@ class TestBuyerAccountCrud:
         auth = _login(client, ADMIN, PASSWORD)
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
-            account = _mk_account(conn, seeded)
 
-        r = client.post(f"/api/v1/buyer-accounts/{account}/plugin-instances", headers=auth, json={})
+        r = client.post("/api/v1/plugin-instances", headers=auth, json={})
         assert r.status_code == 201, r.text
         issued = r.json()
+        assert "buyer_account_id" not in issued, (
+            "签发响应仍带账号 id——令牌绑的是一台授权浏览器，不绑任何买家账号"
+        )
         token = issued["token"]
         assert token and len(token) >= 32
 
@@ -955,11 +1015,11 @@ class TestBuyerAccountCrud:
         # 默认档不会花钱（安全边界即默认值）
         assert stored[1] == "stop_before_payment" and stored[2] == "active"
 
-        listed = client.get(f"/api/v1/buyer-accounts/{account}/plugin-instances", headers=auth)
+        listed = client.get("/api/v1/plugin-instances", headers=auth)
         assert listed.status_code == 200
         blob = listed.text
         assert token not in blob and stored[0] not in blob, "列表端点不得回显 token 任何形态"
-        assert listed.json()[0]["exec_mode"] == "stop_before_payment"
+        assert listed.json()["items"][0]["exec_mode"] == "stop_before_payment"
 
         # 审计快照同样不得含凭证（audit_log 是长期留存面）
         with psycopg.connect(migrated_db) as conn:
@@ -982,9 +1042,8 @@ class TestBuyerAccountCrud:
         auth = _login(client, ADMIN, PASSWORD)
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
-            account = _mk_account(conn, seeded)
 
-        url = f"/api/v1/buyer-accounts/{account}/plugin-instances"
+        url = "/api/v1/plugin-instances"
         r = client.post(url, headers=auth, json={"exec_mode": "live"})
         assert r.status_code == 422, r.text
         for mode in ("dry_run", "stop_before_payment"):
@@ -994,8 +1053,8 @@ class TestBuyerAccountCrud:
             modes = [
                 r[0]
                 for r in conn.execute(
-                    "SELECT exec_mode FROM app.plugin_instance WHERE buyer_account_id = %s",
-                    (account,),
+                    "SELECT exec_mode FROM app.plugin_instance WHERE team_id = %s",
+                    (seeded["team"],),
                 ).fetchall()
             ]
         assert "live" not in modes, "签发路径落库了 live 实例"
@@ -1006,10 +1065,7 @@ class TestBuyerAccountCrud:
         auth = _login(client, ADMIN, PASSWORD)
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
-            account = _mk_account(conn, seeded)
-        instance = client.post(
-            f"/api/v1/buyer-accounts/{account}/plugin-instances", headers=auth, json={}
-        ).json()["id"]
+        instance = client.post("/api/v1/plugin-instances", headers=auth, json={}).json()["id"]
 
         r = client.patch(
             f"/api/v1/plugin-instances/{instance}", headers=auth, json={"exec_mode": "live"}
@@ -1043,31 +1099,134 @@ class TestBuyerAccountCrud:
             ).fetchone()
         assert row[0] == "revoked" and row[1] is not None and row[2] == "live"
 
-    def test_cross_team_account_is_invisible(
-        self, client: TestClient, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    def test_status_transition_guard(
+        self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
-        """RLS + 显式 team 谓词双保险：别的团队的账号一律 404（不是 403，不泄露存在性）。"""
+        """账号状态机：认领要补齐、驳回是终态、任何态都不许回「待认领」。
+
+        三条各挡一件事：
+        - `pending_claim → active` **缺 site** ⇒ 422 `BUYER_ACCOUNT_CLAIM_INCOMPLETE`
+          （库层 `ck_buyer_account_claimed` 不许裸奔成 500——运营少填一格是日常操作）；
+        - `rejected → active` ⇒ 409：驳回必须粘住，否则伪造者换个时间再灌一次；
+        - `active → pending_claim` ⇒ 409：待认领是系统发现态，不是运营可选态。
+
+        顺带钉住审计动作名分化——审计面要能一眼看出「谁认领的、谁驳回的」。
+        """
         auth = _login(client, ADMIN, PASSWORD)
-        tag = uuid.uuid4().hex[:6]
+        tag = uuid.uuid4().hex[:8]
         with psycopg.connect(migrated_db, autocommit=True) as conn:
-            other = int(
+            _reset(conn, seeded)
+            pending = int(
                 conn.execute(
-                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id)"
-                    " VALUES (%s, %s, 'amazon_com', %s) RETURNING id",
-                    (team_ids[0], f"他团队-{tag}", f"X{tag.upper()}"),
+                    "INSERT INTO app.buyer_account (team_id, external_customer_id)"
+                    " VALUES (%s, %s) RETURNING id",
+                    (seeded["team"], f"P{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            assert (
+                conn.execute(
+                    "SELECT status FROM app.buyer_account WHERE id = %s", (pending,)
+                ).fetchone()[0]
+                == "pending_claim"
+            ), "0043 的 DEFAULT 不是 pending_claim——首见自动登记的归宿被改了"
+
+        url = f"/api/v1/buyer-accounts/{pending}"
+        half = client.patch(url, headers=auth, json={"status": "active", "label": f"补名-{tag}"})
+        assert half.status_code == 422, half.text
+        assert half.json()["error"]["code"] == "BUYER_ACCOUNT_CLAIM_INCOMPLETE"
+
+        full = client.patch(
+            url,
+            headers=auth,
+            json={"status": "active", "label": f"补名-{tag}", "site": "amazon_com"},
+        )
+        assert full.status_code == 200, full.text
+
+        back = client.patch(url, headers=auth, json={"status": "pending_claim"})
+        assert back.status_code == 409, back.text
+        assert back.json()["error"]["code"] == "BUYER_ACCOUNT_STATUS_TRANSITION"
+
+        # 另起一条走驳回，并验证终态粘住
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            doomed = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, external_customer_id)"
+                    " VALUES (%s, %s) RETURNING id",
+                    (seeded["team"], f"D{tag.upper()}"),
                 ).fetchone()[0]
             )
         assert (
-            client.get(f"/api/v1/buyer-accounts/{other}/plugin-instances", headers=auth).status_code
-            == 404
+            client.patch(
+                f"/api/v1/buyer-accounts/{doomed}", headers=auth, json={"status": "rejected"}
+            ).status_code
+            == 200
         )
+        revive = client.patch(
+            f"/api/v1/buyer-accounts/{doomed}", headers=auth, json={"status": "active"}
+        )
+        assert revive.status_code == 409, revive.text
+        assert revive.json()["error"]["code"] == "BUYER_ACCOUNT_STATUS_TRANSITION"
+
+        with psycopg.connect(migrated_db) as conn:
+            actions = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT action FROM app.audit_log WHERE object_type = 'buyer_account'"
+                    " AND object_id = ANY(%s)",
+                    ([str(pending), str(doomed)],),
+                ).fetchall()
+            }
+        assert {"buyer_account.claim", "buyer_account.reject"} <= actions, (
+            f"审计动作名没按转移分化（实得 {sorted(actions)}）"
+        )
+
+    def test_cross_team_is_invisible(
+        self, client: TestClient, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """RLS + 显式 team 谓词双保险：别的团队的账号一律 404；别的团队的实例不进列表。
+
+        实例那一腿本轮改形：旧的 `/buyer-accounts/{id}/plugin-instances` 已删除，
+        列表改为团队级——于是「不泄露别团队实例」的判据从「404」变成「不出现在我的列表里」。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        tag = uuid.uuid4().hex[:6]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            other = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_com', %s, 'active') RETURNING id",
+                    (team_ids[0], f"他团队-{tag}", f"X{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            other_instance = int(
+                conn.execute(
+                    "INSERT INTO app.plugin_instance (team_id, token_hash)"
+                    " VALUES (%s, repeat('a', 64)) RETURNING id",
+                    (team_ids[0],),
+                ).fetchone()[0]
+            )
+        mine = client.post("/api/v1/plugin-instances", headers=auth, json={}).json()["id"]
         assert (
             client.patch(
                 f"/api/v1/buyer-accounts/{other}", headers=auth, json={"note": "越权"}
             ).status_code
             == 404
         )
+        assert (
+            client.patch(
+                f"/api/v1/plugin-instances/{other_instance}",
+                headers=auth,
+                json={"exec_mode": "dry_run"},
+            ).status_code
+            == 404
+        )
+        listed = client.get("/api/v1/plugin-instances", headers=auth)
+        assert listed.status_code == 200, listed.text
+        ids = [i["id"] for i in listed.json()["items"]]
+        assert mine in ids and other_instance not in ids, "别的团队的实例出现在了本团队列表里"
         with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.plugin_instance WHERE id = %s", (other_instance,))
             conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (other,))
 
 
@@ -1076,7 +1235,13 @@ class TestBuyerAccountCrud:
 
 class TestDispatchConfig:
     async def test_defaults_and_team_override(self, migrated_db: str, seeded: dict) -> None:
-        async def read() -> tuple[str, int]:
+        """三个键各测默认 / team 覆盖 / 硬上限。
+
+        返回值本轮由元组改成 `DispatchConfig` dataclass——**元组一路加字段就是让调用点
+        静默错位**，而本轮正好加了第三项 `pending_claim_cap`（首见登记的洪水闸）。
+        """
+
+        async def read() -> dispatch.DispatchConfig:
             async with ctx_tx(get_session_factory(), team_id=seeded["team"]) as s:
                 return await dispatch.dispatch_config(s, seeded["team"])
 
@@ -1085,7 +1250,11 @@ class TestDispatchConfig:
                 "DELETE FROM app.team_config WHERE team_id = %s AND key = %s",
                 (seeded["team"], dispatch.PLUGIN_DISPATCH_CONFIG_KEY),
             )
-        assert await read() == (dispatch.DEFAULT_DAY_BOUNDARY_TZ, dispatch.DEFAULT_PULL_BATCH_MAX)
+        assert await read() == dispatch.DispatchConfig(
+            day_boundary_tz=dispatch.DEFAULT_DAY_BOUNDARY_TZ,
+            pull_batch_max=dispatch.DEFAULT_PULL_BATCH_MAX,
+            pending_claim_cap=dispatch.DEFAULT_PENDING_CLAIM_CAP,
+        )
 
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             conn.execute(
@@ -1093,12 +1262,26 @@ class TestDispatchConfig:
                 (
                     seeded["team"],
                     dispatch.PLUGIN_DISPATCH_CONFIG_KEY,
-                    '{"day_boundary_tz": "America/Los_Angeles", "pull_batch_max": 999}',
+                    '{"day_boundary_tz": "America/Los_Angeles", "pull_batch_max": 999,'
+                    ' "pending_claim_cap": 7}',
                 ),
             )
-        tz, batch = await read()
-        assert tz == "America/Los_Angeles"
-        assert batch == dispatch.PULL_BATCH_HARD_MAX, "配置写多大都不许越过硬上限"
+        cfg = await read()
+        assert cfg.day_boundary_tz == "America/Los_Angeles"
+        assert cfg.pull_batch_max == dispatch.PULL_BATCH_HARD_MAX, "配置写多大都不许越过硬上限"
+        assert cfg.pending_claim_cap == 7
+
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.team_config SET value = %s::jsonb WHERE team_id = %s AND key = %s",
+                (
+                    '{"pending_claim_cap": 99999}',
+                    seeded["team"],
+                    dispatch.PLUGIN_DISPATCH_CONFIG_KEY,
+                ),
+            )
+        assert (await read()).pending_claim_cap == dispatch.PENDING_CLAIM_CAP_HARD_MAX
+
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             conn.execute(
                 "DELETE FROM app.team_config WHERE team_id = %s AND key = %s",
@@ -1111,51 +1294,108 @@ class TestDispatchConfig:
         assert dispatch.day_start("UTC").hour == 0
 
 
-# ── 审查 #50 首轮 F2：账号行锁的两层守卫 ──
+# ── 审查 #50 首轮 F2：删掉的那一半与留下的那一半 ──
 
 
 class TestLockIntegrity:
-    """F2 双修的承重：修法 2（复合外键让 team 错配不可表示）+ 修法 1（零行即炸）。
+    """**F2 没有被回退，是被取代**——这句话必须在这里有可执行的证据。
 
-    背景：`SELECT … FOR UPDATE` 匹配零行**不报错也不加锁**——若实例 team ≠ 账号 team，
-    认证在 system_tx 下 JOIN 成功、随后 ctx_tx 里账号行被 RLS 挡住 → 零行、无锁、无声，
-    daily_cap 串行化回到 B1 修复前。与 14b `_delete_row_or_die` 同族（RLS 下静默零行）。
+    F2 原是双修：修法 2（`plugin_instance (buyer_account_id, team_id)` 复合外键，让
+    「实例 team ≠ 账号 team」不可表示）+ 修法 1（行锁零行即炸）。
+
+    身份模型更正（Owner 2026-07-30）之后，**修法 2 守护的失效链第一环被物理删除**：
+    认证不再 JOIN `buyer_account`，账号改为在 `ctx_tx` 内按
+    `team_id = :t AND external_customer_id = :c` 解析——账号 team **由查询谓词构造**，
+    「实例与账号配对」这件事根本不存在了，那个形状不可被表达。故复合外键随绑定列一并删除。
+
+    替代物三条，本类钉住其中两条（第三条 `uq_buyer_account` 由 13a 的并发首见用例钉）：
+    - `test_resolution_is_team_scoped` —— 解析谓词 `team_id = :t` + RLS 双层；
+    - `test_lock_zero_rows_raises` —— 行锁零行即炸，且**本轮加强**：锁语句补了
+      `AND team_id = :t`，跨团队的真实账号 id 同样炸响而不是静默零行。
     """
 
-    def test_team_mismatch_unrepresentable(self, migrated_db: str, seeded: dict) -> None:
-        """修法 2：`plugin_instance (buyer_account_id, team_id)` 复合外键——migrator
-        直连（绕全部应用层）注入「实例挂 A 团队、账号属 B 团队」必须被库拒绝。"""
-        with psycopg.connect(migrated_db, autocommit=True) as conn:
-            _reset(conn, seeded)
-            account = _mk_account(conn, seeded)
-            conn.execute(
-                "INSERT INTO app.team (name) VALUES ('F2错配注入团队')"
-                " ON CONFLICT (name) DO NOTHING"
-            )
-            other_team = conn.execute(
-                "SELECT id FROM app.team WHERE name = 'F2错配注入团队'"
-            ).fetchone()[0]
-            with pytest.raises(psycopg.errors.ForeignKeyViolation):
-                conn.execute(
-                    "INSERT INTO app.plugin_instance (team_id, buyer_account_id, token_hash)"
-                    " VALUES (%s, %s, repeat('f', 64))",
-                    (other_team, account),
-                )
-            conn.execute("DELETE FROM app.team WHERE name = 'F2错配注入团队'")
+    async def test_resolution_is_team_scoped(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """两个团队各有一个**同名 customerId** 的账号 ⇒ 各自解析到自己那一行，互不可见。
 
-    async def test_lock_zero_rows_raises(self, migrated_db: str, seeded: dict) -> None:
-        """修法 1：锁不到账号行（不存在的 id——与 RLS 错配同构的形状）必须炸响，
-        而不是无锁继续派发。"""
+        *修前红*：解析 SQL 漏掉 `team_id = :t` 且 RLS 被绕开时立刻红（会解析到对方的行，
+        进而把对方的额度与站点当成自己的）。
+        """
+        tag = uuid.uuid4().hex[:8]
+        shared_customer = f"SHARED{tag.upper()}"
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
-        async with ctx_tx(get_session_factory(), team_id=seeded["team"]) as s:
-            with pytest.raises(RuntimeError, match="行锁匹配零行"):
-                await dispatch.claim_tasks_for_account(
-                    s,
-                    team_id=seeded["team"],
-                    buyer_account_id=999_999_999,
-                    site="amazon_com",
-                    account_status="active",
-                    daily_cap=None,
-                    limit=5,
-                )
+            mine = _mk_account(conn, seeded)
+            conn.execute(
+                "UPDATE app.buyer_account SET external_customer_id = %s WHERE id = %s",
+                (shared_customer, mine),
+            )
+            theirs = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_ca', %s, 'active') RETURNING id",
+                    (other_team, f"他团队-{tag}", shared_customer),
+                ).fetchone()[0]
+            )
+
+        async def resolve(team_id: int) -> identity.ResolvedAccount | None:
+            principal = PluginPrincipal(
+                instance_id=-1, team_id=team_id, exec_mode="stop_before_payment"
+            )
+            async with ctx_tx(get_session_factory(), team_id=team_id) as s:
+                return await identity.resolve_customer(s, principal, shared_customer)
+
+        got_mine, got_theirs = await resolve(seeded["team"]), await resolve(other_team)
+        assert got_mine is not None and got_mine.id == mine
+        assert got_theirs is not None and got_theirs.id == theirs
+        assert got_mine.site == "amazon_com" and got_theirs.site == "amazon_ca"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (theirs,))
+
+    async def test_lock_zero_rows_raises(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """行锁匹配零行必须**炸响**，而不是无锁继续派发。
+
+        `SELECT … FOR UPDATE` 匹配零行**不报错也不加锁** ⇒ daily_cap 串行化静默消失、
+        超发回到 B1 修复前。两腿：不存在的 id（原有）+ **另一团队的真实账号 id**
+        （本轮新增，钉住锁语句里那条 `AND team_id = :t`）。
+        """
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
+        tag = uuid.uuid4().hex[:8]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            foreign_account = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_com', %s, 'active') RETURNING id",
+                    (other_team, f"他团队锁-{tag}", f"L{tag.upper()}"),
+                ).fetchone()[0]
+            )
+        # 第三腿 `is_super=True` 是**唯一能把新旧两版区分开的那一腿**：前两腿在 RLS 下
+        # 本就零行（谓词删不删都红不了），只有绕开 RLS 时「显式 team 谓词」才是唯一的铃。
+        # 这正是 F2 原本守护的形状——认证曾在 `system_tx` 下 JOIN 账号表。
+        legs: list[tuple[int, bool, str]] = [
+            (999_999_999, False, "不存在的 id"),
+            (foreign_account, False, "别团队的真实 id（RLS 挡）"),
+            (foreign_account, True, "别团队的真实 id + 绕开 RLS（只剩显式 team 谓词挡）"),
+        ]
+        for account_id, is_super, label in legs:
+            async with ctx_tx(
+                get_session_factory(), team_id=seeded["team"], is_super=is_super
+            ) as s:
+                with pytest.raises(RuntimeError, match="行锁匹配零行"):
+                    await dispatch.claim_tasks_for_account(
+                        s,
+                        team_id=seeded["team"],
+                        buyer_account_id=account_id,
+                        site="amazon_com",
+                        account_status="active",
+                        daily_cap=None,
+                        limit=5,
+                    )
+            assert label  # 可读标签（失败信息里能看出是哪一腿）
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (foreign_account,))

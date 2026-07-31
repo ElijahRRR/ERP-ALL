@@ -1,23 +1,24 @@
 """插件机器面服务层（R2-13 13a 通道与拉取语义；13d 补回填/异常/物流语义）。
 
-## 三层越权防线（验收③「A 实例取不到 B 账号的任务」就靠这三层）
+## 三层越权防线（验收③「跨团队必败」就靠这三层）
 
 | 层 | 落点 | 挡什么 |
 |---|---|---|
-| ① 授权链 | `token → plugin_instance → buyer_account_id`（`plugin/auth.py`） | **唯一授权来源** |
-| ② SQL 谓词 | 本文件每条业务 SQL 都带 `buyer_account_id = :bound` | 拿别人的 po_id 来调 |
+| ① 授权链 | `token → plugin_instance.team_id`（`plugin/auth.py`） | **唯一授权来源** |
+| ② SQL 谓词 | 本文件每条业务 SQL 都带 `team_id = :t` | 拿别的团队的 po_id 来调 |
 | ③ RLS | 路由层用 `ctx_tx(team_id=principal.team_id)` | 跨团队（兜底，不是主防线） |
 
-**`customerId` 永远只做一致性校验，绝不作授权依据**——它是请求体/查询串里的自称身份，
-把它当依据等于让调用方自选身份。不符即 403，但那是「插件配错了买家号」的诊断信号，
-不是安全边界。
+**`customerId` 是路由参数，不是鉴权凭据**（身份模型更正，Owner 2026-07-30，图纸
+`07:288-340`）：令牌回答「这是不是团队 T 的一台授权浏览器」，`customerId` 回答「这台
+浏览器此刻登的是哪个买家号」，解析只在团队 T 内进行（`plugin/identity.py`）。
+**越权边界＝跨团队必败**，不是「实例只能取自己账号的任务」；错误码
+`PLUGIN_CUSTOMER_MISMATCH` 随此整条删除。
 
 ## 为什么插件路径不复用 worker 的 `system_tx`
 
 worker 跨团队派任务，必须绕 RLS；插件**绑定唯一团队**（`plugin_instance.team_id`），
 没有任何理由自己关掉 RLS 兜底。故只有认证那一步走 `system_tx`（还不知道团队），
-之后全部换 `ctx_tx`。本文件的每个函数都假定自己跑在**已绑定团队**的会话里——
-`_account_snapshot` 取不到账号行即 fail-closed 回 401，那正是 RLS 生效的证据。
+之后全部换 `ctx_tx`。本文件的每个函数都假定自己跑在**已绑定团队**的会话里。
 
 ## 13d 的四条定性决定（写反任何一条都会造出「钱花了系统不知道」）
 
@@ -66,8 +67,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from erp.core.errors import BusinessError
 from erp.notify.service import Severity, notify
 from erp.order import dispatch, procurement
-from erp.plugin import classify, parse, schemas
-from erp.plugin.auth import PluginPrincipal, auth_failed
+from erp.plugin import classify, identity, parse, schemas
+from erp.plugin.auth import PluginPrincipal
 
 log = structlog.get_logger()
 
@@ -75,8 +76,6 @@ log = structlog.get_logger()
 # 内部会 `min(limit, procurement.plugin_dispatch.pull_batch_max)`。插件侧不带数量参数
 # （厂商协议就没有），故批量完全由服务端配置控制。
 _PULL_LIMIT = dispatch.PULL_BATCH_HARD_MAX
-
-_ACCOUNT_SQL = "SELECT site, status, daily_cap FROM app.buyer_account WHERE id = :a"
 
 # 任务头：渠道单号 + 收货地址。`orderNo` 取**渠道单号**而不是 `PO-{id}`——插件只把它
 # 写日志与回调参数，取渠道单号让插件日志能与 Walmart 后台直接对上。
@@ -114,16 +113,32 @@ SELECT po.id AS po_id, co.channel_order_no, po.purchase_order_ref
  LIMIT :n
 """
 
-# 越权闸：**谓词里的 `buyer_account_id = :a` 就是防线②**。取不到行的两种情形
-# （不存在 / 是别人的）回同一个错误码——越权应当在日志里一眼看见，同时不泄露存在性。
+# 越权闸（本轮改形）。**两个谓词各挡一件事，缺一不可**：
+#
+# - `team_id = :t` —— **跨团队必败**（防线②的显式谓词，不靠 RLS 单撑）。
+# - `buyer_account_id IS NOT NULL` —— **人工/门户单不许被插件写**。这是审查 A1
+#   「人工/插件双买」那族修复的落点，不得回退。
+#
+# **写回四端点的请求体根本不带 `customerId`**（厂商协议如此，已逐字取证：
+# `.agent/evidence/R2-13/owner-reverse-engineering-20260730.md` C.2/E.2 与 `schemas.py`），
+# 故写回路径的归属检查**不可能**也**不应该**基于身份。
+#
+# **同团队、但派给了另一个账号的单 → 放行**，这是有意的语义变更：一台浏览器在拉单后被
+# 换登了另一个亚马逊号，它手上那笔**已经花出去的钱**仍然必须报得回来。旧模型下这会 403
+# ⇒「钱花了系统不知道」，比「同团队内浏览器串号」严重得多（后者按图纸 07:338-340 明确
+# **不在威胁模型内**：自家机器、自家运营，且只能用实际登录的号付款，串号只会让自己拿到
+# 买不了的单）。
+#
+# 取不到行的两种情形（不存在 / 不是本团队的插件单）回同一个错误码——越权应当在日志里
+# 一眼看见，同时不泄露存在性。
 # `note` 一并取回：演练/校验两档要往它后面追加痕迹，而追加前必须先看它里面有没有同一条
 # （去重与长度闸都在 Python 侧，见 `_append_note`）。
-_OWNED_PO_SQL = """
+_TEAM_PLUGIN_PO_SQL = """
 SELECT id, team_id, order_id, order_date, status, buyer_account_id, purchase_order_ref,
        purchase_cost, tax_amount, freight_cost, exchange_rate_locked, exception_kind,
        exception_reason, note
   FROM app.procurement_order
- WHERE id = :p AND buyer_account_id = :a
+ WHERE id = :p AND team_id = :t AND buyer_account_id IS NOT NULL
  FOR UPDATE
 """
 
@@ -283,60 +298,35 @@ WHERE id = :p
 """
 
 
-def ensure_customer(principal: PluginPrincipal, customer_id: str) -> None:
-    """`customerId` 一致性校验（**不是授权**，见模块头注）。
-
-    不符即 403：这通常意味着指纹浏览器里登录的买家号与本实例绑定的账号对不上，
-    继续跑下去就是「用 A 的浏览器拍 B 的单」。fail-closed。
-    """
-    if customer_id != principal.external_customer_id:
-        raise BusinessError(
-            "PLUGIN_CUSTOMER_MISMATCH",
-            "customerId 与本实例绑定的买家账号不符——请确认浏览器登录的账号与实例绑定一致",
-            http_status=403,
-        )
-
-
-async def _account_snapshot(session: AsyncSession, principal: PluginPrincipal) -> dict[str, Any]:
-    """读本实例绑定账号的路由属性（site / status / daily_cap）。
-
-    取不到行 = 该账号在**当前团队上下文**里不可见。正常路径不可能发生（团队来自实例行），
-    真发生就是 RLS 上下文与实例绑定不一致，**按认证失败处理**（fail-closed，不猜）。
-    """
-    row = (
-        (await session.execute(text(_ACCOUNT_SQL), {"a": principal.buyer_account_id}))
-        .mappings()
-        .one_or_none()
-    )
-    if row is None:
-        log.warning(
-            "plugin.account_invisible",
-            instance=principal.instance_id,
-            account=principal.buyer_account_id,
-            team=principal.team_id,
-        )
-        raise auth_failed()
-    return dict(row)
-
-
 async def touch_last_seen(
-    session: AsyncSession, principal: PluginPrincipal, *, version: str | None = None
+    session: AsyncSession,
+    principal: PluginPrincipal,
+    *,
+    account_id: int | None,
+    customer_id: str,
+    version: str | None = None,
 ) -> None:
-    """刷新账号与实例的「最近露面」时间。
+    """刷新账号与实例的「最近露面」，并记下这台浏览器此刻登的是哪个号。
 
     **只在两个拉取端点调用**，不放进认证依赖：放进去的话每个写端点都要多一次 UPDATE
     与行锁竞争，而回填/物流那几条路径的并发恰好最高。
+
+    - **待认领账号也 touch `last_seen_at`**：管理端据此显示「这个未认领的号此刻真的在
+      活动」，认领动作才有依据。
+    - `last_seen_customer_id` **每次拉取都写**（哪怕解析不到账号 ⇒ `account_id is None`）
+      ——它是观察值，与解析结果无关。**任何鉴权判定都不得读它**（0044 头注六）。
     """
-    await session.execute(
-        text("UPDATE app.buyer_account SET last_seen_at = now() WHERE id = :a"),
-        {"a": principal.buyer_account_id},
-    )
+    if account_id is not None:
+        await session.execute(
+            text("UPDATE app.buyer_account SET last_seen_at = now() WHERE id = :a"),
+            {"a": account_id},
+        )
     await session.execute(
         text(
             "UPDATE app.plugin_instance SET last_seen_at = now(),"
-            " version = coalesce(:v, version) WHERE id = :i"
+            " version = coalesce(:v, version), last_seen_customer_id = :c WHERE id = :i"
         ),
-        {"v": version, "i": principal.instance_id},
+        {"v": version, "c": customer_id, "i": principal.instance_id},
     )
 
 
@@ -368,24 +358,52 @@ async def pull_purchase_tasks(
     缺 ASIN 的单在派发层就不进候选（`dispatch._CANDIDATE_SQL` 的 `NOT EXISTS`）；本函数
     再兜一次——**已派出去之后商品被删**（14a 硬删）会让老单变成缺 ASIN，那种单只能
     告警 + 不下发，不能猜一个 ASIN 给插件去买。
+
+    `customerId` 在**本团队范围内**解析成账号（`plugin/identity.py`）：解析不到即当新号
+    首见登记为 `pending_claim` 并回空数组——**四种情形响应逐字节同形**，不泄漏存在性。
     """
-    ensure_customer(principal, customer_id)
-    account = await _account_snapshot(session, principal)
+    resolved = await identity.resolve_customer(session, principal, customer_id)
+    # `touch_last_seen` 必须留在**派发之后**（见下方 B1 提醒），但 `last_seen_customer_id`
+    # 与解析结果无关，故它对「解析不到」这一支同样要跑——两件事在同一个函数里。
+    if resolved is None or resolved.status != "active":
+        await touch_last_seen(
+            session,
+            principal,
+            account_id=None if resolved is None else resolved.id,
+            customer_id=customer_id,
+            version=version,
+        )
+        log.info(
+            "plugin.pull.empty",
+            instance=principal.instance_id,
+            account=None if resolved is None else resolved.id,
+            reason="CUSTOMER_UNRESOLVED" if resolved is None else f"ACCOUNT_{resolved.status}",
+        )
+        return []
+
+    # **`status != 'active'` 的短路在调用方**：`dispatch.py` 不该知道 `pending_claim` /
+    # `rejected` 这些身份态存在，它只认「能不能派单」。`claim_tasks_for_account` 的闸①
+    # 作为**双层冗余保留**（13b 的测试直接调它）。
     po_ids, reason = await dispatch.claim_tasks_for_account(
         session,
         team_id=principal.team_id,
-        buyer_account_id=principal.buyer_account_id,
-        site=account["site"],
-        account_status=account["status"],
-        daily_cap=account["daily_cap"],
+        buyer_account_id=resolved.id,
+        site=resolved.site,
+        account_status=resolved.status,
+        daily_cap=resolved.daily_cap,
         limit=_PULL_LIMIT,
     )
-    await touch_last_seen(session, principal, version=version)
+    # ⚠️ **顺序承重**：`touch_last_seen` 会 UPDATE 同一行账号，它必须留在派发**之后**。
+    # 挪到前面，账号行锁就变成「由 touch 隐式获得」——正是 `dispatch.py` 第③步注释
+    # 明令警告的那种「将来任何一次挪动都会静默拿掉 daily_cap 串行化」。
+    await touch_last_seen(
+        session, principal, account_id=resolved.id, customer_id=customer_id, version=version
+    )
     if not po_ids:
         log.info(
             "plugin.pull.empty",
             instance=principal.instance_id,
-            account=principal.buyer_account_id,
+            account=resolved.id,
             reason=reason,
         )
         return []
@@ -404,7 +422,9 @@ async def pull_purchase_tasks(
         rows = lines.get(po_id, [])
         missing = [r for r in rows if not str(r["source_ref"] or "").strip()]
         if head is None or not rows or missing:
-            await _warn_undeliverable_task(session, principal, po_id, empty=not rows)
+            await _warn_undeliverable_task(
+                session, principal, po_id, account_id=resolved.id, empty=not rows
+            )
             continue
         ship_to = dict(head["ship_to"] or {})
         state = _opt(ship_to, "state")
@@ -435,7 +455,12 @@ async def pull_purchase_tasks(
 
 
 async def _warn_undeliverable_task(
-    session: AsyncSession, principal: PluginPrincipal, po_id: int, *, empty: bool
+    session: AsyncSession,
+    principal: PluginPrincipal,
+    po_id: int,
+    *,
+    account_id: int,
+    empty: bool,
 ) -> None:
     """已派给本账号、但下发不出去的单（缺 ASIN / 缺行 / 订单头查不到）。
 
@@ -444,7 +469,7 @@ async def _warn_undeliverable_task(
     再堆一张。留给人处置，并让人**看得见**。
     """
     body = (
-        f"执行单 #{po_id} 已派给买家账号 {principal.buyer_account_id}，"
+        f"执行单 #{po_id} 已派给买家账号 {account_id}，"
         + ("但该订单没有任何订单行" if empty else "但存在缺少亚马逊 ASIN 的订单行")
         + "，已跳过下发（不猜 ASIN）——请补齐商品来源或人工处置该单"
     )
@@ -467,12 +492,24 @@ async def pull_sync_orders(
     """端点 6：拉待物流同步订单（`{id, orderNo, platformOrderNo}`）。
 
     响应字段未逐字取证，见 `schemas.PluginSyncOrder` 的说明——**如实登记缺口，不编字段**。
+
+    **本端点不设 `status` 闸**（与端点 1 的区别是刻意的）：它拉的是「已经买了、等物流」
+    的单。账号被 `paused`/`blocked` 时**必须照常同步**——包裹在路上，钱已经花了
+    （同 `plugin/auth.py` 头注那条纪律）。`pending_claim` 账号名下不可能有已拍单，
+    `_SYNC_SQL` 自然返回空，无需特判。
+
+    `po.buyer_account_id = :a` 的语义正确：这台浏览器现在登着 A 号，就同步 A 号买的单。
     """
-    ensure_customer(principal, customer_id)
-    await _account_snapshot(session, principal)
-    _, batch_max = await dispatch.dispatch_config(session, principal.team_id)
+    resolved = await identity.resolve_customer(session, principal, customer_id)
+    if resolved is None:
+        # 撞洪水闸：连待认领行都没落，没有账号可指 ⇒ 无单可同步（响应同形）。
+        await touch_last_seen(
+            session, principal, account_id=None, customer_id=customer_id, version=version
+        )
+        return []
+    cfg = await dispatch.dispatch_config(session, principal.team_id)
     rows = (
-        await session.execute(text(_SYNC_SQL), {"a": principal.buyer_account_id, "n": batch_max})
+        await session.execute(text(_SYNC_SQL), {"a": resolved.id, "n": cfg.pull_batch_max})
     ).mappings()
     out = [
         schemas.PluginSyncOrder(
@@ -482,20 +519,32 @@ async def pull_sync_orders(
         ).model_dump()
         for r in rows
     ]
-    await touch_last_seen(session, principal, version=version)
+    await touch_last_seen(
+        session, principal, account_id=resolved.id, customer_id=customer_id, version=version
+    )
     return out
 
 
-async def load_owned_po(
+async def load_team_plugin_po(
     session: AsyncSession, principal: PluginPrincipal, po_id: int
 ) -> dict[str, Any]:
-    """取一张**属于本实例绑定账号**的执行单并加行锁；否则 403。
+    """取一张**本团队的插件派发单**并加行锁；否则 403（谓词与理由见 `_TEAM_PLUGIN_PO_SQL`）。
 
-    不存在的 po_id 与别人的 po_id **回同一码同一状态**：越权是安全事件，应当在日志里
+    函数名不再暗示「账号归属」——写回四端点的请求体不带 `customerId`，归属检查是
+    「团队 + 是插件派发单」，**不是**身份一致性。**同团队、派给另一个账号的单放行**
+    （有意的语义变更：钱已经花出去了，报得回来比「浏览器串号」重要得多）。
+
+    **写回路径不加任何身份一致性校验**：`principal.instance_id` 已经落进
+    `backfill_actor_id`（0045 词表 `kind='plugin'`），「这单是哪台浏览器填的」有据可查；
+    再加一个「实例最近登的号 vs 单的账号」的闸，只会在正常换号时产生噪声告警。
+
+    不存在的 po_id 与别人团队的 po_id **回同一码同一状态**：越权是安全事件，应当在日志里
     一眼看见（`plugin.task_not_owned`），但不该顺带告诉调用方「这个 id 是存在的」。
+    错误码 `PLUGIN_TASK_NOT_OWNED` **逐字保留**——runbook、openapi、部署指令三处都钉着
+    它，改码等于作废已完成的真机取证；只改了 message 文案。
     """
     row = (
-        (await session.execute(text(_OWNED_PO_SQL), {"p": po_id, "a": principal.buyer_account_id}))
+        (await session.execute(text(_TEAM_PLUGIN_PO_SQL), {"p": po_id, "t": principal.team_id}))
         .mappings()
         .one_or_none()
     )
@@ -503,12 +552,12 @@ async def load_owned_po(
         log.warning(
             "plugin.task_not_owned",
             instance=principal.instance_id,
-            account=principal.buyer_account_id,
+            team=principal.team_id,
             po_id=po_id,
         )
         raise BusinessError(
             "PLUGIN_TASK_NOT_OWNED",
-            "该采购任务不属于本插件实例绑定的买家账号",
+            "该采购任务不是本团队的插件派发任务",
             http_status=403,
         )
     return dict(row)
@@ -837,7 +886,7 @@ async def record_purchase_finish(
     返回体里的 `exception_kind` 是**本次核对的结论**：live/演练档同时也是落库值，
     `dry_run` 档只回结论不落库（那一档的全部意义就是「只告诉我核对结果」）。
     """
-    po = await load_owned_po(session, principal, body.id)
+    po = await load_team_plugin_po(session, principal, body.id)
     po_id = int(po["id"])
     mode = _resolve_exec_mode(principal, body.execMode, po_id=po_id)
     ref = _clean(body.platformOrderNo)
@@ -946,7 +995,7 @@ async def record_task_failure(
     该单此后不会再被自动派发：`status='exception'` 不在 `dispatch` 的候选集
     （`status='unassigned'`）里，天然停住，不需要额外的「拉黑」动作。
     """
-    po = await load_owned_po(session, principal, body.id)
+    po = await load_team_plugin_po(session, principal, body.id)
     po_id = int(po["id"])
     raw = _clean(body.failReason)
     kind = classify.classify_failure(raw)
@@ -1001,7 +1050,7 @@ async def record_channel_status(
     `orderNo` 只做一致性校验，**不符仅记 warn 不拒**：渠道单号漂移不该挡住
     「渠道那边把这单取消了」这个事实入库——那是要发起退款/换购的信号。
     """
-    po = await load_owned_po(session, principal, body.id)
+    po = await load_team_plugin_po(session, principal, body.id)
     po_id = int(po["id"])
     kind = _CHANNEL_STATUS_KINDS[body.status]
     reason = f"渠道回报状态 {body.status}（91=已取消/退款，92=订单不存在）"
@@ -1146,7 +1195,7 @@ async def record_tracking(
     **绝不动 `channel_order.internal_status`**（D6）：那一列是「我方已发货给 Walmart
     买家」，由 `order/ship.py` 驱动。亚马逊侧包裹在路上 ≠ 我方已发货。
     """
-    po = await load_owned_po(session, principal, body.orderId)
+    po = await load_team_plugin_po(session, principal, body.orderId)
     po_id = int(po["id"])
     tracking_no = _clean(body.trackingNumber)
 

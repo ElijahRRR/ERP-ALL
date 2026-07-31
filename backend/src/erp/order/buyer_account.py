@@ -9,21 +9,37 @@
 1. **明文令牌只在签发响应里出现一次**。列表端点不返回 token 的任何形态（含 hash）；
    审计 `after` 快照同样不得含 token 或 hash——审计表是长期留存面，把 hash 写进去等于
    给离线爆破留了素材，而 `after` 快照本就不该有凭证。遗失只能吊销后重新签发。
-2. **`external_customer_id` 是必填的人工录入项**，不是系统生成值。来源=在指纹浏览器里
-   打开该买家账号的亚马逊页面 → 点插件面板「提取 customerId」→ 复制粘贴。Owner
-   2026-07-30 补-2 明确：**预配置的账号 ID 本来就是这么来的**，那个按钮要保留
-   （一手来源 §7 写「不需要」，那条错）。前端表单必须挂这段帮助文案，否则运营开不了号。
+2. **签发是团队级的，不挂在任何买家账号下**（身份模型更正，Owner 2026-07-30，图纸
+   `07:288-340`）：令牌绑「一台授权浏览器」，「此刻登的是哪个号」由插件每次请求带的
+   `customerId` 在团队内解析。旧形状 `POST /buyer-accounts/{id}/plugin-instances`
+   **已删除而不是保留**——它的形状本身就是「先有账号才能发令牌」，正是 Owner 指出的
+   死循环（装插件前先要知道 customerId，而 customerId 只有装了插件才看得到）。
+   留着它等于把被推翻的模型在契约里留一份可用副本。
 3. **`exec_mode` 默认 `stop_before_payment`**：新签发的实例**不会花钱**。升到 `live`
    是一次显式的 PATCH，有 audit 留痕。默认值即安全边界，不要为了「省一步」改默认。
    **且签发端点根本不收 `live`**（`ISSUE_EXEC_MODE_PATTERN`，审查 B2）：只把 live 写成
    「非默认值」挡不住 `{"exec_mode": "live"}` 这一步直签——那条不变量得由校验器执行，
    不是由默认值执行。
 
+## 账号状态机（本轮新增；首见自动登记的出口就在这里）
+
+`pending_claim` 是**发现态**：插件带上来一个本团队没见过的 `customerId`，服务端自动
+落一条待认领行（`plugin/identity.py`），**未认领一律不派单**。运营的两个出口：
+
+- **认领** `pending_claim → active`：必须同时补齐 `label` 与 `site`，库层
+  `ck_buyer_account_claimed` 兜底，缺则 422 `BUYER_ACCOUNT_CLAIM_INCOMPLETE`。
+- **驳回** `pending_claim → rejected`：**终态**。不删行是刻意的——本表无 DELETE 授权，
+  而驳回必须**粘住**：该 `(team_id, customerId)` 被 `uq_buyer_account` 永久占住，
+  同一个伪造 id 再灌一万次都只解析到那一行、零新增行、零新通知。
+
+**任何状态都不许转回 `pending_claim`**：那是发现态，不是运营可选态。
+
 ## 为什么没有 DELETE 端点
 
 买家账号的删除分支挂在 14b 之后另补（0043 头注、`review_list.json:1097`）：授 DELETE
-就必须同时建 DELETE 策略，且要处置「该账号名下在途执行单」与 `plugin_instance` 的硬
-外键——那是删除路径要显式解决的问题，不是本单顺手能带的。停用走 `status='retired'`。
+就必须同时建 DELETE 策略，且要处置「该账号名下在途执行单」——那是删除路径要显式解决
+的问题，不是本单顺手能带的。停用走 `status='retired'`。
+**这条与「驳回是终态」互为因果**：正因为删不掉，驳回才必须粘住而不是删行。
 """
 
 from typing import Any
@@ -41,7 +57,9 @@ from erp.identity.schemas import Page
 from erp.plugin import auth as plugin_auth
 
 SITE_PATTERN = "^(amazon_com|amazon_ca|amazon_co_jp)$"
-STATUS_PATTERN = "^(active|paused|blocked|retired)$"
+# 词表与 0043 的 `ck_buyer_account_status` 同源（本轮加 `pending_claim` 与 `rejected`）。
+# 合法转移另由 `_ALLOWED_TRANSITIONS` 约束——pattern 只管「是不是词表内的值」。
+STATUS_PATTERN = "^(pending_claim|active|paused|blocked|retired|rejected)$"
 EXEC_MODE_PATTERN = "^(dry_run|stop_before_payment|live)$"
 # **签发端点不收 `live`**（审查 B2）：纪律 3 说的是「升到 live 是一次显式的 PATCH」，
 # 而签发端点原先照抄了三档 pattern——于是一次 POST 就能直接拿到一把实盘令牌，
@@ -54,10 +72,25 @@ _ACCOUNT_COLUMNS = (
     " last_seen_at, note, created_at, updated_at"
 )
 # 实例列表**逐字不含 token_hash**——纪律 1 的落点在这一行。
+# `buyer_account_id` 本轮随身份模型更正删除；`last_seen_customer_id` 是它的替代观察列
+# （**不参与鉴权**，0044 头注六）。
 _INSTANCE_COLUMNS = (
-    "id, buyer_account_id, status, exec_mode, version,"
+    "id, status, exec_mode, version, last_seen_customer_id,"
     " last_seen_at, revoked_at, created_at, updated_at"
 )
+
+# 账号状态机（本轮新增，理由见模块头注）。键 = 现状，值 = 允许转入的目标。
+# 自转移一律允许：PATCH 常常只改 note/daily_cap 而把 status 原样带上来。
+_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    "pending_claim": {"pending_claim", "active", "rejected"},
+    "active": {"active", "paused", "blocked", "retired"},
+    "paused": {"paused", "active", "blocked", "retired"},
+    "blocked": {"blocked", "active", "paused", "retired"},
+    "retired": {"retired", "active"},
+    # 终态：驳回是粘的，粘性即治理（无 DELETE 授权 ⇒ 该 customerId 被永久占住 ⇒
+    # 同一个伪造 id 再灌不会产生新行、新通知）。
+    "rejected": {"rejected"},
+}
 
 
 class BuyerAccountIn(BaseModel):
@@ -88,15 +121,26 @@ class PluginInstancePatchIn(BaseModel):
     exec_mode: str = Field(pattern=EXEC_MODE_PATTERN)
 
 
-def _duplicate_error(exc: IntegrityError) -> BusinessError:
-    """把 `uq_buyer_account*` 的唯一冲突翻译成能直接照做的提示。
+def _write_error(exc: IntegrityError) -> BusinessError:
+    """把 `buyer_account` 的库层约束违例翻译成能直接照做的提示。
 
-    指明撞的是哪一把键：两把键的处置完全不同（撞 customerId ＝ 这个亚马逊账号已经建过，
-    去改那一条；撞 label ＝ 换个名字）。只回「重复」会让运营两条路都试一遍。
+    指明撞的是哪一把键：处置完全不同（撞 customerId ＝ 这个亚马逊账号已经建过/已被自动
+    登记，去改那一条；撞 label ＝ 换个名字；撞认领闸 ＝ 补齐站点与账号名）。
+    只回「重复」会让运营把几条路都试一遍。
+
+    **认领闸不能裸奔成 500**：`ck_buyer_account_claimed` 是「运营补 label/site 后转
+    active」那句话的库内执行者，运营在界面上少填一格是**日常操作**，不是系统故障。
     """
     diag = getattr(getattr(exc, "orig", None), "diag", None)
     name = str(getattr(diag, "constraint_name", "") or "")
     blob = str(getattr(exc, "orig", exc))
+    if name == "ck_buyer_account_claimed" or "ck_buyer_account_claimed" in blob:
+        return BusinessError(
+            "BUYER_ACCOUNT_CLAIM_INCOMPLETE",
+            "认领必须同时补齐账号名与站点——没有站点就不知道该去哪个亚马逊站下单",
+            detail={"fields": ["label", "site"]},
+            http_status=422,
+        )
     if name == "uq_buyer_account_label" or "uq_buyer_account_label" in blob:
         field, hint = "label", "同团队内已有同名买家账号——换一个名字"
     else:
@@ -105,6 +149,36 @@ def _duplicate_error(exc: IntegrityError) -> BusinessError:
             "同团队内已有该 customerId 的买家账号——同一个亚马逊账号不要建两条",
         )
     return BusinessError("BUYER_ACCOUNT_DUPLICATE", hint, detail={"field": field}, http_status=409)
+
+
+def _transition_action(current: str, target: str | None) -> str:
+    """校验状态转移合法性，并返回本次该记哪个审计动作名。
+
+    **审计动作名按转移分化**（`buyer_account.claim` / `.reject` / `.update`）：审计面要能
+    一眼看出「谁认领的、谁驳回的」——那两件事的责任分量与「改个备注」不是一回事。
+    """
+    if target is None or target == current:
+        return "buyer_account.update"
+    allowed = _ALLOWED_TRANSITIONS.get(current, set())
+    if target not in allowed:
+        raise BusinessError(
+            "BUYER_ACCOUNT_STATUS_TRANSITION",
+            f"买家账号状态不能从 {current} 改成 {target}"
+            + (
+                "——已驳回是终态（该 customerId 已被永久占用，不会再自动登记）"
+                if current == "rejected"
+                else "——「待认领」是系统发现态，不是可选状态"
+                if target == "pending_claim"
+                else ""
+            ),
+            detail={"from": current, "to": target, "allowed": sorted(allowed)},
+            http_status=409,
+        )
+    if current == "pending_claim" and target == "active":
+        return "buyer_account.claim"
+    if target == "rejected":
+        return "buyer_account.reject"
+    return "buyer_account.update"
 
 
 async def _load_account(session: AsyncSession, account_id: int, team_id: int) -> dict[str, Any]:
@@ -150,14 +224,12 @@ async def list_accounts(
             await session.execute(text(f"SELECT count(*) FROM app.buyer_account {where}"), params)
         ).scalar_one()
     )
+    # **不再有 `active_instance_count` 子查询**：实例不属于账号了（令牌绑浏览器），
+    # 那个数没有意义——留着只会让运营以为「这个号有 2 台机器在跑」。
     rows = (
         await session.execute(
             text(
-                f"SELECT {_ACCOUNT_COLUMNS},"
-                " (SELECT count(*) FROM app.plugin_instance pi"
-                "   WHERE pi.buyer_account_id = app.buyer_account.id"
-                "     AND pi.status = 'active') AS active_instance_count"
-                f" FROM app.buyer_account {where}"
+                f"SELECT {_ACCOUNT_COLUMNS} FROM app.buyer_account {where}"
                 " ORDER BY id DESC LIMIT :lim OFFSET :off"
             ),
             {**params, "lim": size, "off": (page - 1) * size},
@@ -170,11 +242,21 @@ async def list_accounts(
 async def create_account(
     session: AsyncSession, *, user: CurrentUser, request: Request | None, body: BuyerAccountIn
 ) -> dict[str, Any]:
+    """手工预建一个买家账号。**这是可选捷径，不是必经通道。**
+
+    主路径是**首见自动登记**：让插件在那台浏览器上跑一次拉取，服务端会把它带上来的
+    `customerId` 落成一条待认领行，运营再补 label/site 认领即可（`plugin/identity.py`）。
+    本端点保留是因为运营手上若已经有 customerId（例如从别处抄来的），预建能省一轮往返。
+
+    `external_customer_id` 在**本端点**仍必填：一条解析不到的账号行永远收不到任务，
+    是一条无用行。缺它的正确做法是走主路径，而不是在这里留个空。
+    """
     if not body.label or not body.site or not body.external_customer_id:
         raise BusinessError(
             "BUYER_ACCOUNT_FIELDS_REQUIRED",
             "label/site/external_customer_id 必填"
-            "（customerId 用插件面板「提取 customerId」按钮取出后粘贴）",
+            "（若还不知道 customerId，别在这里建号——让插件在那台浏览器上跑一次拉取，"
+            "系统会自动登记一条待认领账号，届时补齐名称与站点认领即可）",
         )
     try:
         async with session.begin_nested():
@@ -199,7 +281,7 @@ async def create_account(
                 )
             ).scalar_one()
     except IntegrityError as exc:
-        raise _duplicate_error(exc) from exc
+        raise _write_error(exc) from exc
     await AuditWriter.for_user(session, user, request).log(
         "buyer_account.create",
         "buyer_account",
@@ -217,7 +299,14 @@ async def update_account(
     account_id: int,
     body: BuyerAccountIn,
 ) -> dict[str, Any]:
+    """改买家账号。**认领与驳回也走这里**（不新增路由、不新增权限码）。
+
+    状态转移由 `_ALLOWED_TRANSITIONS` 守卫；`label`/`site` 是否补齐由库层
+    `ck_buyer_account_claimed` 守卫（`_write_error` 把它翻成 422，不许裸奔成 500）。
+    审计动作名按转移分化——审计面要能一眼看出「谁认领的、谁驳回的」。
+    """
     before = await _load_account(session, account_id, user.team_id or -1)
+    action = _transition_action(str(before["status"]), body.status)
     sets: list[str] = []
     params: dict[str, Any] = {"i": account_id}
     for col, val in (
@@ -237,9 +326,9 @@ async def update_account(
                     text(f"UPDATE app.buyer_account SET {', '.join(sets)} WHERE id = :i"), params
                 )
         except IntegrityError as exc:
-            raise _duplicate_error(exc) from exc
+            raise _write_error(exc) from exc
     await AuditWriter.for_user(session, user, request).log(
-        "buyer_account.update",
+        action,
         "buyer_account",
         account_id,
         before={k: before[k] for k in ("label", "site", "status", "daily_cap")},
@@ -249,20 +338,48 @@ async def update_account(
 
 
 async def list_instances(
-    session: AsyncSession, *, team_id: int, account_id: int
-) -> list[dict[str, Any]]:
-    """列该账号的插件实例。**响应逐字不含 token**（纪律 1）。"""
-    await _load_account(session, account_id, team_id)
+    session: AsyncSession,
+    *,
+    team_id: int,
+    status: str | None,
+    page: int,
+    size: int,
+) -> Page[dict[str, Any]]:
+    """列**本团队**的插件实例（服务端分页，008 §3）。**响应逐字不含 token**（纪律 1）。
+
+    `LEFT JOIN buyer_account` 取最近登录号的名称与状态：只显示一串 `customerId`
+    对运营没有用，图纸 `07:283` 说的排障场景（「这台机器现在登的是哪个号」）需要看得懂
+    的名字，以及「那个号认领了没有」。JOIN 条件带 `ba.team_id = :t` 是显式防线②
+    ——`last_seen_customer_id` 是外部输入的字符串，不是外键。
+    """
+    where = "WHERE pi.team_id = :t"
+    params: dict[str, Any] = {"t": team_id}
+    if status:
+        where += " AND pi.status = :st"
+        params["st"] = status
+    total = int(
+        (
+            await session.execute(
+                text(f"SELECT count(*) FROM app.plugin_instance pi {where}"), params
+            )
+        ).scalar_one()
+    )
+    columns = ", ".join(f"pi.{c.strip()}" for c in _INSTANCE_COLUMNS.split(","))
     rows = (
         await session.execute(
             text(
-                f"SELECT {_INSTANCE_COLUMNS} FROM app.plugin_instance"
-                " WHERE buyer_account_id = :a ORDER BY id DESC"
+                f"SELECT {columns},"
+                " ba.label AS last_seen_account_label,"
+                " ba.status AS last_seen_account_status"
+                " FROM app.plugin_instance pi"
+                " LEFT JOIN app.buyer_account ba"
+                "   ON ba.team_id = :t AND ba.external_customer_id = pi.last_seen_customer_id"
+                f" {where} ORDER BY pi.id DESC LIMIT :lim OFFSET :off"
             ),
-            {"a": account_id},
+            {**params, "lim": size, "off": (page - 1) * size},
         )
     ).mappings()
-    return [dict(r) for r in rows]
+    return Page(items=[dict(r) for r in rows], total=total, page=page, size=size)
 
 
 async def issue_instance(
@@ -270,26 +387,26 @@ async def issue_instance(
     *,
     user: CurrentUser,
     request: Request | None,
-    account_id: int,
     body: PluginInstanceIssueIn,
 ) -> dict[str, Any]:
-    """签发一个实例令牌。**明文只在本函数的返回值里出现这一次**（纪律 1）。
+    """签发一个**团队级**实例令牌。**明文只在本函数的返回值里出现这一次**（纪律 1）。
 
-    权限点单列 `procurement.plugin_instance_admin`：签发 = 发一个能代表该买家账号
+    权限点单列 `procurement.plugin_instance_admin`：签发 = 发一个能代表本团队
     真下单的凭证，与「改个备注名」不是同一量级（0043 头注）。
+
+    **不收 `account_id`**（纪律 2）：令牌绑一台授权浏览器，装插件时还不知道那台浏览器
+    会登哪个买家号——那正是死循环被解开的地方。
     """
-    account = await _load_account(session, account_id, user.team_id or -1)
     token = plugin_auth.mint_token()
     instance_id = (
         await session.execute(
             text(
                 "INSERT INTO app.plugin_instance"
-                " (team_id, buyer_account_id, token_hash, exec_mode, version, created_by)"
-                " VALUES (:t, :a, :h, :m, :v, :by) RETURNING id"
+                " (team_id, token_hash, exec_mode, version, created_by)"
+                " VALUES (:t, :h, :m, :v, :by) RETURNING id"
             ),
             {
-                "t": account["team_id"],
-                "a": account_id,
+                "t": user.team_id,
                 "h": plugin_auth.token_digest(token),
                 "m": body.exec_mode,
                 "v": body.version,
@@ -297,18 +414,14 @@ async def issue_instance(
             },
         )
     ).scalar_one()
-    # after 快照只记「签给谁、什么档」——**不含 token 明文，也不含 hash**（纪律 1）。
+    # after 快照只记「什么档」——**不含 token 明文，也不含 hash**（纪律 1）。
     await AuditWriter.for_user(session, user, request).log(
         "plugin_instance.issue",
         "plugin_instance",
         instance_id,
-        after={
-            "buyer_account_id": account_id,
-            "exec_mode": body.exec_mode,
-            "version": body.version,
-        },
+        after={"exec_mode": body.exec_mode, "version": body.version},
     )
-    return {"id": int(instance_id), "buyer_account_id": account_id, "token": token}
+    return {"id": int(instance_id), "token": token}
 
 
 async def _load_instance(session: AsyncSession, instance_id: int, team_id: int) -> dict[str, Any]:

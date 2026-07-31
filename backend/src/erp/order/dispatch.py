@@ -40,6 +40,7 @@
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -62,6 +63,11 @@ DEFAULT_DAY_BOUNDARY_TZ = "UTC"
 DEFAULT_PULL_BATCH_MAX = 20
 # 硬上限：配置写多大都不许超过这个数。一次拉太多会让掉线账号一口气占住大批单。
 PULL_BATCH_HARD_MAX = 100
+# 首见自动登记的洪水闸（`plugin/identity.py` 消费）：本团队 `pending_claim` 行数上限。
+# 持有效令牌者可用伪造 `customerId` 无限灌待认领行，而 `buyer_account` 无 DELETE 授权
+# ⇒ 永久残留。默认值属**业务口径**，已随 PR 列入批注回传的开放问题④。
+DEFAULT_PENDING_CLAIM_CAP = 50
+PENDING_CLAIM_CAP_HARD_MAX = 500
 
 # 站点 ↔ 收货国。**渠道事实不是业务参数**，故是代码常量不进配置中心：
 # 美国订单只能在 amazon.com 买，这不是可配置的口径。
@@ -90,7 +96,13 @@ SELECT id FROM app.procurement_order
 # 账号行锁：把「读余量 → 认领」整段按账号串行化（审查 B1，理由见模块头注）。
 # **锁的是账号行而不是候选单**——余量是账号级的共享资源，锁候选单只会让两路各锁各的
 # 一批、谁也不挡谁。取 `id` 一列即可，本语句只为拿锁，不为取值。
-_LOCK_ACCOUNT_SQL = "SELECT id FROM app.buyer_account WHERE id = :a FOR UPDATE"
+#
+# **锁的对象＝「按本次请求的 customerId 解析出的账号行」**（身份模型更正后）：一台浏览器
+# 换登另一个号就换一把锁，这正是我们要的粒度——额度是账号的，不是浏览器的。
+#
+# `AND team_id = :t`（本轮新增）：把 F2 修法 1 的零行守卫从「靠 RLS 兜」升级成**显式检查**。
+# 0044 那条复合外键删除后，这里是「拿到一个不属于本团队的账号 id」唯一还会响的铃。
+_LOCK_ACCOUNT_SQL = "SELECT id FROM app.buyer_account WHERE id = :a AND team_id = :t FOR UPDATE"
 
 # 今日已派发且未取消的单数（daily_cap 的分子，口径见模块头注）
 _USED_TODAY_SQL = """
@@ -215,7 +227,21 @@ def day_start(tz_name: str) -> datetime:
     return datetime(local.year, local.month, local.day, tzinfo=tz)
 
 
-async def dispatch_config(session: AsyncSession, team_id: int) -> tuple[str, int]:
+@dataclass(frozen=True)
+class DispatchConfig:
+    """`procurement.plugin_dispatch` 的解析结果。
+
+    **为什么从元组改成 dataclass**：本轮要加第三项（`pending_claim_cap`），而元组一路加
+    字段就是让调用点静默错位——三个调用点里任何一个写成 `tz, batch = cfg` 都会在加第四项
+    时变成一次解包异常（好情况）或错位赋值（坏情况）。字段名是这里唯一可靠的对齐方式。
+    """
+
+    day_boundary_tz: str
+    pull_batch_max: int
+    pending_claim_cap: int
+
+
+async def dispatch_config(session: AsyncSession, team_id: int) -> DispatchConfig:
     """读 `procurement.plugin_dispatch`：team_config > system_config > 代码默认（D-Q11）。
 
     经请求会话直读（GUC 已就位、RLS 生效）——同 `pricing/service.py::confirm_threshold`
@@ -240,7 +266,15 @@ async def dispatch_config(session: AsyncSession, team_id: int) -> tuple[str, int
         batch_max = int(cfg.get("pull_batch_max") or DEFAULT_PULL_BATCH_MAX)
     except (TypeError, ValueError):
         batch_max = DEFAULT_PULL_BATCH_MAX
-    return tz, max(1, min(batch_max, PULL_BATCH_HARD_MAX))
+    try:
+        pending_cap = int(cfg.get("pending_claim_cap") or DEFAULT_PENDING_CLAIM_CAP)
+    except (TypeError, ValueError):
+        pending_cap = DEFAULT_PENDING_CLAIM_CAP
+    return DispatchConfig(
+        day_boundary_tz=tz,
+        pull_batch_max=max(1, min(batch_max, PULL_BATCH_HARD_MAX)),
+        pending_claim_cap=max(1, min(pending_cap, PENDING_CLAIM_CAP_HARD_MAX)),
+    )
 
 
 async def _warn_unroutable(session: AsyncSession, *, team_id: int, limit: int) -> None:
@@ -386,7 +420,7 @@ async def claim_tasks_for_account(
     *,
     team_id: int,
     buyer_account_id: int,
-    site: str,
+    site: str | None,
     account_status: str,
     daily_cap: int | None,
     limit: int,
@@ -394,19 +428,29 @@ async def claim_tasks_for_account(
     """给一个买家账号派任务；返回 (可执行的 po_id 列表, 空列表时的原因码)。
 
     非空返回时原因码为 None。列表**含续拉的老单**——插件重启后必须还能看见自己的单。
+
+    `buyer_account_id` 由调用方**按本次请求的 `customerId` 在本团队内解析**得到
+    （`plugin/identity.py`），不再来自实例绑定——身份模型更正后账号是路由参数。
     """
     # ① 账号闸：非 active 一律不派。**注意这只挡拉取，不挡写路径**——账号被停时
     #    回填/异常/物流三条路必须照常通，否则「钱花了但系统不知道」（13a 认证域纪律）。
+    #
+    #    `pending_claim`（首见自动登记的待认领行）与 `rejected`（已驳回）天然落在这条闸
+    #    的非 active 一侧，无需另加分支：本函数**不该知道**那两个身份态存在，它只认
+    #    「能不能派单」。调用方另有一道同义短路（双层冗余，见 `plugin/service.py`）。
     if account_status != "active":
         return [], REASON_ACCOUNT_NOT_ACTIVE
 
-    country = site_country(site)
+    # `site` 可为 NULL（0043 本轮放松：待认领/已驳回行没有站点）。正常路径到不了这里
+    #  ——active ⇒ `ck_buyer_account_claimed` 保证 site 非空——但**闸①被谁删掉时这里是
+    #  第二响**：没有站点就不知道该去哪个亚马逊站买，猜一个就是买错国家。fail-closed。
+    country = None if site is None else site_country(site)
     if country is None:
         log.warning("plugin.dispatch.unknown_site", site=site, account=buyer_account_id)
         return [], REASON_ACCOUNT_NOT_ACTIVE
 
-    tz_name, batch_max = await dispatch_config(session, team_id)
-    want = max(1, min(limit, batch_max))
+    cfg = await dispatch_config(session, team_id)
+    want = max(1, min(limit, cfg.pull_batch_max))
 
     # ② 续拉（不消耗新额度）
     reclaimed = [
@@ -429,15 +473,20 @@ async def claim_tasks_for_account(
     # 拉取本就是异常形态；且将来任何「按账号计的额度」都自动落在这把锁的保护里。
     # 代价可控——锁的粒度是单个账号行，不同账号之间零竞争。
     #
-    # 零行必炸（审查 #50 首轮 F2）：`SELECT … FOR UPDATE` 匹配零行**不报错也不加锁**，
-    # 串行化会静默消失、超发回到 B1 修复前——与 14b `_delete_row_or_die` 拦的是同一族
-    # 「RLS/错配下静默零行」。今天签发链保证 instance.team == account.team，且 0044 的
-    # 复合外键已让错配不可表示；这行是万一两者都被绕开时的最后一响。
-    locked = (await session.execute(text(_LOCK_ACCOUNT_SQL), {"a": buyer_account_id})).one_or_none()
+    # 零行必炸（审查 #50 首轮 F2 修法 1，**本轮保留并加强**）：`SELECT … FOR UPDATE`
+    # 匹配零行**不报错也不加锁**，串行化会静默消失、超发回到 B1 修复前——与 14b
+    # `_delete_row_or_die` 拦的是同一族「RLS/错配下静默零行」。
+    #
+    # F2 修法 2（复合外键）随身份模型更正删除（0044 头注二逐条论证：它守护的失效链第一环
+    # ——认证时 JOIN 账号表——已被物理删除）。本行是那三条替代物之一，且**加了显式
+    # `team_id = :t`**：不再只靠 RLS 兜底，跨团队 id 在这里直接炸响而不是静默零行。
+    locked = (
+        await session.execute(text(_LOCK_ACCOUNT_SQL), {"a": buyer_account_id, "t": team_id})
+    ).one_or_none()
     if locked is None:
         raise RuntimeError(
-            f"buyer_account id={buyer_account_id} 行锁匹配零行——账号不存在或 RLS 挡住了它"
-            "（team 错配？），日限串行化无法成立，拒绝派发"
+            f"buyer_account id={buyer_account_id} 行锁匹配零行——账号不存在、不属于本团队"
+            f"（team_id={team_id}），或 RLS 挡住了它；日限串行化无法成立，拒绝派发"
         )
 
     # ④ daily_cap 余量（NULL = 不限）
@@ -446,7 +495,7 @@ async def claim_tasks_for_account(
             (
                 await session.execute(
                     text(_USED_TODAY_SQL),
-                    {"a": buyer_account_id, "day_start": day_start(tz_name)},
+                    {"a": buyer_account_id, "day_start": day_start(cfg.day_boundary_tz)},
                 )
             ).scalar_one()
         )

@@ -40,12 +40,27 @@
 代价不值——所以这条承诺的准确读法是「大幅收窄」而非「已经关死」。令牌 256 位熵，
 枚举出活跃 id 也无从爆破，残余风险可接受。
 
-## 认证只看 `plugin_instance.status`，**不看 `buyer_account.status`**
+## 认证只看 `plugin_instance.status`，**不看 `buyer_account`**（本轮升为结构性）
 
-这条是刻意的，不是漏了：账号被 `paused`/`blocked` 时**拉任务必须停**（那道闸在
-`order/dispatch.py::claim_tasks_for_account` 第①步），但**回填 / 异常 / 物流三条写路径
-必须照常通**——钱可能已经花出去了，账号被停就收不到回填 = 花了钱系统不知道。
-把账号状态提到认证层就等于把这三条写路径一并掐掉，那是比「账号被风控」严重得多的故障。
+原先这条是一句纪律；身份模型更正（Owner 2026-07-30，图纸
+`specs/001-domain-model/07-order-sourcing-aftersale.md:288-340`）之后它变成结构：
+**认证根本不再触碰 `buyer_account` 表**——令牌只回答「这是不是团队 T 的一台授权浏览器」。
+
+原纪律因此更强：账号被 `paused`/`blocked` 时**拉任务必须停**（那道闸在
+`order/dispatch.py::claim_tasks_for_account` 第①步 + `plugin/service.py` 的调用方短路），
+而**回填 / 异常 / 物流三条写路径压根不解析账号**——钱可能已经花出去了，账号被停就收不到
+回填 = 花了钱系统不知道，那是比「账号被风控」严重得多的故障。
+
+## 两段式身份：令牌 ≠ 身份
+
+| 层 | 由什么承载 | 回答什么问题 |
+|---|---|---|
+| **授权** | `plugin_instance` 的令牌（本文件） | 这是不是我方团队 T 的一台授权浏览器？ |
+| **身份** | 请求带的 `customerId`（页面现抓） | 这台浏览器**此刻**登的是哪个买家号？ |
+
+服务端**只在团队 T 的范围内**把 `customerId` 解析成 `buyer_account`（`plugin/identity.py`）。
+`customerId` 从「鉴权凭据」降为「路由参数」，**它不再是安全边界**；越权边界＝**跨团队必败**，
+由 `plugin_instance.team_id` + RLS + 每条业务 SQL 的显式 `team_id = :t` 谓词承担。
 """
 
 import hashlib
@@ -62,12 +77,13 @@ from erp.core.errors import BusinessError
 # Postgres 抛 NumericValueOutOfRange（500，且整事务作废）。认证失败本就该是 401。
 _MAX_INSTANCE_ID = 2**63 - 1
 
+# **单表，不 JOIN `buyer_account`**（身份模型更正，见头注）。这条 SQL 的形状本身
+# 就是 0044 头注二那段论证的落点：认证不触碰账号表 ⇒「实例 team ≠ 账号 team」
+# 这个失效形状不可被表达 ⇒ 复合外键 F2 守护的不变量由构造性保证取代。
 _INSTANCE_SQL = """
-SELECT pi.id, pi.team_id, pi.buyer_account_id, pi.token_hash, pi.status, pi.exec_mode,
-       ba.site, ba.status AS account_status, ba.external_customer_id
-  FROM app.plugin_instance pi
-  JOIN app.buyer_account ba ON ba.id = pi.buyer_account_id
- WHERE pi.id = :i
+SELECT id, team_id, token_hash, status, exec_mode
+  FROM app.plugin_instance
+ WHERE id = :i
 """
 
 
@@ -92,20 +108,17 @@ _DUMMY_TOKEN_HASH = hashlib.sha256(b"plugin-auth-dummy-never-a-real-token").hexd
 
 @dataclass(frozen=True)
 class PluginPrincipal:
-    """一次插件请求的授权主体。**授权只来自这里**，请求体自称的身份一律不作数。
+    """一次插件请求的授权主体。**授权只回答「这是不是团队 T 的一台授权浏览器」**。
 
-    `external_customer_id` 放进来是为了做一致性校验（插件每次调用都带 `customerId`），
-    **它永远不是授权依据**——授权链是 `token → plugin_instance → buyer_account`，
-    把 `customerId` 当依据等于让调用方自选身份，验收③当场打穿。
+    **刻意不含任何买家账号信息**：身份（此刻登的是哪个号）由请求带的 `customerId`
+    在团队内解析，见 `plugin/identity.py`。把账号塞回这里，就是把「令牌绑账号」
+    这条已被 Owner 2026-07-30 推翻的模型偷偷接回来——那会同时复活「装插件前先要知道
+    customerId、而 customerId 只有装了插件才看得到」的死循环。
     """
 
     instance_id: int
     team_id: int
-    buyer_account_id: int
     exec_mode: str  # dry_run | stop_before_payment | live
-    account_site: str  # amazon_com | amazon_ca | amazon_co_jp
-    account_status: str  # active | paused | blocked | retired
-    external_customer_id: str
 
 
 def auth_failed() -> BusinessError:
@@ -142,9 +155,5 @@ async def authenticate_instance(
     return PluginPrincipal(
         instance_id=int(row["id"]),
         team_id=int(row["team_id"]),
-        buyer_account_id=int(row["buyer_account_id"]),
         exec_mode=str(row["exec_mode"]),
-        account_site=str(row["site"]),
-        account_status=str(row["account_status"]),
-        external_customer_id=str(row["external_customer_id"]),
     )

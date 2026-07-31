@@ -614,8 +614,13 @@ async def delete_purchaser(
 # ── 买家账号池 + 采购插件实例（R2-13 13b；服务在 order/buyer_account.py）──
 #
 # 三个权限码分层（0043）：读 `buyer_account_read` / 改账号 `buyer_account_admin` /
-# **签发与吊销实例单列 `plugin_instance_admin`**——签发 = 发一个能代表该买家账号真下单的
+# **签发与吊销实例单列 `plugin_instance_admin`**——签发 = 发一个能代表本团队真下单的
 # 凭证，与「改个备注名」不是同一量级。**本组无 DELETE 端点**（删除分支挂 14b 之后另补）。
+#
+# **实例端点本轮由账号级改为团队级**（身份模型更正，图纸 07:288-340）：令牌绑「一台授权
+# 浏览器」而不是买家账号，故 `/buyer-accounts/{id}/plugin-instances` 两条**已删除**——
+# 那个形状本身就是「先有账号才能发令牌」的死循环，留着等于把被推翻的模型留一份可用副本。
+# 认领（`pending_claim → active`）与驳回（`→ rejected`）复用既有 PATCH，不新增路由。
 
 
 @order_router.get("/buyer-accounts")
@@ -623,7 +628,10 @@ async def list_buyer_accounts(
     user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_read"))],
     session: Annotated[AsyncSession, Depends(get_session)],
     site: str | None = Query(default=None),
-    status: str | None = Query(default=None),
+    status: str | None = Query(
+        default=None,
+        description="pending_claim=插件首见自动登记的待认领行（一律不派单）；rejected=已驳回终态",
+    ),
     q: str | None = Query(default=None, description="按 label 模糊搜索"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
@@ -646,10 +654,11 @@ async def create_buyer_account(
     user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_admin"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """建买家账号。`external_customer_id` 即插件侧 `customerId`，**人工录入**——
+    """手工预建买家账号（**可选捷径，不是必经通道**）。
 
-    取值方式：在指纹浏览器里打开该买家账号的亚马逊页面 → 点插件面板「提取 customerId」
-    → 复制粘贴（Owner 2026-07-30 补-2：预配置的账号 ID 本来就是这么来的）。
+    主路径是首见自动登记：让插件在那台浏览器上跑一次拉取，服务端把它带上来的
+    `customerId` 落成一条待认领行，运营补齐名称与站点后认领即可。本端点只在运营手上
+    **已经**有 customerId 时省一轮往返。
     """
     return await buyer_account_service.create_account(
         session, user=user, request=request, body=body
@@ -664,34 +673,52 @@ async def update_buyer_account(
     user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_admin"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
+    """改买家账号；**认领与驳回也走这里**。
+
+    - 认领 `pending_claim → active`：须同时补齐 `label` 与 `site`，缺则 422
+      `BUYER_ACCOUNT_CLAIM_INCOMPLETE`。
+    - 驳回 `pending_claim → rejected`：**终态**，该 customerId 此后被永久占用、
+      不会再自动登记。
+    - 非法转移（含 `rejected → *`、任何态 → `pending_claim`）一律 409
+      `BUYER_ACCOUNT_STATUS_TRANSITION`。
+    """
     return await buyer_account_service.update_account(
         session, user=user, request=request, account_id=buyer_account_id, body=body
     )
 
 
-@order_router.get("/buyer-accounts/{buyer_account_id}/plugin-instances")
+@order_router.get("/plugin-instances")
 async def list_plugin_instances(
-    buyer_account_id: int,
     user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_read"))],
     session: Annotated[AsyncSession, Depends(get_session)],
-) -> list[dict[str, Any]]:
-    """列该账号的插件实例。**响应不含 token 的任何形态**（含 hash）。"""
+    status: str | None = Query(default=None, description="active | revoked"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
+) -> Page[dict[str, Any]]:
+    """列**本团队**的插件实例（服务端分页）。**响应不含 token 的任何形态**（含 hash）。
+
+    `last_seen_customer_id` 及 JOIN 出来的账号名/账号状态是**观察值**，不参与鉴权
+    （0044 头注六）——它回答的是排障问题「这台机器现在登的是哪个号、认领了没有」。
+    """
     return await buyer_account_service.list_instances(
-        session, team_id=user.team_id or -1, account_id=buyer_account_id
+        session, team_id=user.team_id or -1, status=status, page=page, size=size
     )
 
 
-@order_router.post("/buyer-accounts/{buyer_account_id}/plugin-instances", status_code=201)
+@order_router.post("/plugin-instances", status_code=201)
 async def issue_plugin_instance(
-    buyer_account_id: int,
     body: PluginInstanceIssueIn,
     request: Request,
     user: Annotated[CurrentUser, Depends(require_permission("procurement.plugin_instance_admin"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """签发实例令牌。**明文只在本响应里出现一次**，关闭后无法再取（遗失请吊销后重签）。"""
+    """签发实例令牌（**团队级，不挂账号**）。
+
+    明文只在本响应里出现一次，关闭后无法再取（遗失请吊销后重签）。插件侧只需配置
+    `token` 与 `baseUrl` 两项——**ERP 侧契约不要求插件存储任何身份**。
+    """
     return await buyer_account_service.issue_instance(
-        session, user=user, request=request, account_id=buyer_account_id, body=body
+        session, user=user, request=request, body=body
     )
 
 
