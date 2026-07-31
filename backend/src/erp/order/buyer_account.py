@@ -31,10 +31,12 @@
 - **驳回** `pending_claim → rejected`：**终态**。不删行是刻意的——本表无 DELETE 授权，
   而驳回必须**粘住**：该 `(team_id, customerId)` 被 `uq_buyer_account` 永久占住，
   同一个伪造 id 再灌一万次都只解析到那一行、零新增行、零新通知。
-  **粘性由两件东西共同保证，缺一即失效**：唯一索引占着那个值，**以及**已驳回行的
-  `external_customer_id` 不可再改（`_guard_rejected_customer_id`，409
-  `BUYER_ACCOUNT_REJECTED_IMMUTABLE`）。只有前者时，把那一行的 id 改走就当场解除了
-  粘性——「终态」在实效上退化成「到下一次有人改这行为止」。
+  **粘性由两件东西共同保证，缺一即失效**：唯一索引占着那个值，**以及**结果态为
+  `rejected` 的请求不许挪动 `external_customer_id`（`_guard_rejected_customer_id`，
+  409 `BUYER_ACCOUNT_REJECTED_IMMUTABLE`；「结果态」包括本来就 rejected 的行**和**
+  同一次 PATCH 里刚驳回的——只看 before 会被「驳回+改 id 合并成一笔」绕过）。
+  只有前者时，把那一行的 id 改走就当场解除了粘性——「终态」在实效上退化成
+  「到下一次有人改这行为止」。
 
 **任何状态都不许转回 `pending_claim`**：那是发现态，不是运营可选态。
 **建号也不许直接建这两个系统态**（`CREATE_STATUS_CHOICES`）——转入与凭空建是两条路，
@@ -225,21 +227,35 @@ def _guard_rejected_customer_id(before: dict[str, Any], body: BuyerAccountIn) ->
     它**：`_transition_action` 只看 status，body 里不带 status 时它连分支都不进。
     故守卫必须单独写在这里。
 
+    **判定看「结果态」，不是只看 `before` 态**（复验抓的三步变体）：只判 `before`
+    的话，把 ②③ 合并成一次 `PATCH {"status":"rejected","external_customer_id":新串}`
+    就整条绕过——转移 `pending_claim→rejected` 合法、守卫因 `before` 还是待认领而提前
+    返回，随后同一条 UPDATE 把两列一起写掉；落库的 rejected 行占的还是一个**从未被灌过**
+    的 customerId（凭空造出一段并未发生的治理历史，正是建号词表收窄要挡的同一件事）。
+    故规则是：**凡本次请求的结果态为 `rejected`，`external_customer_id` 一律不许挪动**
+    ——不管它是本来就 rejected，还是这一笔请求里刚变成 rejected。整个请求 409 原子拒绝，
+    不做「驳回生效、改 id 忽略」的部分放行（静默丢弃入参比报错更糟）。
+
     **只拦「值真的会变」**：把同一个值原样带上来（前端整表单回填是常见形状）是 no-op，
-    拦它只会制造假报错。改动的其余列（label/note/daily_cap）照常放行——驳回行仍然要能
-    被批注「这是谁在什么时候灌的」。
+    拦它只会制造假报错——于是「整表单回填 + 驳回」一次请求照常 200。改动的其余列
+    （label/note/daily_cap）照常放行——驳回行仍然要能被批注「这是谁在什么时候灌的」。
     """
-    if str(before["status"]) != "rejected":
+    result_is_rejected = str(before["status"]) == "rejected" or body.status == "rejected"
+    if not result_is_rejected:
         return
     incoming = body.external_customer_id
     if incoming is None or incoming == before["external_customer_id"]:
         return
     raise BusinessError(
         "BUYER_ACCOUNT_REJECTED_IMMUTABLE",
-        "已驳回账号的 customerId 不可修改——驳回是终态，靠这一行永久占住那个 customerId "
-        "才能挡住「同一个伪造 id 再灌」；改掉它等于把驳回撤销（且本表无 DELETE 授权，"
-        "旧行也删不掉）。要给这个新 customerId 建号，请另建一条",
-        detail={"field": "external_customer_id", "status": "rejected"},
+        "已驳回（含本次请求驳回）账号的 customerId 不可修改——驳回是终态，靠这一行永久"
+        "占住那个 customerId 才能挡住「同一个伪造 id 再灌」；改掉它等于把驳回撤销（且本表"
+        "无 DELETE 授权，旧行也删不掉）。要给这个新 customerId 建号，请另建一条",
+        detail={
+            "field": "external_customer_id",
+            "status_before": str(before["status"]),
+            "status_requested": body.status,
+        },
         http_status=409,
     )
 
@@ -389,8 +405,10 @@ async def update_account(
 
     状态转移由 `_ALLOWED_TRANSITIONS` 守卫；`label`/`site` 是否补齐由库层
     `ck_buyer_account_claimed` 守卫（`_write_error` 把它翻成 422，不许裸奔成 500）。
-    已驳回行的 `external_customer_id` 由 `_guard_rejected_customer_id` 守卫（409）——
-    **那一条与状态机是两件事**：改 id 的请求可以完全不带 status，状态机连分支都不进。
+    结果态为 rejected 的请求（本来就驳回的行 + 本次请求刚驳回的）挪动
+    `external_customer_id` 由 `_guard_rejected_customer_id` 守卫（409）——
+    **那一条与状态机是两件事**：改 id 的请求可以完全不带 status，状态机连分支都不进；
+    带 status 合并驳回的形状则靠「看结果态」拦住。
     审计动作名按转移分化——审计面要能一眼看出「谁认领的、谁驳回的」。
     """
     before = await _load_account(session, account_id, user.team_id or -1)

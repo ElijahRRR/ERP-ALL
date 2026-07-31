@@ -148,7 +148,7 @@
 | `PLUGIN_EXEC_MODE_MISMATCH` | 409 | 见 §二 |
 | `PROCUREMENT_PLUGIN_DISPATCHED` | 409 | 在订单页对**已派给买家账号**的单点了「分配采购方」。这是双保险的应用层那一半：同一单不许既派机器人又派人。要转人工得先把这张单处置掉（异常/取消） |
 | `BUYER_ACCOUNT_DUPLICATE` | 409 | 建号撞唯一键。报文里 `detail.field` 指明撞的是 `external_customer_id`（同一个亚马逊号已建过，去改那条）还是 `label`（换个名字） |
-| `BUYER_ACCOUNT_REJECTED_IMMUTABLE` | 409 | 改了一条**已驳回**账号行的 `external_customer_id`。驳回是终态，靠这一行永久占住那个 customerId 才能挡住「同一个伪造 id 再灌」；改掉它等于撤销驳回。要给新 customerId 建号请另建一条 |
+| `BUYER_ACCOUNT_REJECTED_IMMUTABLE` | 409 | **结果态为驳回**的请求想挪动 `external_customer_id`——包括改一条已驳回行的 id，也包括把「驳回 + 改 id」合并成同一次 PATCH（整个请求原子拒绝，驳回也不会生效）。驳回是终态，靠这一行永久占住那个 customerId 才能挡住「同一个伪造 id 再灌」；改掉它等于撤销驳回。要给新 customerId 建号请另建一条；「整表单回填 + 驳回」（id 原样带回）不受影响照常 200 |
 | `BUYER_ACCOUNT_STATUS_NOT_CREATABLE` | 422 | 建号时把 `status` 直接填成了 `pending_claim` 或 `rejected`。这两个是**系统态**：前者由插件首见自动登记产生，后者只能从待认领行驳回而来（直接建出来是一条改不动也删不掉的死行）。建号只收 active/paused/blocked/retired |
 | `PLUGIN_INSTANCE_REVOKED` | 409 | 已吊销的实例不能改档，请重新签发 |
 | `TEAM_REQUIRED` | 409 | 签发插件令牌时当前主体没有团队（超管未切换到具体团队）。令牌绑定的就是「团队 T 的一台授权浏览器」，没有团队的令牌解析不出任何任务 |

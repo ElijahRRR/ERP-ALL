@@ -778,6 +778,70 @@ class TestInstanceScope:
         )
         assert keep.status_code == 200, keep.text
 
+    def test_rejected_stickiness_merged_patch_also_blocked(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """「驳回」与「改 id」**合并成一次 PATCH** 也必须 409（复验抓的三步变体）。
+
+        四步用例钉住的是「先驳回、后改 id」；守卫若只判 `before` 态，在这里整条失守：
+        ① 灌 ⇒ 待认领；②③ 合并 `PATCH {"status":"rejected","external_customer_id":新串}`
+        ⇒ 转移 `pending_claim→rejected` 合法、守卫因 `before` 还是待认领而提前返回，
+        同一条 UPDATE 把两列一起写掉——落库的 rejected 行占的是一个**从未被灌过**的
+        customerId（凭空造出一段并未发生的治理历史，正是 `CREATE_STATUS_CHOICES`
+        收窄要挡的同一件事），原伪造 id 的占用当场释放；④ 再灌 ⇒ 第二条行 + 第二条通知。
+
+        故守卫判「结果态」：凡这次请求的结果是 rejected，id 一律不许挪。合并请求
+        **整体 409、驳回也不生效**（原子拒绝，不做「驳回生效、改 id 忽略」的部分放行）；
+        「整表单回填 + 驳回」（id 原样带回）仍是一次 200。
+        *修前红*：把守卫退回只看 `before["status"]`，合并步回 200、末段落出第二条行。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            conn.execute("DELETE FROM app.notification WHERE team_id = %s", (seeded["team"],))
+        inst = _issue(client, auth)
+        fake = _new_customer_id()
+
+        # ① 灌
+        assert _pull(client, inst, fake).json()["data"] == []
+        with psycopg.connect(migrated_db) as conn:
+            account_id = _pending_rows(conn, seeded)[0][0]
+        url = f"/api/v1/buyer-accounts/{account_id}"
+
+        # ②③ 合并：驳回 + 挪 id 一笔提交 —— 整体 409，驳回也不生效
+        merged = client.patch(
+            url,
+            headers=auth,
+            json={"status": "rejected", "external_customer_id": _new_customer_id()},
+        )
+        assert merged.status_code == 409, merged.text
+        assert merged.json()["error"]["code"] == "BUYER_ACCOUNT_REJECTED_IMMUTABLE"
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT status, external_customer_id FROM app.buyer_account WHERE id = %s",
+                (account_id,),
+            ).fetchone() == ("pending_claim", fake), "409 却部分生效了"  # fmt: skip
+
+        # 「整表单回填 + 驳回」：id 原样带回 ⇒ no-op 分支，一次 200 驳回生效
+        ok = client.patch(
+            url, headers=auth, json={"status": "rejected", "external_customer_id": fake}
+        )
+        assert ok.status_code == 200, ok.text
+
+        # ④ 再灌同一个 id：仍是那一行、仍 rejected、零新增行、零新通知
+        assert _pull(client, inst, fake).json()["data"] == []
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT status FROM app.buyer_account WHERE id = %s", (account_id,)
+            ).fetchone() == ("rejected",)  # fmt: skip
+            assert conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s", (seeded["team"],)
+            ).fetchone()[0] == 1, "合并形状把粘性解除了"  # fmt: skip
+            assert conn.execute(
+                "SELECT count(*) FROM app.notification WHERE team_id = %s AND dedupe_key LIKE %s",
+                (seeded["team"], "plugin.pending_claim.%"),
+            ).fetchone()[0] == 1, "又吵了一条——粘性失效了"  # fmt: skip
+
     def test_backfill_other_team_po_fails(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:

@@ -4367,10 +4367,12 @@ export interface paths {
          *       零新增行、零新通知。审计动作名 `buyer_account.reject`。
          *     - `rejected → *` 与**任何态 → `pending_claim`** 一律 409 `BUYER_ACCOUNT_STATUS_TRANSITION`
          *       （待认领是系统发现态，不是运营可选态）。
-         *     - **已驳回行的 `external_customer_id` 不可再改** ⇒ 409 `BUYER_ACCOUNT_REJECTED_IMMUTABLE`。
-         *       粘性靠「唯一索引占着那个值」成立，把值改走等于当场撤销驳回（此后同一个伪造 id
-         *       再灌又是"没见过"，新增行 + 新通知）。其余列（label/note/daily_cap）照常可改；
-         *       原样带回同一个值是 no-op，不报错。
+         *     - **结果态为 `rejected` 的请求不许挪动 `external_customer_id`** ⇒ 409
+         *       `BUYER_ACCOUNT_REJECTED_IMMUTABLE`——既拦已驳回行的后续修改，也拦「驳回 + 改 id
+         *       合并成同一次 PATCH」的形状（整个请求原子拒绝，不做部分放行）。粘性靠「唯一索引
+         *       占着那个值」成立，把值改走等于当场撤销驳回（此后同一个伪造 id 再灌又是"没见过"，
+         *       新增行 + 新通知）。其余列（label/note/daily_cap）照常可改；原样带回同一个值是
+         *       no-op，不报错——「整表单回填 + 驳回」一次请求照常 200。
          */
         patch: {
             parameters: {
@@ -4391,7 +4393,7 @@ export interface paths {
                     content?: never;
                 };
                 404: components["responses"]["Error"];
-                /** @description BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移）/ BUYER_ACCOUNT_REJECTED_IMMUTABLE（改已驳回行的 external_customer_id） */
+                /** @description BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移）/ BUYER_ACCOUNT_REJECTED_IMMUTABLE（结果态为 rejected 的请求挪动 external_customer_id，含驳回+改 id 合并的形状） */
                 409: components["responses"]["Error"];
                 /** @description BUYER_ACCOUNT_CLAIM_INCOMPLETE（认领时缺 label 或 site） */
                 422: components["responses"]["Error"];
