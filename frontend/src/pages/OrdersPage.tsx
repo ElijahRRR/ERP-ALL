@@ -76,6 +76,22 @@ const PO_STATUS: Record<string, { color: string; label: string }> = {
   cancelled: { color: 'default', label: '已取消' },
 }
 
+// 采购异常分类中文名（R2-13 0045 `exception_kind`）。
+// ⚠️ 它是**问题分类不是状态**：回填后核对不通过（ASIN/邮编/金额不平）属「已花钱但有问题」，
+// 这时 status 仍是 purchased 而本列非空——面板必须把两者分开显示，
+// 否则运营会把「已拍单但有问题」看成「没拍单」然后重拍一次。
+const EXCEPTION_KIND: Record<string, string> = {
+  address: '地址问题',
+  stock: '无库存/售罄',
+  product: '商品不可自动采购（非 FBA / 捆绑）',
+  delivery: '预计送达超期',
+  checkout: '结账/下单失败',
+  price_guard: '价格护栏拦截',
+  channel_cancelled: '渠道已取消或退款',
+  order_not_found: '渠道查无此单',
+  other: '其他',
+}
+
 // 四检 check_kind 中文名（契约枚举 phishing/purchaser/price_limit/consistency）
 const CHECK_LABEL: Record<string, string> = {
   phishing: '钓鱼地址',
@@ -509,11 +525,19 @@ function OrderDrawer({
                           `#${po.purchaser_id}`)
                         : '—')}
                   </Descriptions.Item>
+                  {/* 买家账号非空 = 这单走的是插件自动采购路径（人工/门户路径该列恒 NULL）。
+                      两条路径互斥由库层唯一索引兜底，面板把它显式摆出来，
+                      运营才不会对一张机器人正在执行的单再点一次「分配采购方」。 */}
+                  <Descriptions.Item label="买家账号">
+                    {po.buyer_account_label ??
+                      (po.buyer_account_id != null ? `#${po.buyer_account_id}` : '—')}
+                  </Descriptions.Item>
                   <Descriptions.Item label="采购成本">
                     {po.purchase_cost != null
                       ? `${po.purchase_cost} ${po.purchase_currency ?? ''}`
                       : '—'}
                   </Descriptions.Item>
+                  <Descriptions.Item label="销售税">{po.tax_amount ?? '—'}</Descriptions.Item>
                   <Descriptions.Item label="运费">{po.freight_cost ?? '—'}</Descriptions.Item>
                   <Descriptions.Item label="锁定汇率">
                     {po.exchange_rate_locked ?? '—'}
@@ -527,6 +551,34 @@ function OrderDrawer({
                   <Descriptions.Item label="平台单号">
                     {po.purchase_order_ref ?? '—'}
                   </Descriptions.Item>
+                  <Descriptions.Item label="付款卡尾号">
+                    {po.payment_card_last4 ?? '—'}
+                  </Descriptions.Item>
+                  {/* 悬浮显示渠道原文：解析成的日期与结账页原文都留着，
+                      对不上时人能一眼看出是我们解析错了还是渠道就那么写的 */}
+                  <Descriptions.Item label="预计送达">
+                    {po.delivery_est_date ? (
+                      <span title={po.delivery_est_raw ?? undefined}>
+                        {po.delivery_est_date}
+                        {po.delivery_est_raw ? '（悬浮看渠道原文）' : ''}
+                      </span>
+                    ) : (
+                      (po.delivery_est_raw ?? '—')
+                    )}
+                  </Descriptions.Item>
+                  {po.exception_kind && (
+                    <Descriptions.Item label="问题分类" span={2}>
+                      <Tag color={po.status === 'exception' ? 'red' : 'orange'}>
+                        {EXCEPTION_KIND[po.exception_kind] ?? po.exception_kind}
+                      </Tag>
+                      {po.status !== 'exception' && (
+                        <span style={{ color: '#999' }}>
+                          单据状态不是「异常」——这单<b>已经拍出去了</b>
+                          ，只是回填后核对有问题，请勿重拍
+                        </span>
+                      )}
+                    </Descriptions.Item>
+                  )}
                   {po.exception_reason && (
                     <Descriptions.Item label="异常原因" span={2}>
                       {po.exception_reason}
@@ -783,6 +835,20 @@ function BackfillModal({
         <Form.Item label="运单号" name="tracking_no">
           <Input />
         </Form.Item>
+        {/* R2-13 0045 四个新列：插件路径由插件回报，人工路径也得能补，
+            否则同一张表的一半字段只有机器人填得了，运营接管时无从下手 */}
+        <Form.Item label="销售税" name="tax_amount">
+          <InputNumber min={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item label="付款卡尾号" name="payment_card_last4">
+          <Input maxLength={8} placeholder="如 4242" />
+        </Form.Item>
+        <Form.Item label="预计送达日期" name="delivery_est_date">
+          <Input placeholder="YYYY-MM-DD" />
+        </Form.Item>
+        <Form.Item label="预计送达原文" name="delivery_est_raw" extra="渠道页面上的原话，照抄即可">
+          <Input placeholder="如 Thursday, August 7" />
+        </Form.Item>
         <Form.Item label="备注" name="note">
           <Input.TextArea rows={2} />
         </Form.Item>
@@ -803,7 +869,7 @@ function ExceptionModal({
   onClose: () => void
   onDone: () => void
 }) {
-  async function onFinish(values: { reason: string }) {
+  async function onFinish(values: { reason: string; kind?: string }) {
     try {
       await api.post(`/procurement-orders/${poId}/exception`, values)
       message.success('已标记异常')
@@ -822,6 +888,13 @@ function ExceptionModal({
           rules={[{ required: true, message: '请填写异常原因' }]}
         >
           <Input.TextArea rows={3} placeholder="如：缺货 / 采购价超限 / 地址无法配送" />
+        </Form.Item>
+        {/* 分类可留空：不传 = 保持已有分类（后端 coalesce 语义），不会把插件已经归好的类抹掉 */}
+        <Form.Item label="问题分类（可选）" name="kind" extra="留空则沿用已有分类，不会抹掉">
+          <Select
+            allowClear
+            options={Object.entries(EXCEPTION_KIND).map(([value, label]) => ({ value, label }))}
+          />
         </Form.Item>
         <Button type="primary" danger htmlType="submit" block>
           确认标异常

@@ -4026,6 +4026,8 @@ export interface paths {
                 content: {
                     "application/json": {
                         reason: string;
+                        /** @enum {string} */
+                        kind?: "address" | "stock" | "product" | "delivery" | "checkout" | "price_guard" | "channel_cancelled" | "order_not_found" | "other";
                     };
                 };
             };
@@ -4164,6 +4166,281 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/buyer-accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 买家账号池列表（服务端分页） */
+        get: {
+            parameters: {
+                query?: {
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                    site?: "amazon_com" | "amazon_ca" | "amazon_co_jp";
+                    status?: "active" | "paused" | "blocked" | "retired";
+                    /** @description 按 label 模糊搜索 */
+                    q?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BuyerAccountPage"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * 建买家账号
+         * @description `external_customer_id`（＝插件侧 `customerId`）**由人工录入**，不是系统生成： 在指纹浏览器里打开该买家账号的亚马逊页面 → 点插件面板「提取 customerId」→ 复制粘贴 （Owner 2026-07-30 补-2：预配置的账号 ID 本来就是这么来的，故该按钮在 fork 版保留）。 `label` 的语义 = 对应哪个指纹浏览器（07:258）。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: components["requestBodies"]["BuyerAccountWrite"];
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description BUYER_ACCOUNT_DUPLICATE（detail.field 指明撞的是 external_customer_id 还是 label） */
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/buyer-accounts/{buyerAccountId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 改买家账号（label/site/status/daily_cap/note/external_customer_id）
+         * @description `daily_cap` **显式传 null = 改成不限**（不传 = 不动该列）。日限的唯一权威就是本列 ——`automation_policy` 的 flow config 里不得出现同名键（Owner 2026-07-30 裁定）。
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    buyerAccountId: components["parameters"]["buyerAccountId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: components["requestBodies"]["BuyerAccountWrite"];
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: components["responses"]["Error"];
+                /** @description BUYER_ACCOUNT_DUPLICATE */
+                409: components["responses"]["Error"];
+            };
+        };
+        trace?: never;
+    };
+    "/buyer-accounts/{buyerAccountId}/plugin-instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列该账号的插件实例
+         * @description **响应不含 token 的任何形态（含 hash）**——明文只在签发响应出现一次。
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    buyerAccountId: components["parameters"]["buyerAccountId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PluginInstance"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * 签发实例令牌（明文只返回这一次）
+         * @description 新签发的实例默认 `exec_mode=stop_before_payment`——**不会花钱**；升到 `live` 是一次 显式 PATCH 且有 audit 留痕。令牌明文**只在本响应里出现一次**，此后 ERP 侧任何端点 （含本组的 GET）都取不到，遗失只能吊销后重新签发。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    buyerAccountId: components["parameters"]["buyerAccountId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /**
+                         * @default stop_before_payment
+                         * @enum {string}
+                         */
+                        exec_mode?: "dry_run" | "stop_before_payment" | "live";
+                        version?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PluginInstanceIssued"];
+                    };
+                };
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugin-instances/{pluginInstanceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 改执行档（只此一项可改）
+         * @description 切到 `live` 意味着该实例此后真实下单花钱——前端须二次确认，服务端写 audit。
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    pluginInstanceId: components["parameters"]["pluginInstanceId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        exec_mode: "dry_run" | "stop_before_payment" | "live";
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: components["responses"]["Error"];
+                /** @description PLUGIN_INSTANCE_REVOKED（已吊销的实例不可改档，请重新签发） */
+                409: components["responses"]["Error"];
+            };
+        };
+        trace?: never;
+    };
+    "/plugin-instances/{pluginInstanceId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 吊销实例（UPDATE 不是 DELETE）
+         * @description 吊销后该令牌对全部插件端点一律 401。已吊销的再调一次是 no-op（200，不报错）。 不做物理删除：历史实例 id 还挂在 `procurement_order.backfill_actor_id` 上 （`backfill_actor_kind='plugin'` 时解读为实例 id），删行会让「这单谁填的」失去落点。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    pluginInstanceId: components["parameters"]["pluginInstanceId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/returns": {
@@ -5105,6 +5382,323 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/purchase-plugin/getNeedPurchaseOrders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 拉待采购任务（拉取即认领）
+         * @description **GET 但有副作用**：本端点按站点/日限/唯一派发把待采购单认领给本实例绑定的买家账号。 重复调用幂等——已认领给本账号的单会再次返回，不产生新派发、不重复消耗 `daily_cap` （插件重启/掉线后必须还能看见手上的单）。`customerId` **只做一致性校验**， 不符回 403 `PLUGIN_CUSTOMER_MISMATCH`；**授权只来自实例令牌**。 账号 `status` 非 `active` 时本端点返回空（写路径不受影响）。
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description 插件侧买家号标识，须等于 buyer_account.external_customer_id */
+                    customerId: string;
+                    /** @description 插件版本（选填），回写 plugin_instance.version */
+                    v?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /**
+                             * @description 厂商兼容回声，恒为 200
+                             * @enum {integer}
+                             */
+                            code: 200;
+                            data: components["schemas"]["PluginTask"][];
+                        };
+                    };
+                };
+                /** @description PLUGIN_AUTH（不区分原因） */
+                401: components["responses"]["Error"];
+                /** @description PLUGIN_CUSTOMER_MISMATCH */
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-plugin/getNeedSyncOrders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 拉待物流同步订单
+         * @description 已拍单（`purchased`/`shipped`）且有渠道单号的单。响应字段取证缺口见本组头注④。
+         */
+        get: {
+            parameters: {
+                query: {
+                    customerId: string;
+                    v?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {integer} */
+                            code: 200;
+                            data: components["schemas"]["PluginSyncOrder"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-plugin/purchaseOrderFinishUpdate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 采购完成回填（金额/单号/卡号后四位/预计送达）
+         * @description 幂等键 = `platformOrderNo`（自然键，跨插件重装/换实例仍成立，**不用 Idempotency-Key** ——插件侧没有生成它的地方）。同值重投 = 200 no-op；**异值不覆盖原值**，改落 `exception_kind=other` + critical 告警（那是重复下单的形状，必须让人看见）。 `execMode` 与实例当前档不符回 409 `PLUGIN_EXEC_MODE_MISMATCH`。 非本实例绑定账号的任务回 403 `PLUGIN_TASK_NOT_OWNED`（与「id 不存在」同码同状态）。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PluginBackfillIn"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {integer} */
+                            code?: 200;
+                            data?: Record<string, never>;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                /** @description PLUGIN_TASK_NOT_OWNED */
+                403: components["responses"]["Error"];
+                /** @description PLUGIN_EXEC_MODE_MISMATCH */
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-plugin/updateOrderStatus": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 拍单失败（status=99）
+         * @description 落 `status=exception` + `exception_reason`（failReason 原文一字不改）+ `exception_kind`（17 条厂商原文的归类表，见 `plugin/classify.py`）。**零金额列写入**。 `status` 只接受 99——厂商的数字状态机不进我方模型，其余值 422。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description procurement_order.id */
+                        id: number;
+                        /** @enum {integer} */
+                        status: 99;
+                        /** @description 失败原文；服务端亦接受同义字段名 failContent（请求体键名未逐字取证，两名一义故都收） */
+                        failReason?: string | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {integer} */
+                            code?: 200;
+                            data?: Record<string, never>;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                /** @description PLUGIN_TASK_NOT_OWNED */
+                403: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-plugin/updateAmzOrderStatus": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 渠道侧回报（91=已取消/退款，92=订单不存在）
+         * @description 这两条发生在**已拍单之后**，故只落 `exception_kind`（`channel_cancelled` / `order_not_found`）+ critical 告警，**`status` 一律不动**——改成 exception 会抹掉 「已拍单」这个事实，运营看到会以为没拍然后重拍一次。 `orderNo` 只做一致性校验，不符仅记 warn 不拒（渠道单号漂移不该挡住「渠道取消了」入库）。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        id: number;
+                        orderNo?: string | null;
+                        /** @enum {integer} */
+                        status: 91 | 92;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {integer} */
+                            code?: 200;
+                            data?: Record<string, never>;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                /** @description PLUGIN_TASK_NOT_OWNED */
+                403: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-plugin/updateTrackingInfo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 物流回填（运单号 + 承运商 + 轨迹事件）
+         * @description 主表金额四项走 `coalesce(列, 新值)`（端点 2 已落的是权威，本端点只补空洞）； `status` **只从 purchased 推到 shipped**，绝不从 assigned 跳（没拍单哪来的运单）。 **绝不动 `channel_order.internal_status`**——那是「我方已发货给 Walmart 买家」， 亚马逊侧包裹在路上 ≠ 我方已发货。 轨迹事件写 `procurement_logistics_event`，`seq` = 渠道数组下标（**0 = 最新，整个数组倒序**）。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PluginTrackingIn"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {integer} */
+                            code?: 200;
+                            data?: Record<string, never>;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                /** @description PLUGIN_TASK_NOT_OWNED */
+                403: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5857,9 +6451,184 @@ export interface components {
             /** Format: date-time */
             backfilled_at?: string | null;
             exception_reason?: string | null;
+            /** @description 非空即「已派给买家账号」（插件路径）；人工/门户路径恒 null */
+            buyer_account_id?: number | null;
+            buyer_account_label?: string | null;
+            /** @description 销售税；与 purchase_cost（税前商品额）、freight_cost 三分不合并，合计由计算得出不落库 */
+            tax_amount?: number | null;
+            payment_card_last4?: string | null;
+            /** Format: date */
+            delivery_est_date?: string | null;
+            delivery_est_raw?: string | null;
+            /**
+             * @description 问题分类，**不是状态列**。回填后核对不通过（asin/邮编/金额不平）属「已花钱但有问题」， 此时 status 保持 purchased 只写本列——改成 exception 会丢掉「已拍单」这个事实， 运营看到会以为没拍然后重拍一次。
+             * @enum {string|null}
+             */
+            exception_kind?: "address" | "stock" | "product" | "delivery" | "checkout" | "price_guard" | "channel_cancelled" | "order_not_found" | "other" | null;
         };
         ProcurementPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["ProcurementOrder"][];
+        };
+        /** @description 亚马逊买家账号（R2-13 13b，图纸 07:249-268）。各自登录在一个独立指纹浏览器内；代理与指纹由外部浏览器管理，**ERP 不管代理**。 */
+        BuyerAccount: {
+            id?: number;
+            /** @description 语义=对应哪个指纹浏览器 */
+            label?: string;
+            /** @enum {string} */
+            site?: "amazon_com" | "amazon_ca" | "amazon_co_jp";
+            /** @description 插件侧 customerId；**只做一致性校验，永不作授权依据**（授权只来自实例令牌） */
+            external_customer_id?: string;
+            /** @enum {string} */
+            status?: "active" | "paused" | "blocked" | "retired";
+            /** @description null=不限。**日限的唯一权威就是这一列** */
+            daily_cap?: number | null;
+            /**
+             * Format: date-time
+             * @description 该账号插件实例最近一次拉任务时间（掉线可见）
+             */
+            last_seen_at?: string | null;
+            note?: string | null;
+            /** @description 该账号下 status=active 的插件实例数 */
+            active_instance_count?: number;
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        BuyerAccountPage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["BuyerAccount"][];
+        };
+        /** @description 采购插件实例（R2-13，图纸 07:274-282 + 本轮补 exec_mode）。**本 schema 逐字不含 token 的任何形态。** */
+        PluginInstance: {
+            /** @description 同时是插件请求头 X-Plugin-Instance 的取值 */
+            id?: number;
+            buyer_account_id?: number;
+            /** @enum {string} */
+            status?: "active" | "revoked";
+            /**
+             * @description dry_run=不进结账页 / stop_before_payment=付款前停下回报（不花钱验收的主力档）/ live=完整下单
+             * @enum {string}
+             */
+            exec_mode?: "dry_run" | "stop_before_payment" | "live";
+            version?: string | null;
+            /** Format: date-time */
+            last_seen_at?: string | null;
+            /** Format: date-time */
+            revoked_at?: string | null;
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        /** @description 签发响应。**token 明文只在这里出现一次**，此后任何端点都取不到（库里只有 sha256）；遗失请吊销后重新签发。 */
+        PluginInstanceIssued: {
+            id: number;
+            buyer_account_id: number;
+            /** @description 实例专属令牌明文（禁全局共享密钥）。前端一次性展示后不得缓存、不得写 localStorage */
+            token: string;
+        };
+        /** @description 一条待采购任务（字段集＝插件拍单流程实读，`07:216-224`）。展示用字段（products[].price/imgUrl/status）插件不读，**不造**。 */
+        PluginTask: {
+            /** @description procurement_order.id；全部回调的主键 */
+            id: number;
+            /** @description **渠道单号**（channel_order.channel_order_no）而不是 PO-{id}：插件把它写日志与回调参数，取渠道单号才能与 Walmart 后台直接对上 */
+            orderNo: string;
+            receivingName?: string | null;
+            receivingPhone?: string | null;
+            /** @description address1；address2 非空时以换行拼接 */
+            receivingAddress?: string | null;
+            receivingCity?: string | null;
+            /** @description JP 必填。**日本站本轮不做但字段与分支保留**（不做不等于删掉） */
+            receivingDistrict?: string | null;
+            receivingPostCode?: string | null;
+            /** @description 驱动插件的地址填写与校验分支 */
+            receivingCountry?: string | null;
+            /** @description 与 receivingState **两个字段名都返回、同值**——插件读的是 `order.state || order.receivingState` */
+            state?: string | null;
+            receivingState?: string | null;
+            products: {
+                /** @description product.source_ref（source_channel=amazon）。**任一行解不出 ASIN 则整单不派**——少给一行会让插件少买一件且无人发现 */
+                asin: string;
+                quantity: number;
+            }[];
+            /**
+             * @description 下发执行档，插件回报时原样回声
+             * @enum {string}
+             */
+            execMode: "dry_run" | "stop_before_payment" | "live";
+        };
+        /** @description 一条待物流同步订单。**响应字段未逐字取证**（见该组头注④），按最小集声明。 */
+        PluginSyncOrder: {
+            id: number;
+            orderNo: string;
+            /** @description 亚马逊订单号（procurement_order.purchase_order_ref） */
+            platformOrderNo: string;
+        };
+        /** @description 采购完成回填体（逐字对齐插件实发）。金额字段是结账页原文字符串（如 "$1,234.56"）——服务端解析失败时该列留 NULL 并告警，**绝不写 0**（空值与解析不出是两件事）。 */
+        PluginBackfillIn: {
+            id: number;
+            /** @description 亚马逊订单号，兼作幂等键 */
+            platformOrderNo?: string | null;
+            /** @description 逗号分隔；**不落列**，用于回填后核对（不符落 exception_kind=product） */
+            asins?: string | null;
+            /** @description 预计送达 YYYY-MM-DD → delivery_est_date */
+            deliveryTime?: string | null;
+            /** @description 结账页原文（如 "Thursday */
+            origDeliveryTime?: string | null;
+            /** @description 卡号后四位 → payment_card_last4 */
+            creditCardNumber?: string | null;
+            /** @description **不落列**，用于回填后核对邮编 */
+            mainPostCode?: string | null;
+            extPostCode?: string | null;
+            /** @description → freight_cost */
+            shipping?: string | number | null;
+            /** @description 税前商品额 → purchase_cost */
+            totalBeforeTax?: string | number | null;
+            /** @description → tax_amount */
+            tax?: string | number | null;
+            /** @description **不落库**，用于三项加总自校验；不平则落 exception_kind=other + critical 告警，但金额照实入库 */
+            total?: string | number | null;
+            products?: {
+                asin?: string | null;
+                quantity?: number | null;
+                /** @description 图纸未指定落点，**不落库**、不自造落点 */
+                unitPrice?: string | number | null;
+                totalPrice?: string | number | null;
+                productImage?: string | null;
+            }[];
+            /**
+             * @description fork 新增的回声字段；与实例当前档不符即 409（防插件版本落后按旧档跑）
+             * @enum {string|null}
+             */
+            execMode?: "dry_run" | "stop_before_payment" | "live" | null;
+        };
+        /** @description 物流回填体。**主键叫 orderId 不是 id**（厂商这一组就这么发）。trackingJson 是 **JSON 编码的字符串**不是数组。 */
+        PluginTrackingIn: {
+            /** @description procurement_order.id */
+            orderId: number;
+            trackingNumber?: string | null;
+            carrier?: string | null;
+            /** @description 事件数组的 JSON 字符串；元素含 day/time/tracking_info/city/state，**倒序（index 0 = 最新）** */
+            trackingJson?: string | null;
+            /** @description **接收后立即丢弃**，不落任何列（可重抓、无消费者） */
+            trackingUrl?: string | null;
+            /** @description **接收后立即丢弃**：base64 整页 HTML，万单 GB 级，图纸 07:245-247 的明确不做决定 */
+            trackingHtml?: string | null;
+            /** @description **接收后立即丢弃** */
+            receiptPicture?: string | null;
+            mainPostCode?: string | null;
+            extPostCode?: string | null;
+            /** @description 卡号后四位，仅在端点 2 未落时补空洞 */
+            card?: string | null;
+            asins?: string | null;
+            orderDate?: string | null;
+            subtotal?: string | number | null;
+            shipping?: string | number | null;
+            totalBeforeTax?: string | number | null;
+            tax?: string | number | null;
+            total?: string | number | null;
+            deliveryDate?: string | null;
+            origDeliveryDate?: string | null;
         };
         Purchaser: {
             id?: number;
@@ -5969,6 +6738,8 @@ export interface components {
         listingId: number;
         orderId: number;
         poId: number;
+        buyerAccountId: number;
+        pluginInstanceId: number;
         returnId: number;
         refundRequestId: number;
         incidentId: number;
@@ -6125,12 +6896,40 @@ export interface components {
                 "application/json": {
                     purchase_platform?: string;
                     purchase_order_ref?: string;
+                    /** @description 税前商品额（成本三分之一，不含税与运费） */
                     purchase_cost?: number;
                     /** @default CNY */
                     purchase_currency?: string;
                     freight_cost?: number;
                     carrier?: string;
                     tracking_no?: string;
+                    note?: string;
+                    /** @description 销售税（成本三分之一） */
+                    tax_amount?: number;
+                    payment_card_last4?: string;
+                    /** Format: date */
+                    delivery_est_date?: string;
+                    /** @description 渠道原文（如 `Thursday */
+                    delivery_est_raw?: string;
+                };
+            };
+        };
+        BuyerAccountWrite: {
+            content: {
+                "application/json": {
+                    /** @description 运营可读名，语义=对应哪个指纹浏览器（07:258） */
+                    label?: string;
+                    /** @enum {string} */
+                    site?: "amazon_com" | "amazon_ca" | "amazon_co_jp";
+                    /** @description 插件侧 customerId，人工用插件面板「提取 customerId」按钮取出后录入 */
+                    external_customer_id?: string;
+                    /**
+                     * @description 非 active 一律不派新任务；**但回填/异常/物流三条写路径不受影响**（钱可能已经花出去了）
+                     * @enum {string}
+                     */
+                    status?: "active" | "paused" | "blocked" | "retired";
+                    /** @description 单日采购上限；null=不限。**显式传 null 即改成不限**，不传=不动 */
+                    daily_cap?: number | null;
                     note?: string;
                 };
             };

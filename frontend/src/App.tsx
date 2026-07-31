@@ -4,6 +4,7 @@ import { AuthProvider } from '@/auth/AuthContext'
 import AppLayout from '@/layout/AppLayout'
 import AuditPage from '@/pages/AuditPage'
 import AutomationPage from '@/pages/AutomationPage'
+import BuyerAccountsPage from '@/pages/BuyerAccountsPage'
 import CompliancePage from '@/pages/CompliancePage'
 import HomePage from '@/pages/HomePage'
 import IncidentsPage from '@/pages/IncidentsPage'
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="/automation" element={<AutomationPage />} />
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/purchasers" element={<PurchasersPage />} />
+            <Route path="/buyer-accounts" element={<BuyerAccountsPage />} />
             <Route path="/stores" element={<StoresPage />} />
             <Route path="/incidents" element={<IncidentsPage />} />
             <Route path="/compliance" element={<CompliancePage />} />
