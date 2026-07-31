@@ -1,11 +1,21 @@
-# PR #50 第三闸真机验证指令 v7（R2-13 自动采购：不花钱可证伪层，按身份模型改形重写）
+# PR #50 第三闸真机验证指令 v8（R2-13 自动采购：不花钱可证伪层，身份模型改形版 + 旧现场清场）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
 >
 > **v7 重写背景**：Owner 逆向工程实录更正了身份模型——插件实例绑「一台授权浏览器」
 > 而非买家账号，`customerId` 从鉴权凭据降为路由参数，越权边界=跨团队。审查五轮
 > （所审 `8ee9703`）对改形后代码**②闸重新放行**并要求本指令按新模型重写。
-> v6 执行到③前停点（README 脏工作树）作废，**从①重新走，基线重取**。
+> v6 执行到③前停点（README 脏工作树）作废。
+>
+> **v8 增补背景**（六轮审查 I1 + 部署机 2026-07-31 停点评论，双源）：
+> (a) **I1**——`plugin_instance` 库里**没有 `note` 列**，v7 却拿它当清理键：⑧-3 直插
+> SQL 报错、⑫清理单事务整段回滚、终态残留核对不可用。v8 全部改用**真实存在且签发
+> 即落库**的 `version` 列（值统一 `R13T`），⑥另加「列表回显 version」正向确认。
+> (b) 部署机现场=旧 v5 授权造的⑤夹具残留 + **改形前旧链 schema**（alembic_version
+> 已是 0046 但内容是旧模型；改形是对未合并迁移的**原地重写**，revision id 未变，
+> 直接 upgrade 对 alembic 是空转，④结构判据必失败）。v8 新增**⓪**：精确清场旧夹具 →
+> 用旧迁移内容回滚到 0047 → ②③再用新内容真正升级。
+> **本版从⓪走起，①的基线在⓪全过之后才取。**
 >
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**（判据=②的「你在分支尖端」+
 > 「迁移清单恰为 0043-0046」，不写死 sha；实际 sha 记进回执）。
@@ -46,6 +56,75 @@
 **不在本单**。
 
 ---
+
+## ⓪ 旧现场清场与旧链回滚（v8 新增；对象=部署机停点评论的清点；全过才进①）
+
+> **为什么必须有⓪**：现场 DB 是改形前的旧 0043-0046 建的，alembic_version 已是 0046。
+> 改形（`5895982` 起）对这四个**未合并**迁移原地重写、revision id 未变，所以新代码下
+> 直接 `run --rm migrate` 什么都不做——库停留在旧模型，④必失败。唯一干净路径：
+> 用**与现场所应用内容一致的旧文件**降到 0047，再让②③用新文件升上来。
+> **授权说明**：本步删除的行 = 部署机 2026-07-31 停点评论逐条清点的旧 v5 测试族
+> （R13T 前缀：账号 2 / 订单 4 / 产品 4 / 执行单 4），且 DELETE 同时用**评论里的精确
+> id** 双重圈定——Owner 转交本指令即为对该精确范围的清场授权。圈到任何非 R13T
+> 对象 → 停下来问。
+
+**⓪-1 预检**（工作树可检出；db 在跑）：
+
+```powershell
+cd D:\项目文件\ERP-ALL
+git status --porcelain
+docker compose -f infra/docker-compose.yml ps db
+```
+
+**判据**：无 tracked 脏文件（未跟踪项不阻检出，可留）；db `Up (healthy)`。
+tracked 有脏 → 按①的 stash 规则处理，处理不了停下来问。
+
+**⓪-2 旧夹具精确清场**（单事务；顺序照删依赖；前缀 + 清点 id 双条件——若前缀圈到
+id 清单之外的行，它会**留下**并在⓪-3 暴露，宁可漏删停下来问，不多删一行。此刻仍是
+旧 schema，旧 buyer_account 的 label/external_customer_id 均 NOT NULL，双条件成立）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (SELECT po.id FROM app.procurement_order po JOIN app.channel_order co ON co.id = po.order_id AND co.order_date = po.order_date WHERE co.channel_order_no LIKE 'R13T-%' AND co.id IN (14,15,16,17)); DELETE FROM app.procurement_order WHERE id IN (3,4,5,6) AND order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (14,15,16,17)); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (14,15,16,17)); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (14,15,16,17); DELETE FROM app.product WHERE source_ref LIKE 'R13T%' AND id IN (2490,2491,2492,2493); DELETE FROM app.buyer_account WHERE (label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%') AND id IN (1,2);"
+```
+
+**判据**（DELETE 行数逐条比对清点）：`procurement_order=4`、`channel_order=4`、
+`product=4`、`buyer_account=2`；logistics_event / order_check / order_line 行数照实
+记回执（v5 造数的附带行，数量不钉死）。
+
+**⓪-3 残留核对**（应全 0）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%') AS r13t_orders, (SELECT count(*) FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%') AS r13t_accounts, (SELECT count(*) FROM app.product WHERE source_ref LIKE 'R13T%') AS r13t_products, (SELECT count(*) FROM app.procurement_order WHERE id IN (3,4,5,6)) AS r13t_pos, (SELECT count(*) FROM app.plugin_instance) AS pi_rows;"
+```
+
+**判据**：五项全 0（`pi_rows=0` 即停点评论的现状复核）。任一非 0 → **不进⓪-4**，
+贴现场等修指令。
+
+**⓪-4 旧链回滚到 0047**（检出改形前最后一个提交 `b0838bf`：0043-0046 的旧内容在
+`644cbf7`（审查首轮修复）之后、改形起点 `5895982` 之前无任何改动，与 v5 ③当时应用的
+内容一致；旧 downgrade 全为 `DROP TABLE IF EXISTS ... CASCADE` / 定名列删，链序
+0046↓→0045↓→0044↓→0043↓，实例表先于账号表删，外键顺序安全）：
+
+```powershell
+git fetch origin claude/r2-03-launch-leg5n8
+git checkout b0838bf
+docker compose -f infra/docker-compose.yml build migrate
+docker compose -f infra/docker-compose.yml run --rm migrate alembic downgrade 0047
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM alembic_version;"
+```
+
+**判据**：`version_num = 0047`。检出后处于分离 HEAD **属预期**（②会回到分支尖端）。
+降级若在 ADD CONSTRAINT 硬失败 → 库里还有 `pending_review`/`backfill_actor_kind='plugin'`
+残行（⓪-2 清过后不应发生，插件从未在生产跑过）→ 停下来贴现场。
+
+**⓪-5 回滚结构核对**（旧模型对象应全部消失）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'app' AND table_name IN ('buyer_account','plugin_instance','procurement_logistics_event')) AS old_tables_left, (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'app' AND table_name = 'procurement_order' AND column_name IN ('exception_kind','delivery_est_raw','delivery_est_date','payment_card_last4','tax_amount','buyer_account_id')) AS old_cols_left, (SELECT count(*) FROM app.permission WHERE code IN ('procurement.buyer_account_read','procurement.buyer_account_admin','procurement.plugin_instance_admin')) AS old_perms_left;"
+```
+
+**判据**：三项全 0。全过 → 进①（**基线此刻取才是真正的生产基线**——旧测试族已出账、
+旧权限种子已回收，①的 `perms_before` 与④的 `+3` 判据由此对得上）。
 
 ## ① 前置与基线（实测值全部写进回执；v6 的旧基线作废）
 
@@ -145,14 +224,16 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 ## ⑥ 实例签发（**团队级**——新模型下实例不挂账号；live 必须签不出来）
 
 ```powershell
-$IA = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"stop_before_payment","note":"R13T-verify"}' -ContentType "application/json"
-"token_len=$($IA.token.Length) token_head=$($IA.token.Substring(0,8))"
+$IA = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"stop_before_payment","version":"R13T"}' -ContentType "application/json"
+"IA_id=$($IA.id) token_len=$($IA.token.Length) token_head=$($IA.token.Substring(0,8))"
 try { Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"live"}' -ContentType "application/json" } catch { $_.Exception.Response.StatusCode.value__ }
 ```
 
-**判据**：签发 201 返回 token（回执只记 `token_len`/`token_head`）；**live 直签 = 422**
+**判据**：签发 201 返回 token（回执记 `IA_id`/`token_len`/`token_head`）；**live 直签 = 422**
 （签发词表只收两个演练档，live 只能事后 PATCH 显式升档）；`GET /plugin-instances`
-不回显 token、含 `last_seen_customer_id` 列（此刻为空）。**只签这一枚工作实例**——
+不回显 token、含 `last_seen_customer_id` 列（此刻为空）、**IA 行 `version='R13T'`**
+（清理键已真实落库的正向确认——⑫按它圈定；六轮 I1：v7 用的 note 从不入库）。
+**只签这一枚工作实例**——
 新模型一枚实例即可服务全团队所有账号（⑧-1 的 (c) 判据正要证明这一点）。
 
 ## ⑦ 认证三路同码（+吊销探针）
@@ -162,7 +243,7 @@ $HA = @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = $IA.token }
 (Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers $HA -UseBasicParsing).StatusCode
 try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = 'R13T-wrong-token' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
 try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers @{ 'X-Plugin-Instance' = '999999999'; 'X-Plugin-Token' = 'R13T-any' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
-$IC = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"dry_run","note":"R13T-revoke-probe"}' -ContentType "application/json"
+$IC = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"dry_run","version":"R13T"}' -ContentType "application/json"
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances/$($IC.id)/revoke" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
 try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers @{ 'X-Plugin-Instance' = "$($IC.id)"; 'X-Plugin-Token' = $IC.token } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
 ```
@@ -200,7 +281,7 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 ```powershell
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.team (name) VALUES ('R13T-TEAM-B') RETURNING id;"
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.plugin_instance (team_id, token_hash, exec_mode, note) VALUES (<TEAM_B>, encode(sha256('R13T-TB-TOKEN-4f9a2c81'::bytea), 'hex'), 'dry_run', 'R13T-crossteam-probe') RETURNING id, status;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.plugin_instance (team_id, token_hash, exec_mode, version) VALUES (<TEAM_B>, encode(sha256('R13T-TB-TOKEN-4f9a2c81'::bytea), 'hex'), 'dry_run', 'R13T') RETURNING id, status;"
 ```
 
 用 `<ITB>` + 明文 `R13T-TB-TOKEN-4f9a2c81` 作头，拉 `?customerId=R13TCUSTA`
@@ -323,11 +404,12 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 **清理（单事务，前缀/对象精确圈定；顺序照删依赖）**：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (SELECT po.id FROM app.procurement_order po JOIN app.channel_order co ON co.id = po.order_id AND co.order_date = po.order_date WHERE co.channel_order_no LIKE 'R13T-%'); DELETE FROM app.procurement_order WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'; DELETE FROM app.product WHERE source_ref LIKE 'R13T%'; DELETE FROM app.plugin_instance WHERE note LIKE 'R13T%'; DELETE FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%'; DELETE FROM app.notification WHERE (object_type = 'procurement_order' AND object_id IN ('<PO1>','<PO2>','<PO3>','<PO4>')) OR (object_type = 'buyer_account' AND object_id IN ('<BA_C>','<BA_D>','<BA_F>','<BA_TB>')) OR dedupe_key = 'plugin.pending_claim_flood.<TEAM_ID>'; DELETE FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch'; DELETE FROM app.team WHERE name = 'R13T-TEAM-B';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (SELECT po.id FROM app.procurement_order po JOIN app.channel_order co ON co.id = po.order_id AND co.order_date = po.order_date WHERE co.channel_order_no LIKE 'R13T-%'); DELETE FROM app.procurement_order WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'; DELETE FROM app.product WHERE source_ref LIKE 'R13T%'; DELETE FROM app.plugin_instance WHERE version = 'R13T'; DELETE FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%'; DELETE FROM app.notification WHERE (object_type = 'procurement_order' AND object_id IN ('<PO1>','<PO2>','<PO3>','<PO4>')) OR (object_type = 'buyer_account' AND object_id IN ('<BA_C>','<BA_D>','<BA_F>','<BA_TB>')) OR dedupe_key = 'plugin.pending_claim_flood.<TEAM_ID>'; DELETE FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch'; DELETE FROM app.team WHERE name = 'R13T-TEAM-B';"
 ```
 
-> 圈定说明：plugin_instance 按 `note LIKE 'R13T%'`（IA/IC/ITB 三枚全中，团队级模型下
-> 不再有「随账号连带删」）；buyer_account 双条件——已认领的按 label 前缀、待认领/驳回的
+> 圈定说明：plugin_instance 按 `version = 'R13T'`（IA/IC/ITB 三枚全中——⑥⑦签发 body
+> 与⑧-3 直插同值，⑥的判据已正向确认落库；六轮 I1：库里从来没有 note 列，团队级模型下
+> 也不再有「随账号连带删」）；buyer_account 双条件——已认领的按 label 前缀、待认领/驳回的
 > label 为 NULL 按 customerId 前缀（含 TB 团队里那条 `R13TCUSTA` 探针行）；notification
 > 按**对象圈定** + 洪水闸那条按**本团队 dedupe_key**（cap 是⑤-2 人为压低造出的告警，
 > 插件未上线不存在真实同类行）；team_config 删的正是⑤-2 造的行（前提=⑤-2 的
@@ -356,7 +438,7 @@ docker compose -f infra/docker-compose.yml restart beat
 暂存（若①做过）并在回执记「已还原」；残留核对**五清单全 0**：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%') AS r13t_orders, (SELECT count(*) FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%') AS r13t_accounts, (SELECT count(*) FROM app.plugin_instance WHERE note LIKE 'R13T%') AS r13t_instances, (SELECT count(*) FROM app.team WHERE name = 'R13T-TEAM-B') AS r13t_team, (SELECT count(*) FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch') AS r13t_cfg;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%') AS r13t_orders, (SELECT count(*) FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%') AS r13t_accounts, (SELECT count(*) FROM app.plugin_instance WHERE version = 'R13T') AS r13t_instances, (SELECT count(*) FROM app.team WHERE name = 'R13T-TEAM-B') AS r13t_team, (SELECT count(*) FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch') AS r13t_cfg;"
 ```
 
 ---
