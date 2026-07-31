@@ -438,6 +438,26 @@ async def exception_procurement(
     return {"id": po_id, "status": "exception"}
 
 
+@order_router.post("/procurement-orders/{po_id}/release")
+async def release_procurement(
+    po_id: int,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("order.assign"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """把插件异常单释放回待派池（R2-13 审查 A3；0045 头注二承诺的显式出边）。
+
+    权限点取 `order.assign` 而不是 `procurement.execute`：本动作改的是「这单归谁做」，
+    与建单/分配同类，不是执行侧的领单/回填。
+    """
+    out = await procurement.release_po(session, team_id=user.team_id or -1, po_id=po_id)
+    await AuditWriter.for_user(session, user, request).log(
+        "order.po_release", "procurement_order", po_id,
+        before=out["before"], after={"status": "unassigned"},
+    )  # fmt: skip
+    return {"id": out["id"], "status": out["status"]}
+
+
 @order_router.get("/purchasers")
 async def list_purchasers(
     user: Annotated[CurrentUser, Depends(require_permission("procurement.read"))],

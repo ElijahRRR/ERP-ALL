@@ -4004,6 +4004,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/procurement-orders/{poId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把插件异常单释放回待派池（清 buyer_account_id / 异常分类与原文，订单退回 checked）
+         * @description 仅接受**插件派发单**（buyer_account_id 非空）且 status='exception' 且尚未拍成单
+         *     （purchase_order_ref 与 purchased_at 均为空）。三条守卫各自 409：
+         *     - `PROCUREMENT_NOT_PLUGIN_DISPATCHED`：人工采购方的异常单不走本出边（FX-0730B）
+         *     - `PROCUREMENT_STATE_INVALID`：插件仍在执行（assigned/claimed）的单不许把活抽走
+         *     - `PROCUREMENT_ALREADY_PURCHASED`：已有单号/拍单时刻 —— 释放会被重新派发＝二次扣款
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    poId: components["parameters"]["poId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/procurement-orders/{poId}/exception": {
         parameters: {
             query?: never;

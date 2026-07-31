@@ -33,6 +33,7 @@
 返回集剔除。**本轮不实现、不留桩、不留假配置键**（护栏缺失即禁止开 auto，007 R2-13）。
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -43,6 +44,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.notify.service import notify
+from erp.order.procurement import advance_order
 
 log = structlog.get_logger()
 
@@ -150,11 +152,15 @@ SELECT po.id
 # `assignee_kind` 保持 'none'、`purchaser_id` 保持 NULL：插件不是 purchaser，
 # **不扩第四种 assignee_kind**——扩了就有两处真相源（kind 与 buyer_account_id），
 # 正是 daily_cap 刚被消灭的那种失效模式。
+#
+# `RETURNING` 带上 `order_id, order_date` 是为了紧接着推渠道订单的 `internal_status`
+# （见 `_advance_claimed`）——`channel_order` 是复合主键 `(id, order_date)`，只拿 po 的
+# 主键推不动它。
 _CLAIM_SQL = """
 UPDATE app.procurement_order
    SET buyer_account_id = :a, status = 'assigned', assigned_at = now(), assigned_by = NULL
  WHERE id = ANY(:ids) AND status = 'unassigned' AND buyer_account_id IS NULL
-RETURNING id
+RETURNING id, order_id, order_date
 """
 
 # 无法路由的单（收货国缺失或不在映射表内）——**不猜**，告警让人处置。
@@ -287,6 +293,36 @@ async def _warn_missing_asin(
         )
 
 
+async def _advance_claimed(session: AsyncSession, rows: Sequence[Any]) -> list[int]:
+    """认领落地后镜像 `assign_po` 的订单联动：`internal_status` `checked` → `assigned`。
+
+    **审查 A2 的不对称加重项**。人工分配（`procurement.py::assign_po`）会把渠道订单推到
+    `assigned`，插件认领此前**只改执行单不动订单**——同一件事经两条路走出两种订单状态：
+    插件派走的单在订单列表里仍显示 `checked`（＝「已过四检、等着派」），运营据此再建一张
+    人工执行单去下单，就是 A2 那条双买路径的**上游诱因**。建单入口那道闸（
+    `_IN_FLIGHT_SIBLING_SQL`）挡住了后果，这里补的是别再把人误导过去。
+
+    复用 `procurement.advance_order` 而不是在本文件另写一条 UPDATE：那个函数的头注写着
+    「唯一的推进入口只应有这一处」，两处各写各的迟早会漂。它内部的 WHERE 带
+    `id = :o AND order_date = :d`——`channel_order` 是复合主键 `(id, order_date)`，
+    单给 `id` 会误伤同号不同日的行（先例：`identity/delete.py` 退回池那段）。
+
+    条件推进（`from_statuses=('checked',)`）意味着已经在 `purchasing`/`shipped` 的订单
+    不会被拉回，与 `assign_po` 逐字同款。
+    """
+    ids: list[int] = []
+    for po_id, order_id, order_date in rows:
+        await advance_order(
+            session,
+            order_id=order_id,
+            order_date=order_date,
+            to_status="assigned",
+            from_statuses=("checked",),
+        )
+        ids.append(int(po_id))
+    return ids
+
+
 async def _claim(
     session: AsyncSession, *, buyer_account_id: int, candidate_ids: list[int]
 ) -> tuple[list[int], int]:
@@ -295,6 +331,9 @@ async def _claim(
     先整批试一次（常态零冲突，一条语句解决）；撞 `uq_po_active_dispatch` 则回退逐单——
     **一单撞车不该让整批拉取失败**。回退必须走 SAVEPOINT：Postgres 里语句一报错，
     整个事务就进入 aborted 状态，不开子事务的话「继续处理其余单」在物理上做不到。
+
+    订单联动（`_advance_claimed`）放在**同一个 SAVEPOINT 内**：认领若被回滚，那条
+    `internal_status` 推进必须跟着回滚，否则会留下「订单说已分配、执行单说没派」的孤儿态。
     """
     if not candidate_ids:
         return [], 0
@@ -305,24 +344,29 @@ async def _claim(
                     text(_CLAIM_SQL), {"a": buyer_account_id, "ids": candidate_ids}
                 )
             ).all()
-        return [int(r[0]) for r in rows], 0
+            batch = await _advance_claimed(session, rows)
+        return batch, 0
     except IntegrityError:
         log.info("plugin.dispatch.batch_conflict", account=buyer_account_id)
 
     claimed: list[int] = []
     conflicts = 0
     for po_id in candidate_ids:
+        row: Any = None
         try:
             async with session.begin_nested():
                 row = (
                     await session.execute(text(_CLAIM_SQL), {"a": buyer_account_id, "ids": [po_id]})
                 ).first()
-            if row is not None:
-                claimed.append(int(row[0]))
+                if row is not None:
+                    await _advance_claimed(session, [row])
         except IntegrityError:
             # 该渠道订单已有别的买家账号在拍（可能是异常单尚未走出边）——跳过，不放宽约束。
             conflicts += 1
             log.info("plugin.dispatch.conflict", po_id=po_id, account=buyer_account_id)
+            continue
+        if row is not None:
+            claimed.append(int(row[0]))
     return claimed, conflicts
 
 

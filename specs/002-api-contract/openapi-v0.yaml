@@ -1355,6 +1355,23 @@ paths:
       parameters: [{$ref: '#/components/parameters/poId'}]
       requestBody: {$ref: '#/components/requestBodies/ProcurementBackfill'}
       responses: {'200': {description: OK}}
+  /procurement-orders/{poId}/release:
+    post:
+      tags: [Order]
+      # R2-13 审查 A3：插件异常单的**显式出边**（0045 头注二承诺、此前代码里不存在）。
+      # 不给出边则 uq_po_active_dispatch 长期占着该 order_id，该渠道订单再也派不出去，
+      # 人工侧又被 PROCUREMENT_PLUGIN_DISPATCHED 挡住 —— 单卡死。
+      # 权限点取 order.assign（改的是「这单归谁做」，同建单/分配），不是 procurement.execute。
+      summary: 把插件异常单释放回待派池（清 buyer_account_id / 异常分类与原文，订单退回 checked）
+      description: |
+        仅接受**插件派发单**（buyer_account_id 非空）且 status='exception' 且尚未拍成单
+        （purchase_order_ref 与 purchased_at 均为空）。三条守卫各自 409：
+        - `PROCUREMENT_NOT_PLUGIN_DISPATCHED`：人工采购方的异常单不走本出边（FX-0730B）
+        - `PROCUREMENT_STATE_INVALID`：插件仍在执行（assigned/claimed）的单不许把活抽走
+        - `PROCUREMENT_ALREADY_PURCHASED`：已有单号/拍单时刻 —— 释放会被重新派发＝二次扣款
+      x-permission: order.assign
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
   /procurement-orders/{poId}/exception:
     post:
       tags: [Order]
