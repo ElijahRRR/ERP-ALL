@@ -99,9 +99,20 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 ```
 
 再造**三张**可路由渠道订单（收货国 US、行带 amazon 产品 ASIN）与**一张缺 ASIN 单**。
-订单/行/product 的造数 SQL 较长，按 `tests/db/test_r2_13b_dispatch.py::_mk_order` 的列清单
-写（channel_order_no 用 `R13T-O1`…`R13T-O4`；缺 ASIN 单 `R13T-O4` 的 product.source_ref
-置空串）。每张订单 `internal_status='checked'`，并各建一张 `status='unassigned'` 的
+订单/行/product 的造数 SQL 较长，按 `tests/db/test_r2_13b_dispatch.py::_mk_order` 的列清单写，
+**product 的形状按下表钉死**（v3 修订：v2 的「O4 置空串 source_ref」与⑫清理的
+`LIKE 'R13T%'` 自相矛盾——空串永远清不掉，部署机⑤前停点抓的就是它。改用「非 amazon
+渠道」触发缺 ASIN：派发谓词认的是「有 `source_channel='amazon'` 且 source_ref 非空的
+产品」，`walmart` 渠道的产品解不出 amazon ASIN，效果等价且可被前缀清理；
+`product.source_channel` 无 CHECK 约束、去重键是 (team_id, source_channel, source_ref)，
+此形状合法且不撞键）：
+
+| 单 | product.source_channel | product.source_ref | 效果 |
+|---|---|---|---|
+| `R13T-O1`…`R13T-O3` | `amazon` | `R13T-O1-ASIN` / `R13T-O2-ASIN` / `R13T-O3-ASIN` | 可路由 |
+| `R13T-O4` | `walmart` | `R13T-O4-NOASIN` | 缺 ASIN 拦截触发 |
+
+每张订单 `internal_status='checked'`，并各建一张 `status='unassigned'` 的
 procurement_order（`R13T-O4` 的也建）。全部 RETURNING id 记回执。
 验收账号：确认你的团队账号有 `procurement.buyer_account_admin` /
 `procurement.plugin_instance_admin` / `procurement.execute` / `order.assign` / `order.read` 五码，
