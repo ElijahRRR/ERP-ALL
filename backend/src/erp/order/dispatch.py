@@ -20,6 +20,12 @@
 派 100 单再一口气拍完，`daily_cap` 等于没有。日限的唯一权威是 `buyer_account.daily_cap`
 列（Owner 2026-07-30 裁定：`automation_policy.config` 里**不得**有同名键）。
 
+## 只派「派得出去」的单
+
+候选谓词除站点匹配外还要求**该单每一行都能解出亚马逊 ASIN**（`_BAD_LINE_EXISTS`）——
+插件拿到任务就照着 `amazon.com/dp/{asin}` 去买，解不出就没得买。缺 ASIN 的单不进候选
+并告警；**不在下发时过滤**，那会让它先被认领、再占住名额，把账号静默饿死（见该常量注释）。
+
 ## 13c 的挂载位
 
 护栏（`amount_ceiling` / `price_delta_pct` / `delivery_days_limit`）评估点在
@@ -79,10 +85,34 @@ SELECT count(*) FROM app.procurement_order
  WHERE buyer_account_id = :a AND status <> 'cancelled' AND assigned_at >= :day_start
 """
 
-# 候选：本团队、待派发、未被人工分配、收货国匹配本账号站点。
+# 「每一行都能解出亚马逊 ASIN」——插件拿到任务就照着 `amazon.com/dp/{asin}` 去买，
+# 解不出就没得买。谓词写成「**没有任何一行缺 ASIN**」而不是「至少有一行有 ASIN」：
+# 一张四行的单若少给一行，插件会照着买三行，**少买的那件不会有任何人发现**。
+#
+# **为什么挡在候选层而不是下发时过滤**（13a §3.1 说的是「该单不派」）：过滤发生在认领
+# 之后的话，这单已经挂在账号名下、还占着本次 `limit` 的名额，而续拉每次都会把它再捞
+# 出来——攒够一批这样的单，该账号就再也拉不到任何可执行任务（**静默饿死**）。
+# 挡在候选层则它根本不会被认领，池子里等人处置。
+#
+# 零订单行的单不被本条挡下（`NOT EXISTS` 对空集为真）；那种形状只出现在造数里，
+# 由下发侧兜底（`plugin/service.py::_warn_undeliverable_task`）。
+_BAD_LINE_EXISTS = """
+   EXISTS (
+     SELECT 1 FROM app.order_line ol
+      WHERE ol.order_id = po.order_id AND ol.order_date = po.order_date
+        AND NOT EXISTS (
+          SELECT 1 FROM app.product p
+           WHERE p.id = ol.product_id
+             AND p.source_channel = 'amazon'
+             AND coalesce(p.source_ref, '') <> ''
+        )
+   )
+"""
+
+# 候选：本团队、待派发、未被人工分配、收货国匹配本账号站点、每行都能解出 ASIN。
 # `FOR UPDATE OF po SKIP LOCKED` 只锁 procurement_order 一侧——channel_order 是 JOIN
 # 进来的读取面，锁它没有意义且会与拉单写路径互相干扰。
-_CANDIDATE_SQL = """
+_CANDIDATE_SQL = f"""
 SELECT po.id
   FROM app.procurement_order po
   JOIN app.channel_order co
@@ -92,9 +122,27 @@ SELECT po.id
    AND po.buyer_account_id IS NULL
    AND po.purchaser_id IS NULL
    AND (co.ship_to ->> 'country') = :country
+   AND NOT {_BAD_LINE_EXISTS}
  ORDER BY po.created_at, po.id
  LIMIT :n
  FOR UPDATE OF po SKIP LOCKED
+"""
+
+# 因缺 ASIN 而没能进候选的待派单——**不派但要有人知道**，否则运营只会看到「插件不拉单」
+# 这个症状。dedupe_key 与下发侧兜底共用，同一张单 24 小时内只吵一次。
+_MISSING_ASIN_SQL = f"""
+SELECT po.id
+  FROM app.procurement_order po
+  JOIN app.channel_order co
+    ON co.id = po.order_id AND co.order_date = po.order_date
+ WHERE po.team_id = :t
+   AND po.status = 'unassigned'
+   AND po.buyer_account_id IS NULL
+   AND po.purchaser_id IS NULL
+   AND (co.ship_to ->> 'country') = :country
+   AND {_BAD_LINE_EXISTS}
+ ORDER BY po.created_at, po.id
+ LIMIT :n
 """
 
 # 认领。谓词重复一遍「仍未被派」是必要的：候选行虽已被 FOR UPDATE 锁住，但本语句
@@ -206,6 +254,39 @@ async def _warn_unroutable(session: AsyncSession, *, team_id: int, limit: int) -
         )
 
 
+async def _warn_missing_asin(
+    session: AsyncSession, *, team_id: int, country: str, limit: int
+) -> None:
+    """待派但有订单行解不出亚马逊 ASIN 的单：告警，**不派**（不猜 ASIN）。
+
+    没有这条告警，运营看到的症状只是「插件一直拉不到单」，而真因（某张单的商品没有
+    货源、或货源不是 amazon）在数据里，不在插件里。dedupe_key 与下发侧兜底共用
+    （`plugin/service.py::_warn_undeliverable_task`）——同一张单只是在两个阶段被发现，
+    不该吵两次。
+    """
+    rows = (
+        await session.execute(
+            text(_MISSING_ASIN_SQL), {"t": team_id, "country": country, "n": limit}
+        )
+    ).all()
+    for (po_id,) in rows:
+        await notify(
+            session,
+            team_id=team_id,
+            severity="warn",
+            category="procurement",
+            title="采购执行单缺 ASIN，未派给买家账号",
+            body=(
+                f"执行单 #{po_id} 存在无法解出亚马逊 ASIN 的订单行"
+                "（商品未关联货源或货源渠道不是 amazon），已跳过自动派发"
+                "——请补齐商品来源或改走人工采购"
+            ),
+            object_type="procurement_order",
+            object_id=str(po_id),
+            dedupe_key=f"plugin.no_asin.{po_id}",
+        )
+
+
 async def _claim(
     session: AsyncSession, *, buyer_account_id: int, candidate_ids: list[int]
 ) -> tuple[list[int], int]:
@@ -300,6 +381,7 @@ async def claim_tasks_for_account(
 
     # ④ 站点匹配 + ⑤ 认领（唯一并发点）
     await _warn_unroutable(session, team_id=team_id, limit=want)
+    await _warn_missing_asin(session, team_id=team_id, country=country, limit=want)
     candidates = [
         int(r[0])
         for r in (

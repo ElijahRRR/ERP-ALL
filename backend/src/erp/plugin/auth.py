@@ -1,4 +1,4 @@
-"""插件实例令牌的散列链（R2-13 13a 认证域；13b 先落签发侧要用的两个原语）。
+"""插件实例令牌的散列链 + 双头部认证域（R2-13 13a；13b 先落了签发侧要用的两个原语）。
 
 ## 为什么走散列链而不是加密链
 
@@ -19,12 +19,50 @@
 响应体里出现一次**，此后 ERP 侧任何地方（列表端点、审计快照、日志）都取不到。
 遗失只能吊销后重新签发。这条纪律的落点在 `order/buyer_account.py::issue_plugin_instance`。
 
-> 13a 补进本文件：`PluginPrincipal` 数据类与 `authenticate_instance()`
-> （按 `id` 取行 + `hmac.compare_digest`，失败一律同一错误码 401 不区分原因）。
+## 载体 = 双头部，对齐仓内唯一非 JWT 机器面先例
+
+`X-Plugin-Instance`（`plugin_instance.id` 的十进制串）+ `X-Plugin-Token`（明文令牌），
+形状同 `scrape/router.py::_node_auth` 的 `X-Node-Key` + `X-Node-Token`。三条不选：
+
+- **不引入 `instance_key` 列**：签发方就是 ERP，`id` 即可索引；id 不是秘密，秘密只有 token。
+- **不用 query 参数带 token**：会进 access log / 浏览器历史 / Referer，属安全边界放宽。
+- **不复用 `Authorization: Bearer`**：与 `bearerAuth`/`portalAuth` 同头不同域，
+  中间件按 audience 分流容易误配——同一把头四种含义是给将来埋雷。
+
+## 失败一律同一个错误码（不区分原因）
+
+不存在的 id / 错 token / 已吊销 → 全部 `PLUGIN_AUTH` + 401。不泄露「这个实例存不存在、
+是不是已经被吊销了」——这两条信息对合法插件毫无用处，对探测者却是地图。
+
+## 认证只看 `plugin_instance.status`，**不看 `buyer_account.status`**
+
+这条是刻意的，不是漏了：账号被 `paused`/`blocked` 时**拉任务必须停**（那道闸在
+`order/dispatch.py::claim_tasks_for_account` 第①步），但**回填 / 异常 / 物流三条写路径
+必须照常通**——钱可能已经花出去了，账号被停就收不到回填 = 花了钱系统不知道。
+把账号状态提到认证层就等于把这三条写路径一并掐掉，那是比「账号被风控」严重得多的故障。
 """
 
 import hashlib
+import hmac
 import secrets
+from dataclasses import dataclass
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from erp.core.errors import BusinessError
+
+# bigint 上界：`X-Plugin-Instance` 是外部输入，超界的十进制串若直接进 SQL 会让
+# Postgres 抛 NumericValueOutOfRange（500，且整事务作废）。认证失败本就该是 401。
+_MAX_INSTANCE_ID = 2**63 - 1
+
+_INSTANCE_SQL = """
+SELECT pi.id, pi.team_id, pi.buyer_account_id, pi.token_hash, pi.status, pi.exec_mode,
+       ba.site, ba.status AS account_status, ba.external_customer_id
+  FROM app.plugin_instance pi
+  JOIN app.buyer_account ba ON ba.id = pi.buyer_account_id
+ WHERE pi.id = :i
+"""
 
 
 def token_digest(token: str) -> str:
@@ -35,3 +73,61 @@ def token_digest(token: str) -> str:
 def mint_token() -> str:
     """生成一个新的实例令牌明文（32 字节熵，URL 安全）。同 `worker_node` 注册。"""
     return secrets.token_urlsafe(32)
+
+
+@dataclass(frozen=True)
+class PluginPrincipal:
+    """一次插件请求的授权主体。**授权只来自这里**，请求体自称的身份一律不作数。
+
+    `external_customer_id` 放进来是为了做一致性校验（插件每次调用都带 `customerId`），
+    **它永远不是授权依据**——授权链是 `token → plugin_instance → buyer_account`，
+    把 `customerId` 当依据等于让调用方自选身份，验收③当场打穿。
+    """
+
+    instance_id: int
+    team_id: int
+    buyer_account_id: int
+    exec_mode: str  # dry_run | stop_before_payment | live
+    account_site: str  # amazon_com | amazon_ca | amazon_co_jp
+    account_status: str  # active | paused | blocked | retired
+    external_customer_id: str
+
+
+def auth_failed() -> BusinessError:
+    """认证失败的唯一出口——三种原因同码同状态（见模块头注）。"""
+    return BusinessError("PLUGIN_AUTH", "插件实例认证失败", http_status=401)
+
+
+async def authenticate_instance(
+    session: AsyncSession, instance_id_raw: str, token: str
+) -> PluginPrincipal:
+    """双头部校验：按 id 取行 → `hmac.compare_digest` 比散列。
+
+    本函数跑在 `system_tx` 下（认证阶段还不知道团队，取不到 RLS 上下文），这是它
+    **唯一**被允许绕 RLS 的理由；拿到 principal 之后所有业务查询都必须换成
+    `ctx_tx(team_id=principal.team_id)`（`plugin/router.py` 的形状）。
+    """
+    try:
+        instance_id = int(instance_id_raw)
+    except (TypeError, ValueError):
+        raise auth_failed() from None
+    if not 0 < instance_id <= _MAX_INSTANCE_ID:
+        raise auth_failed()
+    row = (await session.execute(text(_INSTANCE_SQL), {"i": instance_id})).mappings().one_or_none()
+    # 比较前先散列：明文 token 可能含非 ASCII，直接进 compare_digest 会抛 TypeError；
+    # 而两侧都是十六进制串时它才是恒定时比较。
+    if (
+        row is None
+        or row["status"] != "active"
+        or not hmac.compare_digest(str(row["token_hash"]), token_digest(token))
+    ):
+        raise auth_failed()
+    return PluginPrincipal(
+        instance_id=int(row["id"]),
+        team_id=int(row["team_id"]),
+        buyer_account_id=int(row["buyer_account_id"]),
+        exec_mode=str(row["exec_mode"]),
+        account_site=str(row["site"]),
+        account_status=str(row["account_status"]),
+        external_customer_id=str(row["external_customer_id"]),
+    )

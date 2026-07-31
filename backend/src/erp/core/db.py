@@ -38,7 +38,9 @@ async def ctx_tx(
 
     用于把网络调用移出请求事务的编排（tx1 → HTTP → tx2）——SET LOCAL 随
     COMMIT 失效，故每段都需重放。团队/超管身份必须来自 authn 的真实用户，
-    禁止借本入口提权（与 system_tx 同一纪律）。
+    **或来自等价强度的机器认证域**（`plugin/auth.py` 的实例令牌：团队取自
+    `plugin_instance.team_id`，与用户身份同样不可自称）；任何情况下都禁止以
+    请求体自称的身份进入本入口，也禁止借它提权（与 system_tx 同一纪律）。
     """
     async with sessions() as s, s.begin():
         if is_super:

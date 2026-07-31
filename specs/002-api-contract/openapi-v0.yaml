@@ -26,6 +26,7 @@ tags:
   - {name: Scrape, description: 采集工单与采集端（内部 API 面）}
   - {name: Notify, description: 通知中心：列表/未读数/已读（任何登录用户可用，无权限点）}
   - {name: ScrapeWorker, description: 采集节点回调面（X-Node-Key + X-Node-Token 双头部认证，非 JWT）}
+  - {name: PurchasePlugin, description: 采购插件回调面（X-Plugin-Instance + X-Plugin-Token 双头部认证，非 JWT；R2-13）}
   - {name: Portal, description: 采购方门户（独立认证域，白名单最小面）}
 
 security:
@@ -1824,12 +1825,173 @@ paths:
       responses:
         '200': {description: OK, content: {application/json: {schema: {type: object}}}}
 
+  # ─────────────────── PurchasePlugin（Amazon 采购插件回调面，R2-13）───────────────────
+  # ① **第四个认证域**：`X-Plugin-Instance`（plugin_instance.id）+ `X-Plugin-Token`（明文令牌）
+  #    双头部，非 JWT、无 x-permission——同 ScrapeWorker，保护在另一条道上而不是没有保护。
+  #    失败一律 401 `PLUGIN_AUTH`，**不区分**「实例不存在 / 令牌错 / 已吊销」。
+  # ② **路径末段保留厂商方法名（camelCase）是有意的**：本组是机器协议不是 UI 契约。
+  #    13e 的回切演练要拿 fork 版与厂商原版逐条对照，路径逐字对应做到零翻译；
+  #    且插件 `CONFIG.API.endpoints` 的键名与末段一一对应。前缀收成一组
+  #    （厂商侧原本分 amazonOrder / amazonOrderPig 两个命名空间）是 Owner 2026-07-30 裁定。
+  # ③ ⛔ **本组故意不含 `updateBuyerCookie`**（9 端点 − 它 − amazonOrderPig 那 2 条 = 6 条）。
+  #    Owner 2026-07-30 二次裁定「先不收 cookie」，理由不是「暂时不用」而是**用途已被证伪**：
+  #    那份 jar 的字段整形正是 Cookie-Editor 类插件的导出格式，唯一目的是被导入回浏览器
+  #    ——它是整套可搬运的登录态而非标识；「哪个买家号」由同一调用的 `customerId` 承载。
+  #    ERP 侧不建路由、不建 `buyer_session` 表、任何 cookie jar 不落库。
+  #    **契约门禁只查「代码有契约无」和「契约有代码无」，不会替我们记住「故意不做」**，故写在此处。
+  # ④ **`getNeedSyncOrders` 的响应字段未逐字取证**（考古只对端点 1 给了逐字段清单，
+  #    `archaeology.md:24`）。此处按最小集声明；fork 时以插件 `handleOrderSync` 实读为准，
+  #    如有出入**以插件为准并同 PR 修本契约**。不许编字段。
+  # ⑤ 成功响应一律 `{code: 200, data: ...}`（厂商兼容信封，插件读 `response.data`）；
+  #    **失败走本仓统一 ErrorResponse + 真实 HTTP 状态码**，绝不做「HTTP 200 里塞 code:500」。
+  /purchase-plugin/getNeedPurchaseOrders:
+    get:
+      tags: [PurchasePlugin]
+      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      summary: 拉待采购任务（拉取即认领）
+      description: >-
+        **GET 但有副作用**：本端点按站点/日限/唯一派发把待采购单认领给本实例绑定的买家账号。
+        重复调用幂等——已认领给本账号的单会再次返回，不产生新派发、不重复消耗 `daily_cap`
+        （插件重启/掉线后必须还能看见手上的单）。`customerId` **只做一致性校验**，
+        不符回 403 `PLUGIN_CUSTOMER_MISMATCH`；**授权只来自实例令牌**。
+        账号 `status` 非 `active` 时本端点返回空（写路径不受影响）。
+      parameters:
+        - {name: customerId, in: query, required: true, schema: {type: string, maxLength: 64}, description: 插件侧买家号标识，须等于 buyer_account.external_customer_id}
+        - {name: v, in: query, schema: {type: string, maxLength: 40}, description: 插件版本（选填），回写 plugin_instance.version}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, data]
+                properties:
+                  code: {type: integer, enum: [200], description: 厂商兼容回声，恒为 200}
+                  data: {type: array, items: {$ref: '#/components/schemas/PluginTask'}}
+        '401': {description: 'PLUGIN_AUTH（不区分原因）', $ref: '#/components/responses/Error'}
+        '403': {description: PLUGIN_CUSTOMER_MISMATCH, $ref: '#/components/responses/Error'}
+  /purchase-plugin/getNeedSyncOrders:
+    get:
+      tags: [PurchasePlugin]
+      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      summary: 拉待物流同步订单
+      description: 已拍单（`purchased`/`shipped`）且有渠道单号的单。响应字段取证缺口见本组头注④。
+      parameters:
+        - {name: customerId, in: query, required: true, schema: {type: string, maxLength: 64}}
+        - {name: v, in: query, schema: {type: string, maxLength: 40}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, data]
+                properties:
+                  code: {type: integer, enum: [200]}
+                  data: {type: array, items: {$ref: '#/components/schemas/PluginSyncOrder'}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /purchase-plugin/purchaseOrderFinishUpdate:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      summary: 采购完成回填（金额/单号/卡号后四位/预计送达）
+      description: >-
+        幂等键 = `platformOrderNo`（自然键，跨插件重装/换实例仍成立，**不用 Idempotency-Key**
+        ——插件侧没有生成它的地方）。同值重投 = 200 no-op；**异值不覆盖原值**，改落
+        `exception_kind=other` + critical 告警（那是重复下单的形状，必须让人看见）。
+        `execMode` 与实例当前档不符回 409 `PLUGIN_EXEC_MODE_MISMATCH`。
+        非本实例绑定账号的任务回 403 `PLUGIN_TASK_NOT_OWNED`（与「id 不存在」同码同状态）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PluginBackfillIn'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: PLUGIN_TASK_NOT_OWNED, $ref: '#/components/responses/Error'}
+        '409': {description: PLUGIN_EXEC_MODE_MISMATCH, $ref: '#/components/responses/Error'}
+  /purchase-plugin/updateOrderStatus:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      summary: 拍单失败（status=99）
+      description: >-
+        落 `status=exception` + `exception_reason`（failReason 原文一字不改）+
+        `exception_kind`（17 条厂商原文的归类表，见 `plugin/classify.py`）。**零金额列写入**。
+        `status` 只接受 99——厂商的数字状态机不进我方模型，其余值 422。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, status]
+              properties:
+                id: {type: integer, description: procurement_order.id}
+                status: {type: integer, enum: [99]}
+                failReason: {type: [string, 'null'], description: 失败原文；服务端亦接受同义字段名 failContent（请求体键名未逐字取证，两名一义故都收）}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: PLUGIN_TASK_NOT_OWNED, $ref: '#/components/responses/Error'}
+  /purchase-plugin/updateAmzOrderStatus:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      summary: 渠道侧回报（91=已取消/退款，92=订单不存在）
+      description: >-
+        这两条发生在**已拍单之后**，故只落 `exception_kind`（`channel_cancelled` /
+        `order_not_found`）+ critical 告警，**`status` 一律不动**——改成 exception 会抹掉
+        「已拍单」这个事实，运营看到会以为没拍然后重拍一次。
+        `orderNo` 只做一致性校验，不符仅记 warn 不拒（渠道单号漂移不该挡住「渠道取消了」入库）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, status]
+              properties:
+                id: {type: integer}
+                orderNo: {type: [string, 'null']}
+                status: {type: integer, enum: [91, 92]}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: PLUGIN_TASK_NOT_OWNED, $ref: '#/components/responses/Error'}
+  /purchase-plugin/updateTrackingInfo:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      summary: 物流回填（运单号 + 承运商 + 轨迹事件）
+      description: >-
+        主表金额四项走 `coalesce(列, 新值)`（端点 2 已落的是权威，本端点只补空洞）；
+        `status` **只从 purchased 推到 shipped**，绝不从 assigned 跳（没拍单哪来的运单）。
+        **绝不动 `channel_order.internal_status`**——那是「我方已发货给 Walmart 买家」，
+        亚马逊侧包裹在路上 ≠ 我方已发货。
+        轨迹事件写 `procurement_logistics_event`，`seq` = 渠道数组下标（**0 = 最新，整个数组倒序**）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PluginTrackingIn'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: PLUGIN_TASK_NOT_OWNED, $ref: '#/components/responses/Error'}
+
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 内部 JWT（audience=erp）}
     portalAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 门户 JWT（audience=portal）}
     nodeKeyAuth: {type: apiKey, in: header, name: X-Node-Key, description: 采集节点标识（与 nodeTokenAuth 同时提供）}
     nodeTokenAuth: {type: apiKey, in: header, name: X-Node-Token, description: 采集节点令牌（`scrape/router.py::_node_auth` 双头部校验）}
+    pluginInstanceAuth: {type: apiKey, in: header, name: X-Plugin-Instance, description: 采购插件实例标识（plugin_instance.id 的十进制串；与 pluginTokenAuth 同时提供）}
+    pluginTokenAuth: {type: apiKey, in: header, name: X-Plugin-Token, description: 采购插件实例令牌（`plugin/auth.py::authenticate_instance` 双头部校验；**实例专属，禁全局共享密钥**；库里只存 sha256）}
 
   parameters:
     page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
@@ -2830,6 +2992,92 @@ components:
         id: {type: integer}
         buyer_account_id: {type: integer}
         token: {type: string, description: 实例专属令牌明文（禁全局共享密钥）。前端一次性展示后不得缓存、不得写 localStorage}
+    # ── PurchasePlugin 机器面载荷（字段名逐字保留厂商 camelCase，理由见该组头注②）──
+    PluginTask:
+      type: object
+      description: 一条待采购任务（字段集＝插件拍单流程实读，`07:216-224`）。展示用字段（products[].price/imgUrl/status）插件不读，**不造**。
+      required: [id, orderNo, products, execMode]
+      properties:
+        id: {type: integer, description: procurement_order.id；全部回调的主键}
+        orderNo: {type: string, description: '**渠道单号**（channel_order.channel_order_no）而不是 PO-{id}：插件把它写日志与回调参数，取渠道单号才能与 Walmart 后台直接对上'}
+        receivingName: {type: [string, 'null']}
+        receivingPhone: {type: [string, 'null']}
+        receivingAddress: {type: [string, 'null'], description: address1；address2 非空时以换行拼接}
+        receivingCity: {type: [string, 'null']}
+        receivingDistrict: {type: [string, 'null'], description: JP 必填。**日本站本轮不做但字段与分支保留**（不做不等于删掉）}
+        receivingPostCode: {type: [string, 'null']}
+        receivingCountry: {type: [string, 'null'], description: 驱动插件的地址填写与校验分支}
+        state: {type: [string, 'null'], description: 与 receivingState **两个字段名都返回、同值**——插件读的是 `order.state || order.receivingState`}
+        receivingState: {type: [string, 'null']}
+        products:
+          type: array
+          items:
+            type: object
+            required: [asin, quantity]
+            properties:
+              asin: {type: string, description: product.source_ref（source_channel=amazon）。**任一行解不出 ASIN 则整单不派**——少给一行会让插件少买一件且无人发现}
+              quantity: {type: integer}
+        execMode: {type: string, enum: [dry_run, stop_before_payment, live], description: 下发执行档，插件回报时原样回声}
+    PluginSyncOrder:
+      type: object
+      description: 一条待物流同步订单。**响应字段未逐字取证**（见该组头注④），按最小集声明。
+      required: [id, orderNo, platformOrderNo]
+      properties:
+        id: {type: integer}
+        orderNo: {type: string}
+        platformOrderNo: {type: string, description: 亚马逊订单号（procurement_order.purchase_order_ref）}
+    PluginBackfillIn:
+      type: object
+      description: 采购完成回填体（逐字对齐插件实发）。金额字段是结账页原文字符串（如 "$1,234.56"）——服务端解析失败时该列留 NULL 并告警，**绝不写 0**（空值与解析不出是两件事）。
+      required: [id]
+      properties:
+        id: {type: integer}
+        platformOrderNo: {type: [string, 'null'], description: 亚马逊订单号，兼作幂等键}
+        asins: {type: [string, 'null'], description: 逗号分隔；**不落列**，用于回填后核对（不符落 exception_kind=product）}
+        deliveryTime: {type: [string, 'null'], description: 预计送达 YYYY-MM-DD → delivery_est_date}
+        origDeliveryTime: {type: [string, 'null'], description: 结账页原文（如 "Thursday, August 7"）→ delivery_est_raw}
+        creditCardNumber: {type: [string, 'null'], description: 卡号后四位 → payment_card_last4}
+        mainPostCode: {type: [string, 'null'], description: '**不落列**，用于回填后核对邮编'}
+        extPostCode: {type: [string, 'null']}
+        shipping: {type: [string, number, 'null'], description: → freight_cost}
+        totalBeforeTax: {type: [string, number, 'null'], description: 税前商品额 → purchase_cost}
+        tax: {type: [string, number, 'null'], description: → tax_amount}
+        total: {type: [string, number, 'null'], description: '**不落库**，用于三项加总自校验；不平则落 exception_kind=other + critical 告警，但金额照实入库'}
+        products:
+          type: array
+          items:
+            type: object
+            properties:
+              asin: {type: [string, 'null']}
+              quantity: {type: [integer, 'null']}
+              unitPrice: {type: [string, number, 'null'], description: 图纸未指定落点，**不落库**、不自造落点}
+              totalPrice: {type: [string, number, 'null']}
+              productImage: {type: [string, 'null']}
+        execMode: {type: [string, 'null'], enum: [dry_run, stop_before_payment, live, null], description: fork 新增的回声字段；与实例当前档不符即 409（防插件版本落后按旧档跑）}
+    PluginTrackingIn:
+      type: object
+      description: 物流回填体。**主键叫 orderId 不是 id**（厂商这一组就这么发）。trackingJson 是 **JSON 编码的字符串**不是数组。
+      required: [orderId]
+      properties:
+        orderId: {type: integer, description: procurement_order.id}
+        trackingNumber: {type: [string, 'null']}
+        carrier: {type: [string, 'null']}
+        trackingJson: {type: [string, 'null'], description: '事件数组的 JSON 字符串；元素含 day/time/tracking_info/city/state，**倒序（index 0 = 最新）**'}
+        trackingUrl: {type: [string, 'null'], description: '**接收后立即丢弃**，不落任何列（可重抓、无消费者）'}
+        trackingHtml: {type: [string, 'null'], description: '**接收后立即丢弃**：base64 整页 HTML，万单 GB 级，图纸 07:245-247 的明确不做决定'}
+        receiptPicture: {type: [string, 'null'], description: '**接收后立即丢弃**'}
+        mainPostCode: {type: [string, 'null']}
+        extPostCode: {type: [string, 'null']}
+        card: {type: [string, 'null'], description: 卡号后四位，仅在端点 2 未落时补空洞}
+        asins: {type: [string, 'null']}
+        orderDate: {type: [string, 'null']}
+        subtotal: {type: [string, number, 'null']}
+        shipping: {type: [string, number, 'null']}
+        totalBeforeTax: {type: [string, number, 'null']}
+        tax: {type: [string, number, 'null']}
+        total: {type: [string, number, 'null']}
+        deliveryDate: {type: [string, 'null']}
+        origDeliveryDate: {type: [string, 'null']}
     Purchaser:
       type: object
       properties:
