@@ -201,31 +201,57 @@ class TestSoftReferenceInvariant:
 
 
 class TestDowngradeDataGuard:
-    def test_downgrade_hard_fails_on_plugin_rows(self, migrated_db: str) -> None:
-        """0045 降级守卫的承重（PR #50 五轮 H1）：带新词表数据时降级必须硬失败。
+    @pytest.mark.parametrize(
+        ("actor_kind", "po_status", "constraint"),
+        [
+            pytest.param("plugin", "purchased", "ck_procurement_backfill_actor", id="plugin-actor"),
+            pytest.param(None, "pending_review", "ck_procurement_status", id="pending-review"),
+        ],
+    )
+    def test_downgrade_hard_fails_on_new_vocab_rows(
+        self, migrated_db: str, actor_kind: str | None, po_status: str, constraint: str
+    ) -> None:
+        """0045 降级守卫的承重（PR #50 五轮 H1，六轮建议参数化补齐）：带新词表数据时降级必须硬失败。
 
-        0045 downgrade 头注承诺：库中已有 `backfill_actor_kind='plugin'` 或
+        0045 downgrade 头注承诺**两条**：库中已有 `backfill_actor_kind='plugin'` 或
         `status='pending_review'` 的行时 ADD CONSTRAINT 硬失败——人工处置前不许降
         （同 0047 口径：升级期间已发生的事实无法靠降级抹掉）。这条承诺原先被 CI
         步序**意外**覆盖着（空库演练排在 pytest 后，套件残余恰好触发）；8ee9703
-        把演练挪到 pytest 前之后变成**零覆盖**。本条把它变成显式承重。
+        把演练挪到 pytest 前之后变成**零覆盖**。本条把它变成显式承重，两条各钉一例：
+        downgrade 先重建 ck_procurement_backfill_actor 再重建 ck_procurement_status，
+        故 plugin 行撞前者、pending_review 行（actor NULL 穿过前者）撞后者。
 
         安全性依据：env.py 是整链单事务（begin_transaction 包住 run_migrations），
         中途失败即全部回滚、共享测试库仍在 head。末尾断言钉住这一点——将来若改成
         transaction_per_migration=True，失败的降级会留下半降级的库拖垮整个套件，
         这条会先红并指明原因。
+
+        两处防「顶包」（本用例第一次落地时实测踩过）：先清掉库里既有的新词表残行
+        （前序用例的遗留——它们会先撞约束，让本例的探针行根本没被验到）；match 钉
+        psycopg 报错详情的 `check constraint "<名>"` 带引号短语——IntegrityError 的
+        字符串附带整段 [SQL: ...]，裸约束名在那里两个都出现，松 match 会跨约束误配。
         """
         cfg = Config("alembic.ini")
         with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN"
+                " (SELECT id FROM app.procurement_order"
+                "  WHERE backfill_actor_kind = 'plugin' OR status = 'pending_review')"
+            )
+            conn.execute(
+                "DELETE FROM app.procurement_order"
+                " WHERE backfill_actor_kind = 'plugin' OR status = 'pending_review'"
+            )
             po = conn.execute(
                 "INSERT INTO app.procurement_order"
                 " (team_id, store_id, order_id, order_date, status,"
                 "  backfill_actor_kind, exchange_rate_locked)"
-                " SELECT id, 1, 997766, now(), 'purchased', 'plugin', 1.0"
-                " FROM app.team LIMIT 1 RETURNING id"
+                " SELECT id, 1, 997766, now(), %s, %s, 1.0"
+                " FROM app.team LIMIT 1 RETURNING id",
+                (po_status, actor_kind),
             ).fetchone()[0]
         try:
-            with pytest.raises(IntegrityError, match="ck_procurement_backfill_actor"):
+            with pytest.raises(IntegrityError, match=f'check constraint "{constraint}"'):
                 command.downgrade(cfg, "0044")
         finally:
             # 单事务回滚后库已在 head，此处为幂等 no-op；若将来变成分步事务，
