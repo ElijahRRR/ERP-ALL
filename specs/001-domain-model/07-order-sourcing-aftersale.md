@@ -257,8 +257,8 @@
 | team_id | BIGINT | NOT NULL | |
 | label | TEXT | NOT NULL | 运营可读名（对应哪个指纹浏览器） |
 | site | TEXT | NOT NULL CHECK IN (amazon_com, amazon_ca, amazon_co_jp) | 插件支持三站 |
-| external_customer_id | TEXT | NOT NULL | **插件侧 `customerId`**，任务路由主键。**来源=插件的「提取 customerId」按钮取出后人工录入**（Owner 2026-07-30：预配置的账号 ID 本身就是这么来的）——该按钮属**开账号阶段的一次性配置工具**，13b 必须保留这条录入通道，勿按一手来源 §7 的「不需要」删掉 |
-| status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, paused, blocked, retired) | blocked=账号异常/风控 |
+| external_customer_id | TEXT | NOT NULL | **插件侧 `customerId`**，任务路由键。⚠️ **来源＝插件运行时从亚马逊页面现场提取并随请求带上，由 ERP 首见自动登记**（见下方「身份从哪来」）——**不是人工预录入**。2026-07-30 早先版本写「提取按钮取出后人工录入、属一次性配置工具」，**已作废**：那会造成"装插件前先要知道 ID、而 ID 只能装了插件才看得到"的死循环 |
+| status | TEXT | NOT NULL DEFAULT 'pending_claim' CHECK IN (pending_claim, active, paused, blocked, retired) | **`pending_claim`＝ERP 首见该 `customerId` 时自动落的待认领行**，运营补 `label`/`site`/`daily_cap` 后转 `active`；**未认领不派单**。blocked=账号异常/风控 |
 | daily_cap | INT | NULL | 单日采购上限（**该账号的物理承受力，唯一落点**；null=不限）。**flow config 无同名键**，勿再引入第二处定义 |
 | last_seen_at | timestamptz | NULL | 该账号插件实例最近一次拉任务时间（掉线可见） |
 | note / +公共列 | | | |
@@ -276,13 +276,68 @@ buyer_account；**同一订单的任务只能派给一个账号**（防重复下
 | 列 | 类型 | 约束/默认 | 说明 |
 |---|---|---|---|
 | id | BIGINT | PK identity | |
-| team_id / buyer_account_id | BIGINT | NOT NULL | 一实例绑定一买家账号 |
+| team_id | BIGINT | NOT NULL | **实例绑定的是「一台授权浏览器」，不是一个买家账号** |
 | token_hash | TEXT | NOT NULL | **实例专属令牌哈希**（明文只在签发时出现一次） |
 | status | TEXT | NOT NULL DEFAULT 'active' CHECK IN (active, revoked) | 单实例可独立吊销 |
 | version | TEXT | NULL | 插件版本（便于灰度与排障） |
+| last_seen_customer_id | TEXT | NULL | **观察列，不参与鉴权**：该浏览器最近一次带上来的 `customerId`。排障用（"这台机器现在登的是哪个号"），换号即自然更新 |
 | last_seen_at / created_by / created_at / revoked_at | | | |
 
 **不得使用全局共享密钥**——一台机器被盗即全量失守；实例级令牌让吊销粒度=单个浏览器。
+
+### 身份从哪来 —— **两段式，令牌管浏览器、`customerId` 管账号（2026-07-30 更正）**
+
+> ⚠️ **本节推翻此前的「一实例绑定一买家账号 + `external_customer_id` 人工预录入」。**
+> Owner 2026-07-30 质疑：「**插件为什么做成每个买家号专用的插件了？为什么提前填写
+> customerID，我插件没安装拿不到这个 ID。**」——两条都成立，第二条指出的是死循环。
+
+**插件源码实测（`js/popup.js`，逐字核对）**：
+
+```js
+function extractCustomerId(){
+  const pageContent = document.documentElement.innerHTML;      // ← 读亚马逊页面本身
+  const match1 = pageContent.match(/customerId:\s*"([^"]*)"/); // ← 现场正则
+  ...
+}
+```
+
+三条硬事实：
+
+1. **`customerId` 是从亚马逊页面 HTML 现场抓的**，即"这个浏览器当前登录的是哪个亚马逊账号"。
+   三个入口（`handleStartSync` / `handleStartSyncTracking` / `handleStartPurchase`）
+   **每次点击都重抓一次**，`localStorage` 里**从不存**它。
+2. **插件零 per-install 配置**：全仓 `localStorage` 只有 `sb2-delivery-days-limit` 一个键；
+   `baseUrl` 是 `CONFIG` 里的构建期常量。**同一个 build 装在几十台浏览器上，装完即用。**
+3. **「提取 customerId」按钮是纯展示**：`handleExtractCustomerId()` 只把值写进页面上一个
+   `<div>` 的 `textContent`，**不存、不发**。它的用途是让人肉眼看见"这台机器登的是哪个号"
+   ——正对上 Owner 说的「我一开始并不知道我的 ID 在哪里看」。
+
+**故厂商的插件根本不是"每个买家号专用"，我方也不该做成那样。** 正确的分层：
+
+| 层 | 由什么承载 | 回答什么问题 |
+|---|---|---|
+| **授权** | `plugin_instance` 令牌 | 这是不是我方团队 T 的一台授权浏览器？ |
+| **身份** | 请求带上的 `customerId`（页面提取） | 这台浏览器**此刻**登的是哪个买家号？ |
+
+服务端在**团队 T 的范围内**把 `customerId` 解析成 `buyer_account`。于是：
+
+- **装插件不需要先知道 `customerId`**——令牌与账号无关，死循环消失；
+- **一台浏览器换登另一个买家号，不用换令牌**，路由自然跟随；
+- **越权边界仍在**：跨团队的 `customerId` 解析不到，直接拒。
+
+**首见自动登记**：服务端遇到本团队没见过的 `customerId` → 落一条
+`buyer_account(status='pending_claim', external_customer_id=<新值>)` 并通知，
+运营在页面上补 `label` / `site` / `daily_cap` 后转 `active`。
+**`pending_claim` 一律不派单**——既不阻断发现，也不会把任务派给一个还没设过限额的号。
+
+> **这个方向比我原设计更安全，不只是更省事**：`customerId` 取自**活着的亚马逊登录态**，
+> 所以任务天然只会流向"确实登着该账号"的浏览器。而预绑定方案在有人改了某台浏览器的
+> 亚马逊登录后，会**继续按旧绑定派任务，用错号把单买了**——**厂商的做法自我纠正，
+> 我的原设计会静默买错。**
+>
+> 团队内一台浏览器"冒充"同团队另一个 `customerId` 不在威胁模型内：那是自家机器、自家运营，
+> 且它只能用**实际登录的那个**亚马逊账号付款，冒充只会让自己拿到买不了的单——是操作事故
+> 不是越权。真正的重复下单风险由「同一订单只派一个账号」+ `claimed` 原子锁挡住。
 
 ## buyer_session 买家会话凭证 —— ⛔ **不建（Owner 2026-07-30 裁定：先不收 cookie）**
 
