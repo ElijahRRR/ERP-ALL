@@ -4310,6 +4310,8 @@ export interface paths {
         /**
          * 建买家账号（可选预建捷径）
          * @description **主路径是首见自动登记，不是本端点**（身份模型更正，Owner 2026-07-30，图纸 07:288-340）： 让插件在那台浏览器上跑一次拉取，服务端把它带上来的 `customerId` 落成一条 `status=pending_claim` 的待认领行并通知，运营补齐 `label`/`site`(/`daily_cap`) 后走 `PATCH /buyer-accounts/{id}` 认领。本端点只在运营手上**已经**有 customerId 时省一轮往返。`external_customer_id` 在本端点仍必填——一条解析不到的账号行永远 收不到任务；不知道 customerId 时的正解是走主路径，不是在这里留空。 `label` 的语义 = 对应哪个指纹浏览器（07:258）。
+         *
+         *     **`status` 只收人工可选的四值**（`active`/`paused`/`blocked`/`retired`）—— `pending_claim` 与 `rejected` 是**系统态**，本端点一律 422：前者由插件首见自动 登记独家产生（手工建一条等于伪造一个从未发生的"发现"），后者只能从待认领行驳回 而来（直接建出来即是一条改不动也删不掉的死行——终态 + 无 DELETE 授权）。 PATCH 侧对应的是「任何态都不许转回 `pending_claim`」；两处一起才封住这两个系统态。
          */
         post: {
             parameters: {
@@ -4318,7 +4320,7 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody?: components["requestBodies"]["BuyerAccountWrite"];
+            requestBody?: components["requestBodies"]["BuyerAccountCreate"];
             responses: {
                 /** @description Created */
                 201: {
@@ -4329,6 +4331,8 @@ export interface paths {
                 };
                 /** @description BUYER_ACCOUNT_DUPLICATE（detail.field 指明撞的是 external_customer_id 还是 label） */
                 409: components["responses"]["Error"];
+                /** @description BUYER_ACCOUNT_FIELDS_REQUIRED（label/site/external_customer_id 缺项）/ BUYER_ACCOUNT_STATUS_NOT_CREATABLE（status 填了系统态 pending_claim 或 rejected） */
+                422: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -4363,6 +4367,10 @@ export interface paths {
          *       零新增行、零新通知。审计动作名 `buyer_account.reject`。
          *     - `rejected → *` 与**任何态 → `pending_claim`** 一律 409 `BUYER_ACCOUNT_STATUS_TRANSITION`
          *       （待认领是系统发现态，不是运营可选态）。
+         *     - **已驳回行的 `external_customer_id` 不可再改** ⇒ 409 `BUYER_ACCOUNT_REJECTED_IMMUTABLE`。
+         *       粘性靠「唯一索引占着那个值」成立，把值改走等于当场撤销驳回（此后同一个伪造 id
+         *       再灌又是"没见过"，新增行 + 新通知）。其余列（label/note/daily_cap）照常可改；
+         *       原样带回同一个值是 no-op，不报错。
          */
         patch: {
             parameters: {
@@ -4383,7 +4391,7 @@ export interface paths {
                     content?: never;
                 };
                 404: components["responses"]["Error"];
-                /** @description BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移） */
+                /** @description BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移）/ BUYER_ACCOUNT_REJECTED_IMMUTABLE（改已驳回行的 external_customer_id） */
                 409: components["responses"]["Error"];
                 /** @description BUYER_ACCOUNT_CLAIM_INCOMPLETE（认领时缺 label 或 site） */
                 422: components["responses"]["Error"];
@@ -4460,6 +4468,8 @@ export interface paths {
                         "application/json": components["schemas"]["PluginInstanceIssued"];
                     };
                 };
+                /** @description TEAM_REQUIRED（当前主体没有团队——超管未切换到具体团队。令牌绑定的就是「团队 T 的一台授权浏览器」，无团队的令牌解析不出任何任务） */
+                409: components["responses"]["Error"];
                 /** @description 签发档位不合法（含 `exec_mode=live`——升 live 只能走 PATCH） */
                 422: components["responses"]["Error"];
             };
@@ -7042,6 +7052,27 @@ export interface components {
                     delivery_est_date?: string;
                     /** @description 渠道原文（如 `Thursday */
                     delivery_est_raw?: string;
+                };
+            };
+        };
+        BuyerAccountCreate: {
+            content: {
+                "application/json": {
+                    /** @description 运营可读名，语义=对应哪个指纹浏览器（07:258） */
+                    label?: string;
+                    /** @enum {string} */
+                    site?: "amazon_com" | "amazon_ca" | "amazon_co_jp";
+                    /** @description 插件侧 customerId。**首见自动登记是主路径**；本字段只在手工预建（可选捷径）时由运营填 */
+                    external_customer_id?: string;
+                    /**
+                     * @description 建号可选的四个运营态；不传 = active。**系统态 pending_claim / rejected 一律 422**
+                     * @default active
+                     * @enum {string}
+                     */
+                    status?: "active" | "paused" | "blocked" | "retired";
+                    /** @description 单日采购上限；null=不限 */
+                    daily_cap?: number | null;
+                    note?: string;
                 };
             };
         };

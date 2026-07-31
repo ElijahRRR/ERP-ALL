@@ -48,15 +48,28 @@
 1. **数量上限（硬闸，落在灌注发生的那一刻）**——本文件的 `_PENDING_COUNT_SQL`：登记前
    先数本团队待认领行（走 `ix_buyer_account_pending`），到顶即拒绝登记 + critical 告警。
    只数 `pending_claim`：`rejected` **不占额度**，否则驳回越多越容易把闸撑死，治理动作
-   反而变成自伤。并发下允许小幅越界（数与插之间无锁）——它是**治理边界不是安全边界**，
-   不值得为此加表锁。代价如实登记：闸打满后一个**真实**的新号也会被拒到有人清理为止，
+   反而变成自伤。**并发下精确**——`_register` 在计数之前先取一把按团队派生的
+   `pg_advisory_xact_lock`（见 `_REGISTER_LOCK_SQL`）。此前这里写的是「允许小幅越界」，
+   **那句话是失实的**：数与插之间无锁时，N 路并发各自读到的都是对方写入之前的值，
+   实测 `cap=3` 落地 15 条（＝连接池上限，即「越界幅度 = 并发度」而不是「小幅」）。
+   代价如实登记：闸打满后一个**真实**的新号也会被拒到有人清理为止，
    这是有意的 fail-closed（「注册洪水无解」比「新号晚一天被发现」严重得多）。
 2. **`rejected` 终态 + 天然粘性**——驳回不删行 ⇒ 该 `(team_id, customerId)` 被
    `uq_buyer_account` 永久占住 ⇒ 同一个伪造 id 再灌一万次都只解析到那一行、零新增行、
    零新通知。**粘性不是额外代码，是唯一索引的自然结果。**
+   > **粘性挡的是「同一个 id 再灌」，不挡「换一个 id 再灌」**——后者每次都是一个全新的
+   > `(team_id, customerId)`，照样新增一条待认领行。那一面**只由面 1 的数量闸兜底**，
+   > 驳回本身不产生任何额外保护，只是把该行挪出额度（面 1 只数 `pending_claim`）。
+   > 于是驳回得越勤，池子里的 `rejected` 残留越多而额度看起来越宽松——**残留量本身
+   > 没有任何告警**。观察手段：撞闸的 critical 正文里带**本团队 rejected 行数现值**
+   > （见 `_register`），运营看到「待认领 50/50，已驳回 900」就知道是长期在被灌，
+   > 而不是刚好来了 50 个新号；管理端另有 `status=rejected` 筛选可逐条看。
 3. **通知 dedupe + 行数可见**——每条待认领行一条 warn（`dedupe_key` 用行 id：稳定，
    且形状同既有 `plugin.no_asin.{po_id}`）；正文带当前待认领行数与上限，运营在数量
-   还没打满时就能看出「有人在灌」。
+   还没打满时就能看出「有人在灌」。**两档通知正文都带实例号**——「哪台浏览器在灌」
+   是排障与处置（吊销哪一把令牌）的第一个问题，正文不写就得去翻结构化日志。
+   通知之外另落一条 `audit_log`（见 `_register`）：通知会被清理/静音，审计是 append-only
+   的长期留存面，「这条账号行是什么时候、由哪台实例自动登记的」只有它保得住。
 4. **管理端出口**——认领（`pending_claim → active`，须补齐 label/site）与驳回
    （`→ rejected`，终态）走既有 `PATCH /buyer-accounts/{id}`，见
    `order/buyer_account.py::update_account` 的状态机守卫。
@@ -74,6 +87,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from erp.core.audit import AuditWriter
 from erp.notify.service import notify
 from erp.order import dispatch
 from erp.plugin.auth import PluginPrincipal
@@ -92,6 +106,36 @@ SELECT id, site, status, daily_cap
 _PENDING_COUNT_SQL = (
     "SELECT count(*) FROM app.buyer_account WHERE team_id = :t AND status = 'pending_claim'"
 )
+
+# 已驳回行数：**只用于告警正文的可见性**（治理面 2 的残留观察手段），不参与任何判断。
+_REJECTED_COUNT_SQL = (
+    "SELECT count(*) FROM app.buyer_account WHERE team_id = :t AND status = 'rejected'"
+)
+
+# 洪水闸的串行化锁（**承重**：没有它，`cap` 的实际落地值 = 并发度而不是 cap）。
+#
+# 「数一次 pending → 决定收不收 → INSERT」是典型的 read-then-decide：无锁时 N 路并发
+# 各自读到的都是对方写入之前的值，于是每一路都认为自己没到顶，N 路全放行。实测
+# `cap=3` 落地 15 条（＝连接池上限）——原头注「并发下允许小幅越界」是失实的。
+#
+# **只锁注册路径，不碰热路径**：本语句只在 `_register` 里执行，而 `_register` 只在
+# `_RESOLVE_SQL` 解析不到时才被调用。已认领账号的每一次拉取/写回（真实流量的 99.9%）
+# 一次都不会取这把锁。锁的对象是**整个团队的注册动作**（粒度必须是团队，因为被保护的
+# 共享资源就是「本团队待认领行数」这一个标量），代价是同团队的首见登记串行——而首见
+# 登记本就是罕见事件，串行零感知。
+#
+# 键 = `(常量命名空间, team_id)`。用**两参数形式**并把命名空间放在第一位，是为了与
+# `listing/service.py::allocate` 的 `pg_advisory_xact_lock(team_id, product_id)` 分开：
+# 那一处第一参数是 team_id，本处第一参数是一个不可能成为 team_id 的大常量，故两族键
+# 不会相撞（即便撞上也只是多一次无谓串行，不影响正确性——两条路径各自只取一把锁，
+# 不存在死锁的环）。`xact` 版本＝随事务结束自动释放，不需要也不许手工解锁。
+#
+# **cap 之所以能精确，还依赖「`pending_claim` 行只有这一个生产者」**：
+# `POST /buyer-accounts` 的 status 词表已收窄为人工四值（不含 `pending_claim`），
+# 且 `_ALLOWED_TRANSITIONS` 禁止任何状态转回 `pending_claim`。哪天有人给那两处开口子，
+# 这把锁就只锁住了半边，cap 会重新变成一个近似值。
+_REGISTER_LOCK_NS = 1_302_043  # R2-13 + 0043，一个不会与真实 team_id 相撞的常量
+_REGISTER_LOCK_SQL = "SELECT pg_advisory_xact_lock(:ns, :t)"
 
 # 首见自动登记。**`ON CONFLICT` 推断的就是 `uq_buyer_account (team_id,
 # external_customer_id)`**，正是可能撞的那把键（0043 头注三把它升为承重即为此）。
@@ -140,17 +184,24 @@ class ResolvedAccount:
 async def _register(
     session: AsyncSession, principal: PluginPrincipal, customer_id: str
 ) -> ResolvedAccount | None:
-    """首见自动登记：落一条 `pending_claim` 行 + 通知。撞洪水闸回 None。"""
+    """首见自动登记：落一条 `pending_claim` 行 + 通知 + 审计。撞洪水闸回 None。"""
     team_id = principal.team_id
     cfg = await dispatch.dispatch_config(session, team_id)
+    # 洪水闸串行化：**必须在计数之前**取锁，否则数与插之间的窗口就是超发窗口
+    # （理由与实测数字见 `_REGISTER_LOCK_SQL` 注释）。
+    await session.execute(text(_REGISTER_LOCK_SQL), {"ns": _REGISTER_LOCK_NS, "t": team_id})
     pending = int((await session.execute(text(_PENDING_COUNT_SQL), {"t": team_id})).scalar_one())
     if pending >= cfg.pending_claim_cap:
         # fail-closed：宁可一个真实新号晚一天被发现，也不留「注册洪水无解」的形状。
+        rejected = int(
+            (await session.execute(text(_REJECTED_COUNT_SQL), {"t": team_id})).scalar_one()
+        )
         log.warning(
             "plugin.customer.flood_refused",
             instance=principal.instance_id,
             team=team_id,
             pending=pending,
+            rejected=rejected,
             cap=cfg.pending_claim_cap,
         )
         await notify(
@@ -162,6 +213,18 @@ async def _register(
             body=(
                 f"本团队待认领（pending_claim）买家账号已有 {pending} 条，达到上限"
                 f" {cfg.pending_claim_cap}，本次插件请求带来的新 customerId **未被登记**。\n"
+                # 实例号：告警正文的第一个可执行信息——处置手段（吊销哪一把令牌）按它走。
+                # dedupe 按团队，故这里记的是**撞闸那一刻**的实例；同一轮里若有多台在灌，
+                # 后面几台不会再发通知，要看全量请查结构化日志 `plugin.customer.flood_refused`。
+                f"本次请求来自插件实例 #{principal.instance_id}"
+                "（dedupe 按团队去重，同一轮里若有多台实例在灌，正文只会记下最先撞闸的那台"
+                "——全量请查日志 `plugin.customer.flood_refused`）。\n"
+                # rejected 现值：治理面 2 的残留观察手段。驳回只挡「同一个 id 再灌」，
+                # 换个 id 照灌不误，而 rejected 行不占额度、平时也没有任何告警——
+                # 这个数是判断「长期在被灌」还是「刚好来了一批真新号」的唯一现成信号。
+                f"本团队已驳回（rejected）行现有 {rejected} 条：该数长期走高说明有人在"
+                "**换 id 反复灌**（驳回只对同一个 customerId 粘住，不挡新伪造的 id），"
+                "此时应查的是令牌而不是继续逐条驳回。\n"
                 "⚠️ 这通常意味着有人（或一台被误用的浏览器）在灌伪造 customerId。"
                 "请到买家账号池逐条认领或驳回——驳回是终态，被驳回的 customerId 此后"
                 "不再自动登记，也不占用上限。清理之前，**真实的新买家号同样登记不进来**。"
@@ -176,6 +239,11 @@ async def _register(
     ).first()
     if row is None:
         # 并发下另一路已经插进去并提交了（`DO NOTHING` 零行）。重解析一次即可拿到同一行。
+        #
+        # **advisory 锁之后这条路只剩两个来源**（不是死代码，别删）：
+        # ① 手工预建 `POST /buyer-accounts`——它不取这把锁（也不该取：它不受洪水闸管），
+        #    两路撞同一个 customerId 时本 INSERT 会命中 `uq_buyer_account`；
+        # ② 本请求进锁之前，另一路已经登记完并提交（等锁期间对方已经走完）。
         again = (
             (await session.execute(text(_RESOLVE_SQL), {"t": team_id, "c": customer_id}))
             .mappings()
@@ -223,6 +291,29 @@ async def _register(
         object_type="buyer_account",
         object_id=str(account_id),
         dedupe_key=f"plugin.pending_claim.{account_id}",
+    )
+    # 审计留痕（D-Q16 唯一出口纪律：写操作一律经 AuditWriter，不裸 INSERT audit_log）。
+    #
+    # **为什么通知之外还要落审计**：通知面会被清理、被静音、被 dedupe 折叠，而
+    # `audit_log` 是 append-only（无 UPDATE/DELETE 授权 + 无对应策略，0002）。买家账号池
+    # 里凭空多出来的行「什么时候来的、哪台实例带来的」，长期只有审计答得上；且它与人工
+    # 建号（`buyer_account.create`）落在同一张表、同一个 `object_type`，账号池的完整
+    # 来历在一次查询里就能拉齐。
+    #
+    # `actor_type='system'`（`AuditWriter` 的默认值）：`ck_audit_actor` 的词表是
+    # `('user','portal','system')`，**不含 `plugin`**。本轮不扩那条 CHECK——它是 0002 的
+    # 全局约束，为一个登记动作改它属于跨域改动；`system` 是既有的机器侧惯例（`actor_id`
+    # 留空，因为实例不是 `app_user`，塞实例 id 进去就是把两个 id 空间混成一个）。
+    # **实例号不丢**：它写在 `after.instance_id` 里（以及 `note` 与通知正文里）。
+    await AuditWriter(session, team_id=team_id).log(
+        "buyer_account.auto_register",
+        "buyer_account",
+        account_id,
+        after={
+            "external_customer_id": customer_id,
+            "status": "pending_claim",
+            "instance_id": principal.instance_id,
+        },
     )
     return ResolvedAccount(
         id=account_id, site=None, status="pending_claim", daily_cap=None, newly_registered=True

@@ -87,7 +87,11 @@ export function AccountForm({
         {/* 「待认领」是系统发现态、不是运营可选态（后端任何态转回它一律 409），
             故这里也不给选——留一个点得动却必然报错的选项就是在骗人。
             「已驳回」同理不给选：驳回有专用入口（待认领行的操作列）且有二次确认，
-            从下拉里顺手选到一个**不可撤销的终态**是本项目最不该有的形状。 */}
+            从下拉里顺手选到一个**不可撤销的终态**是本项目最不该有的形状。
+
+            这两条**不再只是前端自觉**：建号侧后端已把 status 词表收窄为人工四值
+            （契约 `BuyerAccountCreate` 的枚举；传系统态一律 422
+            `BUYER_ACCOUNT_STATUS_NOT_CREATABLE`），改号侧由状态机 409 兜。 */}
         <Select
           options={STATUS_OPTIONS.filter(
             (o) => o.value !== 'pending_claim' && o.value !== 'rejected',

@@ -5,13 +5,18 @@
 | **路由正反两面**：带 A 的 customerId 只拿到 A 的单 | `test_pull_routes_by_customer_id` |
 | **验收③(a)**：跨团队 customerId 必败**且不可探测**
   | `test_cross_team_customer_id_is_indistinguishable_from_unknown` |
-| **验收③(b)**：未认领只落待认领行 + 通知，不派单
+| **验收③(b)**：未认领只落待认领行 + 通知 + **审计**，不派单
   | `test_unclaimed_customer_id_registers_and_never_dispatches` |
 | **验收③(c)**：同一实例换号 ⇒ 路由跟随（令牌绑浏览器）
   | `test_same_instance_switches_customer_id_and_routing_follows` |
 | 首见登记并发安全（ON CONFLICT，恰好一行） | `test_first_sight_registration_is_concurrency_safe` |
-| 垃圾行治理：洪水闸 + 撞闸响应同形 | `test_pending_claim_flood_is_capped` |
+| 垃圾行治理：洪水闸 + 撞闸响应同形 + 告警带实例号与已驳回行数
+  | `test_pending_claim_flood_is_capped` |
+| 垃圾行治理：**并发下 cap 精确**（advisory 锁）
+  | `test_pending_claim_flood_cap_is_exact_under_concurrency` |
 | 垃圾行治理：驳回是终态且粘住 | `test_rejected_customer_id_is_sticky` |
+| 垃圾行治理：粘性**不能被 PATCH 掉 customerId 解除**
+  | `test_rejected_stickiness_cannot_be_lifted_by_patch` |
 | **跨团队**的 po_id 回填必败且**一列未变** | `test_backfill_other_team_po_fails` |
 | 不泄露存在性：不存在的 id 与他团队的 id 同码同状态 | `test_nonexistent_po_same_error_as_unowned` |
 | 吊销即全域失效（六端点） | `test_revoked_instance_all_endpoints_401` |
@@ -423,16 +428,26 @@ class TestInstanceScope:
     def test_unclaimed_customer_id_registers_and_never_dispatches(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
-        """**判据 (b)**：未认领的 customerId 不派单，只落一条 `pending_claim` 行 + 一条通知。
+        """**判据 (b)**：未认领的 customerId 不派单，只落一条 `pending_claim` 行 + 通知 + 审计。
 
         重跑一次必须**零新增行、零新增通知**（dedupe 命中）——否则一台跑着的浏览器会
         每隔几秒吵一条，运营很快把这类告警全部静音，真的那条也就没人看了。
+
+        **审计那一腿是本轮新增（F6）**：通知面会被清理、被静音、被 dedupe 折叠，而
+        `audit_log` 是 append-only（0002 无 UPDATE/DELETE 授权 + 无对应策略）。买家账号池里
+        凭空多出来的行「什么时候来的、哪台实例带来的」，长期只有审计答得上。
+        *修前红*：`_register` 不落审计时，`buyer_account.auto_register` 查不到行。
         """
         auth = _login(client, ADMIN, PASSWORD)
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
             conn.execute("DELETE FROM app.notification WHERE team_id = %s", (seeded["team"],))
             waiting = _mk_po(conn, seeded, _mk_order(conn, seeded))
+            audit_before = conn.execute(
+                "SELECT count(*) FROM app.audit_log WHERE team_id = %s"
+                " AND action = 'buyer_account.auto_register'",
+                (seeded["team"],),
+            ).fetchone()[0]
         inst = _issue(client, auth)
         fresh = _new_customer_id()
 
@@ -451,7 +466,26 @@ class TestInstanceScope:
                 "SELECT count(*) FROM app.notification WHERE dedupe_key = %s",
                 (f"plugin.pending_claim.{rows[0][0]}",),
             ).fetchone()[0]
+            audits = conn.execute(
+                "SELECT actor_type, after FROM app.audit_log WHERE team_id = %s"
+                " AND action = 'buyer_account.auto_register' AND object_id = %s",
+                (seeded["team"], str(rows[0][0])),
+            ).fetchall()
+            audit_after = conn.execute(
+                "SELECT count(*) FROM app.audit_log WHERE team_id = %s"
+                " AND action = 'buyer_account.auto_register'",
+                (seeded["team"],),
+            ).fetchone()[0]
         assert notices == 1, "首见登记必须留一条通知，否则那行永远没人认领"
+        assert audit_after == audit_before + 1, "首见登记没落审计——通知被清掉后就再无来历可查"
+        assert len(audits) == 1 and audits[0][0] == "system", (
+            "机器侧动作的 actor_type 必须是既有词表内的 'system'"
+            "（`ck_audit_actor` 只认 user/portal/system，本轮不为它扩 CHECK）"
+        )
+        assert audits[0][1]["external_customer_id"] == fresh
+        assert audits[0][1]["instance_id"] == inst["id"], (
+            "审计快照里没有实例号——「哪台浏览器带来的」正是这条审计存在的理由"
+        )
 
         assert _pull(client, inst, fresh).json()["data"] == []
         with psycopg.connect(migrated_db) as conn:
@@ -528,8 +562,15 @@ class TestInstanceScope:
 
         没有这道闸，持有效令牌者可以用伪造 customerId 无限灌行——而 `buyer_account`
         **无 DELETE 授权**，那些行永久残留。
+
+        告警正文两腿是本轮新增（F7），它们是撞闸后**唯一**的可执行信息：
+        - **实例号**——处置手段是吊销令牌，不知道是哪台就无从处置；
+        - **本团队 rejected 行数**——驳回粘性只挡「同一个 id 再灌」，换个 id 照灌不误，
+          而 rejected 行不占额度、平时零告警；这个数长期走高才是「有人在换 id 反复灌」
+          的信号。*修前红*：正文里没有实例号、没有已驳回行数。
         """
         auth = _login(client, ADMIN, PASSWORD)
+        tag = uuid.uuid4().hex[:8].upper()
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
             conn.execute("DELETE FROM app.notification WHERE team_id = %s", (seeded["team"],))
@@ -541,16 +582,95 @@ class TestInstanceScope:
                 "INSERT INTO app.team_config (team_id, key, value) VALUES (%s, %s, %s::jsonb)",
                 (seeded["team"], dispatch.PLUGIN_DISPATCH_CONFIG_KEY, '{"pending_claim_cap": 3}'),
             )
+            # 两条已驳回残留：它们**不占额度**（闸只数 pending_claim），但必须出现在
+            # 告警正文里——否则「换 id 反复灌」这一面在系统里没有任何观察点。
+            for i in range(2):
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, external_customer_id, status)"
+                    " VALUES (%s, %s, 'rejected')",
+                    (seeded["team"], f"RJ{tag}{i}"),
+                )
         inst = _issue(client, auth)
         try:
             bodies = [_pull(client, inst, _new_customer_id()).content for _ in range(5)]
             assert len(set(bodies)) == 1, "撞闸的响应与放行的响应不同形——那是可探测的信号"
             with psycopg.connect(migrated_db) as conn:
                 assert len(_pending_rows(conn, seeded)) == 3, "洪水闸没拦住"
-                assert conn.execute(
-                    "SELECT count(*) FROM app.notification WHERE dedupe_key = %s",
+                alerts = conn.execute(
+                    "SELECT body FROM app.notification WHERE dedupe_key = %s",
                     (f"plugin.pending_claim_flood.{seeded['team']}",),
-                ).fetchone()[0] == 1, "撞闸必须有 critical 告警"  # fmt: skip
+                ).fetchall()
+            assert len(alerts) == 1, "撞闸必须有 critical 告警"
+            body = alerts[0][0]
+            assert f"#{inst['id']}" in body, (
+                f"critical 正文里没有实例号（处置＝吊销哪一把令牌，不写就得去翻日志）：{body}"
+            )
+            assert "2" in body and "rejected" in body, (
+                f"critical 正文里没有本团队已驳回行数——「换 id 反复灌」失去唯一观察点：{body}"
+            )
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute(
+                    "DELETE FROM app.team_config WHERE team_id = %s AND key = %s",
+                    (seeded["team"], dispatch.PLUGIN_DISPATCH_CONFIG_KEY),
+                )
+
+    async def test_pending_claim_flood_cap_is_exact_under_concurrency(
+        self, migrated_db: str, seeded: dict
+    ) -> None:
+        """**并发下 cap 必须精确**（审查 F2）：N 路同时首见 N 个新号，落地恰好 `cap` 条。
+
+        「数一次 pending → 决定收不收 → INSERT」是典型的 read-then-decide。无锁时 N 路
+        并发各自读到的都是对方写入之前的值，于是每一路都认为自己没到顶 ⇒ **全部放行**。
+        `test_pending_claim_flood_is_capped` 是**顺序**形态，测不到这件事——它绿着的时候
+        实测 `cap=3` 在并发下落地 **15** 条（＝连接池上限，即「越界幅度 = 并发度」，
+        而头注当时写的是「允许小幅越界」）。修法：`_register` 在计数之前取一把按团队
+        派生的 `pg_advisory_xact_lock`。
+
+        *修前红*：去掉 `identity._REGISTER_LOCK_SQL` 那一行即刻红（落地条数 ≫ cap）。
+
+        harness 同 `test_first_sight_registration_is_concurrency_safe`：**独立 `ctx_tx`
+        会话**才是独立事务；`TestClient` 开线程会被它的 portal 串起来，测不到并发。
+        并发度取 12（< 连接池 5+10=15，避免被连接饥饿掩盖成"看起来没超发"）。
+        """
+        cap, fanout = 3, 12
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            conn.execute(
+                "DELETE FROM app.team_config WHERE team_id = %s AND key = %s",
+                (seeded["team"], dispatch.PLUGIN_DISPATCH_CONFIG_KEY),
+            )
+            conn.execute(
+                "INSERT INTO app.team_config (team_id, key, value) VALUES (%s, %s, %s::jsonb)",
+                (
+                    seeded["team"],
+                    dispatch.PLUGIN_DISPATCH_CONFIG_KEY,
+                    f'{{"pending_claim_cap": {cap}}}',
+                ),
+            )
+        principal = PluginPrincipal(
+            instance_id=-1, team_id=seeded["team"], exec_mode="stop_before_payment"
+        )
+
+        async def one(customer_id: str) -> list[dict[str, Any]]:
+            async with ctx_tx(get_session_factory(), team_id=seeded["team"]) as s:
+                return await service.pull_purchase_tasks(
+                    s, principal, customer_id=customer_id, version=None
+                )
+
+        try:
+            results = await asyncio.gather(
+                *(one(_new_customer_id()) for _ in range(fanout)), return_exceptions=True
+            )
+            assert not [r for r in results if isinstance(r, BaseException)], results
+            # 撞闸与放行的响应必须同形（空数组），并发下也不例外
+            assert results == [[]] * fanout
+            with psycopg.connect(migrated_db) as conn:
+                landed = len(_pending_rows(conn, seeded))
+            assert landed == cap, (
+                f"并发下落地 {landed} 条待认领行，cap={cap} 被击穿"
+                "（越界幅度 = 并发度，不是「小幅」）"
+            )
         finally:
             with psycopg.connect(migrated_db, autocommit=True) as conn:
                 conn.execute(
@@ -595,6 +715,68 @@ class TestInstanceScope:
                 "SELECT count(*) FROM app.notification WHERE team_id = %s AND dedupe_key LIKE %s",
                 (seeded["team"], "plugin.pending_claim.%"),
             ).fetchone()[0] == 1, "驳回后再灌又吵了一条"  # fmt: skip
+
+    def test_rejected_stickiness_cannot_be_lifted_by_patch(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """粘性**不能被 PATCH 掉 `external_customer_id` 解除**（审查 F3，四步复现）。
+
+        粘性靠「那一行永久占住那个 customerId」成立，而占用的载体就是这一列。此前
+        `PATCH /buyer-accounts/{id}` 对它毫无守卫，于是有一条四步就能走通的解除序列：
+
+        ① 灌一个伪造 customerId ⇒ 落待认领行；② 驳回 ⇒ `rejected`（占住）；
+        ③ **把这条 rejected 行的 `external_customer_id` 改成别的串** ⇒ 占用当场释放；
+        ④ 同一个伪造 id 再灌 ⇒ 又是「没见过」⇒ 新增行 + 新通知。
+        「终态」于是退化成「到下一次有人改这行为止」。
+
+        **状态机守卫拦不住第 ③ 步**：那个请求可以完全不带 `status`，
+        `_transition_action` 连分支都不进——故守卫必须单独写
+        （`buyer_account._guard_rejected_customer_id`）。
+        *修前红*：去掉那个守卫，第 ③ 步回 200，第 ④ 步落出第二条行。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            conn.execute("DELETE FROM app.notification WHERE team_id = %s", (seeded["team"],))
+        inst = _issue(client, auth)
+        fake = _new_customer_id()
+
+        # ① 灌
+        assert _pull(client, inst, fake).json()["data"] == []
+        with psycopg.connect(migrated_db) as conn:
+            account_id = _pending_rows(conn, seeded)[0][0]
+        url = f"/api/v1/buyer-accounts/{account_id}"
+
+        # ② 驳回
+        assert client.patch(url, headers=auth, json={"status": "rejected"}).status_code == 200
+
+        # ③ 挪走 customerId —— 必须 409
+        moved = client.patch(url, headers=auth, json={"external_customer_id": _new_customer_id()})
+        assert moved.status_code == 409, moved.text
+        assert moved.json()["error"]["code"] == "BUYER_ACCOUNT_REJECTED_IMMUTABLE"
+
+        # ④ 再灌同一个 id：仍是那一行、仍 rejected、零新增行、零新通知
+        assert _pull(client, inst, fake).json()["data"] == []
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT id, status FROM app.buyer_account WHERE team_id = %s"
+                " AND external_customer_id = %s",
+                (seeded["team"], fake),
+            ).fetchall() == [(account_id, "rejected")], "粘性被解除了"  # fmt: skip
+            assert conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s", (seeded["team"],)
+            ).fetchone()[0] == 1, "驳回行被挪走后又新增了一条"  # fmt: skip
+            assert conn.execute(
+                "SELECT count(*) FROM app.notification WHERE team_id = %s AND dedupe_key LIKE %s",
+                (seeded["team"], "plugin.pending_claim.%"),
+            ).fetchone()[0] == 1, "又吵了一条——粘性失效了"  # fmt: skip
+
+        # 其余列照常可改（驳回行仍要能被批注「这是谁在什么时候灌的」），
+        # 且把同一个值原样带回来是 no-op、不报错（前端整表单回填是常见形状）。
+        keep = client.patch(
+            url, headers=auth, json={"note": "确认非我方账号", "external_customer_id": fake}
+        )
+        assert keep.status_code == 200, keep.text
 
     def test_backfill_other_team_po_fails(
         self, client: TestClient, migrated_db: str, seeded: dict

@@ -65,7 +65,10 @@ DEFAULT_PULL_BATCH_MAX = 20
 PULL_BATCH_HARD_MAX = 100
 # 首见自动登记的洪水闸（`plugin/identity.py` 消费）：本团队 `pending_claim` 行数上限。
 # 持有效令牌者可用伪造 `customerId` 无限灌待认领行，而 `buyer_account` 无 DELETE 授权
-# ⇒ 永久残留。默认值属**业务口径**，已随 PR 列入批注回传的开放问题④。
+# ⇒ 永久残留。默认值属**业务口径**，已随 PR 列入批注回传的**开放问题③**
+# （本轮重编号为连续 ①②③：①`label`/`site` 去 NOT NULL 与图纸冲突、②`rejected` 超出
+# 图纸五值词表——两条都在 `0043_buyer_account.py` 头注；③即本条。原编号「④」是清单
+# 中途删项留下的空洞，与台账对不上号）。
 DEFAULT_PENDING_CLAIM_CAP = 50
 PENDING_CLAIM_CAP_HARD_MAX = 500
 
@@ -86,9 +89,19 @@ REASON_ALREADY_DISPATCHED = "ALREADY_DISPATCHED"
 
 # 续拉：插件重启/掉线后重新拉，必须仍看得到自己已被派的单（图纸 07:125 的可见范围
 # 就是 assigned + claimed）。**续拉不消耗新额度**——那是同一批单的重新可见，不是新派发。
+#
+# `AND team_id = :t` 是**防线②的显式谓词**（本轮补齐）。它此前只靠 RLS 单撑，而这条
+# 语句恰恰是「F2 修法 2 被删除后的三条替代物」论证里的一个缺口：论证说「跨团队的账号 id
+# 会在③的账号行锁上炸响」，但②**跑在③之前**——`want` 被续拉打满（`room <= 0`）时函数
+# 直接 return，**根本走不到那把行锁**。于是在那条路径上，跨团队 id 的唯一防线只剩 RLS，
+# 与本文件「不靠 RLS 单撑」的既定纪律不符。补上之后，无论早退与否，②③各自都带显式谓词。
+#
+# （现实里这条路径要被走到，得先有人把一个别团队的 `buyer_account_id` 递进来——正常
+# 调用链不可能：id 由 `identity.resolve_customer` 在 `team_id = :t` 下解析而来。这里补的
+# 是**论证的完整性**，不是一个已知可复现的越权；纵深防御的价值就在于不依赖"上游一定对"。）
 _RECLAIM_SQL = """
 SELECT id FROM app.procurement_order
- WHERE buyer_account_id = :a AND status IN ('assigned','claimed')
+ WHERE buyer_account_id = :a AND team_id = :t AND status IN ('assigned','claimed')
  ORDER BY assigned_at NULLS LAST, id
  LIMIT :n
 """
@@ -452,11 +465,14 @@ async def claim_tasks_for_account(
     cfg = await dispatch_config(session, team_id)
     want = max(1, min(limit, cfg.pull_batch_max))
 
-    # ② 续拉（不消耗新额度）
+    # ② 续拉（不消耗新额度）。带 `team_id = :t`：本步可能直接 return（`room <= 0`），
+    #    走不到③的账号行锁，故它必须自带显式团队谓词（理由详见 `_RECLAIM_SQL` 注释）。
     reclaimed = [
         int(r[0])
         for r in (
-            await session.execute(text(_RECLAIM_SQL), {"a": buyer_account_id, "n": want})
+            await session.execute(
+                text(_RECLAIM_SQL), {"a": buyer_account_id, "t": team_id, "n": want}
+            )
         ).all()
     ]
     room = want - len(reclaimed)

@@ -1510,11 +1510,19 @@ paths:
         时省一轮往返。`external_customer_id` 在本端点仍必填——一条解析不到的账号行永远
         收不到任务；不知道 customerId 时的正解是走主路径，不是在这里留空。
         `label` 的语义 = 对应哪个指纹浏览器（07:258）。
+
+
+        **`status` 只收人工可选的四值**（`active`/`paused`/`blocked`/`retired`）——
+        `pending_claim` 与 `rejected` 是**系统态**，本端点一律 422：前者由插件首见自动
+        登记独家产生（手工建一条等于伪造一个从未发生的"发现"），后者只能从待认领行驳回
+        而来（直接建出来即是一条改不动也删不掉的死行——终态 + 无 DELETE 授权）。
+        PATCH 侧对应的是「任何态都不许转回 `pending_claim`」；两处一起才封住这两个系统态。
       x-permission: procurement.buyer_account_admin
-      requestBody: {$ref: '#/components/requestBodies/BuyerAccountWrite'}
+      requestBody: {$ref: '#/components/requestBodies/BuyerAccountCreate'}
       responses:
         '201': {description: Created}
         '409': {description: 'BUYER_ACCOUNT_DUPLICATE（detail.field 指明撞的是 external_customer_id 还是 label）', $ref: '#/components/responses/Error'}
+        '422': {description: 'BUYER_ACCOUNT_FIELDS_REQUIRED（label/site/external_customer_id 缺项）/ BUYER_ACCOUNT_STATUS_NOT_CREATABLE（status 填了系统态 pending_claim 或 rejected）', $ref: '#/components/responses/Error'}
   /buyer-accounts/{buyerAccountId}:
     patch:
       tags: [Order]
@@ -1534,13 +1542,17 @@ paths:
           零新增行、零新通知。审计动作名 `buyer_account.reject`。
         - `rejected → *` 与**任何态 → `pending_claim`** 一律 409 `BUYER_ACCOUNT_STATUS_TRANSITION`
           （待认领是系统发现态，不是运营可选态）。
+        - **已驳回行的 `external_customer_id` 不可再改** ⇒ 409 `BUYER_ACCOUNT_REJECTED_IMMUTABLE`。
+          粘性靠「唯一索引占着那个值」成立，把值改走等于当场撤销驳回（此后同一个伪造 id
+          再灌又是"没见过"，新增行 + 新通知）。其余列（label/note/daily_cap）照常可改；
+          原样带回同一个值是 no-op，不报错。
       x-permission: procurement.buyer_account_admin
       parameters: [{$ref: '#/components/parameters/buyerAccountId'}]
       requestBody: {$ref: '#/components/requestBodies/BuyerAccountWrite'}
       responses:
         '200': {description: OK}
         '404': {$ref: '#/components/responses/Error'}
-        '409': {description: 'BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移）', $ref: '#/components/responses/Error'}
+        '409': {description: 'BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移）/ BUYER_ACCOUNT_REJECTED_IMMUTABLE（改已驳回行的 external_customer_id）', $ref: '#/components/responses/Error'}
         '422': {description: 'BUYER_ACCOUNT_CLAIM_INCOMPLETE（认领时缺 label 或 site）', $ref: '#/components/responses/Error'}
   # 实例端点是**团队级**的（身份模型更正，Owner 2026-07-30，图纸 07:288-340）：
   # 令牌绑「一台授权浏览器」，不绑买家账号。旧的 `/buyer-accounts/{id}/plugin-instances`
@@ -1584,6 +1596,7 @@ paths:
                 version: {type: string}
       responses:
         '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/PluginInstanceIssued'}}}}
+        '409': {description: 'TEAM_REQUIRED（当前主体没有团队——超管未切换到具体团队。令牌绑定的就是「团队 T 的一台授权浏览器」，无团队的令牌解析不出任何任务）', $ref: '#/components/responses/Error'}
         '422': {description: '签发档位不合法（含 `exec_mode=live`——升 live 只能走 PATCH）', $ref: '#/components/responses/Error'}
   /plugin-instances/{pluginInstanceId}:
     patch:
@@ -2283,12 +2296,32 @@ components:
               payment_card_last4: {type: string, maxLength: 8}
               delivery_est_date: {type: string, format: date}
               delivery_est_raw: {type: string, description: 渠道原文（如 `Thursday, August 7`）}
+    # 建号与改号的入参**故意分成两个 requestBody**：唯一的差别是 `status` 的枚举
+    # （建号只收人工四值，见下），而那正是必须在契约里看得见的差别——共用一个 schema
+    # 会让「建号能不能直接建 pending_claim」只存在于服务层代码里，前端与部署机无从对表。
+    BuyerAccountCreate:
+      content:
+        application/json:
+          schema:
+            type: object
+            description: '建号（可选预建捷径）。label/site/external_customer_id 必填（服务层校验，缺则 422 BUYER_ACCOUNT_FIELDS_REQUIRED）。`status` 只收人工四值——两个系统态由 422 BUYER_ACCOUNT_STATUS_NOT_CREATABLE 拒绝。'
+            properties:
+              label: {type: string, maxLength: 100, description: 运营可读名，语义=对应哪个指纹浏览器（07:258）}
+              site: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}
+              external_customer_id: {type: string, maxLength: 64, description: 插件侧 customerId。**首见自动登记是主路径**；本字段只在手工预建（可选捷径）时由运营填}
+              # 词表 = 0043 `ck_buyer_account_status` 全集 **减去两个系统态**：
+              # `pending_claim` 由插件首见自动登记独家生产（也是洪水闸精确性的前提——
+              # 那把 advisory 锁只锁登记路径，多一个生产者 cap 就退化成近似值）；
+              # `rejected` 只能从待认领行驳回而来，直接建即死行（终态 + 无 DELETE 授权）。
+              status: {type: string, enum: [active, paused, blocked, retired], default: active, description: '建号可选的四个运营态；不传 = active。**系统态 pending_claim / rejected 一律 422**'}
+              daily_cap: {type: [integer, 'null'], minimum: 1, description: 单日采购上限；null=不限}
+              note: {type: string, maxLength: 1000}
     BuyerAccountWrite:
       content:
         application/json:
           schema:
             type: object
-            description: '`POST` 建号时 label/site/external_customer_id 必填（服务层校验，缺则 BUYER_ACCOUNT_FIELDS_REQUIRED）；`PATCH` 按传入字段增量更新，**认领已有待认领行也走 PATCH**（补 label+site 并置 status=active）。'
+            description: '`PATCH` 按传入字段增量更新，**认领已有待认领行也走 PATCH**（补 label+site 并置 status=active）。建号入参见 `BuyerAccountCreate`（status 词表更窄）。'
             properties:
               label: {type: string, maxLength: 100, description: 运营可读名，语义=对应哪个指纹浏览器（07:258）}
               site: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}

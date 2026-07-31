@@ -31,8 +31,14 @@
 - **驳回** `pending_claim → rejected`：**终态**。不删行是刻意的——本表无 DELETE 授权，
   而驳回必须**粘住**：该 `(team_id, customerId)` 被 `uq_buyer_account` 永久占住，
   同一个伪造 id 再灌一万次都只解析到那一行、零新增行、零新通知。
+  **粘性由两件东西共同保证，缺一即失效**：唯一索引占着那个值，**以及**已驳回行的
+  `external_customer_id` 不可再改（`_guard_rejected_customer_id`，409
+  `BUYER_ACCOUNT_REJECTED_IMMUTABLE`）。只有前者时，把那一行的 id 改走就当场解除了
+  粘性——「终态」在实效上退化成「到下一次有人改这行为止」。
 
 **任何状态都不许转回 `pending_claim`**：那是发现态，不是运营可选态。
+**建号也不许直接建这两个系统态**（`CREATE_STATUS_CHOICES`）——转入与凭空建是两条路，
+只堵一条等于没堵。
 
 ## 为什么没有 DELETE 端点
 
@@ -60,6 +66,23 @@ SITE_PATTERN = "^(amazon_com|amazon_ca|amazon_co_jp)$"
 # 词表与 0043 的 `ck_buyer_account_status` 同源（本轮加 `pending_claim` 与 `rejected`）。
 # 合法转移另由 `_ALLOWED_TRANSITIONS` 约束——pattern 只管「是不是词表内的值」。
 STATUS_PATTERN = "^(pending_claim|active|paused|blocked|retired|rejected)$"
+# **建号只收人工可选的四值**（＝0043 现行 CHECK 全集 **减去两个系统态**，审查 F4）。
+#
+# `pending_claim` 与 `rejected` 是**系统发现/治理态**，不是运营在建号表单上该选的值：
+# - `pending_claim` 的语义是「插件带上来一个我们没见过的号」，由 `plugin/identity.py`
+#   独家生产。手工建一条 pending_claim 行是自相矛盾的——那个号根本没被任何插件见过，
+#   却在池子里冒充「有人在等认领」，运营会去认领一个不存在的发现。
+# - `rejected` 的语义是「这个号被驳回过」，前提是它先被发现过。直接建一条 rejected 行
+#   等于凭空造一段并未发生的治理历史（且 `_ALLOWED_TRANSITIONS` 让它**当场变成死行**：
+#   rejected 是终态，建完就再也改不动，本表又无 DELETE 授权 ⇒ 永久垃圾）。
+#
+# **这条收窄同时是洪水闸精确性的前提**：`_register` 的 advisory 锁只锁自己那条路径，
+# `pending_claim` 行必须**只有它一个生产者**，cap 才是精确的（见
+# `plugin/identity.py::_REGISTER_LOCK_SQL` 末段）。加回来就等于把闸重新变成近似值。
+#
+# 转入方向另由 `_ALLOWED_TRANSITIONS` 挡（任何态都不许改回 `pending_claim`）；
+# 本常量挡的是**凭空建**那一面——两处缺一，那两个系统态就有一条能被人工写出来的路。
+CREATE_STATUS_CHOICES = ("active", "paused", "blocked", "retired")
 EXEC_MODE_PATTERN = "^(dry_run|stop_before_payment|live)$"
 # **签发端点不收 `live`**（审查 B2）：纪律 3 说的是「升到 live 是一次显式的 PATCH」，
 # 而签发端点原先照抄了三档 pattern——于是一次 POST 就能直接拿到一把实盘令牌，
@@ -181,6 +204,46 @@ def _transition_action(current: str, target: str | None) -> str:
     return "buyer_account.update"
 
 
+def _guard_rejected_customer_id(before: dict[str, Any], body: BuyerAccountIn) -> None:
+    """已驳回行的 `external_customer_id` **不可再改**（审查 F3：粘性此前可被 PATCH 解除）。
+
+    **粘性是三处声明的同一件事**，而在本轮修复之前它们全都只依赖唯一索引「碰巧还占着
+    那个值」，没有任何东西阻止有人把那个值挪走：
+    - `0043` 迁移头注：「驳回**不删行**，于是该 `(team_id, customerId)` 被
+      `uq_buyer_account` **永久占住** ⇒ 同一个伪造 id 再灌一万次都只解析到那一行」；
+    - `plugin/identity.py` 头注治理面 2：「`rejected` 终态 + 天然粘性……粘性不是额外
+      代码，是唯一索引的自然结果」；
+    - 本模块头注与 openapi PATCH 说明：「驳回是终态……该 customerId 被永久占住」。
+
+    **实测的解除序列（四步）**：① 插件灌一个伪造 customerId ⇒ 落 `pending_claim` 行；
+    ② 运营驳回 ⇒ `rejected`（此时唯一索引占着那个值）；③ **PATCH 把这条 rejected 行的
+    `external_customer_id` 改成别的字符串** ⇒ 唯一索引对原值的占用**当场释放**；
+    ④ 同一个伪造 customerId 再灌一次 ⇒ 又是「没见过」⇒ 新增一条待认领行 + 新一条通知。
+    于是「驳回是终态」在实际效果上只是「驳回到下一次有人改这条行的 id 为止」。
+
+    第 ③ 步不需要越权也不需要绕过任何闸——它是本端点的正常入参，且**状态机守卫拦不住
+    它**：`_transition_action` 只看 status，body 里不带 status 时它连分支都不进。
+    故守卫必须单独写在这里。
+
+    **只拦「值真的会变」**：把同一个值原样带上来（前端整表单回填是常见形状）是 no-op，
+    拦它只会制造假报错。改动的其余列（label/note/daily_cap）照常放行——驳回行仍然要能
+    被批注「这是谁在什么时候灌的」。
+    """
+    if str(before["status"]) != "rejected":
+        return
+    incoming = body.external_customer_id
+    if incoming is None or incoming == before["external_customer_id"]:
+        return
+    raise BusinessError(
+        "BUYER_ACCOUNT_REJECTED_IMMUTABLE",
+        "已驳回账号的 customerId 不可修改——驳回是终态，靠这一行永久占住那个 customerId "
+        "才能挡住「同一个伪造 id 再灌」；改掉它等于把驳回撤销（且本表无 DELETE 授权，"
+        "旧行也删不掉）。要给这个新 customerId 建号，请另建一条",
+        detail={"field": "external_customer_id", "status": "rejected"},
+        http_status=409,
+    )
+
+
 async def _load_account(session: AsyncSession, account_id: int, team_id: int) -> dict[str, Any]:
     row = (
         (
@@ -260,6 +323,10 @@ async def create_account(
 
     `external_customer_id` 在**本端点**仍必填：一条解析不到的账号行永远收不到任务，
     是一条无用行。缺它的正确做法是走主路径，而不是在这里留个空。
+
+    **`status` 只收人工四值**（`CREATE_STATUS_CHOICES`，理由见该常量注释）：两个系统态
+    `pending_claim` / `rejected` 直接建出来与「系统发现态」的口径自相矛盾，且 `rejected`
+    建完即死行（终态 + 无 DELETE 授权）。
     """
     if not body.label or not body.site or not body.external_customer_id:
         raise BusinessError(
@@ -267,6 +334,15 @@ async def create_account(
             "label/site/external_customer_id 必填"
             "（若还不知道 customerId，别在这里建号——让插件在那台浏览器上跑一次拉取，"
             "系统会自动登记一条待认领账号，届时补齐名称与站点认领即可）",
+        )
+    if body.status is not None and body.status not in CREATE_STATUS_CHOICES:
+        raise BusinessError(
+            "BUYER_ACCOUNT_STATUS_NOT_CREATABLE",
+            f"建号不能直接指定 {body.status}——它是系统态不是运营可选态"
+            "（「待认领」由插件首见自动登记产生；「已驳回」只能从待认领行驳回而来，"
+            "直接建出来是一条改不动也删不掉的死行）",
+            detail={"field": "status", "allowed": list(CREATE_STATUS_CHOICES)},
+            http_status=422,
         )
     try:
         async with session.begin_nested():
@@ -313,10 +389,13 @@ async def update_account(
 
     状态转移由 `_ALLOWED_TRANSITIONS` 守卫；`label`/`site` 是否补齐由库层
     `ck_buyer_account_claimed` 守卫（`_write_error` 把它翻成 422，不许裸奔成 500）。
+    已驳回行的 `external_customer_id` 由 `_guard_rejected_customer_id` 守卫（409）——
+    **那一条与状态机是两件事**：改 id 的请求可以完全不带 status，状态机连分支都不进。
     审计动作名按转移分化——审计面要能一眼看出「谁认领的、谁驳回的」。
     """
     before = await _load_account(session, account_id, user.team_id or -1)
     action = _transition_action(str(before["status"]), body.status)
+    _guard_rejected_customer_id(before, body)
     sets: list[str] = []
     params: dict[str, Any] = {"i": account_id}
     for col, val in (
@@ -406,7 +485,23 @@ async def issue_instance(
 
     **不收 `account_id`**（纪律 2）：令牌绑一台授权浏览器，装插件时还不知道那台浏览器
     会登哪个买家号——那正是死循环被解开的地方。
+
+    **`team_id` 必须真实存在**（审查 F8）：令牌的**全部**授权语义就是「这是团队 T 的一台
+    授权浏览器」（`plugin/auth.py` → `plugin_instance.team_id`），一把没有团队的令牌是
+    一个没有意义的对象。无团队的主体（超管未切团队）此前会把 `None` 直送 INSERT，撞
+    `plugin_instance.team_id` 的 NOT NULL/FK 变成 **500**——运维看到的是「服务器错误」，
+    而真因是「你没在任何团队上下文里」。这里显式 409 说清楚。
+    **不套用本文件其余读路径的 `or -1` 哨兵**：那个值在读路径上只是查空（无害），
+    在写路径上会撞外键，等于把一个可读的 409 换成一个 500（同
+    `automation/router.py:99` 与 `audit/router.py:125` 已记的同一条教训）。
     """
+    if user.team_id is None:
+        raise BusinessError(
+            "TEAM_REQUIRED",
+            "签发插件令牌须在具体团队上下文中进行——令牌绑定的就是「团队 T 的一台授权"
+            "浏览器」，没有团队的令牌无法解析任何任务。请超管先切换到目标团队",
+            http_status=409,
+        )
     token = plugin_auth.mint_token()
     instance_id = (
         await session.execute(

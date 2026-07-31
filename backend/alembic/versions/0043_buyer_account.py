@@ -36,7 +36,9 @@ Create Date: 2026-07-31
    美国号收到加拿大单）；编一个占位 `label` 会撞 `uq_buyer_account_label`，把首见登记
    变成可 500 的路径（该唯一索引不在 `ON CONFLICT (team_id, external_customer_id)` 的
    推断范围内，冲突会抛 `IntegrityError` 让整个事务作废 ⇒ 一次拉取变 500）。
-   **与图纸 `07:258-259` 的 NOT NULL 冲突，已随 PR 列入批注回传的开放问题①。**
+   **与图纸 `07:258-259` 的 NOT NULL 冲突，已随 PR 列入批注回传的开放问题①**
+   （全清单三条连续编号：①本条 ②`rejected` 超出图纸五值词表 ③`pending_claim_cap`
+   默认值，见 `order/dispatch.py::DEFAULT_PENDING_CLAIM_CAP`）。
    > 附带的隐性依赖：`uq_buyer_account_label (team_id, label)` 在 PG 默认语义下
    > **NULL 互不相等**，故任意多条待认领行可同时 `label IS NULL` 而不撞唯一索引。
 3. `ck_buyer_account_claimed` —— **认领闸（承重）**：只有待认领/已驳回可以缺

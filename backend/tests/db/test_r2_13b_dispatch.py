@@ -11,7 +11,9 @@
 | `daily_cap` 唯一落点＝账号列，按**派发数**计 | `TestDailyCap` |
 | 并发拉同一账号不得超 cap（账号行锁，审查 B1） | `test_concurrent_pulls_do_not_exceed_cap` |
 | 签发端点**不收 `live`**（升实盘只能 PATCH，审查 B2） | `test_issue_refuses_live` |
+| 签发端点要求真实团队（无团队 409 而不是 500，审查 F8） | `test_issue_instance_requires_team` |
 | 账号状态机：认领缺 site 422 / 驳回是终态 / 不许回 pending_claim | `test_status_transition_guard` |
+| 建号**不收两个系统态**（凭空建那一面，审查 F4） | `test_create_refuses_system_statuses` |
 | 站点路由 + 无收货国不猜（fail-closed + 告警） | `TestSiteRouting` 三例 |
 | 账号闸只挡拉取（写路径不受影响见下注） | `TestAccountGate` |
 | 应用层对偶：已派机器人的单不许再派人工/领单/回填 | `TestAssignInterlock` 前三例 |
@@ -21,7 +23,7 @@
 | 14b 耦合：退回池必须一并清 `buyer_account_id` | `test_pool_return_clears_buyer_account` |
 | 令牌散列链：明文不入库、列表与审计不回显 | `test_issue_instance_token_only_once` |
 | 日界 / 批量上限 / 待认领上限不写死（配置中心） | `TestDispatchConfig` 两例 |
-| **F2 的结构性继任者**：解析按团队隔离 + 行锁带 team 谓词 | `TestLockIntegrity` |
+| **F2 的结构性继任者**：解析/续拉按团队隔离 + 行锁带 team 谓词 | `TestLockIntegrity` 四例 |
 
 **不在本文件**（属 13a/13d）：双头部认证与越权（A 实例取不到 B 账号的任务）、
 六端点 401、插件侧回填/异常/物流语义。本文件只测服务层与管理面。
@@ -53,6 +55,7 @@ from erp.plugin.auth import PluginPrincipal
 from .test_identity_api import PASSWORD, _login
 
 ADMIN = "r13b_admin"
+SUPER_ADMIN = "r13b_super"  # 无团队超管（`ck_app_user_team` 允许），只用于 F8 那条兜底判据
 TEAM = "R2-13b 买家账号池测试团队"
 
 
@@ -90,6 +93,14 @@ def seeded(migrated_db: str) -> dict[str, int]:
                 (role_id, code),
             )
         conn.execute("INSERT INTO app.user_role (user_id, role_id) VALUES (%s, %s)", (uid, role_id))
+        # **无团队的超管**（`ck_app_user_team` 允许 `is_super AND team_id IS NULL`）：
+        # 只给 `test_issue_instance_requires_team` 用——签发路径的 team_id 兜底。
+        # 超管的权限集是空 frozenset 但 `has()` 恒真，故不必给它配角色。
+        super_uid = conn.execute(
+            "INSERT INTO app.app_user (team_id, username, password_hash, display_name, is_super)"
+            " VALUES (NULL, %s, %s, '无团队超管', true) RETURNING id",
+            (SUPER_ADMIN, hash_password(PASSWORD)),
+        ).fetchone()[0]
         channel_id = conn.execute("SELECT id FROM app.channel WHERE code='walmart_us'").fetchone()[
             0
         ]
@@ -98,7 +109,7 @@ def seeded(migrated_db: str) -> dict[str, int]:
             " VALUES (%s, %s, 'BA13B', '账号池测试店', true) RETURNING id",
             (team_id, channel_id),
         ).fetchone()[0]
-    return {"team": team_id, "user": uid, "store": store_id}
+    return {"team": team_id, "user": uid, "store": store_id, "super": super_uid}
 
 
 @pytest.fixture(scope="module")
@@ -986,6 +997,61 @@ class TestBuyerAccountCrud:
         # 改了不该动的列没被顺手改掉
         assert page["items"][0]["external_customer_id"] == f"A{tag.upper()}"
 
+    def test_create_refuses_system_statuses(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """建号**不收两个系统态**（审查 F4）：`pending_claim` / `rejected` 一律 422。
+
+        与「系统发现态」的口径矛盾在于：`pending_claim` 的语义是「插件带上来一个我们
+        没见过的号」，手工建一条等于伪造一个从未发生的"发现"；`rejected` 的前提是它先被
+        发现过，直接建出来还是一条**当场就死**的行（终态 + 本表无 DELETE 授权 ⇒ 建完既
+        改不动也删不掉）。
+
+        `_ALLOWED_TRANSITIONS` 只挡**转入**（`test_status_transition_guard` 钉住），
+        挡不住**凭空建**——两条路各堵一半，缺一即等于没堵。
+        这条同时是洪水闸精确性的前提：`pending_claim` 行必须只有 `_register` 一个生产者，
+        那把 advisory 锁才锁得住全部产出（见 `plugin/identity.py::_REGISTER_LOCK_SQL`）。
+        *修前红*：`create_account` 不校验时两条都回 201。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+        tag = uuid.uuid4().hex[:6]
+
+        for i, bad in enumerate(("pending_claim", "rejected")):
+            r = client.post(
+                "/api/v1/buyer-accounts",
+                headers=auth,
+                json={
+                    "label": f"系统态-{tag}-{i}",
+                    "site": "amazon_com",
+                    "external_customer_id": f"S{tag.upper()}{i}",
+                    "status": bad,
+                },
+            )
+            assert r.status_code == 422, f"{bad} 被建出来了：{r.text}"
+            assert r.json()["error"]["code"] == "BUYER_ACCOUNT_STATUS_NOT_CREATABLE"
+
+        # 四个人工态照常放行（收窄不能误伤正常建号）
+        for i, ok in enumerate(("active", "paused", "blocked", "retired")):
+            r = client.post(
+                "/api/v1/buyer-accounts",
+                headers=auth,
+                json={
+                    "label": f"人工态-{tag}-{ok}",
+                    "site": "amazon_com",
+                    "external_customer_id": f"M{tag.upper()}{i}",
+                    "status": ok,
+                },
+            )
+            assert r.status_code == 201, f"{ok} 被误伤：{r.text}"
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s"
+                " AND status IN ('pending_claim','rejected')",
+                (seeded["team"],),
+            ).fetchone()[0] == 0, "系统态被人工建进了库"  # fmt: skip
+
     def test_issue_instance_token_only_once(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
@@ -1058,6 +1124,42 @@ class TestBuyerAccountCrud:
                 ).fetchall()
             ]
         assert "live" not in modes, "签发路径落库了 live 实例"
+
+    def test_issue_instance_requires_team(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """无团队主体签发令牌 ⇒ **可读的 409**，不是 500（审查 F8）。
+
+        令牌的**全部**授权语义就是「这是团队 T 的一台授权浏览器」
+        （`plugin/auth.py` → `plugin_instance.team_id`），没有团队的令牌是个无意义对象。
+        此前 `user.team_id` 为 `None` 会直送 INSERT，撞 `plugin_instance.team_id` 的
+        NOT NULL（0044）变成 500——运维看到「服务器错误」，而真因是「你没在任何团队里」。
+
+        **不用 `or -1` 那套哨兵**：读路径上它只是查空（无害），写路径上会撞外键，等于把
+        一个可读的 409 换成一个 500（同 `automation/router.py:99` 记的那条教训）。
+
+        另一半判据是**不误伤**：同一个超管带上 `X-Act-Team` 就该照常签得出来——
+        409 说的是「你没指定团队」，不是「超管不许签」。
+        *修前红*：去掉 guard 后第一段回 500。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+        auth = _login(client, SUPER_ADMIN, PASSWORD)
+
+        r = client.post("/api/v1/plugin-instances", headers=auth, json={})
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "TEAM_REQUIRED"
+
+        acting = client.post(
+            "/api/v1/plugin-instances",
+            headers={**auth, "X-Act-Team": str(seeded["team"])},
+            json={},
+        )
+        assert acting.status_code == 201, acting.text
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT team_id FROM app.plugin_instance WHERE id = %s", (acting.json()["id"],)
+            ).fetchone()[0] == seeded["team"]  # fmt: skip
 
     def test_exec_mode_patch_and_revoke(
         self, client: TestClient, migrated_db: str, seeded: dict
@@ -1351,6 +1453,10 @@ class TestLockIntegrity:
 
     替代物三条，本类钉住其中两条（第三条 `uq_buyer_account` 由 13a 的并发首见用例钉）：
     - `test_resolution_is_team_scoped` —— 解析谓词 `team_id = :t` + RLS 双层；
+    - `test_resolution_team_predicate_holds_without_rls` —— 上一条的 **is_super 腿**
+      （审查 F1：只有绕开 RLS 时，那条显式谓词才是唯一的铃，否则删掉它照样绿）；
+    - `test_reclaim_is_team_scoped` —— **续拉**也带 team 谓词（审查 F5：续拉打满时函数
+      在行锁之前就 return，那条路径上「会在行锁上炸响」的论证原本不成立）；
     - `test_lock_zero_rows_raises` —— 行锁零行即炸，且**本轮加强**：锁语句补了
       `AND team_id = :t`，跨团队的真实账号 id 同样炸响而不是静默零行。
     """
@@ -1394,6 +1500,135 @@ class TestLockIntegrity:
         assert got_mine.site == "amazon_com" and got_theirs.site == "amazon_ca"
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (theirs,))
+
+    async def test_resolution_team_predicate_holds_without_rls(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """`_RESOLVE_SQL` 的显式 `team_id = :t` 是**承重的**（审查 F1）。
+
+        上面那条 `test_resolution_is_team_scoped` **区分不开新旧两版**：它跑在普通
+        `ctx_tx` 下，RLS 本就把对方的行挡在视野外——把谓词删掉照样绿（实测：变异掉
+        `AND team_id = :t` 后本类 11 条全过）。这与 `test_lock_zero_rows_raises` 的处境
+        完全一样，那条靠**加一条 `is_super=True` 的腿**才有了区分力；本条是同款第三腿。
+
+        形状：绕开 RLS（`is_super=True`）解析**他团队真实存在**的 customerId。
+        - 谓词在 ⇒ 解析不到 ⇒ 走首见自动登记，在**本团队**落一条待认领行；
+        - 谓词没了 ⇒ 直接解析到**他团队那一行**（`active` + 他们的站点 + 他们的日限），
+          于是本团队的实例拿着别人的账号去派单——正是「跨团队必败」要挡的那件事。
+
+        故断言写在「解析结果是谁」上，而不是「拿没拿到单」上：后者会被别的闸挡住而
+        误绿（本团队没有候选单时，两版都返回空）。
+        """
+        tag = uuid.uuid4().hex[:8]
+        shared_customer = f"SUPER{tag.upper()}"
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            theirs = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status, daily_cap) VALUES (%s, %s, 'amazon_ca', %s, 'active', 7)"
+                    " RETURNING id",
+                    (other_team, f"他团队超管腿-{tag}", shared_customer),
+                ).fetchone()[0]
+            )
+            # 「对方一列不动」用**前后快照 + 行数增量**表达，不用全量行数：
+            # 测试团队A/B 是全仓共用的，池子里本就有别的用例留下的行。
+            theirs_before = conn.execute(
+                "SELECT to_jsonb(ba) FROM app.buyer_account ba WHERE id = %s", (theirs,)
+            ).fetchone()[0]
+            their_rows_before = conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s", (other_team,)
+            ).fetchone()[0]
+        principal = PluginPrincipal(
+            instance_id=-1, team_id=seeded["team"], exec_mode="stop_before_payment"
+        )
+        # is_super=True ⇒ RLS 放行全部行；此刻挡住越界的**只剩** SQL 里那条显式谓词。
+        async with ctx_tx(get_session_factory(), team_id=seeded["team"], is_super=True) as s:
+            got = await identity.resolve_customer(s, principal, shared_customer)
+
+        assert got is not None, "本团队没见过这个 customerId，应当走首见自动登记而不是回 None"
+        assert got.id != theirs, (
+            "绕开 RLS 后解析到了**他团队**的账号行——`_RESOLVE_SQL` 的 `team_id = :t` 没了，"
+            "本团队的实例会拿着别人的账号、别人的站点与日限去派单"
+        )
+        assert (got.status, got.site, got.daily_cap) == ("pending_claim", None, None), (
+            f"解析结果不是一条本团队的新待认领行（实得 {got}）"
+        )
+        with psycopg.connect(migrated_db) as conn:
+            landed = conn.execute(
+                "SELECT team_id FROM app.buyer_account WHERE id = %s", (got.id,)
+            ).fetchone()[0]
+            # 对方团队一列不动：跨团队一视同仁当「新号」处理，不碰对方任何数据
+            assert (
+                conn.execute(
+                    "SELECT to_jsonb(ba) FROM app.buyer_account ba WHERE id = %s", (theirs,)
+                ).fetchone()[0]
+                == theirs_before
+            ), "对方团队的账号行被动了"
+            assert conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s", (other_team,)
+            ).fetchone()[0] == their_rows_before, "对方团队多出了行"  # fmt: skip
+        assert landed == seeded["team"], "待认领行落到了别的团队"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (theirs,))
+
+    async def test_reclaim_is_team_scoped(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """②续拉也必须自带 `team_id = :t`（审查 F5：替代物②的论证缺口）。
+
+        「F2 修法 2 删除后仍安全」的论证里有一条是「跨团队的账号 id 会在③的账号行锁上
+        炸响」。**但②跑在③之前**：续拉把 `want` 打满（`room <= 0`）时函数直接 return，
+        **根本走不到那把锁**。于是在那条路径上，跨团队 id 的唯一防线只剩 RLS——与本文件
+        「不靠 RLS 单撑」的既定纪律不符，论证也就不完整。
+
+        本例把那条路径造出来：`limit=1` + 他团队恰有一张派给该账号的在途单。
+        - 谓词在 ⇒ 续拉零行 ⇒ 走到③ ⇒ 行锁零行 ⇒ **炸响**；
+        - 谓词没了 ⇒ 续拉捞到他团队那张单 ⇒ `room=0` ⇒ **静默返回别人的 po_id**。
+
+        `procurement_order` 的 team/store/order 三列都是软引用（无外键，0025），
+        故直插一行即可，不必为对方团队造店与渠道单。
+        """
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
+        tag = uuid.uuid4().hex[:8]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            foreign_account = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_com', %s, 'active') RETURNING id",
+                    (other_team, f"他团队续拉-{tag}", f"RC{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            foreign_po = int(
+                conn.execute(
+                    "INSERT INTO app.procurement_order (team_id, store_id, order_id, order_date,"
+                    " status, buyer_account_id, assignee_kind, assigned_at)"
+                    " VALUES (%s, %s, %s, now() - interval '1 day', 'assigned', %s, 'none', now())"
+                    " RETURNING id",
+                    (other_team, seeded["store"], 10_000_000 + int(tag[:6], 16), foreign_account),
+                ).fetchone()[0]
+            )
+        try:
+            # is_super=True ⇒ RLS 放行他团队的行；此刻挡住越界的**只剩** SQL 里的显式谓词。
+            async with ctx_tx(
+                get_session_factory(), team_id=seeded["team"], is_super=True
+            ) as s:  # fmt: skip
+                with pytest.raises(RuntimeError, match="行锁匹配零行"):
+                    await dispatch.claim_tasks_for_account(
+                        s,
+                        team_id=seeded["team"],
+                        buyer_account_id=foreign_account,
+                        site="amazon_com",
+                        account_status="active",
+                        daily_cap=None,
+                        limit=1,  # 打满即早退——这正是走不到③行锁的那条路径
+                    )
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute("DELETE FROM app.procurement_order WHERE id = %s", (foreign_po,))
+                conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (foreign_account,))
 
     async def test_lock_zero_rows_raises(
         self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
