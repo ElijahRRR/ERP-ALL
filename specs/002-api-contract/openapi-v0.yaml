@@ -1410,7 +1410,7 @@ paths:
           description: 已删除
           content: {application/json: {schema: {$ref: '#/components/schemas/PrincipalDeleteResult'}}}
         '404': {description: 'PURCHASER_NOT_FOUND', $ref: '#/components/responses/Error'}
-        '409': {description: 'PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其到终态再删）', $ref: '#/components/responses/Error'}
+        '409': {description: 'PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其回填完结再删；若含 exception 单：人工处置通道未建成（FX-0730B），落地前暂无法删除）', $ref: '#/components/responses/Error'}
 
   # ──────────────────────── Aftersale（R2-07）────────────────────────
   /returns:

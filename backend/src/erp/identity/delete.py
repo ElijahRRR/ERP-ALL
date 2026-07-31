@@ -325,7 +325,8 @@ async def delete_purchaser(
     # （claimed/purchased/shipped/exception）——删掉执行方会让外部门户的 mine 过滤
     # 当场失单（D-Q50 身份落点是 purchaser.user_id）、exception 单永久无法重分配。
     # §7.1.1(c)「claimed 及其后保留 purchaser_id」是 id 保留规则，不是在途可删授权；
-    # 等单走到终态（回填/取消）再删，代价只是等。守卫抛错即整事务回滚，退回一并撤销。
+    # 等单回填完结再删。注意 cancelled 现无写入路径、exception 无出边（FX-0730B）——
+    # 通道建成前，含 exception 单的采购方暂无法删除。守卫抛错即整事务回滚，退回一并撤销。
     in_flight = int(
         (
             await session.execute(

@@ -4137,7 +4137,7 @@ export interface paths {
                 };
                 /** @description PURCHASER_NOT_FOUND */
                 404: components["responses"]["Error"];
-                /** @description PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其到终态再删） */
+                /** @description PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其回填完结再删；若含 exception 单：人工处置通道未建成（FX-0730B），落地前暂无法删除） */
                 409: components["responses"]["Error"];
             };
         };
