@@ -41,11 +41,14 @@
 ```powershell
 cd D:\项目文件\ERP-ALL
 git status --porcelain
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.audit_log) AS audit_rows_before, (SELECT count(*) FROM app.channel_order) AS channel_orders_before, (SELECT count(*) FROM app.order_line) AS order_lines_before, (SELECT count(*) FROM app.procurement_order) AS po_rows_before, (SELECT coalesce(max(id),0) FROM app.procurement_order) AS po_max_id_before, (SELECT count(*) FROM app.permission) AS perms_before;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.audit_log) AS audit_rows_before, (SELECT coalesce(max(id),0) FROM app.audit_log) AS audit_max_id_before, (SELECT count(*) FROM app.channel_order) AS channel_orders_before, (SELECT count(*) FROM app.order_line) AS order_lines_before, (SELECT count(*) FROM app.procurement_order) AS po_rows_before, (SELECT coalesce(max(id),0) FROM app.procurement_order) AS po_max_id_before, (SELECT count(*) FROM app.permission) AS perms_before;"
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT md5(coalesce(string_agg(id || ':' || coalesce(purchaser_id::text, '-'), ',' ORDER BY id), '')) AS po_fingerprint_before FROM app.procurement_order;"
 ```
 
-**判据**：`tracked_dirty=0`；六个计数 + 指纹逐字记入回执（⑪要逐项对拍；③的门要求本步先完成）。
+**判据**：`tracked_dirty=0`；全部计数 + 指纹逐字记入回执（⑪要逐项对拍；③的门要求本步先完成）。
+`audit_max_id_before` 是⑪锚定等值判据的锚（审查三轮 G1）。
+**本次运行特批**：①已跑过且当时未取该锚——部署机实测 `audit_rows_now=204` 与基线相等、
+`audit_max_id_now=233`，**授权把 233 记为 audit_max_id_before**（无损补取，理由见 PR 评论）。
 
 ## ② 分支与迁移清单
 
@@ -142,7 +145,20 @@ $HB = @{ 'X-Plugin-Instance' = "$($IB.id)"; 'X-Plugin-Token' = $IB.token }
 try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -Headers @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = 'R13T-wrong-token' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__ }
 ```
 
-**判据**：正确头 200；错 token **401**。越权承重在⑧-2（A 拉到的单拿给 B 的实例写）。
+三条失败路同码（审查三轮 G3——auth 模块的承诺是「不存在的 id / 错 token / 已吊销
+→ 全部 PLUGIN_AUTH + 401」，只测一条不算验过；顺带把吊销这条标准运维路径走一遍）：
+
+```powershell
+try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -Headers @{ 'X-Plugin-Instance' = '999999999'; 'X-Plugin-Token' = 'R13T-any' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
+$IC = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/buyer-accounts/<ACC_A>/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"dry_run","note":"R13T-revoke-probe"}' -ContentType "application/json"
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances/$($IC.id)/revoke" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
+try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -Headers @{ 'X-Plugin-Instance' = "$($IC.id)"; 'X-Plugin-Token' = $IC.token } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
+```
+
+**判据**：正确头 200；错 token / 不存在 id（999999999）/ 已吊销（IC）**三路全部 401 且
+报文含同一错误码 `PLUGIN_AUTH`**（逐字相同——同码是 B6 时序抹平那条承诺的另一半）。
+IC 是吊销探针专用实例（dry_run 档），吊销后不再使用、⑫无需清理（plugin_instance 随
+buyer_account 删除连带）。越权承重在⑧-2（A 拉到的单拿给 B 的实例写）。
 
 ## ⑧ 派发链（13b 承重）
 
@@ -220,9 +236,17 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT md5(coalesce(string_agg(id || ':' || coalesce(purchaser_id::text, '-'), ',' ORDER BY id), '')) AS po_fingerprint_now FROM app.procurement_order WHERE id <= <PO_MAX_ID_BEFORE>;"
 ```
 
+另跑锚定等值（审查三轮 G1——`>=` 是单边判据，「删 5 插 20」也能过；锚定后对新增免疫、
+对删除敏感，才是「一行不删」的精确判据）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS audit_baseline_rows_now FROM app.audit_log WHERE id <= <AUDIT_MAX_ID_BEFORE>;"
+```
+
 **判据**：`channel_orders_now` / `order_lines_now` 与①同名项**相等**（排除 R13T 测试族后）；
 `po_fingerprint_now` 与①**逐字相同**（存量执行单的 id:purchaser_id 无一变化）；
-`audit_rows_now >= ①值`（只增不减；增量来自签发/补录/释放等留痕，非判据缺陷）。
+**`audit_baseline_rows_now = ①的 audit_rows_before`**（锚定等值：基线时刻已存在的审计行
+一行未删；本轮新增的签发/补录/释放留痕都在锚之外，不影响该判据）。
 
 ## ⑫ 清理 + 迁移可逆 + 终态
 
@@ -231,12 +255,14 @@ product(R13T 的 source_ref 族)→plugin_instance→buyer_account→notificatio
 object 指向本次测试单)）**：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (SELECT po.id FROM app.procurement_order po JOIN app.channel_order co ON co.id = po.order_id AND co.order_date = po.order_date WHERE co.channel_order_no LIKE 'R13T-%'); DELETE FROM app.procurement_order WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'; DELETE FROM app.product WHERE source_ref LIKE 'R13T%'; DELETE FROM app.plugin_instance WHERE buyer_account_id IN (SELECT id FROM app.buyer_account WHERE label LIKE 'R13T-%'); DELETE FROM app.buyer_account WHERE label LIKE 'R13T-%'; DELETE FROM app.notification WHERE dedupe_key LIKE 'plugin.%' AND created_at > now() - interval '1 day';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (SELECT po.id FROM app.procurement_order po JOIN app.channel_order co ON co.id = po.order_id AND co.order_date = po.order_date WHERE co.channel_order_no LIKE 'R13T-%'); DELETE FROM app.procurement_order WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'; DELETE FROM app.product WHERE source_ref LIKE 'R13T%'; DELETE FROM app.plugin_instance WHERE buyer_account_id IN (SELECT id FROM app.buyer_account WHERE label LIKE 'R13T-%'); DELETE FROM app.buyer_account WHERE label LIKE 'R13T-%'; DELETE FROM app.notification WHERE object_type = 'procurement_order' AND object_id = ANY (ARRAY['<PO1>','<PO2>','<PO3>','<PO4>']);"
 ```
 
 > buyer_account 无 DELETE 授权是应用角色（erp_app）的限制；本清理走 **erp_migrator**（DDL 角色），
 > 可删。⚠️ 铁律 4 的三级表例外仅限 R13T 前缀族——上面每条 WHERE 都已带前缀圈定，
-> **不许放宽**。notification 那条按 dedupe_key 前缀 + 24h 窗口圈定（本次产生的告警）。
+> **不许放宽**。notification 那条按**对象圈定**（object_id = 本次四张测试执行单的 id，⑤记下的值代入
+`<PO1>`-`<PO4>`）——审查三轮 G2：`plugin.%` 是产品自己的 dedupe 前缀，拿它清会在插件
+真上线后连真实告警一起删；对象圈定与其余各条的前缀圈定同一精神——只删本次测试造出来的。
 
 **迁移可逆**（v2 补具体命令——migrate 服务的默认命令是 upgrade head，降级要**覆盖命令**跑）：
 
