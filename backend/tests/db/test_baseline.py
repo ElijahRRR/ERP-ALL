@@ -2,6 +2,10 @@
 
 import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy.exc import IntegrityError
 
 
 def _set_team(conn: psycopg.Connection, team_id: int | None, *, super_: bool = False) -> None:
@@ -193,4 +197,46 @@ class TestSoftReferenceInvariant:
         assert rows == [], (
             f"以下执行单的 purchaser_id 在主表与墓碑都查不到（永久无法解析）：{rows}"
             "——多半是绕过删除服务的直删或墓碑漏写"
+        )
+
+
+class TestDowngradeDataGuard:
+    def test_downgrade_hard_fails_on_plugin_rows(self, migrated_db: str) -> None:
+        """0045 降级守卫的承重（PR #50 五轮 H1）：带新词表数据时降级必须硬失败。
+
+        0045 downgrade 头注承诺：库中已有 `backfill_actor_kind='plugin'` 或
+        `status='pending_review'` 的行时 ADD CONSTRAINT 硬失败——人工处置前不许降
+        （同 0047 口径：升级期间已发生的事实无法靠降级抹掉）。这条承诺原先被 CI
+        步序**意外**覆盖着（空库演练排在 pytest 后，套件残余恰好触发）；8ee9703
+        把演练挪到 pytest 前之后变成**零覆盖**。本条把它变成显式承重。
+
+        安全性依据：env.py 是整链单事务（begin_transaction 包住 run_migrations），
+        中途失败即全部回滚、共享测试库仍在 head。末尾断言钉住这一点——将来若改成
+        transaction_per_migration=True，失败的降级会留下半降级的库拖垮整个套件，
+        这条会先红并指明原因。
+        """
+        cfg = Config("alembic.ini")
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            po = conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status,"
+                "  backfill_actor_kind, exchange_rate_locked)"
+                " SELECT id, 1, 997766, now(), 'purchased', 'plugin', 1.0"
+                " FROM app.team LIMIT 1 RETURNING id"
+            ).fetchone()[0]
+        try:
+            with pytest.raises(IntegrityError, match="ck_procurement_backfill_actor"):
+                command.downgrade(cfg, "0044")
+        finally:
+            # 单事务回滚后库已在 head，此处为幂等 no-op；若将来变成分步事务，
+            # 先修复 schema 再清样本，保证后续用例拿到完整的 head 库。
+            command.upgrade(cfg, "head")
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute("DELETE FROM app.procurement_order WHERE id = %s", (po,))
+        with psycopg.connect(migrated_db) as conn:
+            version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        expected = ScriptDirectory.from_config(cfg).get_current_head()
+        assert version == expected, (
+            f"降级失败后库停在 {version} 而非 head（{expected}）——env.py 的整链单事务"
+            "回滚被破坏，带数据降级会把共享库留在半降级状态"
         )
