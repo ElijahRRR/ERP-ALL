@@ -83,7 +83,7 @@ async def _load_po(session: AsyncSession, po_id: int, team_id: int) -> dict[str,
     return dict(row)
 
 
-async def _advance_order(
+async def advance_order(
     session: AsyncSession,
     *,
     order_id: int,
@@ -91,6 +91,11 @@ async def _advance_order(
     to_status: str,
     from_statuses: tuple[str, ...],
 ) -> None:
+    """渠道订单 `internal_status` 的条件推进（`from_statuses` 之外一律不动）。
+
+    R2-13 13d 起有第二个消费者（`plugin/service.py` 的采购完成回填），故由模块私有
+    改为公开——**唯一的推进入口只应有这一处**，两处各写各的 UPDATE 迟早会漂。
+    """
     await session.execute(
         text(
             "UPDATE app.channel_order SET internal_status = :to"
@@ -194,7 +199,7 @@ async def assign_po(
         ),
         {"p": purchaser_id, "ak": purchaser["purchaser_kind"], "u": actor_id, "id": po_id},
     )
-    await _advance_order(
+    await advance_order(
         session,
         order_id=po["order_id"],
         order_date=po["order_date"],
@@ -252,7 +257,7 @@ async def backfill_po(
     await session.execute(
         text(f"UPDATE app.procurement_order SET {', '.join(sets)} WHERE id = :id"), params
     )
-    await _advance_order(
+    await advance_order(
         session,
         order_id=po["order_id"],
         order_date=po["order_date"],
