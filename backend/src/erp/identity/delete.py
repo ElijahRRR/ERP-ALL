@@ -338,12 +338,14 @@ async def delete_purchaser(
         ).scalar_one()
     )
     if in_flight:
-        # 文案不承诺不存在的出口（审查六轮 F）：procurement_order 无 cancelled 写入
-        # 路径、exception 无出边（FX-0730B）——能等到的终态只有回填。
+        # 文案不承诺不存在的出口（审查六轮 F / 八轮打磨）：procurement_order 无
+        # cancelled 写入路径、exception 无出边——能等到的终态只有回填；exception 的
+        # 人工处置通道今天也不存在（FX-0730B 立单在补），文案如实说明而不是指一条空路。
         raise BusinessError(
             "PURCHASER_DELETE_IN_FLIGHT",
-            "该采购方仍有执行中的采购单（已领单未完结），请等其回填完结后再删除；"
-            "exception 单请先在采购单侧处置",
+            "该采购方仍有执行中的采购单（已领单未完结），请等其回填完结后再删除。"
+            "若含 exception 单：其人工处置通道尚未建成（已立单 FX-0730B），"
+            "落地前此类采购方暂无法删除",
             {"in_flight": in_flight},
             http_status=409,
         )
