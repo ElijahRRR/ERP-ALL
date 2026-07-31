@@ -987,7 +987,7 @@
   "id": "R2-13",
   "priority": "P0",
   "dimension": "product",
-  "status": "todo",
+  "status": "in_review",
   "check": "自动采购接入(Amazon 采购插件, D-Q69, MVP内)：fork 插件指向 ERP + 实现插件端点组(getNeedPurchaseOrders/purchaseOrderFinishUpdate/updateTrackingInfo 等9个)+buyer_account 账号池与任务路由+plugin_instance 实例令牌+purchase_execute 三档护栏(amount_ceiling/price_delta_pct/delivery_days_limit；daily_cap 不在 config，唯一落点为 buyer_account 列由 13b 消费)+回填对账+厂商SaaS逐账号灰度切换",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md",
@@ -1023,6 +1023,16 @@
     "date": "2026-07-30",
     "kind": "ruling",
     "text": "【Owner 同日晚四条新裁定 + 云端侧提请的图纸改动，审计侧已全部落笔】**补-1 cookies 反转为「不收，删掉」**——同日白天曾裁「要，用途是识别买家号」，晚间查清那份 jar 到底是什么后反转：background.js 的字段整形(hostOnly/sameSite:'no_restriction'/storeId:'1'/id:index+1)正是 Cookie-Editor 那类插件的导出格式，**该格式唯一目的是被导入回浏览器**，所以它不是标识而是整套可搬运的登录态；识别由同一调用里的独立参数 customerId 承载。目的既已另有达成路径，收 cookie 只剩风险没有收益。→ cookies 权限/updateBuyerCookie/getCookiesAsJson/onMessage 监听器全删，fork 后 permissions 为空数组；**buyer_session 表不建**（§07 该节已改写为「不建+将来若要建的判据」，非删节）；连带作废「给 onMessage 加 sender 校验」——监听器都删了，校验失去对象。**补-2 提取 customerId 按钮保留**——预配置的账号 ID 本身就是用它提取的，是开账号阶段的一次性配置工具；这同时填上此前报的输入缺口「数十个账号的 external_customer_id 从哪来」。据此定下**一手来源的权威边界**：Owner 逆向报告对「厂商实际怎么做」是权威，对「我们该怎么做」的推荐不是权威（§7 已两处推荐失准：本条 + asinCheck 前置化，后者照做会直接撞判据⑦），已落 §07 端点契约节头。**补-3 日本站 MVP 不做** ⇒ fork 仓内 v2.4.1 即可（v2.5.0 的核心新增就是 JP_PREFECTURE_EN_TO_JA），但 receivingDistrict 与异常类 address 的 JP 分支保留代码路径，将来开 JP 只补映射表。**补-4 验收改「先停在付款前一步」**——这解开了「验收要真花钱」的死结，但引出图纸原先没有的必需能力：插件 fork 须带 dry_run/stop_before_payment/live 三档（沿用 channel.gateway_mode 同款），否则该执行方式无法落地。验收据此分两层，stop_before_payment 层能验到实付金额/预计送达/非FBA与bundle拦截。**另修 007:279-280（13c 分片定义句）**：护栏键三个里错两个（多 daily_cap、少 delivery_days_limit），该句是 13c 的范围定义处，照它实现会建错护栏集并引回刚被消除的「两处定义」失效模式；已改并订正紧随的「四个护栏键零命中」计数。云端侧 b72ffb3 对 da2a096 的三处复核通过，此为其指出的唯一残留。"
+   },
+   {
+    "date": "2026-07-31",
+    "kind": "landed",
+    "text": "【13a+13b+13d 落地，闸序中】Workflow 编排（Opus/max，Owner 点名方式）五步成 commit：0043-0046 迁移四件套（buyer_account / plugin_instance 实例 token 散列 / procurement_order 增列+status 扩 pending_review+uq_po_active_dispatch / procurement_logistics_event；链 0047→0043→…→0046 单头）；13b 派发内核 claim-on-pull（账号闸/续拉/daily_cap 唯一落点消费/站点映射/FOR UPDATE SKIP LOCKED 认领）；13a 插件契约端点组（厂商 camelCase 原样、双头部实例认证、updateBuyerCookie 按裁定不实现、越权三层防线）；13d 回填/异常/物流（parse 关口绝不返 0、金额自校验、exception_kind 分类列与 status 分离）；002 契约+codegen+买家账号池页/实例抽屉/订单页增列。**对抗审查三镜头 16 findings→修复两批 A1-A4/B1-B8 全闭合**（复验代理逐条变异验证：守卫打断→测试红→还原；3 blocker=人机双买两口子+异常单零出边，1 high=daily_cap 并发击穿→账号行锁串行化，1 major=一步直签 live→签发两档 PATCH 升 live）。cookies 链删净有结构性反向测试（test_r2_13_no_cookie_chain）；护栏三键零实现零假配置（13c）。"
+   },
+   {
+    "date": "2026-07-31",
+    "kind": "progress",
+    "text": "【开放问题与留档（PR 正文同步列出）】需裁定：(1) **业务口径·异常#16 通道**——A1 守卫关闭「人工替插件单补 AMZ 单号」路，替代通道=插件端点2重试（_PURCHASABLE_FROM 含 exception）；但若实例已失联且单在 exception，人工 release 回池会触发重买（钱已花而 ERP 无 ref/purchased_at，release 守卫放行）——release 前无硬闸，仅靠 exception_reason 文案提示，请 Owner/审计侧定口径；(2) 0043/0045 两处软引用无外键与图纸字面冲突（迁移头注已按 0041/0047 惯例提请审计侧确认或改判）。留档（低危不抢修）：插件端点 3/4/7 无 DB 级主体归属（logs 有 instance）；物流事件按 seq upsert 数组变短残留幻影行（需自然键改造）；13c 落地时 pending_review 出边须两侧一并设计（插件白名单已收窄回、人工 assign/backfill 409 注释留档）+ getNeedSyncOrders 对 shipped 单无收敛条件；B1 行锁依赖 READ COMMITTED 无自动断言；被推翻的既有断言 test_paused_account_backfill_still_works（与 A1 对立，已换反向断言，请审查侧确认转手成立）。"
    }
   ]
  },
