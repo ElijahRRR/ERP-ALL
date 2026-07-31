@@ -1,11 +1,14 @@
-"""订单域 API（R2-05；契约 002 §Order——订单/四检/采购执行单/采购方）。
+"""订单域 API（R2-05；契约 002 §Order——订单/四检/采购执行单/采购方/买家账号池）。
 
 发货 /orders/{id}/ship 随增量4（outbox + 幂等）；portal 外部端点随 R2#6。
+
+买家账号池与采购插件实例（R2-13 13b）挂在本 tag 下与 purchaser 并列，服务在
+`order/buyer_account.py`；插件自己的机器面（双头部认证、非 JWT）不在这里，见 `erp/plugin/`。
 """
 
 import json
-from datetime import datetime
-from typing import Annotated, Any
+from datetime import date, datetime
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, Field
@@ -19,9 +22,11 @@ from erp.core.errors import BusinessError
 from erp.core.idempotency import run_idempotent
 from erp.identity import delete as principal_delete
 from erp.identity.schemas import Page
+from erp.order import buyer_account as buyer_account_service
 from erp.order import checks as order_checks
 from erp.order import procurement
 from erp.order import ship as ship_service
+from erp.order.buyer_account import BuyerAccountIn, PluginInstanceIssueIn, PluginInstancePatchIn
 
 order_router = APIRouter(tags=["Order"])
 
@@ -232,10 +237,23 @@ class BackfillIn(BaseModel):
     carrier: str | None = None
     tracking_no: str | None = None
     note: str | None = None
+    # R2-13 0045 增列：人工在订单页也要能补这四项（插件路径的回填不走本端点）
+    tax_amount: float | None = None
+    payment_card_last4: str | None = Field(default=None, max_length=8)
+    delivery_est_date: date | None = None
+    delivery_est_raw: str | None = Field(default=None, max_length=200)
 
 
 class ExceptionIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
+    # 问题分类（0045 九值词表）。可空 = 不改已有分类（exception_po 的 coalesce 语义）。
+    kind: (
+        Literal[
+            "address", "stock", "product", "delivery", "checkout",
+            "price_guard", "channel_cancelled", "order_not_found", "other",
+        ]
+        | None
+    ) = None  # fmt: skip
 
 
 class PurchaserIn(BaseModel):
@@ -281,7 +299,10 @@ async def list_procurement(
                     "SELECT p.id, p.order_id, p.store_id, p.status, p.assignee_kind,"
                     " p.purchaser_id, p.purchase_platform, p.purchase_order_ref, p.purchase_cost,"
                     " p.purchase_currency, p.exchange_rate_locked, p.freight_cost, p.carrier,"
-                    " p.tracking_no, p.exception_reason, p.created_at"
+                    " p.tracking_no, p.exception_reason, p.created_at,"
+                    # R2-13 0045 增列：买家账号（插件路径）+ 成本三分的税额 + 预计送达 + 异常分类
+                    " p.buyer_account_id, p.tax_amount, p.payment_card_last4,"
+                    " p.delivery_est_date, p.delivery_est_raw, p.exception_kind"
                     f" FROM app.procurement_order p {where}"
                     " ORDER BY p.id DESC LIMIT :lim OFFSET :off"
                 ),
@@ -306,6 +327,19 @@ async def list_procurement(
             )
     for r in rows:
         r["purchaser_label"] = labels.get(r["purchaser_id"]) if r["purchaser_id"] else None
+    # 买家账号解析（R2-13 13b）：与 purchaser_label 同款「不冗余名字列」的做法。
+    # 这里只查主表、**不查墓碑**——buyer_account 尚无删除路径（0043 不授 DELETE），
+    # 删除分支落地时（14b 之后）这里要跟着补一段墓碑回落，同 `deleted_labels` 的形状。
+    bids = sorted({r["buyer_account_id"] for r in rows if r["buyer_account_id"] is not None})
+    ba_labels: dict[int, str] = {}
+    if bids:
+        for br in await session.execute(
+            text("SELECT id, label FROM app.buyer_account WHERE id = ANY(:ids)"), {"ids": bids}
+        ):
+            ba_labels[int(br[0])] = str(br[1])
+    for r in rows:
+        bid = r["buyer_account_id"]
+        r["buyer_account_label"] = ba_labels.get(bid) if bid else None
     return Page(items=rows, total=total, page=page, size=size)
 
 
@@ -395,11 +429,12 @@ async def exception_procurement(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     await procurement.exception_po(
-        session, team_id=user.team_id or -1, po_id=po_id, reason=body.reason
+        session, team_id=user.team_id or -1, po_id=po_id, reason=body.reason, kind=body.kind
     )
     await AuditWriter.for_user(session, user, request).log(
-        "procurement.exception", "procurement_order", po_id, after={"reason": body.reason}
-    )
+        "procurement.exception", "procurement_order", po_id,
+        after={"reason": body.reason, "kind": body.kind},
+    )  # fmt: skip
     return {"id": po_id, "status": "exception"}
 
 
@@ -515,6 +550,116 @@ async def delete_purchaser(
     """
     return await principal_delete.delete_purchaser(
         session, user=user, request=request, purchaser_id=purchaser_id, reason=reason
+    )
+
+
+# ── 买家账号池 + 采购插件实例（R2-13 13b；服务在 order/buyer_account.py）──
+#
+# 三个权限码分层（0043）：读 `buyer_account_read` / 改账号 `buyer_account_admin` /
+# **签发与吊销实例单列 `plugin_instance_admin`**——签发 = 发一个能代表该买家账号真下单的
+# 凭证，与「改个备注名」不是同一量级。**本组无 DELETE 端点**（删除分支挂 14b 之后另补）。
+
+
+@order_router.get("/buyer-accounts")
+async def list_buyer_accounts(
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_read"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    site: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    q: str | None = Query(default=None, description="按 label 模糊搜索"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
+) -> Page[dict[str, Any]]:
+    return await buyer_account_service.list_accounts(
+        session,
+        team_id=user.team_id or -1,
+        site=site,
+        status=status,
+        q=q,
+        page=page,
+        size=size,
+    )
+
+
+@order_router.post("/buyer-accounts", status_code=201)
+async def create_buyer_account(
+    body: BuyerAccountIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """建买家账号。`external_customer_id` 即插件侧 `customerId`，**人工录入**——
+
+    取值方式：在指纹浏览器里打开该买家账号的亚马逊页面 → 点插件面板「提取 customerId」
+    → 复制粘贴（Owner 2026-07-30 补-2：预配置的账号 ID 本来就是这么来的）。
+    """
+    return await buyer_account_service.create_account(
+        session, user=user, request=request, body=body
+    )
+
+
+@order_router.patch("/buyer-accounts/{buyer_account_id}")
+async def update_buyer_account(
+    buyer_account_id: int,
+    body: BuyerAccountIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    return await buyer_account_service.update_account(
+        session, user=user, request=request, account_id=buyer_account_id, body=body
+    )
+
+
+@order_router.get("/buyer-accounts/{buyer_account_id}/plugin-instances")
+async def list_plugin_instances(
+    buyer_account_id: int,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.buyer_account_read"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict[str, Any]]:
+    """列该账号的插件实例。**响应不含 token 的任何形态**（含 hash）。"""
+    return await buyer_account_service.list_instances(
+        session, team_id=user.team_id or -1, account_id=buyer_account_id
+    )
+
+
+@order_router.post("/buyer-accounts/{buyer_account_id}/plugin-instances", status_code=201)
+async def issue_plugin_instance(
+    buyer_account_id: int,
+    body: PluginInstanceIssueIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.plugin_instance_admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """签发实例令牌。**明文只在本响应里出现一次**，关闭后无法再取（遗失请吊销后重签）。"""
+    return await buyer_account_service.issue_instance(
+        session, user=user, request=request, account_id=buyer_account_id, body=body
+    )
+
+
+@order_router.post("/plugin-instances/{plugin_instance_id}/revoke")
+async def revoke_plugin_instance(
+    plugin_instance_id: int,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.plugin_instance_admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    return await buyer_account_service.revoke_instance(
+        session, user=user, request=request, instance_id=plugin_instance_id
+    )
+
+
+@order_router.patch("/plugin-instances/{plugin_instance_id}")
+async def update_plugin_instance(
+    plugin_instance_id: int,
+    body: PluginInstancePatchIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.plugin_instance_admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """改执行档。切到 `live` 即该实例此后真实下单花钱——前端须二次确认，服务端留审计。"""
+    return await buyer_account_service.update_instance(
+        session, user=user, request=request, instance_id=plugin_instance_id, body=body
     )
 
 

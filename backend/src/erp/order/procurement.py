@@ -7,6 +7,8 @@
 - order_block 档位（automation_policy，07:82）：manual=纯软标记（默认）；
   semi/auto=存在未放行 flagged 的订单冻结在 checked，不允许建单/分配。
 - 订单联动：assign/claim → internal_status=assigned；backfill → purchasing。
+- 插件路径（R2-13 13b）走另一条支线：`buyer_account_id` 非空即代表「已派给买家账号」，
+  派发算法在 `order/dispatch.py`，本文件只负责与它互斥（见 assign_po 的守卫）。
 """
 
 from typing import Any
@@ -26,6 +28,12 @@ BACKFILL_FIELDS = (
     "carrier",
     "tracking_no",
     "note",
+    # R2-13 0045 新增的四列同属「回填」语义（人工在订单页也要能补），故进本表。
+    # **`exception_kind` 不在此列**——它是问题分类不是回填字段，走 exception_po 的 kind 参数。
+    "tax_amount",
+    "payment_card_last4",
+    "delivery_est_date",
+    "delivery_est_raw",
 )
 
 
@@ -61,7 +69,7 @@ async def _load_po(session: AsyncSession, po_id: int, team_id: int) -> dict[str,
             await session.execute(
                 text(
                     "SELECT id, team_id, store_id, order_id, order_date, status,"
-                    " assignee_kind, purchaser_id, exchange_rate_locked"
+                    " assignee_kind, purchaser_id, exchange_rate_locked, buyer_account_id"
                     " FROM app.procurement_order WHERE id = :p FOR UPDATE"
                 ),
                 {"p": po_id},
@@ -152,6 +160,18 @@ async def assign_po(
         raise BusinessError(
             "PROCUREMENT_STATE_INVALID", f"状态 {po['status']} 不可分配", http_status=409
         )
+    # R2-13 13b：铁律「同一订单只派一个买家账号」在应用层的对偶。
+    # 不加这条就有一个重复下单的口子：插件派走的单是 `assigned`，而本函数允许
+    # `unassigned|assigned` 再分配给 purchaser——于是同一订单**既派机器人又派人**，
+    # 两边都会真下单。DB 侧的 `uq_po_active_dispatch` 只管「一个 order 一个买家账号」，
+    # 管不到「买家账号 + 人工采购方」这种混派。
+    if po["buyer_account_id"] is not None:
+        raise BusinessError(
+            "PROCUREMENT_PLUGIN_DISPATCHED",
+            "该执行单已派给买家账号（插件可能正在执行），不能同时改派人工采购方"
+            "——请先处置该单（异常/取消）再改派",
+            http_status=409,
+        )
     purchaser = (
         (
             await session.execute(
@@ -241,7 +261,15 @@ async def backfill_po(
     )
 
 
-async def exception_po(session: AsyncSession, *, team_id: int, po_id: int, reason: str) -> None:
+async def exception_po(
+    session: AsyncSession, *, team_id: int, po_id: int, reason: str, kind: str | None = None
+) -> None:
+    """标异常。`kind` = 问题分类（0045 的九值词表），可空。
+
+    `exception_kind` 用 `coalesce(:kind, exception_kind)` 写：不传就保持原值，
+    **不会把已有的分类抹成 NULL**——重复标异常（比如插件先落 product 类、人再补一句
+    原因）不该丢掉第一次的归类。
+    """
     po = await _load_po(session, po_id, team_id)
     if po["status"] in ("backfilled", "cancelled"):
         raise BusinessError(
@@ -249,8 +277,8 @@ async def exception_po(session: AsyncSession, *, team_id: int, po_id: int, reaso
         )
     await session.execute(
         text(
-            "UPDATE app.procurement_order SET status = 'exception', exception_reason = :r"
-            " WHERE id = :id"
+            "UPDATE app.procurement_order SET status = 'exception', exception_reason = :r,"
+            " exception_kind = coalesce(:kind, exception_kind) WHERE id = :id"
         ),
-        {"r": reason, "id": po_id},
+        {"r": reason, "kind": kind, "id": po_id},
     )

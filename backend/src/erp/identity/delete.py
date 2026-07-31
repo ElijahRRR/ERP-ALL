@@ -299,7 +299,14 @@ async def delete_purchaser(
             text(
                 "UPDATE app.procurement_order po"
                 " SET status = 'unassigned', purchaser_id = NULL, assignee_kind = 'none',"
-                "     assigned_by = NULL, assigned_at = NULL, exception_reason = NULL"
+                "     assigned_by = NULL, assigned_at = NULL, exception_reason = NULL,"
+                # R2-13 13b：当前不变量下（assign_po 拒绝已派给买家账号的单，
+                # procurement.py 的 PROCUREMENT_PLUGIN_DISPATCHED 守卫）本条恒为 no-op
+                # ——能有 purchaser_id 的单一定没有 buyer_account_id。写它是因为那个
+                # 不变量靠一句 `if` 维持，而本条 SQL 是删除的副作用、离那句 `if` 很远：
+                # 不变量若被破（新增第三条派发路径、守卫被改），这里要**失败在安全的一侧**
+                # ——退回池的单必须同时释放 uq_po_active_dispatch，否则它永远派不出去。
+                "     buyer_account_id = NULL"
                 " FROM (SELECT id, status AS old_status FROM app.procurement_order"
                 "       WHERE purchaser_id = :p AND exchange_rate_locked IS NULL"
                 "         AND status <> ALL (ARRAY['backfilled', 'cancelled'])"

@@ -1365,7 +1365,12 @@ paths:
             schema:
               type: object
               required: [reason]
-              properties: {reason: {type: string}}
+              properties:
+                reason: {type: string}
+                # R2-13 0045：问题分类。不传 = 保持已有分类（coalesce 语义），不会抹成 null。
+                kind:
+                  type: string
+                  enum: [address, stock, product, delivery, checkout, price_guard, channel_cancelled, order_not_found, other]
       responses: {'200': {description: OK}}
   /purchasers:
     get:
@@ -1411,6 +1416,112 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/PrincipalDeleteResult'}}}
         '404': {description: 'PURCHASER_NOT_FOUND', $ref: '#/components/responses/Error'}
         '409': {description: 'PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其回填完结再删；若含 exception 单：人工处置通道未建成（FX-0730B），落地前暂无法删除）', $ref: '#/components/responses/Error'}
+
+  # ──────────── 买家账号池 + 采购插件实例（R2-13 13b；图纸 07:249-282）────────────
+  # 与 purchaser 并列同 tag：买家账号是「谁去亚马逊下单」的另一种形态，同一类运营对象。
+  # 权限三分（0043）：读 buyer_account_read / 改账号 buyer_account_admin /
+  # **签发与吊销实例单列 plugin_instance_admin**——签发 = 发一个能代表该买家账号真下单的
+  # 凭证，与「改个备注名」不是同一量级。**本组无 DELETE 端点**：买家账号的删除分支挂在
+  # 14b 之后另补（0043 头注：授 DELETE 必须同时建 DELETE 策略，且要处置在途单与实例外键）。
+  /buyer-accounts:
+    get:
+      tags: [Order]
+      summary: 买家账号池列表（服务端分页）
+      x-permission: procurement.buyer_account_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: site, in: query, schema: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}}
+        - {name: status, in: query, schema: {type: string, enum: [active, paused, blocked, retired]}}
+        - {name: q, in: query, schema: {type: string}, description: 按 label 模糊搜索}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BuyerAccountPage'}}}}}
+    post:
+      tags: [Order]
+      summary: 建买家账号
+      description: >-
+        `external_customer_id`（＝插件侧 `customerId`）**由人工录入**，不是系统生成：
+        在指纹浏览器里打开该买家账号的亚马逊页面 → 点插件面板「提取 customerId」→ 复制粘贴
+        （Owner 2026-07-30 补-2：预配置的账号 ID 本来就是这么来的，故该按钮在 fork 版保留）。
+        `label` 的语义 = 对应哪个指纹浏览器（07:258）。
+      x-permission: procurement.buyer_account_admin
+      requestBody: {$ref: '#/components/requestBodies/BuyerAccountWrite'}
+      responses:
+        '201': {description: Created}
+        '409': {description: 'BUYER_ACCOUNT_DUPLICATE（detail.field 指明撞的是 external_customer_id 还是 label）', $ref: '#/components/responses/Error'}
+  /buyer-accounts/{buyerAccountId}:
+    patch:
+      tags: [Order]
+      summary: 改买家账号（label/site/status/daily_cap/note/external_customer_id）
+      description: >-
+        `daily_cap` **显式传 null = 改成不限**（不传 = 不动该列）。日限的唯一权威就是本列
+        ——`automation_policy` 的 flow config 里不得出现同名键（Owner 2026-07-30 裁定）。
+      x-permission: procurement.buyer_account_admin
+      parameters: [{$ref: '#/components/parameters/buyerAccountId'}]
+      requestBody: {$ref: '#/components/requestBodies/BuyerAccountWrite'}
+      responses:
+        '200': {description: OK}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {description: BUYER_ACCOUNT_DUPLICATE, $ref: '#/components/responses/Error'}
+  /buyer-accounts/{buyerAccountId}/plugin-instances:
+    get:
+      tags: [Order]
+      summary: 列该账号的插件实例
+      description: '**响应不含 token 的任何形态（含 hash）**——明文只在签发响应出现一次。'
+      x-permission: procurement.buyer_account_read
+      parameters: [{$ref: '#/components/parameters/buyerAccountId'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/PluginInstance'}}}}}}
+    post:
+      tags: [Order]
+      summary: 签发实例令牌（明文只返回这一次）
+      description: >-
+        新签发的实例默认 `exec_mode=stop_before_payment`——**不会花钱**；升到 `live` 是一次
+        显式 PATCH 且有 audit 留痕。令牌明文**只在本响应里出现一次**，此后 ERP 侧任何端点
+        （含本组的 GET）都取不到，遗失只能吊销后重新签发。
+      x-permission: procurement.plugin_instance_admin
+      parameters: [{$ref: '#/components/parameters/buyerAccountId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                exec_mode: {type: string, enum: [dry_run, stop_before_payment, live], default: stop_before_payment}
+                version: {type: string}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/PluginInstanceIssued'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /plugin-instances/{pluginInstanceId}:
+    patch:
+      tags: [Order]
+      summary: 改执行档（只此一项可改）
+      description: 切到 `live` 意味着该实例此后真实下单花钱——前端须二次确认，服务端写 audit。
+      x-permission: procurement.plugin_instance_admin
+      parameters: [{$ref: '#/components/parameters/pluginInstanceId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [exec_mode]
+              properties:
+                exec_mode: {type: string, enum: [dry_run, stop_before_payment, live]}
+      responses:
+        '200': {description: OK}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {description: 'PLUGIN_INSTANCE_REVOKED（已吊销的实例不可改档，请重新签发）', $ref: '#/components/responses/Error'}
+  /plugin-instances/{pluginInstanceId}/revoke:
+    post:
+      tags: [Order]
+      summary: 吊销实例（UPDATE 不是 DELETE）
+      description: >-
+        吊销后该令牌对全部插件端点一律 401。已吊销的再调一次是 no-op（200，不报错）。
+        不做物理删除：历史实例 id 还挂在 `procurement_order.backfill_actor_id` 上
+        （`backfill_actor_kind='plugin'` 时解读为实例 id），删行会让「这单谁填的」失去落点。
+      x-permission: procurement.plugin_instance_admin
+      parameters: [{$ref: '#/components/parameters/pluginInstanceId'}]
+      responses:
+        '200': {description: OK}
+        '404': {$ref: '#/components/responses/Error'}
 
   # ──────────────────────── Aftersale（R2-07）────────────────────────
   /returns:
@@ -1732,6 +1843,8 @@ components:
     listingId: {name: listingId, in: path, required: true, schema: {type: integer}}
     orderId: {name: orderId, in: path, required: true, schema: {type: integer}}
     poId: {name: poId, in: path, required: true, schema: {type: integer}}
+    buyerAccountId: {name: buyerAccountId, in: path, required: true, schema: {type: integer}}
+    pluginInstanceId: {name: pluginInstanceId, in: path, required: true, schema: {type: integer}}
     returnId: {name: returnId, in: path, required: true, schema: {type: integer}}
     refundRequestId: {name: refundRequestId, in: path, required: true, schema: {type: integer}}
     incidentId: {name: incidentId, in: path, required: true, schema: {type: integer}}
@@ -1877,12 +1990,30 @@ components:
             properties:
               purchase_platform: {type: string}
               purchase_order_ref: {type: string}
-              purchase_cost: {type: number}
+              purchase_cost: {type: number, description: 税前商品额（成本三分之一，不含税与运费）}
               purchase_currency: {type: string, default: CNY}
               freight_cost: {type: number}
               carrier: {type: string}
               tracking_no: {type: string}
               note: {type: string}
+              # R2-13 0045 增列：人工在订单页也要能补这四项（插件路径的回填不走本端点）
+              tax_amount: {type: number, description: 销售税（成本三分之一）}
+              payment_card_last4: {type: string, maxLength: 8}
+              delivery_est_date: {type: string, format: date}
+              delivery_est_raw: {type: string, description: 渠道原文（如 `Thursday, August 7`）}
+    BuyerAccountWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            description: 建号时 label/site/external_customer_id 必填（服务层校验，缺则 BUYER_ACCOUNT_FIELDS_REQUIRED）；改号按传入字段增量更新。
+            properties:
+              label: {type: string, maxLength: 100, description: 运营可读名，语义=对应哪个指纹浏览器（07:258）}
+              site: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}
+              external_customer_id: {type: string, maxLength: 64, description: 插件侧 customerId，人工用插件面板「提取 customerId」按钮取出后录入}
+              status: {type: string, enum: [active, paused, blocked, retired], description: 非 active 一律不派新任务；**但回填/异常/物流三条写路径不受影响**（钱可能已经花出去了）}
+              daily_cap: {type: [integer, 'null'], minimum: 1, description: 单日采购上限；null=不限。**显式传 null 即改成不限**，不传=不动}
+              note: {type: string, maxLength: 1000}
 
   schemas:
     ErrorResponse:
@@ -2639,10 +2770,66 @@ components:
         claimed_at: {type: [string, 'null'], format: date-time}
         backfilled_at: {type: [string, 'null'], format: date-time}
         exception_reason: {type: [string, 'null']}
+        # ── R2-13 0045 增列 ──
+        buyer_account_id: {type: [integer, 'null'], description: 非空即「已派给买家账号」（插件路径）；人工/门户路径恒 null}
+        # 软引用解析（同 purchaser_label 的做法，不冗余名字列）。buyer_account 尚无删除路径，
+        # 故当前只查主表、无墓碑回落；删除分支落地时这里要跟着补。
+        buyer_account_label: {type: [string, 'null']}
+        tax_amount: {type: [number, 'null'], description: 销售税；与 purchase_cost（税前商品额）、freight_cost 三分不合并，合计由计算得出不落库}
+        payment_card_last4: {type: [string, 'null']}
+        delivery_est_date: {type: [string, 'null'], format: date}
+        delivery_est_raw: {type: [string, 'null']}
+        exception_kind:
+          type: [string, 'null']
+          enum: [address, stock, product, delivery, checkout, price_guard, channel_cancelled, order_not_found, other, null]
+          description: >-
+            问题分类，**不是状态列**。回填后核对不通过（asin/邮编/金额不平）属「已花钱但有问题」，
+            此时 status 保持 purchased 只写本列——改成 exception 会丢掉「已拍单」这个事实，
+            运营看到会以为没拍然后重拍一次。
     ProcurementPage:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
         - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/ProcurementOrder'}}}}
+    BuyerAccount:
+      type: object
+      description: 亚马逊买家账号（R2-13 13b，图纸 07:249-268）。各自登录在一个独立指纹浏览器内；代理与指纹由外部浏览器管理，**ERP 不管代理**。
+      properties:
+        id: {type: integer}
+        label: {type: string, description: 语义=对应哪个指纹浏览器}
+        site: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}
+        external_customer_id: {type: string, description: 插件侧 customerId；**只做一致性校验，永不作授权依据**（授权只来自实例令牌）}
+        status: {type: string, enum: [active, paused, blocked, retired]}
+        daily_cap: {type: [integer, 'null'], description: null=不限。**日限的唯一权威就是这一列**}
+        last_seen_at: {type: [string, 'null'], format: date-time, description: 该账号插件实例最近一次拉任务时间（掉线可见）}
+        note: {type: [string, 'null']}
+        active_instance_count: {type: integer, description: 该账号下 status=active 的插件实例数}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    BuyerAccountPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/BuyerAccount'}}}}
+    PluginInstance:
+      type: object
+      description: 采购插件实例（R2-13，图纸 07:274-282 + 本轮补 exec_mode）。**本 schema 逐字不含 token 的任何形态。**
+      properties:
+        id: {type: integer, description: 同时是插件请求头 X-Plugin-Instance 的取值}
+        buyer_account_id: {type: integer}
+        status: {type: string, enum: [active, revoked]}
+        exec_mode: {type: string, enum: [dry_run, stop_before_payment, live], description: 'dry_run=不进结账页 / stop_before_payment=付款前停下回报（不花钱验收的主力档）/ live=完整下单'}
+        version: {type: [string, 'null']}
+        last_seen_at: {type: [string, 'null'], format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    PluginInstanceIssued:
+      type: object
+      description: 签发响应。**token 明文只在这里出现一次**，此后任何端点都取不到（库里只有 sha256）；遗失请吊销后重新签发。
+      required: [id, buyer_account_id, token]
+      properties:
+        id: {type: integer}
+        buyer_account_id: {type: integer}
+        token: {type: string, description: 实例专属令牌明文（禁全局共享密钥）。前端一次性展示后不得缓存、不得写 localStorage}
     Purchaser:
       type: object
       properties:
