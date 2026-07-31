@@ -2,18 +2,24 @@
 
 | 判据 / 定性决定 | 用例 |
 |---|---|
-| 金额「空值 ≠ 解析失败」，**失败绝不写 0** | `TestMoneyParsing` 三例 |
+| 金额「空值 ≠ 解析失败」，**失败绝不写 0** | `TestMoneyParsing` |
 | 解析失败该列留 NULL 而不是 0 | `test_unparseable_amount_stays_null` |
+| **负金额=抓错行**，走异常通道不入库（审查 B5） | `test_negative_amount_is_a_parse_error` |
+| 同上端到端：负值该列留 NULL + `other` + 告警 | `test_negative_amount_stays_null_and_alerts` |
 | **D2** 落异常 ≠ 不落数据（不平仍照实入库） | `test_self_check_mismatch_still_records_amounts` |
 | **D1** 回填后核对不改 status（已拍单的事实不能抹） | `test_asin_mismatch_keeps_purchased` |
 | 邮编核对不制造假阳（zip+4） | `test_postcode_zip4_is_not_a_mismatch` |
 | 幂等键 = `platformOrderNo`（同值 no-op / 异值不覆盖 + 告警） | `TestIdempotency` 两例 |
 | 汇率坑：`exchange_rate_locked` 必须是 1.0 不是 NULL | `test_live_backfill_writes_all_columns` |
-| 三档：付款前停能抓回金额、dry_run 零写入、档不符 409 | `TestExecModes` 四例 |
+| 三档：付款前停能抓回金额、dry_run 零写入、档不符 409 | `TestExecModes` |
+| 演练痕迹重投不堆叠（marker 不带时间戳，审查 B3） | `test_replay_does_not_stack_note_markers` |
+| 13c 停留位零出边：不推 purchased（审查 B7） | `test_pending_review_is_not_advanced_to_purchased` |
+| 同上另一半：端点 3 也不许把它推成 exception | `test_pending_review_is_not_pushed_to_exception` |
 | **验收⑧ 服务端半段**：拍单失败零金额列写入 | `test_failure_writes_zero_money_columns` |
 | 17 条厂商原文归类表逐条对判 | `test_classify_covers_production_failures` |
 | 91/92 → 两个 `exception_kind`，**status 一字不动** | `test_channel_status_keeps_status` |
-| 轨迹 `seq` 保序（0=最新）、重投 upsert、解析失败仍入库 | `TestTracking` 五例 |
+| 轨迹 `seq` 保序（0=最新）、重投 upsert、解析失败仍入库 | `TestTracking` |
+| 轨迹条数上限 200：超出截断尾部 + 告警（审查 B4） | `test_tracking_events_are_capped` |
 | 明确不存的三个字段：列不存在 + 载荷不落库 | `test_discarded_fields_never_persisted` |
 | **D6** 物流回填绝不动 `internal_status` | `test_tracking_does_not_touch_internal_status` |
 | 对账接点：采购完成推 `purchasing` | `test_live_backfill_writes_all_columns` |
@@ -22,6 +28,7 @@
 「绕全部应用层注入违反」+ 并发两路覆盖）、认证与越权（`test_r2_13a_plugin_auth.py`）。
 """
 
+import json
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -182,13 +189,26 @@ def _mk_po(
 def _issue(
     client: TestClient, auth: dict[str, str], account_id: int, *, exec_mode: str = "live"
 ) -> dict[str, Any]:
+    """签发一枚实例令牌。要 `live` 的话**必须签发后再 PATCH 升档**。
+
+    签发端点只收两个演练档（审查 B2：一步直签 live 会打穿「升 live 须显式 PATCH」）。
+    本用例文件要测的是 live 档的回填语义，故照真实运营路径走一遍升档——
+    直接 `json={"exec_mode": "live"}` 会 422。
+    """
+    issue_mode = "stop_before_payment" if exec_mode == "live" else exec_mode
     r = client.post(
         f"/api/v1/buyer-accounts/{account_id}/plugin-instances",
         headers=auth,
-        json={"exec_mode": exec_mode},
+        json={"exec_mode": issue_mode},
     )
     assert r.status_code == 201, r.text
-    return dict(r.json())
+    issued = dict(r.json())
+    if exec_mode != issue_mode:
+        up = client.patch(
+            f"/api/v1/plugin-instances/{issued['id']}", headers=auth, json={"exec_mode": exec_mode}
+        )
+        assert up.status_code == 200, up.text
+    return issued
 
 
 def _h(instance: dict[str, Any]) -> dict[str, str]:
@@ -268,7 +288,6 @@ class TestMoneyParsing:
         [
             ("$1,234.56", Decimal("1234.56")),
             ("$0.00", Decimal("0.00")),
-            ("-$3.20", Decimal("-3.20")),
             ("  $12.30  ", Decimal("12.30")),
             (9.99, Decimal("9.99")),
             ("", None),
@@ -291,6 +310,24 @@ class TestMoneyParsing:
         """`"$0.00"` 是「运费确实是 0」，`""` 是「渠道没给」。两者绝不能混为一谈。"""
         assert parse.parse_money("$0.00") == Decimal(0)
         assert parse.parse_money("") is None
+
+    @pytest.mark.parametrize("raw", ["-$3.20", "-1,234.56", -0.01, -5])
+    def test_negative_amount_is_a_parse_error(self, raw: Any) -> None:
+        """负金额 = 抓错行，走异常通道而不是入库（审查 B5）。
+
+        本文件解析的三项是成本 / 税 / 运费，业务上都非负；出现负数只可能是抓到了
+        「优惠 -$5.00」那类行，或渠道换了版式。**此前它是照单全收的**（原
+        `test_parse_money_ok` 里那条 `("-$3.20", Decimal("-3.20"))` 正是把 bug 写成了
+        期望）——而一笔负成本会让利润核算凭空多出两倍利润，且 `purchase_cost` 列上
+        没有 CHECK 兜底（0025 只是 numeric(12,2)）。
+        """
+        with pytest.raises(parse.MoneyParseError):
+            parse.parse_money(raw)
+
+    def test_zero_survives_the_negative_guard(self) -> None:
+        """负值闸不许误伤 0：`"$0.00"` / `"-0.00"` 都是合法的「确实是零」。"""
+        assert parse.parse_money("$0.00") == Decimal(0)
+        assert parse.parse_money("-0.00") == Decimal(0)
 
     @pytest.mark.parametrize(
         ("day", "clock", "expected"),
@@ -389,6 +426,31 @@ class TestLiveBackfill:
         assert row["purchase_cost"] == Decimal("9.99"), "一列读不懂不该拖累其余列"
         assert row["exception_kind"] == "other"
         assert "tax" in (row["exception_reason"] or "")
+        assert any(sev == "critical" for sev, _ in _notifications(migrated_db, env["po"]))
+
+    def test_negative_amount_stays_null_and_alerts(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """负金额走的是与「读不懂」同一条通道：留 NULL + `other` + 告警（审查 B5）。
+
+        端到端这一半是承重的——只在 `parse` 层抛异常还不够，得确认调用方把它接住了
+        （`_parse_amounts` 的 `except MoneyParseError`），而不是让它冒泡成 500 把整笔
+        回填连同已经花出去的钱一起丢掉。
+        """
+        env = _setup(client, migrated_db, seeded)
+        r = client.post(
+            f"{PLUGIN}/purchaseOrderFinishUpdate",
+            headers=_h(env["instance"]),
+            json=_backfill_body(env, shipping="-$4.00", total=None),
+        )
+        assert r.status_code == 200, r.text
+
+        row = _po_row(migrated_db, env["po"])
+        assert row["freight_cost"] is None, "负运费入库了"
+        assert row["purchase_cost"] == Decimal("9.99"), "一列有问题不该拖累其余列"
+        assert row["purchase_order_ref"] == "111-5958998-9658617", "钱花了照样记账（D2）"
+        assert row["exception_kind"] == "other"
+        assert "shipping" in (row["exception_reason"] or "")
         assert any(sev == "critical" for sev, _ in _notifications(migrated_db, env["po"]))
 
     def test_self_check_mismatch_still_records_amounts(
@@ -593,6 +655,56 @@ class TestExecModes:
         row = _po_row(migrated_db, env["po"])
         assert row["purchase_order_ref"] is None and row["purchase_cost"] is None
 
+    @pytest.mark.parametrize(
+        ("mode", "tag"),
+        [("stop_before_payment", "stop_before_payment 演练"), ("dry_run", "dry_run 校验回传")],
+    )
+    def test_replay_does_not_stack_note_markers(
+        self, client: TestClient, migrated_db: str, seeded: dict, mode: str, tag: str
+    ) -> None:
+        """同一请求重投两次，`note` 只留一行痕迹（审查 B3）。
+
+        两个演练档都往 `note` 追加一行「谁跑的、核对结论是什么」。原先那行带秒级时间戳，
+        于是**每次重投都追加一行**——而重投恰是插件侧最常见的形态（网络重试、页面刷新），
+        一个卡在重试循环里的实例能把这一列刷成一堵墙，墙里的信息量与一行完全相同。
+        """
+        env = _setup(client, migrated_db, seeded, exec_mode=mode)
+        body = _backfill_body(env, platformOrderNo=None, execMode=mode)
+        for _ in range(2):
+            r = client.post(
+                f"{PLUGIN}/purchaseOrderFinishUpdate", headers=_h(env["instance"]), json=body
+            )
+            assert r.status_code == 200, r.text
+
+        note = _po_row(migrated_db, env["po"])["note"] or ""
+        assert note.count(tag) == 1, f"重投把 note 堆成了 {note.count(tag)} 行：{note!r}"
+        assert len([ln for ln in note.splitlines() if ln.strip()]) == 1
+
+    def test_pending_review_is_not_advanced_to_purchased(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """`pending_review` **不在**回填的可推进白名单里（审查 B7）。
+
+        它是 13c 护栏拦下的专用停留位，本轮零转入路径（0045 只扩词表）。预先把它写进
+        白名单等于替 13c 开好一条出边——而护栏拦下的单该怎么放行正是 13c 要定的事，
+        不能由「插件说它买了」自动生效。金额与单号仍照实入库（D2：钱花了不记账更糟），
+        停住的只有状态。
+        """
+        env = _setup(client, migrated_db, seeded, status="pending_review")
+        r = client.post(
+            f"{PLUGIN}/purchaseOrderFinishUpdate",
+            headers=_h(env["instance"]),
+            json=_backfill_body(env),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["status"] == "pending_review"
+
+        row = _po_row(migrated_db, env["po"])
+        assert row["status"] == "pending_review", "护栏停留位被插件回填自动推走了"
+        assert row["purchased_at"] is None
+        assert row["purchase_order_ref"] == "111-5958998-9658617", "钱花了照样记账"
+        assert row["purchase_cost"] == Decimal("9.99")
+
     def test_drill_with_channel_ref_is_recorded_as_purchase(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
@@ -638,6 +750,26 @@ class TestTaskFailure:
         for col in ("purchase_cost", "tax_amount", "freight_cost", "purchase_order_ref",
                     "payment_card_last4", "purchased_at"):  # fmt: skip
             assert row[col] is None, f"拍单失败却写了 {col}"
+
+    def test_pending_review_is_not_pushed_to_exception(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """`_FAILABLE_FROM` 同样不含 `pending_review`（审查 B7 的另一半）。
+
+        两个白名单要一起收窄：只收窄采购那条、留着失败这条，等于把 13c 的停留位换成
+        `exception` 再放回自动派发的视野之外——出边仍然是被这一轮悄悄定死的。
+        分类与原文照落（那是给人看的线索），状态留给 13c 处置。
+        """
+        env = _setup(client, migrated_db, seeded, status="pending_review")
+        r = client.post(
+            f"{PLUGIN}/updateOrderStatus",
+            headers=_h(env["instance"]),
+            json={"id": env["po"], "status": 99, "failReason": "商品无库存"},
+        )
+        assert r.status_code == 200, r.text
+        row = _po_row(migrated_db, env["po"])
+        assert row["status"] == "pending_review", "护栏停留位被端点 3 推成了 exception"
+        assert row["exception_kind"] == "stock" and row["exception_reason"] == "商品无库存"
 
     def test_fail_content_alias_is_accepted(
         self, client: TestClient, migrated_db: str, seeded: dict
@@ -888,6 +1020,37 @@ class TestTracking:
         assert len(events) == 1
         assert events[0]["occurred_at"] is None
         assert events[0]["raw_day"] == "昨天" and events[0]["raw_time"] == "稍早"
+
+    def test_tracking_events_are_capped(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """`trackingJson` 条数有上限：201 条只落 200 条 + warn 告警（审查 B4）。
+
+        这是**外部输入且无上界**的字段——一条畸形/恶意载荷能在一个请求里塞进几万条，
+        每条一次 upsert，把一次回填变成长事务并撑爆表。截断丢的是尾部（`seq` 0 是最新，
+        丢的是最老的那截），且轨迹本就是可重抓的投影（0046 头注）；运单号照常回填。
+        """
+        env = _setup(client, migrated_db, seeded, status="purchased", purchase_order_ref="111-C-C")
+        flood = json.dumps(
+            [
+                {"day": "July 28, 2026", "time": "8:42 AM", "tracking_info": f"事件 {i}"}
+                for i in range(201)
+            ]
+        )
+        r = client.post(
+            f"{PLUGIN}/updateTrackingInfo",
+            headers=_h(env["instance"]),
+            json=_tracking_body(env["po"], trackingJson=flood),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["events"] == 200
+
+        events = _events(migrated_db, env["po"])
+        assert len(events) == 200, f"落库 {len(events)} 条，上限没生效"
+        assert [e["seq"] for e in events][:2] == [0, 1]
+        assert events[0]["description"] == "事件 0", "截断丢的应是尾部（最老），不是头部"
+        assert _po_row(migrated_db, env["po"])["tracking_no"] == "1Z999AA10123456784"
+        assert any(sev == "warn" for sev, _ in _notifications(migrated_db, env["po"]))
 
     def test_bad_tracking_json_keeps_tracking_no(
         self, client: TestClient, migrated_db: str, seeded: dict

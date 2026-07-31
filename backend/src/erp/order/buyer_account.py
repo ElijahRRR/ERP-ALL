@@ -15,6 +15,9 @@
    （一手来源 §7 写「不需要」，那条错）。前端表单必须挂这段帮助文案，否则运营开不了号。
 3. **`exec_mode` 默认 `stop_before_payment`**：新签发的实例**不会花钱**。升到 `live`
    是一次显式的 PATCH，有 audit 留痕。默认值即安全边界，不要为了「省一步」改默认。
+   **且签发端点根本不收 `live`**（`ISSUE_EXEC_MODE_PATTERN`，审查 B2）：只把 live 写成
+   「非默认值」挡不住 `{"exec_mode": "live"}` 这一步直签——那条不变量得由校验器执行，
+   不是由默认值执行。
 
 ## 为什么没有 DELETE 端点
 
@@ -40,6 +43,11 @@ from erp.plugin import auth as plugin_auth
 SITE_PATTERN = "^(amazon_com|amazon_ca|amazon_co_jp)$"
 STATUS_PATTERN = "^(active|paused|blocked|retired)$"
 EXEC_MODE_PATTERN = "^(dry_run|stop_before_payment|live)$"
+# **签发端点不收 `live`**（审查 B2）：纪律 3 说的是「升到 live 是一次显式的 PATCH」，
+# 而签发端点原先照抄了三档 pattern——于是一次 POST 就能直接拿到一把实盘令牌，
+# 那条不变量（以及它保证的「新令牌一定先经过不花钱的演练」）等于没有。
+# PATCH 仍收三档：升档本来就该从那里走，且它有 audit 留痕与前端二次确认。
+ISSUE_EXEC_MODE_PATTERN = "^(dry_run|stop_before_payment)$"
 
 _ACCOUNT_COLUMNS = (
     "id, team_id, label, site, external_customer_id, status, daily_cap,"
@@ -68,7 +76,9 @@ class BuyerAccountIn(BaseModel):
 
 
 class PluginInstanceIssueIn(BaseModel):
-    exec_mode: str = Field(default="stop_before_payment", pattern=EXEC_MODE_PATTERN)
+    """签发入参。`exec_mode` **只收两个演练档**（`ISSUE_EXEC_MODE_PATTERN` 的理由见其注释）。"""
+
+    exec_mode: str = Field(default="stop_before_payment", pattern=ISSUE_EXEC_MODE_PATTERN)
     version: str | None = Field(default=None, max_length=40)
 
 

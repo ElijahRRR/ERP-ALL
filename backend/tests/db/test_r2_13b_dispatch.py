@@ -8,7 +8,9 @@
 | 谓词正向：cancelled 不锁死重建单 | `test_cancelled_does_not_block_redispatch` |
 | 谓词反向：exception 必须挡住重派（钱已花＝二次扣款） | `test_exception_does_block_redispatch` |
 | 零回归：人工路径该列恒 NULL，唯一索引不触发 | `test_manual_path_unaffected` |
-| `daily_cap` 唯一落点＝账号列，按**派发数**计 | `TestDailyCap` 五例 |
+| `daily_cap` 唯一落点＝账号列，按**派发数**计 | `TestDailyCap` |
+| 并发拉同一账号不得超 cap（账号行锁，审查 B1） | `test_concurrent_pulls_do_not_exceed_cap` |
+| 签发端点**不收 `live`**（升实盘只能 PATCH，审查 B2） | `test_issue_refuses_live` |
 | 站点路由 + 无收货国不猜（fail-closed + 告警） | `TestSiteRouting` 三例 |
 | 账号闸只挡拉取（写路径不受影响见下注） | `TestAccountGate` |
 | 应用层对偶：已派机器人的单不许再派人工/领单/回填 | `TestAssignInterlock` 前三例 |
@@ -411,6 +413,37 @@ class TestDailyCap:
                 (seeded["team"],),
             ).fetchone()[0]
         assert total == 2, "续拉不得消耗新额度"
+
+    async def test_concurrent_pulls_do_not_exceed_cap(self, migrated_db: str, seeded: dict) -> None:
+        """并发拉同一账号，合计不得超过 `daily_cap`（审查 B1）。
+
+        `daily_cap` 是 read-then-claim：先数今日已派、再按余量认领。没有账号级串行化时，
+        N 路并发各自读到的 `used` 都是对方写入之前的值，于是能派出 **N×cap** 单。
+        **`SKIP LOCKED` 在这里帮倒忙**——它让各路的候选集互斥，于是两边都不撞车、
+        都成功，把超发放大而不是挡住（这正是「绿的并发测试没证明帽子还在」的形状：
+        `test_concurrent_pull_dispatches_once` 断言的是唯一派发索引，与日限无关）。
+
+        每张单挂在**不同订单**上：`uq_po_active_dispatch` 只挡「同一订单派两次」，
+        本例要测的是日限，不能让那个索引替日限背书。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, daily_cap=2)
+            for _ in range(6):
+                _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        results = await asyncio.gather(
+            *(_pull(seeded["team"], account, limit=2) for _ in range(3)),
+            return_exceptions=True,
+        )
+        assert not [r for r in results if isinstance(r, BaseException)], results
+        with psycopg.connect(migrated_db) as conn:
+            dispatched = conn.execute(
+                "SELECT count(*) FROM app.procurement_order"
+                " WHERE team_id = %s AND buyer_account_id = %s",
+                (seeded["team"], account),
+            ).fetchone()[0]
+        assert dispatched == 2, f"并发拉取派出了 {dispatched} 单，daily_cap=2 被击穿"
 
     async def test_cap_resets_across_day_boundary(self, migrated_db: str, seeded: dict) -> None:
         with psycopg.connect(migrated_db, autocommit=True) as conn:
@@ -937,6 +970,35 @@ class TestBuyerAccountCrud:
             ).fetchall()
         assert audits, "签发必须留审计"
         assert all(token not in a[0] and stored[0] not in a[0] for a in audits)
+
+    def test_issue_refuses_live(self, client: TestClient, migrated_db: str, seeded: dict) -> None:
+        """签发端点**不接受 `live`**（审查 B2）：升实盘只能走 PATCH。
+
+        「新签发的实例不会花钱」此前只由**默认值**保证——而默认值挡不住显式传 live 的
+        一步直签，于是「升 live 须显式 PATCH（有 audit、有前端二次确认）」这条不变量
+        （openapi 该端点白纸黑字）等于没有。两档演练照常放行，PATCH 三档不受影响
+        （`test_exec_mode_patch_and_revoke` 钉住）。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+
+        url = f"/api/v1/buyer-accounts/{account}/plugin-instances"
+        r = client.post(url, headers=auth, json={"exec_mode": "live"})
+        assert r.status_code == 422, r.text
+        for mode in ("dry_run", "stop_before_payment"):
+            ok = client.post(url, headers=auth, json={"exec_mode": mode})
+            assert ok.status_code == 201, ok.text
+        with psycopg.connect(migrated_db) as conn:
+            modes = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT exec_mode FROM app.plugin_instance WHERE buyer_account_id = %s",
+                    (account,),
+                ).fetchall()
+            ]
+        assert "live" not in modes, "签发路径落库了 live 实例"
 
     def test_exec_mode_patch_and_revoke(
         self, client: TestClient, migrated_db: str, seeded: dict

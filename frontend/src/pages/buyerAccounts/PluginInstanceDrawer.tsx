@@ -25,6 +25,14 @@ import { useAuth } from '@/auth/AuthContext'
 import { EXEC_MODE, fmtTime, lastSeen } from './labels'
 
 const EXEC_OPTIONS = Object.entries(EXEC_MODE).map(([value, m]) => ({ value, label: m.label }))
+/**
+ * 签发弹窗的档位选项：**没有 live**。
+ *
+ * 契约里签发端点的枚举就只有两个演练档（传 live 一律 422，见 openapi 该端点说明）——
+ * 升到 live 是签发之后一次单独的 PATCH，那一步有二次确认与服务端 audit。这里跟着契约走，
+ * 不是前端自行加的限制：留着一个必然 422 的选项只会让人以为「签发时就能选实盘」。
+ */
+const ISSUE_EXEC_OPTIONS = EXEC_OPTIONS.filter((o) => o.value !== 'live')
 
 /**
  * 签发回执。**明文令牌只在这一个组件里存在，且只在本次弹窗生命周期内**。
@@ -282,9 +290,12 @@ export default function PluginInstanceDrawer({
           <Form.Item
             label="执行档"
             name="exec_mode"
-            extra={EXEC_MODE.stop_before_payment.hint + '；默认即此档，先演练再升 live。'}
+            extra={
+              EXEC_MODE.stop_before_payment.hint +
+              '；默认即此档。签发只能选演练档——实盘 live 要在上面的实例列表里单独切。'
+            }
           >
-            <Select options={EXEC_OPTIONS} />
+            <Select options={ISSUE_EXEC_OPTIONS} />
           </Form.Item>
           <Form.Item label="插件版本（可选）" name="version" extra="填了便于日后对照哪台机器跑的哪版">
             <Input placeholder="如 v2.4.1" />

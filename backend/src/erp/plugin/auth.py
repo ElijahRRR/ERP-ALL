@@ -33,6 +33,8 @@
 
 不存在的 id / 错 token / 已吊销 → 全部 `PLUGIN_AUTH` + 401。不泄露「这个实例存不存在、
 是不是已经被吊销了」——这两条信息对合法插件毫无用处，对探测者却是地图。
+**同码还不够，三条路的工作量也要一样**：短路掉散列比较会让「id 不存在」比「令牌不对」
+快一截，那条承诺就从响应体漏到了响应时间上（审查 B6，落点见 `_DUMMY_TOKEN_HASH`）。
 
 ## 认证只看 `plugin_instance.status`，**不看 `buyer_account.status`**
 
@@ -73,6 +75,15 @@ def token_digest(token: str) -> str:
 def mint_token() -> str:
     """生成一个新的实例令牌明文（32 字节熵，URL 安全）。同 `worker_node` 注册。"""
     return secrets.token_urlsafe(32)
+
+
+# 陪跑用的固定假散列（审查 B6）。行不存在 / 已吊销这两条路原先**短路返回**，
+# 于是它们比「实例存在但令牌不对」少做一次 sha256 + 一次比较——那点时间差恰好把
+# 模块头注承诺不泄露的「这个实例存不存在、是不是已被吊销」变成一个可测的时序信道，
+# 探测者只要拿一把随便的 token 扫 id 就能画出实例地图。让三条失败路径做同样的活。
+# **它本身不是秘密**：值域是 sha256 的输出，与任何真令牌的散列都不相等（`mint_token`
+# 出的是 32 字节随机串，撞上这一把的概率是 2^-256 量级）。
+_DUMMY_TOKEN_HASH = hashlib.sha256(b"plugin-auth-dummy-never-a-real-token").hexdigest()
 
 
 @dataclass(frozen=True)
@@ -116,11 +127,13 @@ async def authenticate_instance(
     row = (await session.execute(text(_INSTANCE_SQL), {"i": instance_id})).mappings().one_or_none()
     # 比较前先散列：明文 token 可能含非 ASCII，直接进 compare_digest 会抛 TypeError；
     # 而两侧都是十六进制串时它才是恒定时比较。
-    if (
-        row is None
-        or row["status"] != "active"
-        or not hmac.compare_digest(str(row["token_hash"]), token_digest(token))
-    ):
+    #
+    # **散列 + 比较一定要跑**，哪怕行不存在或已吊销（审查 B6）——`or` 的短路会让那两条
+    # 路提前返回，快出一次 sha256 的时间，等于把「实例存不存在」按毫秒播了出去。
+    # 故先无条件算完 `token_ok`（拿不到真散列就跟固定假散列比），再统一判定。
+    stored = str(row["token_hash"]) if row is not None else _DUMMY_TOKEN_HASH
+    token_ok = hmac.compare_digest(stored, token_digest(token))
+    if row is None or row["status"] != "active" or not token_ok:
         raise auth_failed()
     return PluginPrincipal(
         instance_id=int(row["id"]),

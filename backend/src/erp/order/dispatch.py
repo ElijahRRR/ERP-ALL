@@ -20,6 +20,12 @@
 派 100 单再一口气拍完，`daily_cap` 等于没有。日限的唯一权威是 `buyer_account.daily_cap`
 列（Owner 2026-07-30 裁定：`automation_policy.config` 里**不得**有同名键）。
 
+**「读余量 → 认领」必须按账号串行**（审查 B1）：它是典型的 read-then-claim，两路并发
+各自读到的 `used` 都是对方写入之前的值，于是 N 路并发能派出 N×cap 单。上面那两层并发
+防线一层都挡不住这件事——`SKIP LOCKED` 恰恰**帮倒忙**：它让各路候选集互斥，两边都不
+撞车、都成功，把超发放大而不是挡住；唯一索引管的是「同一订单只派一个账号」，与日限无关。
+故 `claim_tasks_for_account` 在计数之前先把**账号行**锁住（见该函数第③步）。
+
 ## 只派「派得出去」的单
 
 候选谓词除站点匹配外还要求**该单每一行都能解出亚马逊 ASIN**（`_BAD_LINE_EXISTS`）——
@@ -80,6 +86,11 @@ SELECT id FROM app.procurement_order
  ORDER BY assigned_at NULLS LAST, id
  LIMIT :n
 """
+
+# 账号行锁：把「读余量 → 认领」整段按账号串行化（审查 B1，理由见模块头注）。
+# **锁的是账号行而不是候选单**——余量是账号级的共享资源，锁候选单只会让两路各锁各的
+# 一批、谁也不挡谁。取 `id` 一列即可，本语句只为拿锁，不为取值。
+_LOCK_ACCOUNT_SQL = "SELECT id FROM app.buyer_account WHERE id = :a FOR UPDATE"
 
 # 今日已派发且未取消的单数（daily_cap 的分子，口径见模块头注）
 _USED_TODAY_SQL = """
@@ -408,7 +419,18 @@ async def claim_tasks_for_account(
     if room <= 0:
         return reclaimed, None
 
-    # ③ daily_cap 余量（NULL = 不限）
+    # ③ 账号行锁（**承重**）：从这一行起到本事务提交为止，同一账号的另一路拉取会排队。
+    #
+    # 为什么锁在这里，而不是靠 `touch_last_seen` 那句 UPDATE 顺带锁：那句跑在认领**之后**
+    # ——余量早读完了，锁得太晚；而且它属于「最近露面」语义，将来任何一次挪动或删除都会
+    # 静默拿掉串行化，没有人会意识到日限跟着废了。这里是显式的一行，理由写在旁边。
+    #
+    # `daily_cap` 为 NULL（不限）时也照锁：一个账号 = 一个装着插件的浏览器，同账号并发
+    # 拉取本就是异常形态；且将来任何「按账号计的额度」都自动落在这把锁的保护里。
+    # 代价可控——锁的粒度是单个账号行，不同账号之间零竞争。
+    await session.execute(text(_LOCK_ACCOUNT_SQL), {"a": buyer_account_id})
+
+    # ④ daily_cap 余量（NULL = 不限）
     if daily_cap is not None:
         used = int(
             (
@@ -423,7 +445,7 @@ async def claim_tasks_for_account(
             return reclaimed, (None if reclaimed else REASON_DAILY_CAP_REACHED)
         room = min(room, remaining)
 
-    # ④ 站点匹配 + ⑤ 认领（唯一并发点）
+    # ⑤ 站点匹配 + ⑥ 认领（唯一并发点）
     await _warn_unroutable(session, team_id=team_id, limit=want)
     await _warn_missing_asin(session, team_id=team_id, country=country, limit=want)
     candidates = [

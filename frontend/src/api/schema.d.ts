@@ -4356,7 +4356,7 @@ export interface paths {
         put?: never;
         /**
          * 签发实例令牌（明文只返回这一次）
-         * @description 新签发的实例默认 `exec_mode=stop_before_payment`——**不会花钱**；升到 `live` 是一次 显式 PATCH 且有 audit 留痕。令牌明文**只在本响应里出现一次**，此后 ERP 侧任何端点 （含本组的 GET）都取不到，遗失只能吊销后重新签发。
+         * @description 新签发的实例默认 `exec_mode=stop_before_payment`——**不会花钱**；升到 `live` 是一次 显式 PATCH 且有 audit 留痕。故**本端点不接受 `live`**（枚举只有两个演练档，传 live 一律 422） ——只把 live 定成「非默认值」挡不住一步直签，那条不变量得由校验器执行。 令牌明文**只在本响应里出现一次**，此后 ERP 侧任何端点 （含本组的 GET）都取不到，遗失只能吊销后重新签发。
          */
         post: {
             parameters: {
@@ -4374,7 +4374,7 @@ export interface paths {
                          * @default stop_before_payment
                          * @enum {string}
                          */
-                        exec_mode?: "dry_run" | "stop_before_payment" | "live";
+                        exec_mode?: "dry_run" | "stop_before_payment";
                         version?: string;
                     };
                 };
@@ -4390,6 +4390,8 @@ export interface paths {
                     };
                 };
                 404: components["responses"]["Error"];
+                /** @description 签发档位不合法（含 `exec_mode=live`——升 live 只能走 PATCH） */
+                422: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -4413,7 +4415,7 @@ export interface paths {
         head?: never;
         /**
          * 改执行档（只此一项可改）
-         * @description 切到 `live` 意味着该实例此后真实下单花钱——前端须二次确认，服务端写 audit。
+         * @description 切到 `live` 意味着该实例此后真实下单花钱——前端须二次确认，服务端写 audit。 **本端点是升到 `live` 的唯一入口**：签发端点的枚举里没有 live。
          */
         patch: {
             parameters: {

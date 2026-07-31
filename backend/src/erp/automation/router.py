@@ -21,9 +21,18 @@
 
 ## PUT 不接受 `config`
 
-`automation_policy.config` 全仓零消费点（`amount_ceiling` / `daily_cap` /
-`price_delta_pct` / `check_kinds` 四个护栏键在 `backend/src` 零命中）。开放写入只会
-造成「护栏已配」的错觉——真正的护栏要等消费点落地。带 `config` 的请求**显式 422
+`automation_policy.config` **仍无任何消费点**：没有一条代码路径读它来做判断。
+采购护栏的三个键 `amount_ceiling` / `price_delta_pct` / `delivery_days_limit` 的评估点
+属 **R2-13 13c**（挂载位见 `order/dispatch.py` 头注「13c 的挂载位」，本轮只留位置不落
+实现）；`daily_cap` **不在这份清单里**——它的唯一权威落点是 `buyer_account.daily_cap`
+列（Owner 2026-07-30 裁定：config 里**不得**出现同名键，两处真相源正是它此前失效的原因）。
+
+〔2026-07-31 更正：原文写「四个护栏键在 `backend/src` 零命中」并把 `daily_cap` /
+`check_kinds` 算作护栏键——键集不对，且那句「零命中」的断言已被 R2-13 证伪
+（`daily_cap` 现在是 buyer_account 的列名，护栏三键出现在 13c 的挂载位注释里）。
+**关键是别再用「grep 零命中」当判据**：字符串命中与「有没有消费点」本就是两回事。〕
+
+开放写入只会造成「护栏已配」的错觉——真正的护栏要等消费点落地。带 `config` 的请求**显式 422
 `AUTOMATION_CONFIG_NOT_WRITABLE`**（走统一错误信封）而不是静默丢弃——静默丢弃正是
 那种错觉的来源。此前用 `extra="forbid"` 实现同一意图，但那会落到 FastAPI 默认的
 `{"detail": [...]}` 校验信封、绕过 002 的统一 Error 信封（审查 2026-07-28 指出），

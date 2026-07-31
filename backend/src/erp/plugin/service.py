@@ -56,7 +56,6 @@ shipped`——R2-05 的 docstring 早写明「purchased/shipped 细分随物流�
 """
 
 import json
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -117,10 +116,12 @@ SELECT po.id AS po_id, co.channel_order_no, po.purchase_order_ref
 
 # 越权闸：**谓词里的 `buyer_account_id = :a` 就是防线②**。取不到行的两种情形
 # （不存在 / 是别人的）回同一个错误码——越权应当在日志里一眼看见，同时不泄露存在性。
+# `note` 一并取回：演练/校验两档要往它后面追加痕迹，而追加前必须先看它里面有没有同一条
+# （去重与长度闸都在 Python 侧，见 `_append_note`）。
 _OWNED_PO_SQL = """
 SELECT id, team_id, order_id, order_date, status, buyer_account_id, purchase_order_ref,
        purchase_cost, tax_amount, freight_cost, exchange_rate_locked, exception_kind,
-       exception_reason
+       exception_reason, note
   FROM app.procurement_order
  WHERE id = :p AND buyer_account_id = :a
  FOR UPDATE
@@ -155,13 +156,33 @@ ON CONFLICT (procurement_order_id, seq) DO UPDATE SET
 # 采购完成时允许推到 `purchased` 的来源状态。**白名单而不是黑名单**：
 # `shipped`（端点 7 先到）不该被拉回，`backfilled`/`cancelled` 是终态，
 # 将来新增的状态默认不许被这条路径推走（fail-closed）。
-_PURCHASABLE_FROM = ("unassigned", "pending_review", "assigned", "claimed", "exception")
+#
+# **`pending_review` 不在表里**（审查 B7）：它是 13c 护栏拦下的专用停留位，本轮
+# **零转入路径**（0045 头注三只扩词表）。先写进白名单等于替 13c 预开一条出边——
+# 而那条出边该怎么走恰恰是 13c 要定的：护栏拦下的单必须先由人**放行或驳回**，
+# 不能由「插件说它买了」自动生效。13c 落地时，本表与人工侧的出边要**一并**设计，
+# 别只放开其中一侧——人工侧现在同样把它挡在外面：`procurement.py::assign_po` 只收
+# `('unassigned','assigned')`、`backfill_po` 只收 `('unassigned','assigned','claimed',
+# 'purchased')`，`pending_review` 撞的是 `PROCUREMENT_STATE_INVALID` 409。
+# 那两处**本次不动**（零转入路径的现状下改它们同样是替 13c 预开边）。
+# 落地后果如实记：真出现 `pending_review` 的单被回填时，金额与单号照常入库（D2），
+# 只是 `status` 停在原地等人处置——不记账比记错更糟，而自动推进比两者都糟。
+_PURCHASABLE_FROM = ("unassigned", "assigned", "claimed", "exception")
 # 允许被端点 3 推到 `exception` 的来源状态：**已拍单之后的一律不动**（D1）。
-_FAILABLE_FROM = ("unassigned", "pending_review", "assigned", "claimed", "exception")
+# 同样不含 `pending_review`（理由同上）。
+_FAILABLE_FROM = ("unassigned", "assigned", "claimed", "exception")
 
 # `exception_kind` 一列存不下多类：多项命中时按本序取第一个，全部原文进 `exception_reason`。
 # 顺序即「谁更需要有人立刻处置」：买错东西 > 寄错地方 > 账目对不上。
 _KIND_PRIORITY: tuple[str, ...] = ("product", "address", "other")
+
+# 单次物流回填最多落几条轨迹事件（审查 B4）。`trackingJson` 是**外部输入且无上界**——
+# 一条畸形/恶意载荷能在一个请求里塞进几万条，每条都是一次 upsert，把一次回填变成
+# 长事务并撑爆表。真实亚马逊轨迹是十几到几十条量级，200 已是数倍余量。
+# 超出部分**丢尾不丢头**：`seq` = 渠道数组下标、**0 是最新**（0046 头注），故截断掉的
+# 是最老的那截；且轨迹本就是可重抓的投影（同一头注），丢了还能再同步回来——
+# 这与「运单号是承重的、绝不能丢」是同一条纪律的两半。
+_MAX_TRACKING_EVENTS = 200
 
 # ── 端点 2 的三种执行档写入面 ──
 #
@@ -210,14 +231,16 @@ UPDATE app.procurement_order SET
   delivery_est_raw     = coalesce(:draw, delivery_est_raw),
   exception_kind       = coalesce(:kind, exception_kind),
   exception_reason     = coalesce(:reason, exception_reason),
-  note                 = concat_ws(chr(10), note, cast(:marker as text))
+  -- `coalesce(:note, note)`：传 NULL ＝ 本次不追加（已有同一条痕迹，或 note 已到长度上限）。
+  -- 去重与长度闸在 Python 侧算好（`_append_note`），SQL 侧只负责落值。
+  note                 = coalesce(:note, note)
 WHERE id = :p
 """
 
 # 只校验档：**一个金额列都不写**，只留一行痕迹说明「这个实例确实跑过、跑的是 dry_run」。
 _DRY_RUN_SQL = """
 UPDATE app.procurement_order
-   SET note = concat_ws(chr(10), note, cast(:marker as text))
+   SET note = coalesce(:note, note)
  WHERE id = :p
 """
 
@@ -550,6 +573,28 @@ def _append_reason(prior: str | None, new: str | None) -> str | None:
     return None if new in prior else f"{prior}\n{new}"
 
 
+# `note` 的长度上限。这一列是运营看的自由文本，只增不减；一个坏掉的插件在循环重投时
+# 能把它撑成几 MB——那时它既没人读得下去，也会拖慢每一条带 note 的查询。到顶就停手 +
+# 告警，**不截断已有内容**（截断＝删别人写下的字，那是数据损失，不是保护）。
+_NOTE_MAX_CHARS = 4000
+
+
+def _append_note(prior: str | None, marker: str, *, po_id: int) -> str | None:
+    """把演练/校验痕迹接到 `note` 之后；**已含或已到上限则回 None**（审查 B3）。
+
+    回 None 的语义与 `_append_reason` 一致：SQL 侧 `coalesce(:note, note)` 保持原值。
+
+    幂等是必需的：端点 2 的重投送来的是同一段请求，`_marker` 也刻意不带时间戳，
+    于是「note 里已经有这串」就是可靠的判重依据——同一次演练重投十次，note 仍是一行。
+    """
+    if prior and marker in prior:
+        return None
+    if prior and len(prior) >= _NOTE_MAX_CHARS:
+        log.warning("plugin.note.limit_reached", po_id=po_id, length=len(prior))
+        return None
+    return marker if not prior else f"{prior}\n{marker}"
+
+
 async def _alert(
     session: AsyncSession,
     principal: PluginPrincipal,
@@ -836,15 +881,17 @@ async def record_purchase_finish(
     if mode == "dry_run":
         # 只校验档：**一个金额列都不写**。核对结论也只进 note——写 exception_kind 会让
         # 一次纯演练在运营的异常列表里留下一张需要处置的单。
+        marker = _marker("dry_run 校验回传", principal, findings)
         await session.execute(
             text(_DRY_RUN_SQL),
-            {"p": po_id, "marker": _marker("dry_run 校验回传", principal, findings)},
+            {"p": po_id, "note": _append_note(po["note"], marker, po_id=po_id)},
         )
         status = str(po["status"])
     elif mode == "stop_before_payment":
+        marker = _marker("stop_before_payment 演练", principal, findings)
         await session.execute(
             text(_DRILL_BACKFILL_SQL),
-            {**params, "marker": _marker("stop_before_payment 演练", principal, findings)},
+            {**params, "note": _append_note(po["note"], marker, po_id=po_id)},
         )
         status = str(po["status"])
     else:
@@ -873,9 +920,14 @@ async def record_purchase_finish(
 
 
 def _marker(label: str, principal: PluginPrincipal, findings: _Findings) -> str:
-    """演练/校验档往 `note` 里留的一行痕迹（含时间、实例、核对结论）。"""
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
-    head = f"[{label} @{stamp} instance={principal.instance_id}]"
+    """演练/校验档往 `note` 里留的一行痕迹（实例 + 核对结论）。
+
+    **不带时间戳**（审查 B3）：这一行同时是幂等键——`_append_note` 靠「note 里已经有这串」
+    判重。带上秒级时间戳的话，同一个请求重投两次就会追加两行内容完全相同、只有秒数不同的
+    痕迹，而重投恰是插件侧最常见的形态（网络重试、页面刷新）。「什么时候跑的」由
+    `updated_at` 与结构化日志承载，不必也不该塞进这一列。
+    """
+    head = f"[{label} instance={principal.instance_id}]"
     return f"{head} {findings.text}" if findings else head
 
 
@@ -1028,6 +1080,25 @@ async def _write_events(
             dedupe_key=f"plugin.tracking_json.{po_id}",
         )
         return 0
+
+    if len(parsed) > _MAX_TRACKING_EVENTS:
+        # 截断而不是拒收：运单号与主表已经写好了，为一条超长轨迹把整次回填退回去，
+        # 代价是「包裹在路上但系统不知道运单号」——比丢掉最老的几条轨迹严重得多。
+        log.warning("plugin.tracking.too_many_events", po_id=po_id, count=len(parsed))
+        await _alert(
+            session,
+            principal,
+            po_id,
+            severity="warn",
+            title="采购物流轨迹条数超上限，已截断",
+            body=(
+                f"执行单 #{po_id} 本次回传 {len(parsed)} 条轨迹事件，超过上限"
+                f" {_MAX_TRACKING_EVENTS}——只保留最新的 {_MAX_TRACKING_EVENTS} 条"
+                "（运单号已照常回填；轨迹可重新同步）。请核实插件版本与回传载荷"
+            ),
+            dedupe_key=f"plugin.tracking_overflow.{po_id}",
+        )
+        parsed = parsed[:_MAX_TRACKING_EVENTS]
 
     written = 0
     for seq, item in enumerate(parsed):

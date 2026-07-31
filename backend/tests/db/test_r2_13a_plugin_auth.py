@@ -9,6 +9,7 @@
 | 不泄露存在性：不存在的 id 与他人的 id 同码同状态 | `test_nonexistent_po_same_error_as_unowned` |
 | 吊销即全域失效（六端点） | `test_revoked_instance_all_endpoints_401` |
 | 认证失败一律 401 同码（含缺头/坏 id/超界 id） | `test_bad_credentials_all_401` |
+| 三条失败路径工作量相同（不留时序信道，审查 B6） | `test_failure_paths_all_hash_and_compare` |
 | 库里的 hash 不能当令牌用（证明不是裸比） | `test_stored_hash_is_not_a_usable_token` |
 | **D4 承重**：插件路径的 RLS 没被 `system_tx` 短路 | `test_rls_still_on_for_plugin_path` |
 | 任务取还幂等：重复拉不重复派、不重复耗额度 | `test_pull_is_idempotent` |
@@ -32,9 +33,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from erp.core.db import ctx_tx, get_session_factory
+from erp.core.db import ctx_tx, get_session_factory, system_tx
 from erp.core.errors import BusinessError
 from erp.core.security import hash_password
+from erp.plugin import auth as plugin_auth
 from erp.plugin import service
 from erp.plugin.auth import PluginPrincipal
 
@@ -454,6 +456,59 @@ class TestAuthDomain:
             r = client.get(f"{PLUGIN}/getNeedPurchaseOrders", headers=headers, params=params)
             assert r.status_code == 401, (headers, r.status_code, r.text)
             assert r.json()["error"]["code"] == "PLUGIN_AUTH"
+
+    async def test_failure_paths_all_hash_and_compare(
+        self,
+        client: TestClient,
+        migrated_db: str,
+        seeded: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """三条失败路径**做同样的活**：都要跑一次散列 + 比较（审查 B6）。
+
+        同码同状态还不够。`row is None` 与「已吊销」原先靠 `or` 短路直接返回，比
+        「实例存在但令牌不对」少一次 sha256 + 一次比较——那点时间差恰好把模块头注承诺
+        不泄露的「这个实例存不存在 / 是不是已被吊销」漏到了**响应时间**上，探测者拿一把
+        随便的 token 扫 id 就能画出实例地图。
+
+        时序本身在单测里测不稳（几十微秒的差异会被调度噪声淹没），故这里钉**代码路径**：
+        给 `token_digest` 挂一个计数器，三条路都必须调到它。短路一旦回来，计数立刻对不上。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+        live = _issue(client, auth, account["id"])
+        revoked = _issue(client, auth, account["id"])
+        assert (
+            client.post(
+                f"/api/v1/plugin-instances/{revoked['id']}/revoke", headers=auth
+            ).status_code
+            == 200
+        )
+
+        calls: list[str] = []
+        real = plugin_auth.token_digest
+
+        def counting_digest(token: str) -> str:
+            calls.append(token)
+            return real(token)
+
+        monkeypatch.setattr(plugin_auth, "token_digest", counting_digest)
+
+        cases = {
+            "不存在的 id": ("2000000111", live["token"]),
+            "已吊销的实例": (str(revoked["id"]), revoked["token"]),
+            "令牌不对": (str(live["id"]), "not-the-token"),
+        }
+        for label, (instance_id, token) in cases.items():
+            before = len(calls)
+            async with system_tx(get_session_factory()) as s:
+                with pytest.raises(BusinessError) as exc:
+                    await plugin_auth.authenticate_instance(s, instance_id, token)
+            assert exc.value.code == "PLUGIN_AUTH", label
+            assert exc.value.http_status == 401, label
+            assert len(calls) == before + 1, f"「{label}」这条路短路了，没跑散列比较"
 
     def test_stored_hash_is_not_a_usable_token(
         self, client: TestClient, migrated_db: str, seeded: dict

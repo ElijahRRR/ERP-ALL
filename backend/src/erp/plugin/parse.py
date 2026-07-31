@@ -10,6 +10,7 @@
 |---|---|---|
 | `None` / `""` | 渠道**没给**（结账页就没这一项） | 返回 `None`，列留 NULL |
 | `"abc"` / `"$"` | 渠道给了、**我们读错了** | 抛 `MoneyParseError`，调用方落 `other` + 告警 |
+| `"-12.34"` | 抓到了负数（多半是抓错行，如「优惠 -$5.00」） | 同上——见 `_non_negative`（审查 B5） |
 
 **绝不返回 0**（图纸 `07:150-153` 点名的那处坑）：静默写 0 会在利润核算里埋一个永远查不
 出来的错——一笔 `$1,234.56` 的采购成本记成 0，报表上只会显示「这单利润特别好」。
@@ -63,8 +64,25 @@ _DAY_RE = re.compile(
 _TIME_RE = re.compile(r"(?P<h>\d{1,2}):(?P<m>\d{2})(?::(?P<s>\d{2}))?\s*(?P<ampm>[AaPp][Mm])?")
 
 
+def _non_negative(value: Decimal, raw: str | float) -> Decimal:
+    """负金额一律当解析失败抛（审查 B5）。
+
+    本文件解析的三项是**采购成本 / 税 / 运费**，业务上都非负。负值只可能来自两件事：
+    结账页上抓错了行（抓到「优惠 -$5.00」那一行），或渠道文案换了版式。两者都是
+    「渠道给了、我们读错了」——正是 `MoneyParseError` 的定义域，该走 `other` + 告警
+    让人当天看见，而不是静静入库。
+
+    **静默放行的代价与写 0 同级、方向相反**：一笔 `-1234.56` 的成本会让利润核算凭空
+    多出两倍利润；而 `purchase_cost` 列上没有 CHECK 拦它（0025 只是 `numeric(12,2)`），
+    库这一层不会替我们兜底。
+    """
+    if value < 0:
+        raise MoneyParseError(f"金额为负（成本/税/运费不可为负）：{raw!r}")
+    return value
+
+
 def parse_money(raw: str | float | None) -> Decimal | None:
-    """`"$1,234.56"` → `Decimal("1234.56")`；`""`/`None` → `None`；读不懂 → 抛。
+    """`"$1,234.56"` → `Decimal("1234.56")`；`""`/`None` → `None`；读不懂或为负 → 抛。
 
     数字类型（插件的 `unitPrice` 就是数字）直接转，不绕字符串——`float` 转 `Decimal`
     走 `str()` 而不是 `Decimal(float)`，后者会把 `9.99` 变成 `9.9900000000000002131628…`。
@@ -75,7 +93,7 @@ def parse_money(raw: str | float | None) -> Decimal | None:
         raise MoneyParseError(f"金额字段收到布尔值：{raw!r}")
     if isinstance(raw, int | float):
         try:
-            return Decimal(str(raw))
+            return _non_negative(Decimal(str(raw)), raw)
         except InvalidOperation as exc:  # pragma: no cover - float 已是有限数才走到这
             raise MoneyParseError(f"金额数值无法转换：{raw!r}") from exc
 
@@ -91,9 +109,12 @@ def parse_money(raw: str | float | None) -> Decimal | None:
     if not _MONEY_RE.match(text):
         raise MoneyParseError(f"金额原文无法解析：{raw!r}")
     try:
-        return Decimal(text.replace(",", ""))
+        value = Decimal(text.replace(",", ""))
     except InvalidOperation as exc:
         raise MoneyParseError(f"金额原文无法解析：{raw!r}") from exc
+    # 负号仍留在 `_MONEY_RE` 里：先认出「这是个数、且是负的」，再按负值抛——
+    # 那样错误信息说的是真因（抓到了负数），而不是含糊的「无法解析」。
+    return _non_negative(value, raw)
 
 
 def parse_iso_date(raw: str | None) -> date | None:
