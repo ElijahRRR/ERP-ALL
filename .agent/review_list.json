@@ -1033,6 +1033,11 @@
     "date": "2026-07-31",
     "kind": "progress",
     "text": "【开放问题与留档（PR 正文同步列出）】需裁定：(1) **业务口径·异常#16 通道**——A1 守卫关闭「人工替插件单补 AMZ 单号」路，替代通道=插件端点2重试（_PURCHASABLE_FROM 含 exception）；但若实例已失联且单在 exception，人工 release 回池会触发重买（钱已花而 ERP 无 ref/purchased_at，release 守卫放行）——release 前无硬闸，仅靠 exception_reason 文案提示，请 Owner/审计侧定口径；(2) 0043/0045 两处软引用无外键与图纸字面冲突（迁移头注已按 0041/0047 惯例提请审计侧确认或改判）。留档（低危不抢修）：插件端点 3/4/7 无 DB 级主体归属（logs 有 instance）；物流事件按 seq upsert 数组变短残留幻影行（需自然键改造）；13c 落地时 pending_review 出边须两侧一并设计（插件白名单已收窄回、人工 assign/backfill 409 注释留档）+ getNeedSyncOrders 对 shipped 单无收敛条件；B1 行锁依赖 READ COMMITTED 无自动断言；被推翻的既有断言 test_paused_account_backfill_still_works（与 A1 对立，已换反向断言，请审查侧确认转手成立）。"
+   },
+   {
+    "date": "2026-07-31",
+    "kind": "ruling",
+    "text": "【Owner 裁定：异常#16 人工补录口径】原文要点：人工补录=先去亚马逊买家号查有无这条购买记录，有则把单号手填进去；一般插件自动同步都能查到（主通道仍是插件端点2重试）。落地：新端点 POST /procurement-orders/{id}/plugin-backfill（procurement.execute）——仅收插件单（buyer_account_id 非空）且 status∈assigned/exception 且尚无 ref；写入面镜像 _LIVE_BACKFILL_SQL（USD/汇率1.0 D-Q32 同币种分支）但主体标 op_direct（plugin 值留给真插件回传，人代抄不冒充）；补录清 exception_kind/reason（处置完毕，陈旧分类不留）；渠道订单推 purchasing。与 /release 互斥成对：查到记录→补录（ref 落库后 release 守卫3自动拒绝，误释放重买的洞随之闭合）；确认没有→释放。前端订单页两按钮带裁定操作序文案。承重测试六条含「补录后 release 409」与「插件迟到重试同 ref 幂等不覆盖人工值」。PR #50 正文「重点看」第2条由此关闭。"
    }
   ]
  },

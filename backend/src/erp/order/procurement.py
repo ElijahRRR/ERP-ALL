@@ -435,3 +435,94 @@ async def release_po(session: AsyncSession, *, team_id: int, po_id: int) -> dict
             "exception_reason": po["exception_reason"],
         },
     }
+
+
+async def plugin_manual_backfill(
+    session: AsyncSession,
+    *,
+    team_id: int,
+    po_id: int,
+    actor_id: int | None,
+    ref: str,
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    """人工补录**插件单**的已发生购买（Owner 2026-07-31 裁定异常 #16 口径）。
+
+    场景：插件在亚马逊拍成了单，但回传失败（异常 #16「回传订单失败，请手动复制
+    AMZ 订单号回填」）。裁定的操作序：**先去亚马逊买家号核实确有这条购买记录，
+    再把单号手填进来**；插件端点 2 重试仍是主通道（一般能自动查到），本函数是
+    实例失联/重试无望时的人工兜底。
+
+    这与 `backfill_po`（人工采购的回填）是**两个语义**：那边是「人买的、人回填」，
+    推 `backfilled` 终态；这边是「插件买的、人代抄」，按插件路径落 `purchased`
+    （D5：插件走 purchased → shipped，物流链随端点 7 继续）。写入面镜像
+    `plugin/service.py::_LIVE_BACKFILL_SQL`（USD/汇率 1.0 的 D-Q32 同币种分支——
+    插件单 `purchaser_id IS NULL`，取不到采购方费率），主体标 `op_direct`
+    （0045 词表；`plugin` 是留给真插件回传的，人代抄不许冒充）。
+
+    与 `release_po` 的关系即裁定的两个分支：查到购买记录 → 走本函数（落 ref 后
+    release 的守卫 3 自动拒绝，误释放重买的洞随之闭合）；确认没有购买记录 →
+    走 release 释放回池。守卫三条（都 409）：必须插件单 / 必须停在
+    assigned·exception（购买可能已发生而 ERP 不知情的两个停位）/ 必须尚无 ref
+    （已有 ref 说明回传其实成功了，重复补录按幂等冲突处置——若人工查到的单号与
+    库内不同，那是重复下单的形状，走标异常而不是覆盖）。
+    """
+    po = await _load_po(session, po_id, team_id)
+    if po["buyer_account_id"] is None:
+        raise BusinessError(
+            "PROCUREMENT_NOT_PLUGIN_DISPATCHED",
+            "该执行单不是插件派发单——人工采购的回填走 /backfill",
+            http_status=409,
+        )
+    if po["status"] not in ("assigned", "exception"):
+        raise BusinessError(
+            "PROCUREMENT_STATE_INVALID",
+            f"状态 {po['status']} 不可人工补录（只接受 assigned/exception：插件已回传过的"
+            "单不需要补录，重复补录请核对库内单号）",
+            http_status=409,
+        )
+    if po["purchase_order_ref"] is not None:
+        raise BusinessError(
+            "PROCUREMENT_ALREADY_PURCHASED",
+            f"该执行单已有采购单号 {po['purchase_order_ref']}——若与你在亚马逊查到的单号"
+            "不一致，那是重复下单的形状，请标异常并人工核实，不要覆盖",
+            http_status=409,
+        )
+    sets = [
+        "purchase_platform = 'amazon'",
+        "purchase_currency = 'USD'",
+        "exchange_rate_locked = coalesce(exchange_rate_locked, 1.0)",
+        "purchase_order_ref = :ref",
+        "backfill_actor_kind = 'op_direct'",
+        "backfill_actor_id = :actor",
+        # 补录即处置完毕：陈旧分类不许留下（release/14b 退回池同一条纪律，
+        # 否则会被插件侧 coalesce(:kind, exception_kind) 固化）。
+        "exception_kind = NULL",
+        "exception_reason = NULL",
+        "status = 'purchased'",
+        "purchased_at = coalesce(purchased_at, now())",
+    ]
+    params: dict[str, Any] = {"id": po_id, "ref": ref, "actor": actor_id}
+    for f in ("purchase_cost", "tax_amount", "freight_cost", "payment_card_last4"):
+        if fields.get(f) is not None:
+            sets.append(f"{f} = :{f}")
+            params[f] = fields[f]
+    await session.execute(
+        text(f"UPDATE app.procurement_order SET {', '.join(sets)} WHERE id = :id"), params
+    )
+    await advance_order(
+        session,
+        order_id=po["order_id"],
+        order_date=po["order_date"],
+        to_status="purchasing",
+        from_statuses=("checked", "assigned"),
+    )
+    return {
+        "id": po_id,
+        "status": "purchased",
+        "before": {
+            "status": po["status"],
+            "exception_kind": po["exception_kind"],
+            "exception_reason": po["exception_reason"],
+        },
+    }

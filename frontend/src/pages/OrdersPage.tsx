@@ -285,6 +285,7 @@ function OrderDrawer({
   const [assignId, setAssignId] = useState<number | undefined>()
   const [shipOpen, setShipOpen] = useState(false)
   const [backfillOpen, setBackfillOpen] = useState(false)
+  const [pluginBackfillOpen, setPluginBackfillOpen] = useState(false)
   const [exceptionOpen, setExceptionOpen] = useState(false)
 
   const load = useCallback(async () => {
@@ -640,6 +641,43 @@ function OrderDrawer({
                         标异常
                       </Button>
                     )}
+                  {/* 插件单两个互斥出口（Owner 2026-07-31 异常#16 裁定）：
+                      先查亚马逊买家号——有购买记录→补录单号；确认没有→释放回池 */}
+                  {canExec &&
+                    po.buyer_account_id != null &&
+                    !po.purchase_order_ref &&
+                    ['assigned', 'exception'].includes(po.status ?? '') && (
+                      <Button size="small" onClick={() => setPluginBackfillOpen(true)}>
+                        补录插件购买
+                      </Button>
+                    )}
+                  {has('order.assign') &&
+                    po.buyer_account_id != null &&
+                    !po.purchase_order_ref &&
+                    po.status === 'exception' && (
+                      <Button
+                        size="small"
+                        danger
+                        onClick={() => {
+                          Modal.confirm({
+                            title: '释放回待派池？',
+                            content:
+                              '释放前请先在亚马逊买家号里核实：若已有这条购买记录，' +
+                              '请走「补录插件购买」填单号，不要释放——释放后该单会被' +
+                              '重新派发，等于再买一次。确认亚马逊侧没有购买记录才释放。',
+                            okText: '确认没有购买记录，释放',
+                            cancelText: '先去查',
+                            onOk: () =>
+                              op(
+                                () => api.post(`/procurement-orders/${po.id}/release`),
+                                '已释放回待派池',
+                              ),
+                          })
+                        }}
+                      >
+                        释放回池
+                      </Button>
+                    )}
                 </Space>
               </>
             ) : (
@@ -655,6 +693,17 @@ function OrderDrawer({
           onClose={() => setShipOpen(false)}
           onShipped={() => {
             setShipOpen(false)
+            void load()
+            onChanged()
+          }}
+        />
+      )}
+      {pluginBackfillOpen && po && (
+        <PluginBackfillModal
+          poId={po.id ?? 0}
+          onClose={() => setPluginBackfillOpen(false)}
+          onDone={() => {
+            setPluginBackfillOpen(false)
             void load()
             onChanged()
           }}
@@ -854,6 +903,62 @@ function BackfillModal({
         </Form.Item>
         <Button type="primary" htmlType="submit" block>
           提交回填
+        </Button>
+      </Form>
+    </Modal>
+  )
+}
+
+function PluginBackfillModal({
+  poId,
+  onClose,
+  onDone,
+}: {
+  poId: number
+  onClose: () => void
+  onDone: () => void
+}) {
+  async function onFinish(values: Record<string, unknown>) {
+    try {
+      await api.post(`/procurement-orders/${poId}/plugin-backfill`, values)
+      message.success('已补录，单据转入 purchased（物流将随插件同步链继续）')
+      onDone()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '补录失败')
+    }
+  }
+
+  return (
+    <Modal title="补录插件购买记录" open onCancel={onClose} footer={null} destroyOnHidden>
+      {/* Owner 2026-07-31 异常#16 裁定：先查亚马逊买家号确有这条购买记录，再手填单号。
+          与人工「回填」不同：这是替插件抄单（落 purchased），不是人工采购（落 backfilled） */}
+      <p style={{ color: '#888' }}>
+        仅用于插件已在亚马逊拍成但回传失败的单：请先在对应<b>亚马逊买家号</b>
+        的订单列表核实确有这条购买记录，再把单号抄进来。若亚马逊侧
+        <b>没有</b>购买记录，请关闭本窗改用「释放回池」。
+      </p>
+      <Form layout="vertical" onFinish={onFinish}>
+        <Form.Item
+          label="亚马逊订单号"
+          name="purchase_order_ref"
+          rules={[{ required: true, message: '必填：亚马逊订单号' }]}
+        >
+          <Input placeholder="如 111-5958998-9658617" />
+        </Form.Item>
+        <Form.Item label="实付金额（税前）" name="purchase_cost">
+          <InputNumber min={0} style={{ width: '100%' }} addonAfter="USD" />
+        </Form.Item>
+        <Form.Item label="销售税" name="tax_amount">
+          <InputNumber min={0} style={{ width: '100%' }} addonAfter="USD" />
+        </Form.Item>
+        <Form.Item label="运费" name="freight_cost">
+          <InputNumber min={0} style={{ width: '100%' }} addonAfter="USD" />
+        </Form.Item>
+        <Form.Item label="付款卡尾号" name="payment_card_last4">
+          <Input maxLength={4} placeholder="如 4242" />
+        </Form.Item>
+        <Button type="primary" htmlType="submit" block>
+          补录
         </Button>
       </Form>
     </Modal>

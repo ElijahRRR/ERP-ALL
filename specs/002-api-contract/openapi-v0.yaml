@@ -1372,6 +1372,40 @@ paths:
       x-permission: order.assign
       parameters: [{$ref: '#/components/parameters/poId'}]
       responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
+  /procurement-orders/{poId}/plugin-backfill:
+    post:
+      tags: [Order]
+      # Owner 2026-07-31 裁定（异常 #16 口径）：人工补录 = 先去亚马逊买家号核实确有
+      # 这条购买记录，再把单号手填进来。插件端点 2 重试仍是主通道（一般能自动查到），
+      # 本端点是实例失联时的人工兜底。与 /backfill 是两个语义：那边人买人填推 backfilled，
+      # 这边插件买人代抄，按插件路径落 purchased（D5），物流链随插件端点 7 继续。
+      # 与 /release 互斥成对：查到记录→补录（落 ref 后 release 守卫 3 自动拒绝）；
+      # 确认没有→释放回池。
+      summary: 人工补录插件单的已发生购买（异常 #16 兜底；落 purchased，主体 op_direct）
+      description: |
+        仅接受**插件派发单**（buyer_account_id 非空）且 status ∈ assigned/exception
+        且尚无 purchase_order_ref。三条守卫各自 409：
+        - `PROCUREMENT_NOT_PLUGIN_DISPATCHED`：人工采购的回填走 /backfill
+        - `PROCUREMENT_STATE_INVALID`：插件已回传过的单不需要补录
+        - `PROCUREMENT_ALREADY_PURCHASED`：已有单号——与所查不一致属重复下单形状，标异常勿覆盖
+        补录同时清 exception_kind/exception_reason（处置完毕，陈旧分类不留），
+        渠道订单推进 checked→purchasing。
+      x-permission: procurement.execute
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purchase_order_ref]
+              properties:
+                purchase_order_ref: {type: string, minLength: 1, maxLength: 64}
+                purchase_cost: {type: number, minimum: 0}
+                tax_amount: {type: number, minimum: 0}
+                freight_cost: {type: number, minimum: 0}
+                payment_card_last4: {type: string, pattern: '^\d{4}$'}
+      responses: {'200': {description: 'OK（{id, status=purchased}）'}, '409': {$ref: '#/components/responses/Error'}}
   /procurement-orders/{poId}/exception:
     post:
       tags: [Order]

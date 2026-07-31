@@ -4048,6 +4048,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/procurement-orders/{poId}/plugin-backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 人工补录插件单的已发生购买（异常
+         * @description 仅接受**插件派发单**（buyer_account_id 非空）且 status ∈ assigned/exception
+         *     且尚无 purchase_order_ref。三条守卫各自 409：
+         *     - `PROCUREMENT_NOT_PLUGIN_DISPATCHED`：人工采购的回填走 /backfill
+         *     - `PROCUREMENT_STATE_INVALID`：插件已回传过的单不需要补录
+         *     - `PROCUREMENT_ALREADY_PURCHASED`：已有单号——与所查不一致属重复下单形状，标异常勿覆盖
+         *     补录同时清 exception_kind/exception_reason（处置完毕，陈旧分类不留），
+         *     渠道订单推进 checked→purchasing。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    poId: components["parameters"]["poId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        purchase_order_ref: string;
+                        purchase_cost?: number;
+                        tax_amount?: number;
+                        freight_cost?: number;
+                        payment_card_last4?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK（{id, status=purchased}） */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/procurement-orders/{poId}/exception": {
         parameters: {
             query?: never;

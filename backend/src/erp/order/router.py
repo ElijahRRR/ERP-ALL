@@ -244,6 +244,16 @@ class BackfillIn(BaseModel):
     delivery_est_raw: str | None = Field(default=None, max_length=200)
 
 
+class PluginManualBackfillIn(BaseModel):
+    """人工补录插件单（Owner 2026-07-31 异常 #16 裁定）。单号必填，金额可选。"""
+
+    purchase_order_ref: str = Field(min_length=1, max_length=64)
+    purchase_cost: float | None = Field(default=None, ge=0)
+    tax_amount: float | None = Field(default=None, ge=0)
+    freight_cost: float | None = Field(default=None, ge=0)
+    payment_card_last4: str | None = Field(default=None, pattern=r"^\d{4}$")
+
+
 class ExceptionIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
     # 问题分类（0045 九值词表）。可空 = 不改已有分类（exception_po 的 coalesce 语义）。
@@ -418,6 +428,34 @@ async def backfill_procurement(
         after=body.model_dump(exclude_none=True),
     )  # fmt: skip
     return {"id": po_id, "status": "backfilled"}
+
+
+@order_router.post("/procurement-orders/{po_id}/plugin-backfill")
+async def plugin_backfill_procurement(
+    po_id: int,
+    body: PluginManualBackfillIn,
+    request: Request,
+    user: Annotated[CurrentUser, Depends(require_permission("procurement.execute"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """人工补录插件单的已发生购买（异常 #16 兜底；主通道仍是插件端点 2 重试）。
+
+    操作前提写在服务层 docstring：先查亚马逊买家号确有购买记录再补录；
+    确认没有 → 走 /release 释放回池，两个分支互斥（补录落 ref 后 release 自动拒绝）。
+    """
+    out = await procurement.plugin_manual_backfill(
+        session,
+        team_id=user.team_id or -1,
+        po_id=po_id,
+        actor_id=user.id,
+        ref=body.purchase_order_ref,
+        fields=body.model_dump(exclude_none=True),
+    )
+    await AuditWriter.for_user(session, user, request).log(
+        "procurement.plugin_backfill", "procurement_order", po_id,
+        before=out["before"], after=body.model_dump(exclude_none=True),
+    )  # fmt: skip
+    return {"id": out["id"], "status": out["status"]}
 
 
 @order_router.post("/procurement-orders/{po_id}/exception")

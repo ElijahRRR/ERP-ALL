@@ -70,7 +70,7 @@ def seeded(migrated_db: str) -> dict[str, int]:
             "INSERT INTO app.role (team_id, name) VALUES (%s, '13d测试角色') RETURNING id",
             (team_id,),
         ).fetchone()[0]
-        for code in ("order.read", "procurement.read", "procurement.execute",
+        for code in ("order.read", "order.assign", "procurement.read", "procurement.execute",
                      "procurement.buyer_account_read", "procurement.buyer_account_admin",
                      "procurement.plugin_instance_admin"):  # fmt: skip
             conn.execute(
@@ -1149,3 +1149,128 @@ class TestTracking:
                     (f"%{needle}%",),
                 ).fetchone()[0]
                 assert hits == 0, f"{table} 里落下了本该丢弃的整页 HTML"
+
+
+# ── 人工补录插件单（Owner 2026-07-31 异常 #16 裁定）──
+
+
+class TestPluginManualBackfill:
+    """裁定口径：先查亚马逊买家号确有购买记录，再把单号手填进来。
+
+    与 /release 互斥成对——补录落 ref 后，release 的守卫 3（已拍成单不许释放）
+    自动闭合「误释放→重新派发→二次扣款」的洞。
+    """
+
+    REF = "111-4242424-2424242"
+
+    def _manual(self, client: TestClient, auth: dict[str, str], po_id: int, **body: Any) -> Any:
+        return client.post(
+            f"/api/v1/procurement-orders/{po_id}/plugin-backfill",
+            headers=auth,
+            json={"purchase_order_ref": self.REF, **body},
+        )
+
+    def test_exception_po_manual_backfill_lands_purchased(
+        self, client: TestClient, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """异常 #16 主场景：插件报了失败（exception），人工核实后补录单号与金额。"""
+        env = _setup(client, migrated_db, seeded, status="exception")
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.procurement_order SET exception_kind = 'other',"
+                " exception_reason = '回传订单失败' WHERE id = %s",
+                (env["po"],),
+            )
+        auth = _login(client, ADMIN, PASSWORD)
+        r = self._manual(client, auth, env["po"], purchase_cost=10.79)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"id": env["po"], "status": "purchased"}
+        row = _po_row(migrated_db, env["po"])
+        assert row["purchase_order_ref"] == self.REF
+        assert row["status"] == "purchased"
+        assert row["purchased_at"] is not None
+        assert row["backfill_actor_kind"] == "op_direct"
+        assert row["backfill_actor_id"] == seeded["user"]
+        assert row["purchase_currency"] == "USD"
+        assert str(row["exchange_rate_locked"]) in ("1.0", "1.00", "1.000000")
+        # 处置完毕：陈旧分类不留（否则回池后被插件侧 coalesce 固化——release/14b 同一条纪律）
+        assert row["exception_kind"] is None and row["exception_reason"] is None
+        assert row["buyer_account_id"] == env["account"]["id"]  # 主体不变：仍是插件单
+
+    def test_assigned_po_manual_backfill_advances_channel_order(
+        self, client: TestClient, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """assigned 停位（插件拍了单但连失败都没来得及报）同样可补录；渠道订单推进 purchasing。"""
+        env = _setup(client, migrated_db, seeded, status="assigned")
+        auth = _login(client, ADMIN, PASSWORD)
+        r = self._manual(client, auth, env["po"])
+        assert r.status_code == 200, r.text
+        with psycopg.connect(migrated_db) as conn:
+            ist = conn.execute(
+                "SELECT internal_status FROM app.channel_order WHERE id = %s",
+                (env["order"]["id"],),
+            ).fetchone()[0]
+        assert ist == "purchasing"
+
+    def test_release_refused_after_manual_backfill(
+        self, client: TestClient, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """洞闭合的承重断言：补录后再释放 → 409 ALREADY_PURCHASED（守卫 3）。"""
+        env = _setup(client, migrated_db, seeded, status="exception")
+        auth = _login(client, ADMIN, PASSWORD)
+        assert self._manual(client, auth, env["po"]).status_code == 200
+        # 补录把单推到 purchased；就算有人再把它标回 exception（exception_po 允许），
+        # release 也会被守卫 3 拒绝——ref 已落，释放即重派即二次扣款。
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.procurement_order SET status = 'exception' WHERE id = %s",
+                (env["po"],),
+            )
+        r = client.post(f"/api/v1/procurement-orders/{env['po']}/release", headers=auth)
+        assert r.status_code == 409, r.text
+        assert "PROCUREMENT_ALREADY_PURCHASED" in r.text
+
+    def test_non_plugin_po_refused(
+        self, client: TestClient, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        env = _setup(client, migrated_db, seeded, status="assigned")
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.procurement_order SET buyer_account_id = NULL WHERE id = %s",
+                (env["po"],),
+            )
+        auth = _login(client, ADMIN, PASSWORD)
+        r = self._manual(client, auth, env["po"])
+        assert r.status_code == 409, r.text
+        assert "PROCUREMENT_NOT_PLUGIN_DISPATCHED" in r.text
+
+    def test_existing_ref_refused_no_overwrite(
+        self, client: TestClient, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """已有 ref = 回传其实成功了。人工查到不同单号属重复下单形状——拒绝且一字不改。"""
+        env = _setup(
+            client, migrated_db, seeded, status="exception",
+            purchase_order_ref="111-0000000-0000000",
+        )  # fmt: skip
+        auth = _login(client, ADMIN, PASSWORD)
+        r = self._manual(client, auth, env["po"])
+        assert r.status_code == 409, r.text
+        assert "PROCUREMENT_ALREADY_PURCHASED" in r.text
+        assert _po_row(migrated_db, env["po"])["purchase_order_ref"] == "111-0000000-0000000"
+
+    def test_plugin_retry_after_manual_backfill_is_idempotent(
+        self, client: TestClient, migrated_db: str, seeded: dict[str, int]
+    ) -> None:
+        """补录后插件端点 2 迟到重试同一单号 → 幂等 no-op，金额不被覆盖、不告警。"""
+        env = _setup(client, migrated_db, seeded, status="exception")
+        auth = _login(client, ADMIN, PASSWORD)
+        assert self._manual(client, auth, env["po"], purchase_cost=10.79).status_code == 200
+        r = client.post(
+            "/api/v1/purchase-plugin/purchaseOrderFinishUpdate",
+            headers=_h(env["instance"]),
+            json=_backfill_body(env, platformOrderNo=self.REF, totalBeforeTax="$99.99"),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["data"].get("idempotent") is True  # 厂商信封 {code, data}
+        row = _po_row(migrated_db, env["po"])
+        assert str(row["purchase_cost"]) in ("10.79", "10.790")  # 人工值未被迟到重试覆盖
