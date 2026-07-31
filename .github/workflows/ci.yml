@@ -65,13 +65,20 @@ jobs:
           uv run ruff format --check .
       - name: 类型检查（mypy strict）
         run: uv run mypy
-      - name: 单元测试
-        run: uv run pytest
+      # 演练必须在 pytest **之前**：它的名字说的就是「空库」，而 pytest 与它共用
+      # erp_all，跑完会留下测试残余。0045 起降级对「新词表已写入的行」按 0047 口径
+      # **有意硬失败**（backfill_actor_kind='plugin' 等，须人工处置后才许降）——
+      # 排在 pytest 之后等于必然撞上这条设计，红的是步序不是迁移（a9d9396 实证：
+      # 套件留下一行 (plugin, purchased)，downgrade base 即 CheckViolation）。
+      # 放到前面后本步只验它该验的：空库上 DDL 升降升对称。pytest 的 migrated_db
+      # fixture 自己跑 upgrade head，库已在 head 时是幂等 no-op，顺序对它无影响。
       - name: migration 空库演练（升→降→升）
         run: |
           uv run alembic upgrade head
           uv run alembic downgrade base
           uv run alembic upgrade head
+      - name: 单元测试
+        run: uv run pytest
 
   workers:
     runs-on: ubuntu-latest
