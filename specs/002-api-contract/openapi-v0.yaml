@@ -143,6 +143,29 @@ paths:
       parameters: [{$ref: '#/components/parameters/userId'}]
       requestBody: {$ref: '#/components/requestBodies/UserWrite'}
       responses: {'200': {$ref: '#/components/responses/UserResp'}}
+    delete:
+      tags: [Identity]
+      summary: 硬删除用户（00-conventions §7.1；R2-14 14b）
+      description: >-
+        ①无历史（无 audit_log 留痕）→ 物理删除、不写墓碑；②有历史 → 物理删除并写
+        `deleted_principal (kind='user')` 墓碑，此后审计日志操作人显示「XX（已删除）」；
+        ③audit_log 一行不删。`purchaser.user_id` 显式置 NULL（采购方实体保留）。
+        不能删自己（USER_DELETE_SELF）；超管不经本入口删（USER_DELETE_SUPER）。
+        不要求 `Idempotency-Key`，理由同 DELETE /products/{productId}。
+      x-permission: identity.user_delete
+      parameters:
+        - {$ref: '#/components/parameters/userId'}
+        - name: reason
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 200}
+          description: 删除原因，写入墓碑与 audit_log
+      responses:
+        '200':
+          description: 已删除
+          content: {application/json: {schema: {$ref: '#/components/schemas/PrincipalDeleteResult'}}}
+        '404': {description: 'USER_NOT_FOUND——不存在或不属于当前团队（响应不可区分，防探测）', $ref: '#/components/responses/Error'}
+        '409': {description: 'USER_DELETE_SELF（不能删当前登录账号）/ USER_DELETE_SUPER（超管不经本入口）', $ref: '#/components/responses/Error'}
   /users/{userId}/roles:
     put:
       tags: [Identity]
@@ -179,6 +202,27 @@ paths:
       parameters: [{$ref: '#/components/parameters/roleId'}]
       requestBody: {$ref: '#/components/requestBodies/RoleWrite'}
       responses: {'200': {description: OK}}
+    delete:
+      tags: [Identity]
+      summary: 硬删除角色（00-conventions §7.1；R2-14 14b）
+      description: >-
+        在挂成员的角色拒删（先解绑）；全局模板（team_id IS NULL）404，口径同「模板不可改」。
+        `role_permission` 随 CASCADE 清空（角色自身构成，非外部历史）；②级写
+        `deleted_principal (kind='role')` 墓碑。
+      x-permission: identity.role_delete
+      parameters:
+        - {$ref: '#/components/parameters/roleId'}
+        - name: reason
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 200}
+          description: 删除原因，写入墓碑与 audit_log
+      responses:
+        '200':
+          description: 已删除
+          content: {application/json: {schema: {$ref: '#/components/schemas/PrincipalDeleteResult'}}}
+        '404': {description: 'ROLE_NOT_FOUND——不存在、跨团队或为全局模板（模板不可删）', $ref: '#/components/responses/Error'}
+        '409': {description: 'ROLE_IN_USE（仍挂有成员，先解绑）', $ref: '#/components/responses/Error'}
   /roles/{roleId}/permissions:
     put:
       tags: [Identity]
@@ -1342,6 +1386,31 @@ paths:
       parameters: [{name: purchaserId, in: path, required: true, schema: {type: integer}}]
       requestBody: {$ref: '#/components/requestBodies/PurchaserWrite'}
       responses: {'200': {description: OK}}
+    delete:
+      tags: [Order]
+      summary: 硬删除采购方（00-conventions §7.1 + §7.1.1；R2-14 14b）
+      description: >-
+        §7.1.1(c)：删除前把该采购方名下**未锁汇率**（`exchange_rate_locked IS NULL`）的
+        非终态执行单**退回 unassigned 并清空 purchaser_id**（汇率源随主体消失），渠道订单
+        `internal_status` 对称退回 `checked`；退回后仍有**非终态**单（已锁汇率、执行中）
+        → 409 拒删（在途守卫——删掉执行方会让门户失单、exception 单无法重分配）。
+        终态（backfilled/cancelled）单一行不删、`purchaser_id` 原值保留（软引用），
+        经墓碑解析显示「XX（已删除）」。有残留引用 = ②级写墓碑；无 = ①级直删。
+        回执带 `orders_returned` / `orders_retained`。
+      x-permission: procurement.purchaser_delete
+      parameters:
+        - {name: purchaserId, in: path, required: true, schema: {type: integer}}
+        - name: reason
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 200}
+          description: 删除原因，写入墓碑与 audit_log
+      responses:
+        '200':
+          description: 已删除
+          content: {application/json: {schema: {$ref: '#/components/schemas/PrincipalDeleteResult'}}}
+        '404': {description: 'PURCHASER_NOT_FOUND', $ref: '#/components/responses/Error'}
+        '409': {description: 'PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其回填完结再删；若含 exception 单：人工处置通道未建成（FX-0730B），落地前暂无法删除）', $ref: '#/components/responses/Error'}
 
   # ──────────────────────── Aftersale（R2-07）────────────────────────
   /returns:
@@ -1914,6 +1983,9 @@ components:
         occurred_at: {type: string, format: date-time}
         actor_type: {type: string, enum: [user, portal, system]}
         actor_id: {type: [integer, 'null']}
+        # R2-14 14b 验收③：在册用户=display_name；已删用户=「label（已删除）」（墓碑解析）；
+        # 解析不到或非 user 操作者 = null（前端回落 actor_type#id）
+        actor_label: {type: [string, 'null']}
         action: {type: string}
         object_type: {type: string}
         object_id: {type: string}
@@ -2090,6 +2162,25 @@ components:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
         - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Product'}}}}
+    PrincipalDeleteResult:
+      type: object
+      required: [level, tombstoned]
+      properties:
+        level:
+          type: string
+          enum: [no_history, with_history]
+          description: >-
+            §7.1 的①/②级（R2-14 14b）。no_history=从未操作/接单，未留墓碑；
+            with_history=有历史，已留墓碑——此后审计/单据里显示「XX（已删除）」。
+        tombstoned: {type: boolean}
+        user_id: {type: integer}
+        username: {type: string}
+        purchasers_unlinked: {type: integer, description: '删用户时被解除绑定的采购方数量（实体保留）'}
+        role_id: {type: integer}
+        purchaser_id: {type: integer}
+        name: {type: string}
+        orders_returned: {type: integer, description: '删采购方时退回 unassigned 的未锁汇率执行单数（§7.1.1(c)）'}
+        orders_retained: {type: integer, description: '删采购方后保留 purchaser_id 的执行单数（claimed 及其后 + 终态）'}
     ProductDeleteResult:
       type: object
       required: [product_id, master_sku, level, tombstoned, listings_deleted]
@@ -2534,6 +2625,9 @@ components:
         status: {type: string}
         assignee_kind: {type: string}
         purchaser_id: {type: [integer, 'null']}
+        # §7.1.1(b)：软引用解析——在册=purchaser.name；已删=「label（已删除）」（墓碑）；
+        # 无采购方或解析不到 = null
+        purchaser_label: {type: [string, 'null']}
         purchase_platform: {type: [string, 'null']}
         purchase_order_ref: {type: [string, 'null']}
         purchase_cost: {type: [number, 'null']}

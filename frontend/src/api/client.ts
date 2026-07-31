@@ -9,6 +9,8 @@ export type Role = Schemas['Role']
 export type Permission = Schemas['Permission']
 export type Team = Schemas['Team']
 export type AuditLog = Schemas['AuditLog']
+// R2-14 14b 主体删除回执（user/role/purchaser 三端点共用）
+export type PrincipalDeleteResult = Schemas['PrincipalDeleteResult']
 // R2-12 增量5 合规中心（契约 codegen 类型，禁页面手写响应 interface——008§2）
 export type BlacklistEntry = Schemas['BlacklistEntry']
 export type BlacklistAssertion = Schemas['BlacklistAssertion']

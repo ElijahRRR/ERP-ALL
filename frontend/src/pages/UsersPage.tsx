@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { ApiError, api, type PageOf, type Role, type User } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
+import { PrincipalDeleteModal } from '@/components/PrincipalDeleteModal'
 
 export default function UsersPage() {
   const { me, has } = useAuth()
@@ -12,6 +13,8 @@ export default function UsersPage() {
   const [page, setPage] = useState(1)
   const [createOpen, setCreateOpen] = useState(false)
   const [roleTarget, setRoleTarget] = useState<User | null>(null)
+  const [toDelete, setToDelete] = useState<User | null>(null)
+  const canDelete = has('identity.user_delete')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -125,11 +128,20 @@ export default function UsersPage() {
           {
             title: '操作',
             render: (_, u) =>
-              has('identity.user_write') &&
               !u.is_super && (
-                <Button size="small" onClick={() => setRoleTarget(u)}>
-                  设置角色
-                </Button>
+                <Space>
+                  {has('identity.user_write') && (
+                    <Button size="small" onClick={() => setRoleTarget(u)}>
+                      设置角色
+                    </Button>
+                  )}
+                  {/* 不能删自己（服务端 USER_DELETE_SELF 同款守卫，入口即不给） */}
+                  {canDelete && u.id !== me?.user.id && (
+                    <Button size="small" danger onClick={() => setToDelete(u)}>
+                      删除
+                    </Button>
+                  )}
+                </Space>
               ),
           },
         ]}
@@ -170,6 +182,32 @@ export default function UsersPage() {
           </Button>
         </Form>
       </Modal>
+
+      <PrincipalDeleteModal
+        open={!!toDelete}
+        title={`删除成员：${toDelete?.display_name ?? ''}（${toDelete?.username ?? ''}）`}
+        endpoint={`/users/${toDelete?.id ?? 0}`}
+        consequences={
+          <>
+            账号会被<b>物理删除</b>，登录立即失效，<b>没有回收站</b>。
+            <br />
+            若该成员<b>操作过系统</b>，会留下墓碑——其审计留痕仍在，操作人显示
+            「{toDelete?.display_name ?? ''}<b>（已删除）</b>」；从未操作过则直删无墓碑。
+            <br />
+            其名下的采购方绑定会被<b>解除</b>（采购方本身保留）；审计与订单记录
+            <b>一行都不会删</b>。
+            <br />
+            只是暂时停用的话，请用「状态」开关而不是删除。
+          </>
+        }
+        successOf={(r) =>
+          r.tombstoned
+            ? `已删除 ${r.username ?? ''}（有操作留痕，已留墓碑，审计里显示「已删除」）`
+            : `已删除 ${r.username ?? ''}（从未操作过，未留墓碑）`
+        }
+        onClose={() => setToDelete(null)}
+        onDeleted={() => void load()}
+      />
 
       <Modal
         title={`设置角色 — ${roleTarget?.display_name ?? ''}`}

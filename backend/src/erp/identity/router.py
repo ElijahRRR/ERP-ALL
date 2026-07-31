@@ -23,6 +23,7 @@ from erp.core.authn import (
 from erp.core.db import get_session, get_session_factory
 from erp.core.errors import BusinessError
 from erp.core.security import hash_password
+from erp.identity import delete as principal_delete
 from erp.identity import service
 from erp.identity.schemas import (
     AuditLogOut,
@@ -344,6 +345,25 @@ async def set_user_roles(
     return await _load_user(session, user_id)
 
 
+@identity_router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("identity.user_delete")),
+    session: AsyncSession = Depends(get_session),
+    reason: str = Query(min_length=1, max_length=200, description="删除原因，落墓碑与审计留痕"),
+) -> dict[str, Any]:
+    """硬删除一个用户（§7.1 三级规则；R2-14 14b）。
+
+    `reason` 走 query 不走请求体、不消费 `Idempotency-Key`——两条理由同
+    `catalog/router.py` 的 DELETE /products/{id}（DELETE body 沿途会被丢；
+    重放语义天然清楚：第二次 404 而用户确已删除）。
+    """
+    return await principal_delete.delete_user(
+        session, user=user, request=request, target_user_id=user_id, reason=reason
+    )
+
+
 async def _guard_same_team(session: AsyncSession, user_id: int) -> None:
     """RLS 直查兜底：不可见（跨团队）与不存在同样报 404 语义（防探测，契约约定）。"""
     n = (
@@ -465,6 +485,20 @@ async def set_role_permissions(
     return {"status": "ok"}
 
 
+@identity_router.delete("/roles/{role_id}")
+async def delete_role(
+    role_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("identity.role_delete")),
+    session: AsyncSession = Depends(get_session),
+    reason: str = Query(min_length=1, max_length=200, description="删除原因，落墓碑与审计留痕"),
+) -> dict[str, Any]:
+    """硬删除一个角色（§7.1；R2-14 14b）。在挂成员的角色拒删（先解绑），模板 404。"""
+    return await principal_delete.delete_role(
+        session, user=user, request=request, role_id=role_id, reason=reason
+    )
+
+
 @identity_router.get("/permissions", response_model=list[PermissionOut])
 async def list_permissions(
     _: CurrentUser = Depends(get_current_user),
@@ -508,15 +542,40 @@ async def list_audit_logs(
             params,
         )
     ).scalar_one()
-    rows = await session.execute(
-        text(
-            "SELECT id, occurred_at, actor_type, actor_id, action, object_type, object_id,"
-            f" before, after, ip::text AS ip FROM app.audit_log WHERE {cond}"
-            " ORDER BY occurred_at DESC LIMIT :l OFFSET :o"
-        ),
-        params,
-    )
-    return Page(items=[AuditLogOut(**r._asdict()) for r in rows], total=total, page=page, size=size)
+    rows = [
+        r._asdict()
+        for r in await session.execute(
+            text(
+                "SELECT id, occurred_at, actor_type, actor_id, action, object_type, object_id,"
+                f" before, after, ip::text AS ip FROM app.audit_log WHERE {cond}"
+                " ORDER BY occurred_at DESC LIMIT :l OFFSET :o"
+            ),
+            params,
+        )
+    ]
+    # 操作人解析（§7.1 / R2-14 14b 验收③）：先查主表，查不到再查墓碑显示
+    # 「XX（已删除）」——audit_log.actor_id 无外键不冗余名字，删了用户后这里
+    # 若不解析就只剩一串认不出的数字。批量两查，不逐行放大。
+    uids = sorted({r["actor_id"] for r in rows if r["actor_type"] == "user" and r["actor_id"]})
+    labels: dict[int, str] = {}
+    if uids:
+        for r in await session.execute(
+            text("SELECT id, display_name FROM app.app_user WHERE id = ANY(:ids)"), {"ids": uids}
+        ):
+            labels[int(r[0])] = str(r[1])
+        gone = [u for u in uids if u not in labels]
+        if gone:
+            labels.update(await principal_delete.deleted_labels(session, kind="user", ids=gone))
+    items = [
+        AuditLogOut(
+            **r,
+            actor_label=(
+                labels.get(r["actor_id"]) if r["actor_type"] == "user" and r["actor_id"] else None
+            ),
+        )
+        for r in rows
+    ]
+    return Page(items=items, total=total, page=page, size=size)
 
 
 @identity_router.get("/dicts/{dict_type}", response_model=list[DictItemOut])

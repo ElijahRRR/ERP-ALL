@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { ApiError, api, type Schemas } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
+import { PrincipalDeleteModal } from '@/components/PrincipalDeleteModal'
 
 type Purchaser = Schemas['Purchaser']
 
@@ -17,6 +18,7 @@ export default function PurchasersPage() {
   const [loading, setLoading] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<Purchaser | null>(null)
+  const [toDelete, setToDelete] = useState<Purchaser | null>(null)
   const canAdmin = has('procurement.admin')
 
   const load = useCallback(async () => {
@@ -107,15 +109,50 @@ export default function PurchasersPage() {
           {
             title: '操作',
             key: 'op',
-            width: 90,
-            render: (_, p) =>
-              canAdmin ? (
-                <Button size="small" onClick={() => setEditing(p)}>
-                  编辑
-                </Button>
-              ) : null,
+            width: 140,
+            render: (_, p) => (
+              <Space>
+                {canAdmin && (
+                  <Button size="small" onClick={() => setEditing(p)}>
+                    编辑
+                  </Button>
+                )}
+                {has('procurement.purchaser_delete') && (
+                  <Button size="small" danger onClick={() => setToDelete(p)}>
+                    删除
+                  </Button>
+                )}
+              </Space>
+            ),
           },
         ]}
+      />
+
+      <PrincipalDeleteModal
+        open={!!toDelete}
+        title={`删除采购方：${toDelete?.name ?? ''}`}
+        endpoint={`/purchasers/${toDelete?.id ?? 0}`}
+        consequences={
+          <>
+            采购方会被<b>物理删除</b>，<b>没有回收站</b>。
+            <br />
+            其名下<b>未领单</b>（汇率尚未锁定）的执行单会<b>退回待分配池</b>并解除绑定
+            ——不退回会变成永远锁不上汇率的孤单。
+            <br />
+            <b>仍有执行中的单</b>（已领单未完结）<b>删不掉</b>——请等其回填完结再删；
+            若含 exception 单：其人工处置通道尚未建成（工单 FX-0730B），落地前暂无法删除。
+            <br />
+            已完结的执行单<b>一行不删</b>（汇率已锁），其采购方显示
+            「{toDelete?.name ?? ''}<b>（已删除）</b>」；从未接过单则直删无墓碑。
+          </>
+        }
+        successOf={(r) =>
+          r.tombstoned
+            ? `已删除 ${r.name ?? ''}（接过单，已留墓碑，历史单据仍可读）`
+            : `已删除 ${r.name ?? ''}（从未接单，未留墓碑）`
+        }
+        onClose={() => setToDelete(null)}
+        onDeleted={() => void load()}
       />
 
       <Modal

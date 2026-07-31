@@ -501,10 +501,13 @@ function OrderDrawer({
                     {statusTag(PO_STATUS, po.status)}
                   </Descriptions.Item>
                   <Descriptions.Item label="采购方">
-                    {po.purchaser_id != null
-                      ? (purchasers.find((p) => p.id === po.purchaser_id)?.name ??
-                        `#${po.purchaser_id}`)
-                      : '—'}
+                    {/* 服务端两段式解析优先（§7.1.1(b)：已删采购方显示「XX（已删除）」），
+                        客户端点名仅作旧数据回落 */}
+                    {po.purchaser_label ??
+                      (po.purchaser_id != null
+                        ? (purchasers.find((p) => p.id === po.purchaser_id)?.name ??
+                          `#${po.purchaser_id}`)
+                        : '—')}
                   </Descriptions.Item>
                   <Descriptions.Item label="采购成本">
                     {po.purchase_cost != null

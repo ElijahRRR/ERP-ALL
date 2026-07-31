@@ -300,7 +300,39 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * 硬删除用户（00-conventions §7.1；R2-14 14b）
+         * @description ①无历史（无 audit_log 留痕）→ 物理删除、不写墓碑；②有历史 → 物理删除并写 `deleted_principal (kind='user')` 墓碑，此后审计日志操作人显示「XX（已删除）」； ③audit_log 一行不删。`purchaser.user_id` 显式置 NULL（采购方实体保留）。 不能删自己（USER_DELETE_SELF）；超管不经本入口删（USER_DELETE_SUPER）。 不要求 `Idempotency-Key`，理由同 DELETE /products/{productId}。
+         */
+        delete: {
+            parameters: {
+                query: {
+                    /** @description 删除原因，写入墓碑与 audit_log */
+                    reason: string;
+                };
+                header?: never;
+                path: {
+                    userId: components["parameters"]["userId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 已删除 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PrincipalDeleteResult"];
+                    };
+                };
+                /** @description USER_NOT_FOUND——不存在或不属于当前团队（响应不可区分，防探测） */
+                404: components["responses"]["Error"];
+                /** @description USER_DELETE_SELF（不能删当前登录账号）/ USER_DELETE_SUPER（超管不经本入口） */
+                409: components["responses"]["Error"];
+            };
+        };
         options?: never;
         head?: never;
         /** 改成员（display_name/status/重置密码） */
@@ -418,7 +450,39 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * 硬删除角色（00-conventions §7.1；R2-14 14b）
+         * @description 在挂成员的角色拒删（先解绑）；全局模板（team_id IS NULL）404，口径同「模板不可改」。 `role_permission` 随 CASCADE 清空（角色自身构成，非外部历史）；②级写 `deleted_principal (kind='role')` 墓碑。
+         */
+        delete: {
+            parameters: {
+                query: {
+                    /** @description 删除原因，写入墓碑与 audit_log */
+                    reason: string;
+                };
+                header?: never;
+                path: {
+                    roleId: components["parameters"]["roleId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 已删除 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PrincipalDeleteResult"];
+                    };
+                };
+                /** @description ROLE_NOT_FOUND——不存在、跨团队或为全局模板（模板不可删） */
+                404: components["responses"]["Error"];
+                /** @description ROLE_IN_USE（仍挂有成员，先解绑） */
+                409: components["responses"]["Error"];
+            };
+        };
         options?: never;
         head?: never;
         patch: {
@@ -4044,7 +4108,39 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * 硬删除采购方（00-conventions §7.1 + §7.1.1；R2-14 14b）
+         * @description §7.1.1(c)：删除前把该采购方名下**未锁汇率**（`exchange_rate_locked IS NULL`）的 非终态执行单**退回 unassigned 并清空 purchaser_id**（汇率源随主体消失），渠道订单 `internal_status` 对称退回 `checked`；退回后仍有**非终态**单（已锁汇率、执行中） → 409 拒删（在途守卫——删掉执行方会让门户失单、exception 单无法重分配）。 终态（backfilled/cancelled）单一行不删、`purchaser_id` 原值保留（软引用）， 经墓碑解析显示「XX（已删除）」。有残留引用 = ②级写墓碑；无 = ①级直删。 回执带 `orders_returned` / `orders_retained`。
+         */
+        delete: {
+            parameters: {
+                query: {
+                    /** @description 删除原因，写入墓碑与 audit_log */
+                    reason: string;
+                };
+                header?: never;
+                path: {
+                    purchaserId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 已删除 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PrincipalDeleteResult"];
+                    };
+                };
+                /** @description PURCHASER_NOT_FOUND */
+                404: components["responses"]["Error"];
+                /** @description PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其回填完结再删；若含 exception 单：人工处置通道未建成（FX-0730B），落地前暂无法删除） */
+                409: components["responses"]["Error"];
+            };
+        };
         options?: never;
         head?: never;
         /** 改采购方（含汇率，D-Q32；改汇率只影响未锁单） */
@@ -5120,6 +5216,7 @@ export interface components {
             /** @enum {string} */
             actor_type?: "user" | "portal" | "system";
             actor_id?: number | null;
+            actor_label?: string | null;
             action?: string;
             object_type?: string;
             object_id?: string;
@@ -5300,6 +5397,25 @@ export interface components {
         };
         ProductPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["Product"][];
+        };
+        PrincipalDeleteResult: {
+            /**
+             * @description §7.1 的①/②级（R2-14 14b）。no_history=从未操作/接单，未留墓碑； with_history=有历史，已留墓碑——此后审计/单据里显示「XX（已删除）」。
+             * @enum {string}
+             */
+            level: "no_history" | "with_history";
+            tombstoned: boolean;
+            user_id?: number;
+            username?: string;
+            /** @description 删用户时被解除绑定的采购方数量（实体保留） */
+            purchasers_unlinked?: number;
+            role_id?: number;
+            purchaser_id?: number;
+            name?: string;
+            /** @description 删采购方时退回 unassigned 的未锁汇率执行单数（§7.1.1(c)） */
+            orders_returned?: number;
+            /** @description 删采购方后保留 purchaser_id 的执行单数（claimed 及其后 + 终态） */
+            orders_retained?: number;
         };
         ProductDeleteResult: {
             product_id: number;
@@ -5727,6 +5843,7 @@ export interface components {
             status?: string;
             assignee_kind?: string;
             purchaser_id?: number | null;
+            purchaser_label?: string | null;
             purchase_platform?: string | null;
             purchase_order_ref?: string | null;
             purchase_cost?: number | null;

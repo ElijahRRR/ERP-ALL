@@ -100,7 +100,8 @@ class TestSeeds:
                 # + 0010 compliance.import_* 2 + 0030 aftersale.read 1 + 0031 refund.* 2
                 # + 0033 catalog.brand_* 2 + 0035 compliance.blacklist_*/trademark/tro 4
                 # + 0040 automation.* 2 + 0041 catalog.product_delete 1
-                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 56
+                # + 0047 identity.user_delete/role_delete + procurement.purchaser_delete 3
+                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 59
             )
             assert (
                 conn.execute("SELECT count(*) FROM app.role WHERE team_id IS NULL").fetchone()[0]
@@ -120,3 +121,75 @@ class TestSeeds:
                 ).fetchone()[0]
                 >= 4
             )
+
+
+class TestRlsDeleteInvariant:
+    def test_no_delete_grant_without_delete_policy(self, migrated_db: str) -> None:
+        """schema 不变量（PR #49 审查 N2）：不允许「授了 DELETE 却没有 DELETE 策略」。
+
+        RLS 下无 DELETE 策略的 DELETE **静默匹配零行、不报错**——R2-14 14b 实撞
+        （0025 的 TEAM_RLS 是三策略模板，purchaser 补授 DELETE 后端点回 200、
+        墓碑照写、实体行还在）。`_delete_row_or_die` 是调用点纪律，管不住将来
+        不用它的新删除路径；本条是结构性防线，天然覆盖所有未来的表。
+        """
+        with psycopg.connect(migrated_db) as conn:
+            rows = conn.execute(
+                "SELECT c.relname FROM pg_class c"
+                " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE n.nspname='app' AND c.relkind='r' AND c.relrowsecurity"
+                "   AND has_table_privilege('erp_app', c.oid, 'DELETE')"
+                "   AND NOT EXISTS (SELECT 1 FROM pg_policies p"
+                "                   WHERE p.schemaname='app' AND p.tablename=c.relname"
+                "                     AND p.cmd IN ('DELETE','ALL'))"
+                " ORDER BY 1"
+            ).fetchall()
+        assert rows == [], (
+            "以下表授了 erp_app 的 DELETE 却没有 DELETE 策略（删除会静默零行）："
+            f"{[r[0] for r in rows]}——补 CREATE POLICY 或收回授权，二选一"
+        )
+
+
+_DANGLING_PURCHASER_SQL = (
+    "SELECT po.id, po.purchaser_id FROM app.procurement_order po"
+    " WHERE po.purchaser_id IS NOT NULL"
+    "   AND NOT EXISTS (SELECT 1 FROM app.purchaser p WHERE p.id = po.purchaser_id)"
+    "   AND NOT EXISTS (SELECT 1 FROM app.deleted_principal dp"
+    "                   WHERE dp.kind = 'purchaser' AND dp.id = po.purchaser_id)"
+    " ORDER BY po.id"
+)
+
+
+class TestSoftReferenceInvariant:
+    def test_query_catches_bypass_delete_then_clean(self, migrated_db: str) -> None:
+        """§7.1.1(b) 后半（PR #49 审查 N6，判据形状按五轮 C 重做）。
+
+        空库上只断言「结果为空」是空判据（空 ⊆ 空恒绿，五轮 C 实测：注释掉
+        _write_tombstone 它照样绿）。故本用例**先自己造 violation**——绕过删除服务
+        直删一个有单的采购方（migrator 连接，模拟坏路径）——断言查询**抓得到**；
+        清掉后再断言全库干净。前半证「查询有牙齿」，后半才是对现库的不变量。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            pid = conn.execute(
+                "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                " SELECT id, 'N6违例样本', 'external', 7.2 FROM app.team LIMIT 1 RETURNING id"
+            ).fetchone()[0]
+            po = conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status, purchaser_id,"
+                "  exchange_rate_locked)"
+                " SELECT team_id, 1, 998877, now(), 'backfilled', id, 7.2"
+                " FROM app.purchaser WHERE id = %s RETURNING id",
+                (pid,),
+            ).fetchone()[0]
+            try:
+                # 绕过删除服务直删——不写墓碑，制造悬空引用
+                conn.execute("DELETE FROM app.purchaser WHERE id = %s", (pid,))
+                caught = conn.execute(_DANGLING_PURCHASER_SQL).fetchall()
+                assert (po, pid) in caught, "查询没抓到人为制造的悬空引用——不变量无牙齿"
+            finally:
+                conn.execute("DELETE FROM app.procurement_order WHERE id = %s", (po,))
+            rows = conn.execute(_DANGLING_PURCHASER_SQL).fetchall()
+        assert rows == [], (
+            f"以下执行单的 purchaser_id 在主表与墓碑都查不到（永久无法解析）：{rows}"
+            "——多半是绕过删除服务的直删或墓碑漏写"
+        )

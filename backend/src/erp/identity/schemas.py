@@ -103,6 +103,9 @@ class AuditLogOut(BaseModel):
     occurred_at: datetime
     actor_type: str
     actor_id: int | None
+    # 操作人显示名（R2-14 14b 验收③）：在册用户=display_name；已删用户=「label（已删除）」
+    # （墓碑解析）；主表墓碑都查不到、或非 user 操作者 = None（前端回落 actor_type#id）。
+    actor_label: str | None = None
     action: str
     object_type: str
     object_id: str

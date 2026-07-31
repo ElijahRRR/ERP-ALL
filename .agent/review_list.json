@@ -1068,8 +1068,28 @@
    },
    {
     "date": "2026-07-30",
+    "kind": "landed",
+    "text": "【14b 落地，闸序中】迁移 0047：deleted_principal 墓碑表 PK=(kind,id)（坑2：四类主体各有自增序列，单列 id 跨类必撞）、kind 词表含 buyer_account（其删除路径随 13b 另补，坑3）、追加式只授 SELECT/INSERT（同 0041）；补 purchaser 的 DELETE 授权（0025:359 只授 SIU，14a 同形坑）与 RLS DELETE 策略（0025 的 TEAM_RLS 是三策略模板无 DELETE——无策略的 DELETE 静默匹配零行不报错，测试实撞：端点回 200、墓碑照写、实体行还在；服务层同步加 _delete_row_or_die 守卫把此类静默失败变响亮 500）；procurement_order.purchaser_id 外键改软引用（③级行保留原 id 供墓碑解析，同 audit_log.actor_id/order_line.product_id 既有取舍，迁移头注已请审计侧确认或改判）。identity/delete.py 三类删除服务：user（自删/超管拒绝；purchaser.user_id 显式置 NULL——坑1，无 ON DELETE 不处置则外键拒删）、role（在挂成员 409、全局模板 404）、purchaser（在途执行单非终态 409，fail-closed 词表）。验收③承重：/audit-logs 批量解析 actor_label——在册查主表、已删查墓碑显示「XX（已删除）」。三 DELETE 端点 + PrincipalDeleteResult/actor_label 进 002 契约；前端三页删除入口共用 PrincipalDeleteModal（二次确认+必填原因+分级播报），AuditPage 接 actor_label。判据测试 test_r2_14b_principal_delete.py 九条（坑1/坑2/验收③⑤各有承重用例）。验收③已覆盖；R2-14 四片全落，闸序（审查→真机→Owner）后可关单。"
+   },
+   {
+    "date": "2026-07-30",
     "kind": "ruling",
     "text": "【procurement_order.purchaser_id 改软引用——开发侧 0047 提请，审计侧确认删外键，附三条强制条件】开发侧提出的矛盾属实：②级要求「干过活的采购方删实体」、③级要求「订单一行不删」，在原外键(bigint REFERENCES app.purchaser(id)，默认 NO ACTION)下不可能同时成立。**解法只能是删外键，确认删。****ON DELETE SET NULL 已排除且判据补足**：置 NULL 把 id 本身抹掉，而墓碑正是靠 id 反查名字——id 一没，「当时是谁采购的」永久丢失；软引用保留 id、墓碑还原名字。SET NULL 严格劣于删外键，不是更安全的折中。**三条实测支撑删外键**：①同一节早已两次做过同样取舍——§7.1 论证 deleted_principal 时写的就是「audit_log.actor_id 无外键、且不冗余用户名，UI 先查主表再查墓碑」，0041 落 deleted_product 时又做两次(product_id 无外键「实体已被物理删除，有外键就建不出这一行」；deleted_by 无外键指向 app_user)，**0047 是同一取舍再往外推一层，不是新开先例**；②**财务不失真——承重值早已快照**：purchaser 上唯一被下游依赖的是 exchange_rate，而它在领单时就锁进 procurement_order.exchange_rate_locked(order/procurement.py:196 coalesce(...)；D-Q32「汇率后改不影响已锁单」)，删采购方动不了任何已锁单的结算口径；③爆炸半径一列——全仓 REFERENCES app.purchaser 只此一处(0025:232)。**三条强制条件(删外键=把完整性保证从库搬到应用代码，须有东西接住)**：(a)唯一出口+同事务——主体删除只能经删除服务，墓碑写入与实体物理删除必须同一事务，否则一次漏写就产生永久无法解析的悬空 id 而数据库不再报错；(b)机器守卫——测试证伪「删掉干过活的采购方后历史执行单仍在且 purchaser_id 能经墓碑解析出名字」，并加一致性检查「任何非空 purchaser_id 必能在主表或墓碑命中其一」；(c)**删除前先处置未锁汇率的在途单**(审计侧新发现，开发侧未提)——exchange_rate_locked 是**领单时**才锁的，该采购方名下尚未进入 claimed 的执行单(assigned/pending_review)汇率源会随主体一起消失；删除服务须先把这些单退回 unassigned 并清空 purchaser_id，claimed 及其后的保留 purchaser_id(汇率已锁、历史可读)。**不做这条，删完会留下一批永远锁不上汇率的孤单。****顺带三条**：deleted_principal 须带 team_id(与 deleted_product 同形，0041 已如此建)——purchaser 是 team 域带 RLS，墓碑无 team_id 则 A 团队会解析出 B 团队已删采购方的名字；**不要加 purchaser_name 冗余列当双保险**(造出第二个真相源，与本节「靠墓碑而非冗余」的取舍相悖)；purchaser.id 是 GENERATED ALWAYS AS IDENTITY 序列不复用，故无「新采购方继承已删历史」的撞号风险，谁都不要为整理序号去 reset 它。口径全文见 §7.1.1。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【§7.1.1 三条强制条件对齐（审查四轮 N5/N6/N7）】审计侧 8221203 在 main 落 §7.1.1 确认 0047 外键改软引用并附三条强制条件，本单逐条落地：(a) 同事务墓碑——原实现已满足；(b) 前半——采购单列表接 purchaser_label 两段式解析（主表→墓碑「XX（已删除）」，与 audit-logs 操作人共用 deleted_labels helper；§7.1.1 明令不加 purchaser_name 冗余列），墓碑 label 测试改逐字断言；(b) 后半——test_baseline 新增 TestSoftReferenceInvariant（任何非空 purchaser_id 必须命中主表或墓碑）；(c)——按铁律 1「实现与图纸冲突改代码」把拒删路线改为图纸的退回路线：assigned/pending_review 单退回 unassigned 清空 purchaser_id（汇率未锁）、claimed 及其后保留原 id（汇率已锁），PURCHASER_DELETE_IN_FLIGHT 移除，回执带 orders_returned/orders_retained；契约与前端（OrdersPage 解析优先、PurchasersPage 文案）同步。部署指令 v3：⑧-4 按新语义重写 + ⑤判据按 N8 改具名比对。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【审查五轮 A/B/C/E 落地】A：在途守卫补回——退回未锁汇率单后仍有非终态单（已锁汇率执行中）→ 409 PURCHASER_DELETE_IN_FLIGHT；§7.1.1(c)「claimed 及其后保留 purchaser_id」按 id 保留规则理解，不作在途可删授权（审查点出门户 mine 失单与 exception 死路两个具体后果；若审计侧明文认可在途可删再放开）。B：退回谓词改事实判（exchange_rate_locked IS NULL AND 非终态），fail-open 白名单消除，未来新增领单前状态自动落进退回侧。C：N6 不变量测试重做为有牙齿版——用例内绕过删除服务直删制造悬空引用，断言查询抓得到，清理后再断言全库干净。E：退回时 channel_order.internal_status 对称退回 checked（assign_po 的逆操作），测试内联断言。D：真机⑧-4 恢复两段式（claimed 拒删→backfilled 删+label 解析），退回分支 CI 覆盖并要求回执写明。契约（409 恢复、DELETE 语义按守卫+退回组合重写）、前端弹窗、指令 v4 同步。"
+   },
+   {
+    "date": "2026-07-31",
+    "kind": "progress",
+    "text": "【第三闸真机验证通过（PR #49 / 14b）】部署机 ①–⑫ 全过，回执归档 .agent/evidence/R2-14/deploy-verify-pr49-receipt.md。被验代码 b97318c、指令终版 1d89fff（v6）。承重四条真机成立：验收③已删操作人 label_hex 逐字节命中「R14B验证用户乙（已删除）」；§7.1.1(b) 前半——终态执行单 purchaser_id=3 原值保留（fk_exists=0 软引用落地）且列表经墓碑解析出「R14B外协丙（已删除）」；验收⑤ ③级表指纹逐字不变、audit 条件式 199+1+4=204 吻合（4a 被拒不写审计）；在途守卫 claimed 拒删 409。⑧-4 退回分支未真机执行、CI 三用例覆盖（五轮 D 口径，回执写明）。迁移 0047↔0042 往返成立（perms 59↔56、fk 0↔1）。**过程：一次停机、一条指令缺陷、产品代码零缺陷**——⑧-3 首停为 PS 5.1 对无 charset JSON 默认 ISO-8859-1 解码致中文判据乱码（库内字节正确由⑧-2 psql 直读证明，非产品缺陷）；v6 修法=HTTP 中文判据改原始字节 UTF-8 解码+十六进制比对（纯 ASCII），同类全扫仅⑧-3/⑧-4 两处，指令缺陷类别新增「HTTP 响应中文参与判据未考虑客户端解码」入写法约定。闸序：①✅（run 30596714932 四绿）②✅（十一轮零保留，1d89fff 指令修订待复核）③✅，唯待 Owner ④ 合并授权（外加公开/转私决定）。"
    }
   ]
  },
@@ -1092,7 +1112,7 @@
   "id": "R2-15",
   "priority": "P0",
   "dimension": "product",
-  "status": "in_progress",
+  "status": "accepted",
   "check": "SKU 内外分离(D-Q72,修订D1)：listing.channel_sku 在 source_channel='amazon' 时取 ASIN(同店冲突加 -N 后缀,唯一约束仍为 (store_id,channel_sku) 故跨店同 ASIN 不冲突)；master_sku 保留为内部身份不再默认发渠道；master_sku 生成式由 'M'||lpad(...,7,'0') 改 'M'||to_char(...,'FM000000000') 修截断撞号缺陷",
   "evidence": [
    "specs/000-founding/DECISION-FORM.md",
@@ -1118,6 +1138,11 @@
     "date": "2026-07-30",
     "kind": "progress",
     "text": "【第三闸 PASS（PR #48 真机最终回执，锚点 HEAD=3fe960f）】①-⑬全过（⑨⑩按判据条件跳过）：判据①③⑤真机成立（channel_sku=ASIN 且库=API 回显；-2/-3 后缀；存量 67 行指纹前后逐字不变）；判据④真机 probe=M000002487（M+9 位）；⑪渠道写路径 dry-run 证据经 Owner 授权受控窗口取得——载荷 SKU=B0R215V001-3（ASIN 形态）、master_sku 0 次出现、MP_ITEM_MATCH v4.2，与云端沙箱同代码路径替证互证一致（channel_command id=16 留库为证）；⑫ 0042→0041→0042 可逆性演练全过。真机验证 5 次停机揪出 7 条缺陷全部在部署指令侧（compose 服务名/路径、PowerShell 引号拆参、验收账号权限、网关档位授权、match 缺 UPC、清理缺 listing_spec），产品代码零缺陷；指令迭代至 v7 并新增第 4 个检查器 psquotecheck。审查侧 N4（uq_listing 兜底前缀误匹配）已修码，N6（order_line 清理预期值判据）已入指令 v7；剩余闸：Owner 授权合并。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "progress",
+    "text": "【关账】PR #48 经四闸（CI 绿 / 独立审查四轮 N1-N8 收口 / 部署机第三闸真机 PASS / Owner 授权）于 2026-07-30 合并，merge commit b001616。状态置 accepted。"
    }
   ]
  },
@@ -1197,5 +1222,18 @@
   "acceptance": "①存在 AI 只读角色模板，其权限点集合为各域 *_read 的最小子集，写权限一个不含(越权测试必败)；②AI 发起的调用在 audit_log 中 actor 可辨识，不与人工混淆；③对该角色独立限流，超限拒绝而非拖垮库；④凭证可单独吊销不影响其他账号",
   "finding": "【现状核实 2026-07-29】能力面其实已具备——全部业务能力都在 REST API 之后，有完整 OpenAPI 契约(002)与权限点系统，给受限角色发 token 即可读数。缺的是三样配套：无专为 AI 设的最小只读角色模板(现权限点按域分读写)、审计日志无法区分调用主体是 AI 还是人、无针对性限流(AI 循环可能拖垮库)",
   "last_checked_at": "2026-07-29"
+ },
+ {
+  "id": "FX-0730B",
+  "priority": "P2",
+  "dimension": "product",
+  "status": "todo",
+  "check": "procurement_order 状态机 exception 无出边：assign 前置集 unassigned/assigned、claim 前置 assigned、backfill 前置 unassigned/assigned/claimed/purchased——三条都不含 exception；cancelled 更无任何写入路径。异常单一旦标记即永久卡死，无人工处置回流通道。需给 exception 增显式出边（重派/取消/恢复之一，口径归 order 域，图纸归审计侧落笔）",
+  "evidence": [
+   "backend/src/erp/order/procurement.py"
+  ],
+  "finding": "PR #49 审查六轮 F 实测（2026-07-30）：status 写入点仅 assigned/claimed/backfilled/exception 四处（procurement.py:176/198/221/255）。14b 删除路径两处受累已就地补：409 文案原承诺「回填/取消」两条不存在的出口（已改为「等回填；exception 先处置」）；未锁汇率的 exception 单经删除副作用被退回池（已显式化：exception_reason 一并清 + 审计 after 记 exceptions_released + 专用测试）。但「人工处置异常单」的正路仍缺——已锁汇率的 exception 单会让其采购方永久删不掉（守卫永不放行），这是既有状态机缺口，不该在删除路径顺手补，故立本单。",
+  "last_checked_at": "2026-07-30",
+  "acceptance": "exception 单存在至少一条显式人工出边（重新分配或取消，含权限点与审计留痕）；出边落地后 14b 删除路径的 409 文案与退回行为复核一遍口径仍自洽"
  }
 ]

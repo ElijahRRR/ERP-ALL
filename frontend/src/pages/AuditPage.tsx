@@ -83,7 +83,9 @@ export default function AuditPage() {
             width: 120,
             render: (_, log) => (
               <Tag color={ACTOR_COLOR[log.actor_type ?? 'system']}>
-                {log.actor_type}#{log.actor_id ?? '-'}
+                {/* R2-14 14b 验收③：优先显示解析名（已删用户带「（已删除）」后缀），
+                    解析不到（system/portal/极老数据）回落原 type#id */}
+                {log.actor_label ?? `${log.actor_type}#${log.actor_id ?? '-'}`}
               </Tag>
             ),
           },
