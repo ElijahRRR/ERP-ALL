@@ -9,7 +9,10 @@
 > 写法约定沿用 PR #48 指令 v7 的全部教训：每条命令写死 `-f infra/docker-compose.yml`、
 > 服务名只用 `db/redis/migrate/api/beat/scraper/frontend` 真名、路径 `D:\项目文件\ERP-ALL`、
 > SQL 载荷内**只有单引号**（JSON 用 `jsonb_build_object` 构造，双引号零出现）、
-> 判据认状态不认日志、清理单事务、预期值判据写**条件式**不写「恒为」（#49 审查 N9）。
+> 判据认状态不认日志、清理单事务、预期值判据写**条件式**不写「恒为」（#49 审查 N9）、
+> **HTTP 响应含中文的判据一律取原始字节显式按 UTF-8 解码、判据比 UTF-8 十六进制不比
+> 中文**（本单⑧-3 首停教训：PS 5.1 对无 charset 的 JSON 响应默认按 ISO-8859-1 解码，
+> 中文必乱码——属客户端解码问题，非产品缺陷）。
 
 ## 铁律（本次全程有效）
 
@@ -258,11 +261,25 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 **⑧-3 验收③真机承重：审计里已删操作人显示「XX（已删除）」**
 
+> 编码安全写法（本步首跑停点的修复）：响应取原始字节显式按 UTF-8 解码；判据不再比
+> 中文字符串，改比 UTF-8 十六进制——纯 ASCII，响应解码、粘贴输入、控制台显示三层
+> 编码差异全部失效。库内 label 字节正确已由⑧-2 的 psql 直读证明；JSON 按 RFC 8259
+> 即 UTF-8，浏览器前端解码正确不受影响（⑩ 有人眼复核）。
+
 ```powershell
-(Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/audit-logs?actor_id=<U2>" -Headers @{ Authorization = "Bearer $TOKEN" }).items | Select-Object action, actor_id, actor_label | ConvertTo-Json
+$R83 = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/audit-logs?actor_id=<U2>" -Headers @{ Authorization = "Bearer $TOKEN" } -UseBasicParsing
+$J83 = [Text.Encoding]::UTF8.GetString($R83.RawContentStream.ToArray()) | ConvertFrom-Json
+$J83.items | Select-Object action, actor_id | ConvertTo-Json
+$LBL83 = ($J83.items | Where-Object { $_.action -eq 'r14b.noop' } | Select-Object -First 1).actor_label
+$HEX83 = ([Text.Encoding]::UTF8.GetBytes($LBL83) | ForEach-Object { $_.ToString('x2') }) -join ''
+"label_hex=$HEX83"
+"label_hex_match=$($HEX83 -eq '52313442e9aa8ce8af81e794a8e688b7e4b999efbc88e5b7b2e588a0e999a4efbc89')"
 ```
 
-**判据**：至少一条（那条 `r14b.noop`），其 `actor_label` **= `R14B验证用户乙（已删除）`**。
+**判据**：`label_hex_match = True`；`label_hex` 原样贴回执。期望值即
+`R14B验证用户乙（已删除）` 的 UTF-8 字节（备查：`52313442`=`R14B`、`e9aa8c`=验、
+`e8af81`=证、`e794a8`=用、`e688b7`=户、`e4b999`=乙、`efbc88`=（、`e5b7b2`=已、
+`e588a0`=删、`e999a4`=除、`efbc89`=））。
 
 **⑧-4 采购方：执行中拒删 → 终态可删 + 保留原 id + 墓碑解析出名字**
 
@@ -272,7 +289,12 @@ try { Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reaso
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "UPDATE app.procurement_order SET status = 'backfilled' WHERE purchase_order_ref = 'R14B0730-PO1';"
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/purchasers/<P2>?reason=R14B-14b-acceptance-4b" -Method Delete -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.purchaser WHERE id = <P2>) AS purchaser_left, (SELECT purchaser_id FROM app.procurement_order WHERE purchase_order_ref = 'R14B0730-PO1') AS po_purchaser_id, (SELECT label FROM app.deleted_principal WHERE kind = 'purchaser' AND id = <P2>) AS tombstone_label;"
-(Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/procurement-orders?purchaser_id=<P2>" -Headers @{ Authorization = "Bearer $TOKEN" }).items | Select-Object id, status, purchaser_id, purchaser_label | ConvertTo-Json
+$R84 = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/procurement-orders?purchaser_id=<P2>" -Headers @{ Authorization = "Bearer $TOKEN" } -UseBasicParsing
+$J84 = [Text.Encoding]::UTF8.GetString($R84.RawContentStream.ToArray()) | ConvertFrom-Json
+$J84.items | Select-Object id, status, purchaser_id | ConvertTo-Json
+$HEX84 = ([Text.Encoding]::UTF8.GetBytes(($J84.items | Select-Object -First 1).purchaser_label) | ForEach-Object { $_.ToString('x2') }) -join ''
+"plabel_hex=$HEX84"
+"plabel_hex_match=$($HEX84 -eq '52313442e5a496e58d8fe4b899efbc88e5b7b2e588a0e999a4efbc89')"
 ```
 
 **判据**：第一次删（claimed，执行中）被拒且报文含 `PURCHASER_DELETE_IN_FLIGHT`
@@ -280,7 +302,9 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 `orders_returned = 0`、`orders_retained = 1`；`purchaser_left = 0`、
 **`po_purchaser_id = <P2> 原值**（不是 NULL——软引用，③级行保留原 id）、
 `tombstone_label = R14B外协丙`；采购单列表该行
-**`purchaser_label = R14B外协丙（已删除）`**（§7.1.1(b) 前半的真机承重——
+**`plabel_hex_match = True`**、`plabel_hex` 原样贴回执（期望值即
+`R14B外协丙（已删除）` 的 UTF-8 字节：`52313442`=`R14B`、`e5a496`=外、`e58d8f`=协、
+`e4b899`=丙、后缀「（已删除）」同⑧-3 备查表）（§7.1.1(b) 前半的真机承重——
 墓碑不是只写不读，历史单据解析得出「当时是谁采的」）。
 
 > **退回分支（§7.1.1(c)，未锁汇率单退回池）真机不跑**：需要另造 assigned 态渠道订单链，
