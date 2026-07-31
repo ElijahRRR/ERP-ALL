@@ -12,6 +12,7 @@ import ListingsPage from '@/pages/ListingsPage'
 import LoginPage from '@/pages/LoginPage'
 import NotificationsPage from '@/pages/NotificationsPage'
 import OrdersPage from '@/pages/OrdersPage'
+import PluginInstancesPage from '@/pages/PluginInstancesPage'
 import PricingPage from '@/pages/PricingPage'
 import ProductsPage from '@/pages/ProductsPage'
 import ProxiesPage from '@/pages/ProxiesPage'
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/purchasers" element={<PurchasersPage />} />
             <Route path="/buyer-accounts" element={<BuyerAccountsPage />} />
+            <Route path="/plugin-instances" element={<PluginInstancesPage />} />
             <Route path="/stores" element={<StoresPage />} />
             <Route path="/incidents" element={<IncidentsPage />} />
             <Route path="/compliance" element={<CompliancePage />} />

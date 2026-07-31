@@ -203,19 +203,29 @@ async def list_accounts(
     team_id: int,
     site: str | None,
     status: str | None,
+    include_rejected: bool = False,
     q: str | None,
     page: int,
     size: int,
 ) -> Page[dict[str, Any]]:
-    """服务端分页（008 §3）——账号池会长到几十上百条，不做一次拉全量的列表。"""
+    """服务端分页（008 §3）——账号池会长到几十上百条，不做一次拉全量的列表。
+
+    **默认折叠 `rejected`**：驳回是终态且不删行（无 DELETE 授权，粘性即治理），
+    被灌过伪造 customerId 的团队池子里会长期躺着一堆已驳回行。语义逐字照搬 14c
+    折叠 `retired` 的既有做法（`catalog/router.py::list_products`）。
+    """
     where = "WHERE team_id = :t"
     params: dict[str, Any] = {"t": team_id}
     if site:
         where += " AND site = :site"
         params["site"] = site
     if status:
+        # **显式筛选优先，折叠不叠加**（同 14c）：运营在下拉里选「已驳回」却得到空列表，
+        # 看起来就是功能坏了。故 status 与 include_rejected 是互斥两条路，不是 AND。
         where += " AND status = :st"
         params["st"] = status
+    elif not include_rejected:
+        where += " AND status <> 'rejected'"
     if q:
         where += " AND label ILIKE :q"
         params["q"] = f"%{q}%"

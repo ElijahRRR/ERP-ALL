@@ -1180,6 +1180,47 @@ class TestBuyerAccountCrud:
             f"审计动作名没按转移分化（实得 {sorted(actions)}）"
         )
 
+    def test_rejected_is_folded_by_default(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """列表默认折叠 `rejected`，且**显式筛选优先、折叠不叠加**（同 14c 折叠 retired）。
+
+        为什么要折叠：驳回是终态且**不删行**（无 DELETE 授权，粘性即治理），被人灌过
+        一轮伪造 customerId 的团队池子里会长期躺着一堆已驳回行——默认视图堆满垃圾，
+        真正要认领的那条就看不见了。
+
+        为什么必须落在**后端**而不是前端过滤：`total` 要跟着筛选走。前端把 rejected
+        滤掉而 total 仍按全量算，翻页会出现半空页与对不上的总数（008 §3 服务端分页）。
+
+        三条判据缺一不可——**只做前两条时，「运营在下拉里选『已驳回』得到空列表」
+        这个功能坏掉的形状不会被发现**。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        tag = uuid.uuid4().hex[:8].upper()
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            for cid, st in ((f"K{tag}", "active"), (f"R{tag}", "rejected")):
+                conn.execute(
+                    "INSERT INTO app.buyer_account"
+                    " (team_id, label, site, external_customer_id, status)"
+                    " VALUES (%s, %s, 'amazon_com', %s, %s)",
+                    (seeded["team"], f"{st}-{tag}", cid, st),
+                )
+
+        def ids(qs: str) -> set[str]:
+            r = client.get(f"/api/v1/buyer-accounts?size=200{qs}", headers=auth)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["total"] == len(body["items"]), (
+                "total 与本页条数不一致——筛选没落在 SQL 里（前端过滤会让翻页错位）"
+            )
+            return {i["external_customer_id"] for i in body["items"]}
+
+        assert ids("") == {f"K{tag}"}, "默认列表把已驳回行也带出来了"
+        assert ids("&include_rejected=true") == {f"K{tag}", f"R{tag}"}
+        # 显式筛选优先：选「已驳回」必须真能看到，否则看起来就是功能坏了
+        assert ids("&status=rejected") == {f"R{tag}"}
+
     def test_cross_team_is_invisible(
         self, client: TestClient, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
     ) -> None:

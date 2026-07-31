@@ -1,21 +1,21 @@
 import {
   Alert,
   Button,
-  Form,
+  Checkbox,
   Input,
-  InputNumber,
   Modal,
   Select,
   Space,
   Table,
   Tag,
+  Tooltip,
   message,
 } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
 import { ApiError, api, type BuyerAccount, type PageOf } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
-import PluginInstanceDrawer from '@/pages/buyerAccounts/PluginInstanceDrawer'
+import { AccountForm, ClaimForm, type FormValues } from '@/pages/buyerAccounts/AccountForms'
 import { ACCOUNT_STATUS, SITE_LABEL, lastSeen } from '@/pages/buyerAccounts/labels'
 
 const SITE_OPTIONS = Object.entries(SITE_LABEL).map(([value, label]) => ({ value, label }))
@@ -23,86 +23,6 @@ const STATUS_OPTIONS = Object.entries(ACCOUNT_STATUS).map(([value, m]) => ({
   value,
   label: m.label,
 }))
-
-// customerId 的取值方式不是自明的（不是系统生成、也不是亚马逊页面上能直接看到的东西），
-// 表单上不写这段话运营就开不了号——Owner 2026-07-30 补-2 明确这个值就是靠插件面板那个
-// 按钮取出来人工录入的。
-const CUSTOMER_ID_HELP =
-  '在指纹浏览器里打开该买家账号的亚马逊页面 → 点插件面板「提取 customerId」→ 复制粘贴到此处（形如 A1NS3HIW4IC6P7）'
-
-interface FormValues {
-  label?: string
-  site?: string
-  external_customer_id?: string
-  status?: string
-  daily_cap?: number | null
-  note?: string
-}
-
-function AccountForm({
-  initial,
-  submitText,
-  onFinish,
-}: {
-  initial?: BuyerAccount
-  submitText: string
-  onFinish: (v: FormValues) => void | Promise<void>
-}) {
-  return (
-    <Form<FormValues>
-      layout="vertical"
-      onFinish={onFinish}
-      initialValues={{
-        label: initial?.label,
-        site: initial?.site ?? 'amazon_com',
-        external_customer_id: initial?.external_customer_id,
-        status: initial?.status ?? 'active',
-        daily_cap: initial?.daily_cap ?? undefined,
-        note: initial?.note ?? undefined,
-      }}
-    >
-      <Form.Item
-        label="账号名"
-        name="label"
-        extra="语义 = 对应哪一个指纹浏览器——运营靠它把系统里的号和桌面上开着的窗口对上"
-        rules={[{ required: true, message: '请填写账号名' }]}
-      >
-        <Input placeholder="如：指纹浏览器 07 号窗口" maxLength={100} />
-      </Form.Item>
-      <Form.Item label="站点" name="site" rules={[{ required: true }]}>
-        <Select options={SITE_OPTIONS} />
-      </Form.Item>
-      <Form.Item
-        label="customerId"
-        name="external_customer_id"
-        extra={CUSTOMER_ID_HELP}
-        rules={[{ required: true, message: '请填写 customerId' }]}
-      >
-        <Input placeholder="A1NS3HIW4IC6P7" maxLength={64} />
-      </Form.Item>
-      <Form.Item
-        label="状态"
-        name="status"
-        extra="非「启用」一律不再派新任务；但已派出去的单，其回填/异常/物流回报照常收（钱可能已经花出去了）"
-      >
-        <Select options={STATUS_OPTIONS} />
-      </Form.Item>
-      <Form.Item
-        label="单日上限"
-        name="daily_cap"
-        extra="按「当日已派发且未取消的单数」计，不按拍成的单数计；留空 = 不限。这一列是日限的唯一权威"
-      >
-        <InputNumber min={1} max={10000} style={{ width: '100%' }} placeholder="留空 = 不限" />
-      </Form.Item>
-      <Form.Item label="备注" name="note">
-        <Input.TextArea rows={2} maxLength={1000} />
-      </Form.Item>
-      <Button type="primary" htmlType="submit" block>
-        {submitText}
-      </Button>
-    </Form>
-  )
-}
 
 export default function BuyerAccountsPage() {
   const { has } = useAuth()
@@ -113,10 +33,19 @@ export default function BuyerAccountsPage() {
   const [page, setPage] = useState(1)
   const [site, setSite] = useState<string | undefined>()
   const [status, setStatus] = useState<string | undefined>()
+  // 默认折叠已驳回（后端 `include_rejected`，同 14c 产品页折叠 retired）。驳回是终态且
+  // 不删行，被灌过一轮伪造 customerId 的团队池子里会长期躺着一堆——默认视图堆满垃圾，
+  // 真正要认领的那条就看不见了。
+  const [includeRejected, setIncludeRejected] = useState(false)
   const [q, setQ] = useState('')
+  const [qInput, setQInput] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<BuyerAccount | null>(null)
-  const [instancesOf, setInstancesOf] = useState<BuyerAccount | null>(null)
+  const [claiming, setClaiming] = useState<BuyerAccount | null>(null)
+  // 待认领行数：单独一次 count 查询（size=1 只取 total），走 `ix_buyer_account_pending`。
+  // 不从当前页数据里数——默认视图可能被站点/搜索筛过，也可能翻在第 3 页，
+  // 而「有几个号在等人认领」必须是全池的数，否则这条提示会漏报。
+  const [pendingCount, setPendingCount] = useState(0)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -126,18 +55,25 @@ export default function BuyerAccountsPage() {
         `page=${page}`,
         'size=20',
         site ? `site=${site}` : '',
-        status ? `status=${status}` : '',
+        // 后端语义：显式 status 时 include_rejected 不生效（按状态精确筛选优先）。
+        // 故只在无 status 时才发它——发一个后端会忽略的参数等于在请求里留一句假话。
+        status ? `status=${status}` : includeRejected ? 'include_rejected=true' : '',
         q ? `q=${encodeURIComponent(q)}` : '',
       ]
         .filter(Boolean)
         .join('&')
-      setData(await api.get<PageOf<BuyerAccount>>(`/buyer-accounts?${qs}`))
+      const [pageData, pending] = await Promise.all([
+        api.get<PageOf<BuyerAccount>>(`/buyer-accounts?${qs}`),
+        api.get<PageOf<BuyerAccount>>('/buyer-accounts?status=pending_claim&page=1&size=1'),
+      ])
+      setData(pageData)
+      setPendingCount(pending.total ?? 0)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [page, site, status, q])
+  }, [page, site, status, includeRejected, q])
 
   useEffect(() => {
     void load()
@@ -175,6 +111,48 @@ export default function BuyerAccountsPage() {
     }
   }
 
+  async function onClaim(values: FormValues) {
+    if (!claiming) return
+    try {
+      await api.patch(`/buyer-accounts/${claiming.id}`, {
+        ...values,
+        status: 'active',
+        daily_cap: values.daily_cap ?? null,
+      })
+      message.success(`已认领并启用：${values.label}`)
+      setClaiming(null)
+      void load()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '认领失败')
+    }
+  }
+
+  function confirmReject(row: BuyerAccount) {
+    Modal.confirm({
+      title: '确认驳回这个 customerId？',
+      content: (
+        <>
+          驳回后 <code>{row.external_customer_id}</code> 变成<b>终态「已驳回」，不可撤销</b>；
+          该 customerId 会被<b>永久占用</b>，此后插件再带它上来也不会重新登记、不会再有通知。
+          <br />
+          用于「这不是我们的号」——若只是暂时不想派单给它，请改用认领后置为「暂停派单」。
+        </>
+      ),
+      okText: '确认驳回',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await api.patch(`/buyer-accounts/${row.id}`, { status: 'rejected' })
+          message.success('已驳回')
+          void load()
+        } catch (e) {
+          message.error(e instanceof ApiError ? e.message : '驳回失败')
+        }
+      },
+    })
+  }
+
   return (
     <>
       <Alert
@@ -182,18 +160,57 @@ export default function BuyerAccountsPage() {
         showIcon
         style={{ marginBottom: 16 }}
         message="买家账号 = 一个亚马逊下单号；它登录在哪个指纹浏览器里由「账号名」标注，代理与指纹由外部浏览器管理，ERP 不管代理。"
-        description="派单只发给「启用」且当日未超限的账号；同一渠道订单只会派给一个买家账号（库层唯一索引兜底）。账号本期只停用不删除。"
+        description={
+          <>
+            账号<b>不靠人工预录入</b>：插件每次请求都会带上它当前登录的 customerId，本团队没见过
+            的会自动落成一条「待认领」行并通知——补齐账号名与站点<b>认领</b>后才开始派单。
+            令牌绑的是<b>一台授权浏览器</b>而不是买家账号（在「插件实例」页签发），同一台机器换登
+            另一个已认领的号，派单会自动跟着走。派单只发给「启用」且当日未超限的账号；同一渠道订单
+            只会派给一个买家账号（库层唯一索引兜底）。账号本期只停用不删除。
+          </>
+        }
       />
+      {pendingCount > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`有 ${pendingCount} 个待认领的买家号——它们收不到任何派单`}
+          description="这些是插件上报过、但还没人确认的 customerId。是我们的号就认领（补账号名与站点），不是就驳回。"
+          action={
+            <Button
+              size="small"
+              onClick={() => {
+                setPage(1)
+                setSite(undefined)
+                // 必须连搜索框的显示值一起清：待认领行的 label 是 NULL，任何 `q`
+                // 都会把它们滤掉（`label ILIKE :q` 对 NULL 恒为 NULL）——只清 q 而
+                // 留着框里的旧字，用户会看到「筛了待认领却一条没有」且找不到原因。
+                setQInput('')
+                setQ('')
+                setStatus('pending_claim')
+              }}
+            >
+              只看待认领
+            </Button>
+          }
+        />
+      )}
       <Space style={{ marginBottom: 16 }} wrap>
         {canAdmin && (
           <Button type="primary" onClick={() => setCreateOpen(true)}>
             新建买家账号
           </Button>
         )}
+        {/* 受控：`qInput` 是框里显示的字，`q` 是**已生效**的筛选值。两者分开而不是
+            合成一个，是为了保住「回车才搜」的语义（合成一个就变成逐键请求）；
+            而搜索框必须受控，否则上面「只看待认领」清不掉它显示的旧字。 */}
         <Input.Search
           allowClear
           placeholder="按账号名搜索"
           style={{ width: 200 }}
+          value={qInput}
+          onChange={(e) => setQInput(e.target.value)}
           onSearch={(v) => {
             setQ(v)
             setPage(1)
@@ -221,6 +238,21 @@ export default function BuyerAccountsPage() {
           }}
           options={STATUS_OPTIONS}
         />
+        {/* 开关在选了状态时**禁用而非静默失效**（同 14c 产品页）：后端此时忽略
+            include_rejected，留一个点得动却不起作用的勾正是本项目反复栽跟头的
+            那类「看起来配着、实际没生效」。 */}
+        <Tooltip title={status ? '已按状态精确筛选，此时不再折叠——清空状态筛选后可用' : ''}>
+          <Checkbox
+            disabled={!!status}
+            checked={includeRejected}
+            onChange={(e) => {
+              setPage(1)
+              setIncludeRejected(e.target.checked)
+            }}
+          >
+            显示已驳回
+          </Checkbox>
+        </Tooltip>
         <Button onClick={() => void load()}>刷新</Button>
       </Space>
       {error && (
@@ -230,7 +262,10 @@ export default function BuyerAccountsPage() {
         rowKey={(r) => r.id ?? 0}
         loading={loading}
         dataSource={data?.items ?? []}
-        locale={{ emptyText: '还没有买家账号——先建一个，再给它签发插件实例令牌' }}
+        locale={{
+          emptyText:
+            '还没有买家账号——去「插件实例」页签发一把令牌，让那台浏览器跑一次拉取，账号会自动出现在这里等认领',
+        }}
         pagination={{
           current: page,
           pageSize: data?.size ?? 20,
@@ -239,12 +274,17 @@ export default function BuyerAccountsPage() {
           onChange: setPage,
         }}
         columns={[
-          { title: '账号名', dataIndex: 'label' },
+          {
+            title: '账号名',
+            dataIndex: 'label',
+            // 待认领/已驳回行没有账号名（首见登记时服务端只知道一个 customerId，名字是人给的）
+            render: (v?: string | null) => v ?? <span style={{ color: '#999' }}>—（未认领）</span>,
+          },
           {
             title: '站点',
             dataIndex: 'site',
             width: 190,
-            render: (s?: string) => (s ? (SITE_LABEL[s] ?? s) : '—'),
+            render: (s?: string | null) => (s ? (SITE_LABEL[s] ?? s) : '—'),
           },
           {
             title: 'customerId',
@@ -275,6 +315,9 @@ export default function BuyerAccountsPage() {
               // 已退役的账号不谈掉线——它本来就不该再上线，标灰会变成噪音
               if (row.status === 'retired') return '—'
               const s = lastSeen(v)
+              // 已驳回同理不标「疑似掉线」；但**时间照显**——一个被驳回的 customerId 仍在
+              // 活动，正是「有人在灌」的信号，藏起来就看不见了
+              if (row.status === 'rejected') return s.text
               return s.stale ? (
                 <span style={{ color: '#999' }}>{s.text}（疑似掉线）</span>
               ) : (
@@ -283,39 +326,52 @@ export default function BuyerAccountsPage() {
             },
           },
           {
-            title: '在用实例',
-            dataIndex: 'active_instance_count',
-            width: 100,
-            render: (v?: number) =>
-              v ? v : <span style={{ color: '#999' }}>0（无实例，拉不了单）</span>,
-          },
-          {
             title: '操作',
             key: 'op',
-            width: 170,
-            render: (_, row) => (
-              <Space>
-                {canAdmin && (
-                  <Button size="small" onClick={() => setEditing(row)}>
-                    编辑
-                  </Button>
-                )}
-                <Button size="small" onClick={() => setInstancesOf(row)}>
-                  插件实例
+            width: 180,
+            render: (_, row) => {
+              if (!canAdmin) return null
+              if (row.status === 'pending_claim') {
+                return (
+                  <Space>
+                    <Button type="primary" size="small" onClick={() => setClaiming(row)}>
+                      认领
+                    </Button>
+                    <Button size="small" danger onClick={() => confirmReject(row)}>
+                      驳回
+                    </Button>
+                  </Space>
+                )
+              }
+              // 已驳回是终态：不给编辑入口——那一行唯一还能改的只有备注，
+              // 而放一个「编辑」按钮会让人以为还能改回启用（后端一律 409）
+              if (row.status === 'rejected') {
+                return <span style={{ color: '#999' }}>终态</span>
+              }
+              return (
+                <Button size="small" onClick={() => setEditing(row)}>
+                  编辑
                 </Button>
-              </Space>
-            ),
+              )
+            },
           },
         ]}
       />
 
       <Modal
-        title="新建买家账号"
+        title="新建买家账号（可选捷径）"
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         footer={null}
         destroyOnHidden
       >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="通常不需要走这里"
+          description="主路径是让插件在那台浏览器上跑一次拉取，系统会自动登记待认领行。只有手上已经有 customerId 时，预建才能省一轮往返。"
+        />
         <AccountForm submitText="创建" onFinish={onCreate} />
       </Modal>
 
@@ -329,13 +385,15 @@ export default function BuyerAccountsPage() {
         {editing && <AccountForm initial={editing} submitText="保存" onFinish={onEdit} />}
       </Modal>
 
-      {instancesOf && (
-        <PluginInstanceDrawer
-          account={instancesOf}
-          onClose={() => setInstancesOf(null)}
-          onChanged={() => void load()}
-        />
-      )}
+      <Modal
+        title="认领买家账号"
+        open={!!claiming}
+        onCancel={() => setClaiming(null)}
+        footer={null}
+        destroyOnHidden
+      >
+        {claiming && <ClaimForm account={claiming} onFinish={onClaim} />}
+      </Modal>
     </>
   )
 }

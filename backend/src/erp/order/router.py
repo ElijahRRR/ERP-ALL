@@ -632,15 +632,28 @@ async def list_buyer_accounts(
         default=None,
         description="pending_claim=插件首见自动登记的待认领行（一律不派单）；rejected=已驳回终态",
     ),
+    include_rejected: bool = Query(
+        default=False,
+        description="是否包含已驳回（rejected）行；默认折叠。显式传 status 时本参数不生效。",
+    ),
     q: str | None = Query(default=None, description="按 label 模糊搜索"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
 ) -> Page[dict[str, Any]]:
+    """列买家账号池（服务端分页）。**默认折叠 `rejected`**。
+
+    折叠的理由不是美观：驳回是终态且**不删行**（本表无 DELETE 授权，粘性即治理），
+    所以被人灌过一轮伪造 customerId 的团队，账号池里会长期躺着一堆已驳回行。
+    默认视图把它们收起来，与 14c 产品页折叠 `retired` 同一做法与同一语义
+    （`catalog/router.py::list_products`）：**显式筛选优先，折叠不叠加**——
+    运营在状态下拉里选「已驳回」时必须真能看到它们，否则看起来就是功能坏了。
+    """
     return await buyer_account_service.list_accounts(
         session,
         team_id=user.team_id or -1,
         site=site,
         status=status,
+        include_rejected=include_rejected,
         q=q,
         page=page,
         size=size,

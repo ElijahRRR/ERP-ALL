@@ -4282,7 +4282,10 @@ export interface paths {
                     page?: components["parameters"]["page"];
                     size?: components["parameters"]["size"];
                     site?: "amazon_com" | "amazon_ca" | "amazon_co_jp";
-                    status?: "active" | "paused" | "blocked" | "retired";
+                    /** @description pending_claim=插件首见自动登记的待认领行（一律不派单）；rejected=已驳回终态 */
+                    status?: "pending_claim" | "active" | "paused" | "blocked" | "retired" | "rejected";
+                    /** @description 是否包含已驳回（rejected）行；默认折叠。显式传 status 时本参数不生效 */
+                    include_rejected?: boolean;
                     /** @description 按 label 模糊搜索 */
                     q?: string;
                 };
@@ -4305,8 +4308,8 @@ export interface paths {
         };
         put?: never;
         /**
-         * 建买家账号
-         * @description `external_customer_id`（＝插件侧 `customerId`）**由人工录入**，不是系统生成： 在指纹浏览器里打开该买家账号的亚马逊页面 → 点插件面板「提取 customerId」→ 复制粘贴 （Owner 2026-07-30 补-2：预配置的账号 ID 本来就是这么来的，故该按钮在 fork 版保留）。 `label` 的语义 = 对应哪个指纹浏览器（07:258）。
+         * 建买家账号（可选预建捷径）
+         * @description **主路径是首见自动登记，不是本端点**（身份模型更正，Owner 2026-07-30，图纸 07:288-340）： 让插件在那台浏览器上跑一次拉取，服务端把它带上来的 `customerId` 落成一条 `status=pending_claim` 的待认领行并通知，运营补齐 `label`/`site`(/`daily_cap`) 后走 `PATCH /buyer-accounts/{id}` 认领。本端点只在运营手上**已经**有 customerId 时省一轮往返。`external_customer_id` 在本端点仍必填——一条解析不到的账号行永远 收不到任务；不知道 customerId 时的正解是走主路径，不是在这里留空。 `label` 的语义 = 对应哪个指纹浏览器（07:258）。
          */
         post: {
             parameters: {
@@ -4348,8 +4351,18 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * 改买家账号（label/site/status/daily_cap/note/external_customer_id）
+         * 改买家账号（含**认领 / 驳回**：label/site/status/daily_cap/note/external_customer_id）
          * @description `daily_cap` **显式传 null = 改成不限**（不传 = 不动该列）。日限的唯一权威就是本列 ——`automation_policy` 的 flow config 里不得出现同名键（Owner 2026-07-30 裁定）。
+         *
+         *     **认领与驳回也走本端点**（不另开路由、不另加权限码）：
+         *     - 认领 `pending_claim → active`：必须**同时**补齐 `label` 与 `site`，缺则 422
+         *       `BUYER_ACCOUNT_CLAIM_INCOMPLETE`（库层 `ck_buyer_account_claimed` 兜底——
+         *       「active 但没站点」不可表示，否则美国号会收到加拿大单）。审计动作名 `buyer_account.claim`。
+         *     - 驳回 `pending_claim → rejected`：**终态**。不删行是刻意的（本表无 DELETE 授权），
+         *       该 customerId 被 `uq_buyer_account` 永久占住 ⇒ 同一个伪造 id 再灌只会解析到那一行，
+         *       零新增行、零新通知。审计动作名 `buyer_account.reject`。
+         *     - `rejected → *` 与**任何态 → `pending_claim`** 一律 409 `BUYER_ACCOUNT_STATUS_TRANSITION`
+         *       （待认领是系统发现态，不是运营可选态）。
          */
         patch: {
             parameters: {
@@ -4370,13 +4383,15 @@ export interface paths {
                     content?: never;
                 };
                 404: components["responses"]["Error"];
-                /** @description BUYER_ACCOUNT_DUPLICATE */
+                /** @description BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移） */
                 409: components["responses"]["Error"];
+                /** @description BUYER_ACCOUNT_CLAIM_INCOMPLETE（认领时缺 label 或 site） */
+                422: components["responses"]["Error"];
             };
         };
         trace?: never;
     };
-    "/buyer-accounts/{buyerAccountId}/plugin-instances": {
+    "/plugin-instances": {
         parameters: {
             query?: never;
             header?: never;
@@ -4384,16 +4399,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 列该账号的插件实例
-         * @description **响应不含 token 的任何形态（含 hash）**——明文只在签发响应出现一次。
+         * 本团队的插件实例列表（服务端分页）
+         * @description **响应不含 token 的任何形态（含 hash）**——明文只在签发响应出现一次。 `last_seen_customer_id` 及随之 JOIN 出来的 `last_seen_account_label` / `last_seen_account_status` 是**观察值，不参与鉴权**（0044 头注六）：它们回答排障 问题「这台机器现在登的是哪个号、认领了没有」。
          */
         get: {
             parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    buyerAccountId: components["parameters"]["buyerAccountId"];
+                query?: {
+                    page?: components["parameters"]["page"];
+                    size?: components["parameters"]["size"];
+                    status?: "active" | "revoked";
                 };
+                header?: never;
+                path?: never;
                 cookie?: never;
             };
             requestBody?: never;
@@ -4404,23 +4421,21 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["PluginInstance"][];
+                        "application/json": components["schemas"]["PluginInstancePage"];
                     };
                 };
             };
         };
         put?: never;
         /**
-         * 签发实例令牌（明文只返回这一次）
-         * @description 新签发的实例默认 `exec_mode=stop_before_payment`——**不会花钱**；升到 `live` 是一次 显式 PATCH 且有 audit 留痕。故**本端点不接受 `live`**（枚举只有两个演练档，传 live 一律 422） ——只把 live 定成「非默认值」挡不住一步直签，那条不变量得由校验器执行。 令牌明文**只在本响应里出现一次**，此后 ERP 侧任何端点 （含本组的 GET）都取不到，遗失只能吊销后重新签发。
+         * 签发实例令牌（团队级；明文只返回这一次）
+         * @description **不收买家账号**：令牌绑一台授权浏览器，装插件时还不知道那台浏览器会登哪个买家号。 插件侧只需配置 `token` 与 `baseUrl` 两项——**ERP 侧契约不要求插件存储任何身份** （`customerId` 由插件每次从亚马逊页面现抓并随请求带上）。 新签发的实例默认 `exec_mode=stop_before_payment`——**不会花钱**；升到 `live` 是一次 显式 PATCH 且有 audit 留痕。故**本端点不接受 `live`**（枚举只有两个演练档，传 live 一律 422） ——只把 live 定成「非默认值」挡不住一步直签，那条不变量得由校验器执行。 令牌明文**只在本响应里出现一次**，此后 ERP 侧任何端点（含本组的 GET）都取不到， 遗失只能吊销后重新签发。
          */
         post: {
             parameters: {
                 query?: never;
                 header?: never;
-                path: {
-                    buyerAccountId: components["parameters"]["buyerAccountId"];
-                };
+                path?: never;
                 cookie?: never;
             };
             requestBody?: {
@@ -4445,7 +4460,6 @@ export interface paths {
                         "application/json": components["schemas"]["PluginInstanceIssued"];
                     };
                 };
-                404: components["responses"]["Error"];
                 /** @description 签发档位不合法（含 `exec_mode=live`——升 live 只能走 PATCH） */
                 422: components["responses"]["Error"];
             };
@@ -5493,12 +5507,16 @@ export interface paths {
         };
         /**
          * 拉待采购任务（拉取即认领）
-         * @description **GET 但有副作用**：本端点按站点/日限/唯一派发把待采购单认领给本实例绑定的买家账号。 重复调用幂等——已认领给本账号的单会再次返回，不产生新派发、不重复消耗 `daily_cap` （插件重启/掉线后必须还能看见手上的单）。`customerId` **只做一致性校验**， 不符回 403 `PLUGIN_CUSTOMER_MISMATCH`；**授权只来自实例令牌**。 账号 `status` 非 `active` 时本端点返回空（写路径不受影响）。
+         * @description **GET 但有副作用**：本端点把 `customerId` 在**本团队范围内**解析成买家账号， 再按站点/日限/唯一派发把待采购单认领给它。重复调用幂等——已认领给该账号的单会再次 返回，不产生新派发、不重复消耗 `daily_cap`（插件重启/掉线后必须还能看见手上的单）。
+         *
+         *     `customerId` 是**路由参数不是鉴权凭据**（身份模型更正，图纸 07:288-340）： 令牌回答「这是不是团队 T 的一台授权浏览器」，`customerId` 回答「这台浏览器此刻登的 是哪个买家号」。越权边界＝**跨团队必败**，由 `plugin_instance.team_id` + RLS + 每条 SQL 的显式 `team_id = :t` 承担。
+         *
+         *     **未认领 / 从没见过 / 跨团队一律 `200` + 空数组**（响应逐字节同形，不泄漏存在性—— 任何差异化处理本身就是存在性探针）。本团队没见过的 `customerId` 会**自动落一条 `status=pending_claim` 的账号行并通知**，运营认领后才开始派单；`pending_claim` 与 `rejected` 一律不派单。待认领行数有上限（配置键 `procurement.plugin_dispatch` 的 `pending_claim_cap`），撞上限则**不登记**并发 critical 告警，响应仍同形。 账号 `status` 非 `active` 时本端点返回空（写路径不受影响）。
          */
         get: {
             parameters: {
                 query: {
-                    /** @description 插件侧买家号标识，须等于 buyer_account.external_customer_id */
+                    /** @description 插件从亚马逊页面现抓的买家号标识。服务端在本团队范围内解析成 buyer_account；**不是鉴权凭据** */
                     customerId: string;
                     /** @description 插件版本（选填），回写 plugin_instance.version */
                     v?: string;
@@ -5527,8 +5545,6 @@ export interface paths {
                 };
                 /** @description PLUGIN_AUTH（不区分原因） */
                 401: components["responses"]["Error"];
-                /** @description PLUGIN_CUSTOMER_MISMATCH */
-                403: components["responses"]["Error"];
             };
         };
         put?: never;
@@ -5548,11 +5564,14 @@ export interface paths {
         };
         /**
          * 拉待物流同步订单
-         * @description 已拍单（`purchased`/`shipped`）且有渠道单号的单。响应字段取证缺口见本组头注④。
+         * @description 该 `customerId` 解析出的账号名下、已拍单（`purchased`/`shipped`）且有渠道单号的单。 响应字段取证缺口见本组头注④。`customerId` 的语义与首见自动登记行为同端点 1 （**路由参数，未认领/未知/跨团队一律 200 + 空数组**）。
+         *
+         *     **本端点不设账号 status 闸**（与端点 1 的区别是刻意的）：它拉的是「已经买了、等物流」 的单，账号被 `paused`/`blocked` 时**必须照常同步**——包裹在路上，钱已经花了。
          */
         get: {
             parameters: {
                 query: {
+                    /** @description 同端点 1：路由参数，非鉴权凭据 */
                     customerId: string;
                     v?: string;
                 };
@@ -5576,7 +5595,6 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
-                403: components["responses"]["Error"];
             };
         };
         put?: never;
@@ -5598,7 +5616,7 @@ export interface paths {
         put?: never;
         /**
          * 采购完成回填（金额/单号/卡号后四位/预计送达）
-         * @description 幂等键 = `platformOrderNo`（自然键，跨插件重装/换实例仍成立，**不用 Idempotency-Key** ——插件侧没有生成它的地方）。同值重投 = 200 no-op；**异值不覆盖原值**，改落 `exception_kind=other` + critical 告警（那是重复下单的形状，必须让人看见）。 `execMode` 与实例当前档不符回 409 `PLUGIN_EXEC_MODE_MISMATCH`。 非本实例绑定账号的任务回 403 `PLUGIN_TASK_NOT_OWNED`（与「id 不存在」同码同状态）。
+         * @description 幂等键 = `platformOrderNo`（自然键，跨插件重装/换实例仍成立，**不用 Idempotency-Key** ——插件侧没有生成它的地方）。同值重投 = 200 no-op；**异值不覆盖原值**，改落 `exception_kind=other` + critical 告警（那是重复下单的形状，必须让人看见）。 `execMode` 与实例当前档不符回 409 `PLUGIN_EXEC_MODE_MISMATCH`。 非本团队的插件派发任务回 403 `PLUGIN_TASK_NOT_OWNED`（与「id 不存在」同码同状态）。
          */
         post: {
             parameters: {
@@ -5627,7 +5645,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
-                /** @description PLUGIN_TASK_NOT_OWNED */
+                /** @description PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥） */
                 403: components["responses"]["Error"];
                 /** @description PLUGIN_EXEC_MODE_MISMATCH */
                 409: components["responses"]["Error"];
@@ -5686,7 +5704,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
-                /** @description PLUGIN_TASK_NOT_OWNED */
+                /** @description PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥） */
                 403: components["responses"]["Error"];
             };
         };
@@ -5741,7 +5759,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
-                /** @description PLUGIN_TASK_NOT_OWNED */
+                /** @description PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥） */
                 403: components["responses"]["Error"];
             };
         };
@@ -5791,7 +5809,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
-                /** @description PLUGIN_TASK_NOT_OWNED */
+                /** @description PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥） */
                 403: components["responses"]["Error"];
             };
         };
@@ -6571,27 +6589,31 @@ export interface components {
         ProcurementPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["ProcurementOrder"][];
         };
-        /** @description 亚马逊买家账号（R2-13 13b，图纸 07:249-268）。各自登录在一个独立指纹浏览器内；代理与指纹由外部浏览器管理，**ERP 不管代理**。 */
+        /** @description 亚马逊买家账号（R2-13 13b，图纸 07:249-268 + 288-340）。各自登录在一个独立指纹浏览器内；代理与指纹由外部浏览器管理，**ERP 不管代理**。 */
         BuyerAccount: {
             id?: number;
-            /** @description 语义=对应哪个指纹浏览器 */
-            label?: string;
-            /** @enum {string} */
-            site?: "amazon_com" | "amazon_ca" | "amazon_co_jp";
-            /** @description 插件侧 customerId；**只做一致性校验，永不作授权依据**（授权只来自实例令牌） */
+            /** @description 语义=对应哪个指纹浏览器。**待认领/已驳回行为 null**——首见自动登记时服务端只知道一个 customerId，账号名是人给的 */
+            label?: string | null;
+            /**
+             * @description **待认领/已驳回行为 null**（customerId 不含站点信息，编一个占位值是假话）。一旦转 active 必须齐全（库层 ck_buyer_account_claimed）
+             * @enum {string|null}
+             */
+            site?: "amazon_com" | "amazon_ca" | "amazon_co_jp" | null;
+            /** @description 插件侧 customerId；**任务路由键，不是授权依据**。来源＝插件运行时从亚马逊页面现抓并随请求带上，由 ERP **首见自动登记**（图纸 07:288-340）；不是人工预录入 */
             external_customer_id?: string;
-            /** @enum {string} */
-            status?: "active" | "paused" | "blocked" | "retired";
+            /**
+             * @description pending_claim=首见自动登记的待认领行（**一律不派单**）；rejected=已驳回终态（该 customerId 被永久占用，此后不再自动登记）
+             * @enum {string}
+             */
+            status?: "pending_claim" | "active" | "paused" | "blocked" | "retired" | "rejected";
             /** @description null=不限。**日限的唯一权威就是这一列** */
             daily_cap?: number | null;
             /**
              * Format: date-time
-             * @description 该账号插件实例最近一次拉任务时间（掉线可见）
+             * @description 该 customerId 最近一次被插件请求解析到的时间（掉线可见；待认领行同样刷新——运营据此看出这个未认领的号此刻真的在活动）
              */
             last_seen_at?: string | null;
             note?: string | null;
-            /** @description 该账号下 status=active 的插件实例数 */
-            active_instance_count?: number;
             /** Format: date-time */
             created_at?: string;
             /** Format: date-time */
@@ -6600,11 +6622,10 @@ export interface components {
         BuyerAccountPage: components["schemas"]["PageMeta"] & {
             items?: components["schemas"]["BuyerAccount"][];
         };
-        /** @description 采购插件实例（R2-13，图纸 07:274-282 + 本轮补 exec_mode）。**本 schema 逐字不含 token 的任何形态。** */
+        /** @description 采购插件实例＝**一台授权浏览器**（R2-13，图纸 07:274-286 + 本轮补 exec_mode）。**本 schema 逐字不含 token 的任何形态**，也**不含 buyer_account_id**——令牌不绑买家账号。 */
         PluginInstance: {
             /** @description 同时是插件请求头 X-Plugin-Instance 的取值 */
             id?: number;
-            buyer_account_id?: number;
             /** @enum {string} */
             status?: "active" | "revoked";
             /**
@@ -6613,6 +6634,12 @@ export interface components {
              */
             exec_mode?: "dry_run" | "stop_before_payment" | "live";
             version?: string | null;
+            /** @description **观察值，不参与鉴权**（0044 头注六）：该浏览器最近一次带上来的 customerId，换号即自然更新。任何鉴权判定读它都等于把「令牌绑账号」偷偷接回来 */
+            last_seen_customer_id?: string | null;
+            /** @description 由 last_seen_customer_id 在本团队内 JOIN 出来的账号名（未认领时为 null）。同为观察值 */
+            last_seen_account_label?: string | null;
+            /** @description 同上，账号状态；为 pending_claim 即「这台机器登的号还没认领」——运营看出该认领谁的唯一入口 */
+            last_seen_account_status?: string | null;
             /** Format: date-time */
             last_seen_at?: string | null;
             /** Format: date-time */
@@ -6622,10 +6649,12 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
         };
-        /** @description 签发响应。**token 明文只在这里出现一次**，此后任何端点都取不到（库里只有 sha256）；遗失请吊销后重新签发。 */
+        PluginInstancePage: components["schemas"]["PageMeta"] & {
+            items?: components["schemas"]["PluginInstance"][];
+        };
+        /** @description 签发响应。**token 明文只在这里出现一次**，此后任何端点都取不到（库里只有 sha256）；遗失请吊销后重新签发。**不含 buyer_account_id**——令牌绑一台授权浏览器。 */
         PluginInstanceIssued: {
             id: number;
-            buyer_account_id: number;
             /** @description 实例专属令牌明文（禁全局共享密钥）。前端一次性展示后不得缓存、不得写 localStorage */
             token: string;
         };
@@ -7023,13 +7052,13 @@ export interface components {
                     label?: string;
                     /** @enum {string} */
                     site?: "amazon_com" | "amazon_ca" | "amazon_co_jp";
-                    /** @description 插件侧 customerId，人工用插件面板「提取 customerId」按钮取出后录入 */
+                    /** @description 插件侧 customerId。**首见自动登记是主路径**；本字段只在手工预建（可选捷径）时由运营填 */
                     external_customer_id?: string;
                     /**
-                     * @description 非 active 一律不派新任务；**但回填/异常/物流三条写路径不受影响**（钱可能已经花出去了）
+                     * @description 非 active 一律不派新任务（含 pending_claim / rejected）；**但回填/异常/物流三条写路径不受影响**（钱可能已经花出去了）。合法转移见 PATCH 端点说明——任何态都不许改回 pending_claim
                      * @enum {string}
                      */
-                    status?: "active" | "paused" | "blocked" | "retired";
+                    status?: "pending_claim" | "active" | "paused" | "blocked" | "retired" | "rejected";
                     /** @description 单日采购上限；null=不限。**显式传 null 即改成不限**，不传=不动 */
                     daily_cap?: number | null;
                     note?: string;

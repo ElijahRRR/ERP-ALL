@@ -1,28 +1,15 @@
-import {
-  Alert,
-  Button,
-  Drawer,
-  Form,
-  Input,
-  Modal,
-  Select,
-  Table,
-  Tag,
-  Typography,
-  message,
-} from 'antd'
+import { Alert, Button, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
 import {
   ApiError,
   api,
-  type BuyerAccount,
+  type PageOf,
   type PluginInstance,
   type PluginInstanceIssued,
 } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
-
-import { EXEC_MODE, fmtTime, lastSeen } from './labels'
+import { ACCOUNT_STATUS, EXEC_MODE, fmtTime, lastSeen } from '@/pages/buyerAccounts/labels'
 
 const EXEC_OPTIONS = Object.entries(EXEC_MODE).map(([value, m]) => ({ value, label: m.label }))
 /**
@@ -45,7 +32,13 @@ const ISSUE_EXEC_OPTIONS = EXEC_OPTIONS.filter((o) => o.value !== 'live')
  * （`document.execCommand`）而不是 `navigator.clipboard`：本系统按 http://内网IP 部署，
  * 非安全上下文下 `navigator.clipboard` 是 undefined，直接用会静默失效。
  */
-function IssuedTokenModal({ issued, onClose }: { issued: PluginInstanceIssued; onClose: () => void }) {
+function IssuedTokenModal({
+  issued,
+  onClose,
+}: {
+  issued: PluginInstanceIssued
+  onClose: () => void
+}) {
   return (
     <Modal
       title={`实例 #${issued.id} 已签发`}
@@ -75,24 +68,33 @@ function IssuedTokenModal({ issued, onClose }: { issued: PluginInstanceIssued; o
         {' 与 '}
         <Typography.Text code>X-Plugin-Token: 上面这串</Typography.Text>。
       </Typography.Paragraph>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+        插件侧只需要配这两个头和 baseUrl，<b>不需要配任何买家账号</b>——它登的是哪个号，
+        每次请求都会自己带上来。
+      </Typography.Paragraph>
     </Modal>
   )
 }
 
-export default function PluginInstanceDrawer({
-  account,
-  onClose,
-  onChanged,
-}: {
-  account: BuyerAccount
-  onClose: () => void
-  onChanged: () => void
-}) {
+/**
+ * 采购插件实例管理（**团队级**）。
+ *
+ * 本页此前是买家账号页下的一个抽屉（`buyerAccounts/PluginInstanceDrawer`），随身份模型
+ * 更正改成独立页：令牌绑的是**一台授权浏览器**，不绑买家账号（图纸 07:288-340）。
+ * 旧形状「先选一个账号，再给它签发令牌」正是 Owner 指出的死循环——装插件前先要知道
+ * customerId，而 customerId 只有装了插件才看得到。
+ *
+ * 「最近登录买家号」是**观察值不是绑定关系**：它由插件每次请求带上来的 customerId 在
+ * 本团队内 JOIN 出来，换号即变。任何据此推断「这台机器只能拉那个号的单」的读法都是错的。
+ */
+export default function PluginInstancesPage() {
   const { has } = useAuth()
   const canAdmin = has('procurement.plugin_instance_admin')
-  const [items, setItems] = useState<PluginInstance[]>([])
+  const [data, setData] = useState<PageOf<PluginInstance> | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [status, setStatus] = useState<string | undefined>()
   const [issueOpen, setIssueOpen] = useState(false)
   const [issued, setIssued] = useState<PluginInstanceIssued | null>(null)
 
@@ -100,13 +102,14 @@ export default function PluginInstanceDrawer({
     setLoading(true)
     setError(null)
     try {
-      setItems(await api.get<PluginInstance[]>(`/buyer-accounts/${account.id}/plugin-instances`))
+      const qs = status ? `&status=${status}` : ''
+      setData(await api.get<PageOf<PluginInstance>>(`/plugin-instances?page=${page}&size=20${qs}`))
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [account.id])
+  }, [page, status])
 
   useEffect(() => {
     void load()
@@ -115,14 +118,13 @@ export default function PluginInstanceDrawer({
   async function issue(values: { exec_mode?: string; version?: string }) {
     try {
       const r = await api.post<PluginInstanceIssued>(
-        `/buyer-accounts/${account.id}/plugin-instances`,
+        '/plugin-instances',
         // 版本留空就别送空串——存进去列表里会显示成一个空格而不是「—」
         { ...values, version: values.version || undefined },
       )
       setIssueOpen(false)
       setIssued(r) // 明文只在这个 state 里活到弹窗关闭
       void load()
-      onChanged()
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '签发失败')
     }
@@ -133,7 +135,6 @@ export default function PluginInstanceDrawer({
       await api.post(`/plugin-instances/${row.id}/revoke`)
       message.success(`实例 #${row.id} 已吊销`)
       void load()
-      onChanged()
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '吊销失败')
     }
@@ -157,8 +158,8 @@ export default function PluginInstanceDrawer({
         title: `确认把实例 #${row.id} 切到实盘 live？`,
         content: (
           <>
-            切换后该实例执行的采购任务会<b>真实下单、真实扣款</b>
-            。仅在该买家账号与插件已完成「付款前停」演练、且本轮要正式跑单时才切。
+            切换后这台浏览器执行的采购任务会<b>真实下单、真实扣款</b>
+            ，无论它当时登的是哪个买家号。仅在这台机器已完成「付款前停」演练、且本轮要正式跑单时才切。
           </>
         ),
         okText: '确认切到 live',
@@ -172,35 +173,58 @@ export default function PluginInstanceDrawer({
   }
 
   return (
-    <Drawer
-      title={`插件实例：${account.label ?? ''}`}
-      open
-      width={840}
-      onClose={onClose}
-      extra={
-        canAdmin ? (
-          <Button type="primary" onClick={() => setIssueOpen(true)}>
-            签发新实例
-          </Button>
-        ) : null
-      }
-    >
+    <>
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="一个实例 = 一个装了插件的浏览器；令牌是实例专属的，禁止多机共用一把。"
-        description="新签发的实例默认「付款前停」，不会花钱。掉线判断看「最近上线」——它由插件拉任务时写。"
+        message="一个实例 = 一台装了插件的授权浏览器；令牌是实例专属的，禁止多机共用一把。"
+        description={
+          <>
+            令牌<b>不绑买家账号</b>：这台机器此刻登的是哪个号，由插件每次请求自己带上来，服务端在
+            本团队范围内解析——换登另一个已认领的号，派单会自动跟着走。插件侧只需要配令牌与
+            baseUrl 两项。新签发的实例默认「付款前停」，不会花钱。掉线判断看「最近上线」——它由
+            插件拉任务时写。
+          </>
+        }
       />
+      <Space style={{ marginBottom: 16 }} wrap>
+        {canAdmin && (
+          <Button type="primary" onClick={() => setIssueOpen(true)}>
+            签发新实例
+          </Button>
+        )}
+        <Select
+          allowClear
+          placeholder="按状态筛选"
+          style={{ width: 150 }}
+          value={status}
+          onChange={(v) => {
+            setStatus(v)
+            setPage(1)
+          }}
+          options={[
+            { value: 'active', label: '在用' },
+            { value: 'revoked', label: '已吊销' },
+          ]}
+        />
+        <Button onClick={() => void load()}>刷新</Button>
+      </Space>
       {error && (
         <Alert type="error" showIcon style={{ marginBottom: 16 }} message={error} closable />
       )}
       <Table<PluginInstance>
         rowKey={(r) => r.id ?? 0}
         loading={loading}
-        dataSource={items}
-        pagination={false}
-        locale={{ emptyText: '该账号还没有插件实例——点右上角「签发新实例」拿令牌' }}
+        dataSource={data?.items ?? []}
+        pagination={{
+          current: page,
+          pageSize: data?.size ?? 20,
+          total: data?.total ?? 0,
+          showSizeChanger: false,
+          onChange: setPage,
+        }}
+        locale={{ emptyText: '本团队还没有插件实例——点左上角「签发新实例」拿令牌' }}
         columns={[
           { title: '实例 ID', dataIndex: 'id', width: 90 },
           {
@@ -228,6 +252,36 @@ export default function PluginInstanceDrawer({
                   {(m && EXEC_MODE[m]?.label) ?? m ?? '—'}
                 </Tag>
               ),
+          },
+          {
+            // 图纸 07:283 的排障场景（「这台机器现在登的是哪个号」）。**观察值，不是绑定**。
+            // 只显示一串 customerId 对运营没用，故后端把账号名与账号状态 JOIN 出来一并给：
+            // 标着「待认领」的那些，正是这一页唯一能看出「该去认领谁」的入口。
+            title: '最近登录买家号',
+            dataIndex: 'last_seen_account_label',
+            width: 230,
+            render: (label: string | null | undefined, row) => {
+              if (!row.last_seen_customer_id) {
+                return <span style={{ color: '#999' }}>从未上报</span>
+              }
+              const st = row.last_seen_account_status
+              const meta = st ? ACCOUNT_STATUS[st] : undefined
+              return (
+                <Space direction="vertical" size={0}>
+                  <span>
+                    {label ?? <span style={{ color: '#999' }}>未认领</span>}
+                    {meta && st !== 'active' && (
+                      <Tag color={meta.color} style={{ marginLeft: 8 }}>
+                        {meta.label}
+                      </Tag>
+                    )}
+                  </span>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    <code>{row.last_seen_customer_id}</code>
+                  </Typography.Text>
+                </Space>
+              )
+            },
           },
           { title: '插件版本', dataIndex: 'version', width: 100, render: (v?: string) => v ?? '—' },
           {
@@ -282,11 +336,14 @@ export default function PluginInstanceDrawer({
         footer={null}
         destroyOnHidden
       >
-        <Form
-          layout="vertical"
-          onFinish={issue}
-          initialValues={{ exec_mode: 'stop_before_payment' }}
-        >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="签发不需要先有买家账号"
+          description="令牌代表这台浏览器。把它配进插件、让插件跑一次拉取，它当时登的买家号会自动出现在「买家账号池」里等认领。"
+        />
+        <Form layout="vertical" onFinish={issue} initialValues={{ exec_mode: 'stop_before_payment' }}>
           <Form.Item
             label="执行档"
             name="exec_mode"
@@ -307,6 +364,6 @@ export default function PluginInstanceDrawer({
       </Modal>
 
       {issued && <IssuedTokenModal issued={issued} onClose={() => setIssued(null)} />}
-    </Drawer>
+    </>
   )
 }

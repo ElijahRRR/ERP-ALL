@@ -1492,6 +1492,11 @@ paths:
         - {$ref: '#/components/parameters/size'}
         - {name: site, in: query, schema: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}}
         - {name: status, in: query, schema: {type: string, enum: [pending_claim, active, paused, blocked, retired, rejected]}, description: 'pending_claim=插件首见自动登记的待认领行（一律不派单）；rejected=已驳回终态'}
+        # 默认折叠 rejected，与 14c 产品页折叠 retired 同一做法（`GET /products` 的 include_retired）：
+        # 驳回是终态且**不删行**（本表无 DELETE 授权，粘性即治理），被灌过伪造 customerId 的团队
+        # 池子里会长期躺着一堆已驳回行。**显式传 status 时本参数不生效**——运营在下拉里选「已驳回」
+        # 必须真能看到它们，否则看起来就是功能坏了。
+        - {name: include_rejected, in: query, schema: {type: boolean, default: false}, description: '是否包含已驳回（rejected）行；默认折叠。显式传 status 时本参数不生效'}
         - {name: q, in: query, schema: {type: string}, description: 按 label 模糊搜索}
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BuyerAccountPage'}}}}}
     post:
