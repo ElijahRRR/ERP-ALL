@@ -1,4 +1,4 @@
-# PR #50 第三闸真机验证指令 v8（R2-13 自动采购：不花钱可证伪层，身份模型改形版 + 旧现场清场）
+# PR #50 第三闸真机验证指令 v9（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
 >
@@ -15,7 +15,14 @@
 > 已是 0046 但内容是旧模型；改形是对未合并迁移的**原地重写**，revision id 未变，
 > 直接 upgrade 对 alembic 是空转，④结构判据必失败）。v8 新增**⓪**：精确清场旧夹具 →
 > 用旧迁移内容回滚到 0047 → ②③再用新内容真正升级。
-> **本版从⓪走起，①的基线在⓪全过之后才取。**
+>
+> **v9 续跑补丁背景**（部署机 v8 停点评论 + 审查八轮裁定，双源）：v8 实跑到⑧-2，
+> **产品判据全过**；停在部署侧编排的本地取值层——psql 单行输出在 PowerShell 里是
+> String 不是数组，`$rows[0]` 取到 Char，`.Split` 报错。IA 明文令牌只在已退出的进程里，
+> 库内只有散列（设计而非事故），不可恢复。八轮裁定：**吊销 IA + 补签不损伤已录证据**。
+> **本版续跑路径：⓪-⑧-2 前半的已录证据全部有效不重跑——「续跑入口 R」→ ⑧-2「续跑
+> 补齐」→ ⑧-3 起按序走完**。全新重跑者仍从⓪走起（R 节跳过）。取值一律用「统一取值」
+> 节的 `Get-SqlValue`，**禁 Split**（八轮点名同族陷阱下游还有五处）。
 >
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**（判据=②的「你在分支尖端」+
 > 「迁移清单恰为 0043-0046」，不写死 sha；实际 sha 记进回执）。
@@ -30,7 +37,8 @@
 1. **不花钱**：全程 `stop_before_payment` / `dry_run` 档。**绝不签发、绝不使用 `live` 档
    实例**（⑥有一步专门验证「live 签不出来」，那是验证 422，不是要你签成）。
 2. **不输出任何密钥、口令、Authorization/X-Plugin-Token 头的完整值**。实例 token 明文只在
-   签发响应出现一次：截取**前 8 位 + 长度**记回执，完整值只存进 PowerShell 变量使用。
+   签发响应出现一次：回执**只记长度（`token_len`），不记任何令牌片段**（v9 收紧，八轮
+   卫生条：仓库 public，归档物不放令牌前缀），完整值只存进 PowerShell 变量使用。
    （⑧-3 跨团队探针的 SQL 里有一枚**测试造的**假 token 字面量，它不是凭证，可照贴。）
 3. **不改码、不 push、不 merge。**
 4. **③级表一行不删**：`audit_log`、`channel_order`/`order_line`/`order_check`、财务表。
@@ -43,6 +51,23 @@
 7. 审查五轮点名的**重点位有两处**：⑨（金额与状态机——直接碰钱的一块）与
    ⑧（**首见登记与认领流的真机形状**——新号进来→待认领→认领补站点→开始派单，
    这条链只有真机能看出运营走不走得通）。两处的数值判据逐字贴回执，不写「与预期一致」。
+
+## 统一取值（v9 新增；八轮三号条件——同族陷阱一次性抹掉）
+
+凡「从 psql 回读单值 → 存 PowerShell 变量」，一律先贴这个函数再取值：
+
+```powershell
+function Get-SqlValue([string]$Sql) {
+  $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -tA -1 -v ON_ERROR_STOP=1 -c $Sql
+  return ($raw | Out-String).Trim()
+}
+```
+
+规则：数值用 `[long](Get-SqlValue "…")`，字符串直接用；`-tA` 保证无表头无对齐的裸值；
+**禁止 `.Split` / 禁止对返回值做行数组索引**——psql 单行输出在 PowerShell 里是 String，
+`[0]` 取到的是 Char（v8 停点实证）。需要多列时分两次取值，不做文本拆分。
+下文 `<BA_C>`/`<TEAM_B>`/`<ITB>`/`<BA_D>`/`<BA_F>` 等尖括号占位符 = 用本函数取到并记进
+回执的值。
 
 ## 本单验什么
 
@@ -225,11 +250,11 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 ```powershell
 $IA = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"stop_before_payment","version":"R13T"}' -ContentType "application/json"
-"IA_id=$($IA.id) token_len=$($IA.token.Length) token_head=$($IA.token.Substring(0,8))"
+"IA_id=$($IA.id) token_len=$($IA.token.Length)"
 try { Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"live"}' -ContentType "application/json" } catch { $_.Exception.Response.StatusCode.value__ }
 ```
 
-**判据**：签发 201 返回 token（回执记 `IA_id`/`token_len`/`token_head`）；**live 直签 = 422**
+**判据**：签发 201 返回 token（回执只记 `IA_id`/`token_len`，**不记令牌片段**——铁律 2 v9 版）；**live 直签 = 422**
 （签发词表只收两个演练档，live 只能事后 PATCH 显式升档）；`GET /plugin-instances`
 不回显 token、含 `last_seen_customer_id` 列（此刻为空）、**IA 行 `version='R13T'`**
 （清理键已真实落库的正向确认——⑫按它圈定；六轮 I1：v7 用的 note 从不入库）。
@@ -251,6 +276,30 @@ try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNe
 **判据**：正确头 200；错 token / 不存在 id / 已吊销 **三路全部 401 且报文含同一错误码
 `PLUGIN_AUTH`**（逐字相同——同码是 B6 时序抹平承诺的另一半）。`customerId` 是必填 query，
 四条 URL 统一钉 `?customerId=R13TCUSTA` 保证失败只能来自认证层（v6 教训保留）。
+
+## 续跑入口 R：吊销旧工作实例并补签（v9 新增；八轮裁定「允许」的落地；全新重跑跳过本节）
+
+> 已录证据全部有效的依据（八轮逐条核过）：本指令无任何步骤断言 `plugin_instance` 行数
+> （⓪-3 的 `pi_rows` 是升级前的、⑫按 version 圈定）；旧 IA 吊销后行仍在、
+> `last_seen_customer_id='R13TCUSTC'` 观察值保留；已落派单在 `procurement_order` 上与实例
+> 状态无关；明文只在签发响应出现一次、库内仅散列——**补签是唯一路径**。
+
+```powershell
+git stash list
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances/1/revoke" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
+$IA = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"stop_before_payment","version":"R13T"}' -ContentType "application/json"
+"IA_R_id=$($IA.id) token_len=$($IA.token.Length)"
+$HA = @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = $IA.token }
+```
+
+**判据**：`git stash list` 照实记回执（①若做过 README 暂存它应还挂在栈上、⑫要 pop；
+空则记「无暂存」——八轮点名的回执缺项）；吊销 200 且旧行仍在（revoked、last_seen 保留）；
+补签 201，回执只记 `IA_R_id`/`token_len`；`GET /plugin-instances` 复核三行：id=1 revoked /
+IC revoked / **IA-R 是唯一 active**，且 IA-R 行 **`version='R13T'`**（八轮一号条件：
+body 漏这个字段则⑫清不掉、终态 `r13t_instances=0` 必红——签完立刻在这里确认，不拖到⑫）。
+路由地址钉 id=1 是停点回执钉下的旧 IA id，现场若不同以现场为准并记回执。
+变量沿用 `$IA`/`$HA`——⑧⑨⑩全部后续命令无需改写。
+**续跑顺序：本节 → ⑧-2「续跑补齐」→ ⑧-3 起按序走完。**
 
 ## ⑧ 派发与身份链（验收③三判据 + 首见登记/洪水闸/驳回粘性；审查五轮点名重点位）
 
@@ -276,12 +325,26 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 **再拉一次同 id** → 仍 200+空数组，行数仍 1、通知仍 1 条（幂等，不重复告警）。
 **任何执行单未因此变动**（`<PO1>`-`<PO4>` 状态复查与⑧-1 后一致）。
 
+**⑧-2 续跑补齐（八轮点名的证据缺项；续跑者从这里接，全新重跑者随⑧-2 一并做）**：
+
+```powershell
+$BA_C = [long](Get-SqlValue "SELECT id FROM app.buyer_account WHERE team_id = <TEAM_ID> AND external_customer_id = 'R13TCUSTC';")
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.notification WHERE dedupe_key = 'plugin.pending_claim.<BA_C>') AS c_alerts, (SELECT count(*) FROM app.audit_log WHERE action = 'buyer_account.auto_register' AND object_id = '<BA_C>') AS c_audit;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT channel_order_no, internal_status FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' ORDER BY channel_order_no;"
+```
+
+**判据**：`c_alerts=1`（warn 行在）、`c_audit>=1`（auto_register 留痕在）；随后用 IA-R
+再拉一次 `?customerId=R13TCUSTC` → 200+空数组，复查 C 行数仍 1、`c_alerts` **仍 1**
+（幂等不重复告警——⑧-2 原判据的续跑复核）；channel_order 侧 `R13T-O1/O2/O3 = assigned`、
+`R13T-O4 = checked`（⑧-1 漏报的 A2 对称项，补进回执）。
+
 **⑧-3 跨团队必败（验收③判据 a）**：造对端团队与实例（直插 SQL——这是探针夹具，
 不是签发通道；token 是测试字面量非凭证）：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.team (name) VALUES ('R13T-TEAM-B') RETURNING id;"
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "INSERT INTO app.plugin_instance (team_id, token_hash, exec_mode, version) VALUES (<TEAM_B>, encode(sha256('R13T-TB-TOKEN-4f9a2c81'::bytea), 'hex'), 'dry_run', 'R13T') RETURNING id, status;"
+$TEAM_B = [long](Get-SqlValue "INSERT INTO app.team (name) VALUES ('R13T-TEAM-B') RETURNING id;")
+$ITB = [long](Get-SqlValue "INSERT INTO app.plugin_instance (team_id, token_hash, exec_mode, version) VALUES ($TEAM_B, encode(sha256('R13T-TB-TOKEN-4f9a2c81'::bytea), 'hex'), 'dry_run', 'R13T') RETURNING id;")
+"TEAM_B=$TEAM_B ITB=$ITB"
 ```
 
 用 `<ITB>` + 明文 `R13T-TB-TOKEN-4f9a2c81` 作头，拉 `?customerId=R13TCUSTA`
@@ -289,7 +352,8 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 - 响应 **200 + 空数组**，**与⑧-2 的响应同形**（同形即「不可探测存在性」判据：
   拿 B 的令牌问不出「R13TCUSTA 在别的团队存不存在」）；
 - 库内：**团队 B 里**新落一行 `external_customer_id='R13TCUSTA'` 的 `pending_claim`
-  （记 `<BA_TB>`——跨团队在对方团队眼里就是个没见过的字符串，一视同仁登记）；
+  （取值 `$BA_TB = [long](Get-SqlValue "SELECT id FROM app.buyer_account WHERE team_id = $TEAM_B AND external_customer_id = 'R13TCUSTA';")`
+  ——跨团队在对方团队眼里就是个没见过的字符串，一视同仁登记）；
 - **团队 A 一列不动**：A 的 R13TCUSTA 行、`<POA>` 等任务、A 的额度复查全部原值。
 写路径必败：ITB 对 `<POA>` 调 `updateOrderStatus`（载荷同⑧-4）→ **403 且报文含
 `PLUGIN_TASK_NOT_OWNED`**；库内 `<POA>` 一字未动。
@@ -313,8 +377,9 @@ order_id）→ **409 PROCUREMENT_ORDER_IN_FLIGHT**（A2）；人工 claim `<POA>
 **409 PROCUREMENT_PLUGIN_DISPATCHED**（A1）。
 
 **⑧-7 洪水闸（cap=2，⑤-2 所设）**：IA 拉 `?customerId=R13TCUSTD`（团队 A 第 2 条
-pending：C+D）→ 200+空数组、落行（记 `<BA_D>`）。再拉 `?customerId=R13TCUSTE` →
-**200+空数组但不落行**：
+pending：C+D）→ 200+空数组、落行，取值
+`$BA_D = [long](Get-SqlValue "SELECT id FROM app.buyer_account WHERE team_id = <TEAM_ID> AND external_customer_id = 'R13TCUSTD';")`。
+再拉 `?customerId=R13TCUSTE` → **200+空数组但不落行**：
 
 ```powershell
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.buyer_account WHERE team_id = <TEAM_ID> AND external_customer_id = 'R13TCUSTE') AS e_rows, (SELECT count(*) FROM app.buyer_account WHERE team_id = <TEAM_ID> AND status = 'pending_claim') AS pending_now, (SELECT count(*) FROM app.notification WHERE dedupe_key = 'plugin.pending_claim_flood.<TEAM_ID>') AS flood_alerts;"
@@ -322,10 +387,14 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 **判据**：`e_rows=0`（拒绝登记）、`pending_now=2`（=cap）、`flood_alerts=1`（critical，
 正文含实例号与 rejected 现值——治理面的两条可见性都在正文里，抽查贴回执）。
+**实例号比对基准（八轮二号条件）**：通知正文记的是**发起当次请求的实例**
+（`identity.py` 语义）。续跑后洪水闸/D/F 各条正文含 **IA-R 的 id**；⑧-2 已落的 BA_C
+那条正文含旧 IA id=1——**两个 id 并存是正确行为**，既不是缺陷，也不许因「对不上」跳过比对。
 
 **⑧-8 驳回粘性 + 合并 PATCH 探针（F3 承重）+ 认领链**：
 a. 驳回 D：`PATCH /buyer-accounts/<BA_D>` body `'{"status":"rejected"}'` → 200；
-   **rejected 不占额度**：再拉 `?customerId=R13TCUSTF` → **登记成功**（记 `<BA_F>`；
+   **rejected 不占额度**：再拉 `?customerId=R13TCUSTF` → **登记成功**（取值
+   `$BA_F = [long](Get-SqlValue "SELECT id FROM app.buyer_account WHERE team_id = <TEAM_ID> AND external_customer_id = 'R13TCUSTF';")`；
    pending 回到 2——D 挪出额度后新号能进来，治理不自伤）。
 b. 粘性（同 id 再灌零新增）：再拉 `?customerId=R13TCUSTD` → 200+空数组，
    D 行数仍 1、无新通知。
@@ -407,8 +476,9 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (SELECT po.id FROM app.procurement_order po JOIN app.channel_order co ON co.id = po.order_id AND co.order_date = po.order_date WHERE co.channel_order_no LIKE 'R13T-%'); DELETE FROM app.procurement_order WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'; DELETE FROM app.product WHERE source_ref LIKE 'R13T%'; DELETE FROM app.plugin_instance WHERE version = 'R13T'; DELETE FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%'; DELETE FROM app.notification WHERE (object_type = 'procurement_order' AND object_id IN ('<PO1>','<PO2>','<PO3>','<PO4>')) OR (object_type = 'buyer_account' AND object_id IN ('<BA_C>','<BA_D>','<BA_F>','<BA_TB>')) OR dedupe_key = 'plugin.pending_claim_flood.<TEAM_ID>'; DELETE FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch'; DELETE FROM app.team WHERE name = 'R13T-TEAM-B';"
 ```
 
-> 圈定说明：plugin_instance 按 `version = 'R13T'`（IA/IC/ITB 三枚全中——⑥⑦签发 body
-> 与⑧-3 直插同值，⑥的判据已正向确认落库；六轮 I1：库里从来没有 note 列，团队级模型下
+> 圈定说明：plugin_instance 按 `version = 'R13T'`（**续跑现场为四枚全中**：旧 IA revoked /
+> IC revoked / IA-R active / ITB——⑥、续跑入口 R 的签发 body 与⑧-3 直插同值，落库已在
+> ⑥/R 正向确认；全新重跑则三枚。六轮 I1：库里从来没有 note 列，团队级模型下
 > 也不再有「随账号连带删」）；buyer_account 双条件——已认领的按 label 前缀、待认领/驳回的
 > label 为 NULL 按 customerId 前缀（含 TB 团队里那条 `R13TCUSTA` 探针行）；notification
 > 按**对象圈定** + 洪水闸那条按**本团队 dedupe_key**（cap 是⑤-2 人为压低造出的告警，
