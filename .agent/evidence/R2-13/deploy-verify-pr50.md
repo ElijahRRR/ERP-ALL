@@ -141,18 +141,21 @@ try { Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/buyer-accounts/<ACC_A
 ```powershell
 $HA = @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = $IA.token }
 $HB = @{ 'X-Plugin-Instance' = "$($IB.id)"; 'X-Plugin-Token' = $IB.token }
-(Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -Headers $HA -UseBasicParsing).StatusCode
-try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -Headers @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = 'R13T-wrong-token' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__ }
+(Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers $HA -UseBasicParsing).StatusCode
+try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = 'R13T-wrong-token' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__ }
 ```
 
 三条失败路同码（审查三轮 G3——auth 模块的承诺是「不存在的 id / 错 token / 已吊销
-→ 全部 PLUGIN_AUTH + 401」，只测一条不算验过；顺带把吊销这条标准运维路径走一遍）：
+→ 全部 PLUGIN_AUTH + 401」，只测一条不算验过；顺带把吊销这条标准运维路径走一遍）。
+v6 修订（部署机⑥前预检抓的）：`customerId` 是**必填 query**（无默认值），不带则四条
+全在参数校验层 422、根本到不了认证——四条 URL 统一钉 `?customerId=R13TCUSTA`
+（A/IC 都属账号 A），保证失败只能来自认证层、成功只能证明凭证可用：
 
 ```powershell
-try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -Headers @{ 'X-Plugin-Instance' = '999999999'; 'X-Plugin-Token' = 'R13T-any' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
+try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers @{ 'X-Plugin-Instance' = '999999999'; 'X-Plugin-Token' = 'R13T-any' } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
 $IC = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/buyer-accounts/<ACC_A>/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"dry_run","note":"R13T-revoke-probe"}' -ContentType "application/json"
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances/$($IC.id)/revoke" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
-try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -Headers @{ 'X-Plugin-Instance' = "$($IC.id)"; 'X-Plugin-Token' = $IC.token } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
+try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders?customerId=R13TCUSTA" -Headers @{ 'X-Plugin-Instance' = "$($IC.id)"; 'X-Plugin-Token' = $IC.token } -UseBasicParsing } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message }
 ```
 
 **判据**：正确头 200；错 token / 不存在 id（999999999）/ 已吊销（IC）**三路全部 401 且
@@ -162,9 +165,11 @@ buyer_account 删除连带）。越权承重在⑧-2（A 拉到的单拿给 B �
 
 ## ⑧ 派发链（13b 承重）
 
-**⑧-1 daily_cap=1 只派一单 + 原因码**：A 实例拉取（`getNeedPurchaseOrders`，编码安全读法
-取原始字节 UTF-8 解码后 ConvertFrom-Json）→ 应恰返回 **1** 张单（cap=1，池里 ≥2 张可派）；
-再拉一次 → 返回同一张（续拉不耗额度）；记该单为 `<POA>`。B 实例拉取 → 返回**其余可派单**
+**⑧-1 daily_cap=1 只派一单 + 原因码**：A 实例拉取（`getNeedPurchaseOrders?customerId=R13TCUSTA`，
+编码安全读法取原始字节 UTF-8 解码后 ConvertFrom-Json）→ 应恰返回 **1** 张单（cap=1，池里
+≥2 张可派）；再拉一次 → 返回同一张（续拉不耗额度）；记该单为 `<POA>`。
+B 实例拉取（`?customerId=R13TCUSTB`——query 与实例绑定账号一致，v6 钉死避免现场猜测）
+→ 返回**其余可派单**
 （`R13T-O4` 缺 ASIN 的**不在其中**）。
 库内核对：`SELECT id, status, buyer_account_id FROM app.procurement_order WHERE id IN (...)`
 → 被派单 `status='assigned'` 且挂对账号；对应 channel_order `internal_status='assigned'`（A2 对称）。
