@@ -295,10 +295,10 @@ async def list_procurement(
     pids = sorted({r["purchaser_id"] for r in rows if r["purchaser_id"] is not None})
     labels: dict[int, str] = {}
     if pids:
-        for r in await session.execute(
+        for pr in await session.execute(
             text("SELECT id, name FROM app.purchaser WHERE id = ANY(:ids)"), {"ids": pids}
         ):
-            labels[int(r[0])] = str(r[1])
+            labels[int(pr[0])] = str(pr[1])
         gone = [p for p in pids if p not in labels]
         if gone:
             labels.update(
