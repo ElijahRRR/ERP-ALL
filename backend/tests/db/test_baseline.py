@@ -101,7 +101,8 @@ class TestSeeds:
                 # + 0033 catalog.brand_* 2 + 0035 compliance.blacklist_*/trademark/tro 4
                 # + 0040 automation.* 2 + 0041 catalog.product_delete 1
                 # + 0047 identity.user_delete/role_delete + procurement.purchaser_delete 3
-                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 59
+                # + 0043 procurement.buyer_account_read/_admin + plugin_instance_admin 3
+                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 62
             )
             assert (
                 conn.execute("SELECT count(*) FROM app.role WHERE team_id IS NULL").fetchone()[0]
