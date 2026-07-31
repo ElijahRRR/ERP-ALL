@@ -272,14 +272,22 @@ erpAPI 仓考古，而插件在独立仓（`ElijahRRR/AMZ-Purchase-Assistant`）
 
 **分片**：
 - **13a 契约端点组 + 实例认证**：实现插件端点组；`plugin_instance` 实例专属 token
-  （**禁全局共享密钥**）；`buyer_account.external_customer_id` ↔ 插件 `customerId` 映射；
-  越权必败（实例只能取到自己账号的任务）。
+  （**禁全局共享密钥**）。
+  ⚠️ **令牌绑的是「一台授权浏览器」，不是「一个买家账号」**（Owner 2026-07-30 质疑
+  「插件为什么做成每个买家号专用的」后更正，口径见 §07「身份从哪来」）：
+  身份两段式——**令牌管授权**（这是团队 T 的一台机器吗）、**请求带的 `customerId` 管身份**
+  （这台机器此刻登的是哪个买家号，插件从亚马逊页面现场提取）。
+  越权边界＝**跨团队必败**，不是"实例只能取到自己账号的任务"。
 - **13b 买家账号池 + 任务路由**：`buyer_account` 建表（§07 图纸）；`procurement_order`
   增 `buyer_account_id`；按站点+可用性+`daily_cap` 路由（`daily_cap` 读的是账号列，权威侧）；
   **同一订单只派一个账号**（防重复下单）。
-  ⚠️ **`external_customer_id` 的来源已查清（Owner 2026-07-30）**：靠插件的「提取 customerId」
-  按钮取出、人工录入——**预配置的账号 ID 本身就是这么来的**。故该按钮**保留**（一手来源 §7 写
-  "不需要"，那条错），它是**开账号阶段的一次性配置工具**，不是运行时功能。13b 必须保留这条录入通道。
+  ⚠️ **`external_customer_id` 是首见自动登记，不是人工预录入**（Owner 2026-07-30 质疑
+  「我插件没安装拿不到这个 ID」后更正——原写法要求装插件前先知道 ID，而 ID 只有装了插件
+  才看得到，是个死循环）：服务端遇到本团队没见过的 `customerId` → 自动落一条
+  `buyer_account(status='pending_claim')` 并通知，运营补 `label`/`site`/`daily_cap` 后转
+  `active`；**`pending_claim` 一律不派单**。
+  「提取 customerId」按钮**保留但定位是纯展示**——源码里 `handleExtractCustomerId()` 只把值
+  写进页面一个 `<div>`，不存不发，用途是让人肉眼看见"这台机器登的是哪个号"。
 - **13c 三档接线**：`purchase_execute` flow（§09 v2.1，创建快照型）；**auto 档护栏必备**
   ——`amount_ceiling` 单单上限、`price_delta_pct` 较预估涨价超阈值、`delivery_days_limit`
   预计送达超天数，三者任一触发转人工。**花真金白银的自动化，护栏缺失即禁止开 auto**。
@@ -328,7 +336,10 @@ fork 后 `permissions` 应为空数组。**理由不是"暂时不用"而是"用�
 真实订单来测完整流程"）**：
 
 - **`stop_before_payment` 可证伪层（不花钱）**：②三档各跑一遍（人工点采/半自动待确认/全自动），
-  auto 档超 `amount_ceiling` 必须转人工且零下单；③越权测试：A 实例取不到 B 账号的任务（必败）；
+  auto 档超 `amount_ceiling` 必须转人工且零下单；③**越权测试（边界＝团队，2026-07-30 更正）**：
+  团队 A 的实例带团队 B 的 `customerId` 取任务必败；且未认领的 `customerId`（`pending_claim`）
+  **不派单**、只落待认领行 + 通知；同一实例换带另一个**同团队已认领**的 `customerId` 应正常路由
+  （证明令牌绑的是浏览器不是账号，换登即跟随）；
   ④同一订单不产生两个采购任务（并发下发压测）；⑥实付金额可抓回且价格护栏三段式的客户端判定成立；
   ⑦预计送达可抓回且超 `delivery_days_limit` 转人工；⑧非 FBA / bundle 前置拦截生效。
 - **必须 `live` 层（花真钱，Owner 亲自收口）**：①一张真实订单完成采购并回填，
