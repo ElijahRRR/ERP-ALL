@@ -1073,6 +1073,11 @@
    },
    {
     "date": "2026-07-30",
+    "kind": "ruling",
+    "text": "【procurement_order.purchaser_id 改软引用——开发侧 0047 提请，审计侧确认删外键，附三条强制条件】开发侧提出的矛盾属实：②级要求「干过活的采购方删实体」、③级要求「订单一行不删」，在原外键(bigint REFERENCES app.purchaser(id)，默认 NO ACTION)下不可能同时成立。**解法只能是删外键，确认删。****ON DELETE SET NULL 已排除且判据补足**：置 NULL 把 id 本身抹掉，而墓碑正是靠 id 反查名字——id 一没，「当时是谁采购的」永久丢失；软引用保留 id、墓碑还原名字。SET NULL 严格劣于删外键，不是更安全的折中。**三条实测支撑删外键**：①同一节早已两次做过同样取舍——§7.1 论证 deleted_principal 时写的就是「audit_log.actor_id 无外键、且不冗余用户名，UI 先查主表再查墓碑」，0041 落 deleted_product 时又做两次(product_id 无外键「实体已被物理删除，有外键就建不出这一行」；deleted_by 无外键指向 app_user)，**0047 是同一取舍再往外推一层，不是新开先例**；②**财务不失真——承重值早已快照**：purchaser 上唯一被下游依赖的是 exchange_rate，而它在领单时就锁进 procurement_order.exchange_rate_locked(order/procurement.py:196 coalesce(...)；D-Q32「汇率后改不影响已锁单」)，删采购方动不了任何已锁单的结算口径；③爆炸半径一列——全仓 REFERENCES app.purchaser 只此一处(0025:232)。**三条强制条件(删外键=把完整性保证从库搬到应用代码，须有东西接住)**：(a)唯一出口+同事务——主体删除只能经删除服务，墓碑写入与实体物理删除必须同一事务，否则一次漏写就产生永久无法解析的悬空 id 而数据库不再报错；(b)机器守卫——测试证伪「删掉干过活的采购方后历史执行单仍在且 purchaser_id 能经墓碑解析出名字」，并加一致性检查「任何非空 purchaser_id 必能在主表或墓碑命中其一」；(c)**删除前先处置未锁汇率的在途单**(审计侧新发现，开发侧未提)——exchange_rate_locked 是**领单时**才锁的，该采购方名下尚未进入 claimed 的执行单(assigned/pending_review)汇率源会随主体一起消失；删除服务须先把这些单退回 unassigned 并清空 purchaser_id，claimed 及其后的保留 purchaser_id(汇率已锁、历史可读)。**不做这条，删完会留下一批永远锁不上汇率的孤单。****顺带三条**：deleted_principal 须带 team_id(与 deleted_product 同形，0041 已如此建)——purchaser 是 team 域带 RLS，墓碑无 team_id 则 A 团队会解析出 B 团队已删采购方的名字；**不要加 purchaser_name 冗余列当双保险**(造出第二个真相源，与本节「靠墓碑而非冗余」的取舍相悖)；purchaser.id 是 GENERATED ALWAYS AS IDENTITY 序列不复用，故无「新采购方继承已删历史」的撞号风险，谁都不要为整理序号去 reset 它。口径全文见 §7.1.1。"
+   },
+   {
+    "date": "2026-07-30",
     "kind": "progress",
     "text": "【§7.1.1 三条强制条件对齐（审查四轮 N5/N6/N7）】审计侧 8221203 在 main 落 §7.1.1 确认 0047 外键改软引用并附三条强制条件，本单逐条落地：(a) 同事务墓碑——原实现已满足；(b) 前半——采购单列表接 purchaser_label 两段式解析（主表→墓碑「XX（已删除）」，与 audit-logs 操作人共用 deleted_labels helper；§7.1.1 明令不加 purchaser_name 冗余列），墓碑 label 测试改逐字断言；(b) 后半——test_baseline 新增 TestSoftReferenceInvariant（任何非空 purchaser_id 必须命中主表或墓碑）；(c)——按铁律 1「实现与图纸冲突改代码」把拒删路线改为图纸的退回路线：assigned/pending_review 单退回 unassigned 清空 purchaser_id（汇率未锁）、claimed 及其后保留原 id（汇率已锁），PURCHASER_DELETE_IN_FLIGHT 移除，回执带 orders_returned/orders_retained；契约与前端（OrdersPage 解析优先、PurchasersPage 文案）同步。部署指令 v3：⑧-4 按新语义重写 + ⑤判据按 N8 改具名比对。"
    },
