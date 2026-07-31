@@ -1030,7 +1030,7 @@
   "id": "R2-14",
   "priority": "P0",
   "dimension": "product",
-  "status": "in_progress",
+  "status": "accepted",
   "check": "生命周期出口（Owner 2026-07-28 指出「只有进没有出」）：硬删除三级规则(无历史直删/有历史删实体留墓碑/审计财务订单绝不删)+deleted_product 与 deleted_principal 两张墓碑表+列表默认折叠已停用项+删除权限点与二次确认与 audit_log 留痕。口径见 00-conventions §7.1，分片见 007",
   "evidence": [
    "specs/001-domain-model/00-conventions.md",
@@ -1090,6 +1090,11 @@
     "date": "2026-07-31",
     "kind": "progress",
     "text": "【第三闸真机验证通过（PR #49 / 14b）】部署机 ①–⑫ 全过，回执归档 .agent/evidence/R2-14/deploy-verify-pr49-receipt.md。被验代码 b97318c、指令终版 1d89fff（v6）。承重四条真机成立：验收③已删操作人 label_hex 逐字节命中「R14B验证用户乙（已删除）」；§7.1.1(b) 前半——终态执行单 purchaser_id=3 原值保留（fk_exists=0 软引用落地）且列表经墓碑解析出「R14B外协丙（已删除）」；验收⑤ ③级表指纹逐字不变、audit 条件式 199+1+4=204 吻合（4a 被拒不写审计）；在途守卫 claimed 拒删 409。⑧-4 退回分支未真机执行、CI 三用例覆盖（五轮 D 口径，回执写明）。迁移 0047↔0042 往返成立（perms 59↔56、fk 0↔1）。**过程：一次停机、一条指令缺陷、产品代码零缺陷**——⑧-3 首停为 PS 5.1 对无 charset JSON 默认 ISO-8859-1 解码致中文判据乱码（库内字节正确由⑧-2 psql 直读证明，非产品缺陷）；v6 修法=HTTP 中文判据改原始字节 UTF-8 解码+十六进制比对（纯 ASCII），同类全扫仅⑧-3/⑧-4 两处，指令缺陷类别新增「HTTP 响应中文参与判据未考虑客户端解码」入写法约定。闸序：①✅（run 30596714932 四绿）②✅（十一轮零保留，1d89fff 指令修订待复核）③✅，唯待 Owner ④ 合并授权（外加公开/转私决定）。"
+   },
+   {
+    "date": "2026-07-31",
+    "kind": "progress",
+    "text": "【关账（PR #49 合并 263b27e，四闸齐）】14a+14c（PR #46）、14b user/role/purchaser 三类 + 14d 主体面权限/二次确认/审计留痕（PR #49）全部落地并过四闸。**显式遗留（不阻关账，各有归属）**：buyer_account 删除分支挂 R2-13 13b 建表之后补（007「三路并行须知」跨线唯一依赖，13b 落地时 deleted_principal.kind 词表已预含无需动表）；listing/store/proxy 删除出口不在 R2-14 范围（FX-0729 等各自立单）。验收①-⑥全绿：①②④⑤⑥随 PR #46 真机、③随 PR #49 真机（label_hex 逐字承重）。"
    }
   ]
  },
