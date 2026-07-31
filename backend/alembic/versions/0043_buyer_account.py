@@ -111,6 +111,10 @@ def upgrade() -> None:
         CREATE UNIQUE INDEX uq_buyer_account
           ON app.buyer_account (team_id, external_customer_id);
         CREATE UNIQUE INDEX uq_buyer_account_label ON app.buyer_account (team_id, label);
+        -- 复合外键靶（审查 #50 首轮 F2）：让 plugin_instance (buyer_account_id, team_id)
+        -- 能整体引用本表，使「实例 team ≠ 账号 team」在数据库层不可表示——那种错配会让
+        -- 派发路径的账号行锁在 RLS 下静默匹配零行，日限串行化无声失效。
+        ALTER TABLE app.buyer_account ADD CONSTRAINT uq_buyer_account_id_team UNIQUE (id, team_id);
         CREATE INDEX ix_buyer_account_site ON app.buyer_account (team_id, site, status);
         """
     )

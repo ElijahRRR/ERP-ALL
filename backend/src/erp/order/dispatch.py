@@ -428,7 +428,17 @@ async def claim_tasks_for_account(
     # `daily_cap` 为 NULL（不限）时也照锁：一个账号 = 一个装着插件的浏览器，同账号并发
     # 拉取本就是异常形态；且将来任何「按账号计的额度」都自动落在这把锁的保护里。
     # 代价可控——锁的粒度是单个账号行，不同账号之间零竞争。
-    await session.execute(text(_LOCK_ACCOUNT_SQL), {"a": buyer_account_id})
+    #
+    # 零行必炸（审查 #50 首轮 F2）：`SELECT … FOR UPDATE` 匹配零行**不报错也不加锁**，
+    # 串行化会静默消失、超发回到 B1 修复前——与 14b `_delete_row_or_die` 拦的是同一族
+    # 「RLS/错配下静默零行」。今天签发链保证 instance.team == account.team，且 0044 的
+    # 复合外键已让错配不可表示；这行是万一两者都被绕开时的最后一响。
+    locked = (await session.execute(text(_LOCK_ACCOUNT_SQL), {"a": buyer_account_id})).one_or_none()
+    if locked is None:
+        raise RuntimeError(
+            f"buyer_account id={buyer_account_id} 行锁匹配零行——账号不存在或 RLS 挡住了它"
+            "（team 错配？），日限串行化无法成立，拒绝派发"
+        )
 
     # ④ daily_cap 余量（NULL = 不限）
     if daily_cap is not None:

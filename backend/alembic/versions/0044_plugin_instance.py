@@ -77,7 +77,13 @@ def upgrade() -> None:
           id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           team_id          bigint NOT NULL REFERENCES app.team(id),
           -- 硬外键（见头注）：孤儿令牌仍能通过认证，必须让删除路径显式处置。
-          buyer_account_id bigint NOT NULL REFERENCES app.buyer_account(id),
+          -- 复合引用 (id, team_id)（审查 #50 首轮 F2）：单列外键挡不住「实例 team ≠
+          -- 账号 team」——那种行会让认证 JOIN 成功、随后 ctx_tx 下账号行锁零行，
+          -- 日限串行化无声消失。复合外键使错配不可表示（多租户标准写法）。
+          buyer_account_id bigint NOT NULL,
+          CONSTRAINT fk_plugin_instance_account
+            FOREIGN KEY (buyer_account_id, team_id)
+            REFERENCES app.buyer_account (id, team_id),
           -- sha256 十六进制串；明文只在签发响应出现一次，任何列表端点都不返回。
           token_hash       text NOT NULL,
           status           text NOT NULL DEFAULT 'active'

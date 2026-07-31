@@ -1109,3 +1109,53 @@ class TestDispatchConfig:
         """坏时区名只降级回 UTC + 告警，**不抛**——一个配错的值不该让整条拉取链 500。"""
         assert dispatch.day_start("Mars/Olympus").utcoffset().total_seconds() == 0  # type: ignore[union-attr]
         assert dispatch.day_start("UTC").hour == 0
+
+
+# ── 审查 #50 首轮 F2：账号行锁的两层守卫 ──
+
+
+class TestLockIntegrity:
+    """F2 双修的承重：修法 2（复合外键让 team 错配不可表示）+ 修法 1（零行即炸）。
+
+    背景：`SELECT … FOR UPDATE` 匹配零行**不报错也不加锁**——若实例 team ≠ 账号 team，
+    认证在 system_tx 下 JOIN 成功、随后 ctx_tx 里账号行被 RLS 挡住 → 零行、无锁、无声，
+    daily_cap 串行化回到 B1 修复前。与 14b `_delete_row_or_die` 同族（RLS 下静默零行）。
+    """
+
+    def test_team_mismatch_unrepresentable(self, migrated_db: str, seeded: dict) -> None:
+        """修法 2：`plugin_instance (buyer_account_id, team_id)` 复合外键——migrator
+        直连（绕全部应用层）注入「实例挂 A 团队、账号属 B 团队」必须被库拒绝。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            conn.execute(
+                "INSERT INTO app.team (name) VALUES ('F2错配注入团队')"
+                " ON CONFLICT (name) DO NOTHING"
+            )
+            other_team = conn.execute(
+                "SELECT id FROM app.team WHERE name = 'F2错配注入团队'"
+            ).fetchone()[0]
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                conn.execute(
+                    "INSERT INTO app.plugin_instance (team_id, buyer_account_id, token_hash)"
+                    " VALUES (%s, %s, repeat('f', 64))",
+                    (other_team, account),
+                )
+            conn.execute("DELETE FROM app.team WHERE name = 'F2错配注入团队'")
+
+    async def test_lock_zero_rows_raises(self, migrated_db: str, seeded: dict) -> None:
+        """修法 1：锁不到账号行（不存在的 id——与 RLS 错配同构的形状）必须炸响，
+        而不是无锁继续派发。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+        async with ctx_tx(get_session_factory(), team_id=seeded["team"]) as s:
+            with pytest.raises(RuntimeError, match="行锁匹配零行"):
+                await dispatch.claim_tasks_for_account(
+                    s,
+                    team_id=seeded["team"],
+                    buyer_account_id=999_999_999,
+                    site="amazon_com",
+                    account_status="active",
+                    daily_cap=None,
+                    limit=5,
+                )

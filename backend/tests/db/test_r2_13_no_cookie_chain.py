@@ -84,6 +84,13 @@ def test_no_cookie_endpoint_in_any_route() -> None:
 
     paths = list(walk(create_app().routes))
     assert paths, "没取到任何路由——遍历逻辑可能失效（本条判据会因此变成空判据）"
+    # 水位线钉一条已知路径（审查 #50 首轮小项）：walk 依赖框架内部类名，框架升级后
+    # 遍历可能退化成只看顶层——paths 仍非空、上一条仍绿，而 /purchase-plugin/* 整组
+    # 恰好在被漏掉的那部分。钉死一条即可暴露这种退化。
+    assert any(p.endswith("/purchase-plugin/getNeedPurchaseOrders") for p in paths), (
+        "路由遍历没枚举到已知的 /purchase-plugin/getNeedPurchaseOrders——"
+        "walk 可能退化（框架内部结构变了），本条判据的覆盖面已不完整"
+    )
     offenders = [p for p in paths if "cookie" in p.lower()]
     assert not offenders, (
         f"出现了收 cookie 的端点：{offenders}。"
@@ -94,13 +101,17 @@ def test_no_cookie_endpoint_in_any_route() -> None:
 
 def test_no_cookie_identifier_in_backend_code() -> None:
     """后端代码里没有 cookie jar 的落点、搬运或 `buyer_session` 这张表。"""
+    # 水位线（审查 #50 首轮 F1，已变异证明）：SOURCE_DIRS 失准（目录搬家 /
+    # parents[2] 失灵）时 rglob 扫到 0 个文件，hits==[] 照样判绿——本条不变量的全部意义
+    # 是拦住下一个照厂商协议补齐 cookie 链的人，静默空判等于没有这条闸。
+    scanned = [p for root in SOURCE_DIRS for p in sorted(root.rglob("*.py"))]
+    assert len(scanned) > 100, (
+        f"只扫到 {len(scanned)} 个 .py 文件——SOURCE_DIRS 可能失准，本条会变成空判据"
+    )
     hits: list[str] = []
-    for root in SOURCE_DIRS:
-        for path in sorted(root.rglob("*.py")):
-            text = _code_text(path)
-            hits += [
-                f"{path.relative_to(BACKEND)}: {needle}" for needle in FORBIDDEN if needle in text
-            ]
+    for path in scanned:
+        text = _code_text(path)
+        hits += [f"{path.relative_to(BACKEND)}: {needle}" for needle in FORBIDDEN if needle in text]
     assert not hits, (
         "以下位置在往回接 cookie 链：\n  "
         + "\n  ".join(hits)

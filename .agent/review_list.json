@@ -1255,5 +1255,18 @@
   "finding": "PR #49 审查六轮 F 实测（2026-07-30）：status 写入点仅 assigned/claimed/backfilled/exception 四处（procurement.py:176/198/221/255）。14b 删除路径两处受累已就地补：409 文案原承诺「回填/取消」两条不存在的出口（已改为「等回填；exception 先处置」）；未锁汇率的 exception 单经删除副作用被退回池（已显式化：exception_reason 一并清 + 审计 after 记 exceptions_released + 专用测试）。但「人工处置异常单」的正路仍缺——已锁汇率的 exception 单会让其采购方永久删不掉（守卫永不放行），这是既有状态机缺口，不该在删除路径顺手补，故立本单。",
   "last_checked_at": "2026-07-30",
   "acceptance": "exception 单存在至少一条显式人工出边（重新分配或取消，含权限点与审计留痕）；出边落地后 14b 删除路径的 409 文案与退回行为复核一遍口径仍自洽"
+ },
+ {
+  "id": "FX-0731A",
+  "priority": "P2",
+  "dimension": "order",
+  "status": "todo",
+  "check": "渠道取消/退款后重买无出边（PR #50 审查首轮 F3 立单）：插件端点 4（91=已取消/退款，92=订单不存在）按 D1 只落 exception_kind 不动 status，而 release_po 守卫 2 要求 status='exception'、守卫 3 拒绝已有 ref 的单——两个形状对不上。后果：(a) 未回填过的 91/92 单需先人工 exception_po 再 release，两步法无处记载（告警文案已先补真话）；(b) 已回填后被渠道取消退款的单（91 典型形态）永远占着 uq_po_active_dispatch，该渠道订单再也派不出去、create_po 也被混派闸拒绝——「退款后重买」整个场景系统内无通道，与 FX-0730B（exception 无出边）同形。设计需回答：退款核实（谁确认钱真退了）→ 原单收口（cancelled 写入路径？终态语义）→ 重买通道（原单让位后新派发）三步的权责与状态机边。验收：91 退款单在系统内走完「核实→收口→重派→新单回填」全链且原单账目可追溯。",
+  "evidence": [
+   "backend/src/erp/plugin/service.py",
+   "backend/src/erp/order/procurement.py"
+  ],
+  "finding": "端点4 告警文案已改为如实说明「需人工处置、暂无重买通道」（PR #50）；出边设计属 order 域状态机，与 FX-0730B 宜同批处置。",
+  "last_checked_at": "2026-07-31"
  }
 ]
