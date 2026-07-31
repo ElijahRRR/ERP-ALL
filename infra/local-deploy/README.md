@@ -481,3 +481,21 @@ docker compose -f infra/docker-compose.yml exec api \
   `UPDATE app.schedule SET config = jsonb_set(config, '{kinds}', '["delist"]') WHERE code='maintenance_run';`
   关回人工档把 kinds 改回 `[]`。end_date_renewal 执行通道随增量4b。
 - 手动单跑：`docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task item_pull`
+
+## 四闸后固定收尾：合并后上线部署（每张 PR 合并后必做，部署 AI 执行并回执）
+
+> 由来：PR #46 验证收尾正确恢复了验证前状态，但「合并后重新部署」不在任何人的清单里，
+> 导致「验收通过」与「线上能用」断链（Owner 在界面上看不到已验收的功能）。自 PR #49 起
+> 固化为第四闸之后的固定步骤。
+> ⚠️ 部署机曾在本地维护过一版本节（+33 行，未提交）——如与本文有差异，以部署机实测为准
+> 在下一次回执里贴出差异，由云端侧合回本文（部署 AI 不改码不 push）。
+
+1. **拉主干**：`git checkout main && git pull`，回执记 `main` HEAD sha 并确认与 `origin/main` 一致。
+2. **迁移**：`docker compose -f infra/docker-compose.yml run --rm migrate`（或等价 `alembic upgrade head`）；
+   已在 head 则为 no-op，回执记终态 `alembic_version`。
+3. **重建产物**：重新 build backend/frontend 镜像并强制重建运行容器（api/beat/frontend）。
+4. **健康检查**：healthz HTTP 200；六服务 `docker compose ps` 全 Up（db/redis 须 healthy）。
+5. **前端对拍**：容器内 `assets/index-*.js` 文件名与浏览器实际加载的资产名逐字一致
+   （防「代码合了、浏览器还跑旧包」）。
+6. **清理**：删除本地验证分支。
+7. **回执**：以上各项数值贴回对应 PR 评论（sha / alembic_version / 服务表 / 资产名对拍）。
