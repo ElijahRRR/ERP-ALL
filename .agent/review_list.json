@@ -987,7 +987,7 @@
   "id": "R2-13",
   "priority": "P0",
   "dimension": "product",
-  "status": "in_review",
+  "status": "in_progress",
   "check": "自动采购接入(Amazon 采购插件, D-Q69, MVP内)：fork 插件指向 ERP + 实现插件端点组(getNeedPurchaseOrders/purchaseOrderFinishUpdate/updateTrackingInfo 等9个)+buyer_account 账号池与任务路由+plugin_instance 实例令牌+purchase_execute 三档护栏(amount_ceiling/price_delta_pct/delivery_days_limit；daily_cap 不在 config，唯一落点为 buyer_account 列由 13b 消费)+回填对账+厂商SaaS逐账号灰度切换",
   "evidence": [
    "specs/007-mvp-completion-plan/README.md",
