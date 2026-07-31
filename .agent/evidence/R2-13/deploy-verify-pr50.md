@@ -153,9 +153,17 @@ try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNe
 库内核对：`SELECT id, status, buyer_account_id FROM app.procurement_order WHERE id IN (...)`
 → 被派单 `status='assigned'` 且挂对账号；对应 channel_order `internal_status='assigned'`（A2 对称）。
 
-**⑧-2 越权必败（验收③）**：用 **B 实例**的头对 `<POA>`（A 的单）调
-`updateOrderStatus`（载荷按 `plugin/schemas.py` 的字段，status 用 5=已领取之类的合法值）→
-**404/403 类拒绝**（记逐字错误码）；库内 `<POA>` 一字未动。
+**⑧-2 越权必败（验收③）**：用 **B 实例**的头对 `<POA>`（A 的单）调 `updateOrderStatus`，
+载荷钉死（v4 修订：schema 的 `status` 是 `Literal[99]`，v3 那句「5=已领取之类的合法值」
+过不了 Pydantic、422 到不了归属闸——部署机⑥前预检抓的）：
+
+```powershell
+Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/updateOrderStatus" -Method Post -Headers $HB -Body '{"id": <POA>, "status": 99, "failReason": "R13T-cross-account"}' -ContentType "application/json" -UseBasicParsing
+```
+
+**判据**：**HTTP 403** 且报文含 `PLUGIN_TASK_NOT_OWNED`（载荷合法所以拒绝只能来自
+实例↔账号归属闸，这才是验收③要的证据）；库内 `<POA>` 一字未动
+（status/exception_kind/exception_reason 三列复查为派发后原值）。
 
 **⑧-3 缺 ASIN 拦截**：`R13T-O4` 的执行单始终 `unassigned`、`buyer_account_id IS NULL`；
 `app.notification` 有 `plugin.no_asin.<该单id>` 的 dedupe_key 告警行（判据认 dedupe_key，ASCII）。
