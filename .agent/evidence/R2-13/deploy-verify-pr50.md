@@ -63,16 +63,23 @@ git diff --name-only origin/main...HEAD -- backend/alembic/versions
 
 ## ③ 重建与迁移（进入本步前确认①②已完成且基线已贴回执）
 
+> ⚠️ v2 修订（③首停根因）：`migrate` 与 `api` 虽同一 build 上下文（`../backend`），但在
+> compose 里是**两个独立镜像标签**——只 build `api frontend` 时 `run --rm migrate` 用的是
+> **上一次的旧镜像**（迁移链停在旧 head），upgrade 原地 no-op。**build 必须带上 migrate**。
+
 ```powershell
-docker compose -f infra/docker-compose.yml build api frontend
+docker compose -f infra/docker-compose.yml build api frontend migrate
 docker compose -f infra/docker-compose.yml run --rm migrate
 docker compose -f infra/docker-compose.yml up -d --force-recreate api beat frontend
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM alembic_version;"
+Start-Sleep -Seconds 8
 $r = Invoke-WebRequest -Uri "http://127.0.0.1:8000/healthz" -UseBasicParsing -TimeoutSec 5
 $r.StatusCode
 ```
 
-**判据**：`version_num = 0046`（链 0047→0043→0044→0045→0046，head 是 0046）；healthz 200。
+**判据**：`version_num = 0046`（链 0047→0043→0044→0045→0046，head 是 0046）；healthz 200
+（force-recreate 后容器要几秒起身，故先等 8 秒；仍失败再等 10 秒重试一次，
+两次都失败才算判据不满足）。
 
 ## ④ 迁移结构核对（含审查二轮真库验过的复合外键）
 
@@ -212,9 +219,18 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 > 可删。⚠️ 铁律 4 的三级表例外仅限 R13T 前缀族——上面每条 WHERE 都已带前缀圈定，
 > **不许放宽**。notification 那条按 dedupe_key 前缀 + 24h 窗口圈定（本次产生的告警）。
 
-**迁移可逆**：`alembic downgrade 0047` → 核 `version_num=0047` + 三张新表消失 +
-procurement_order 新列消失 + perms 回到①值；`alembic upgrade head` → `version_num=0046` +
-④的结构判据复核全过；beat 重启恢复。
+**迁移可逆**（v2 补具体命令——migrate 服务的默认命令是 upgrade head，降级要**覆盖命令**跑）：
+
+```powershell
+docker compose -f infra/docker-compose.yml run --rm migrate alembic downgrade 0047
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM alembic_version;"
+docker compose -f infra/docker-compose.yml run --rm migrate
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT version_num FROM alembic_version;"
+docker compose -f infra/docker-compose.yml restart beat
+```
+
+判据：降级后 `version_num=0047` + 三张新表消失 + procurement_order 新列消失 + perms 回到①值；
+回升后 `version_num=0046` + ④的结构判据复核全过；beat 重启恢复 Up。
 
 **终态**：①的三个③级计数复核相等；六服务 Up（db/redis healthy）；工作树无已跟踪改动；
 残留 `R13T` 行数全 0。
