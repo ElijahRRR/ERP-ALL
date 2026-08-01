@@ -1,4 +1,4 @@
-# PR #50 第三闸真机验证指令 v11（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
+# PR #50 第三闸真机验证指令 v12（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
 >
@@ -34,6 +34,11 @@
 > 盖不住 PO 支半替换恰好压线，终态残留查询加第六项 `dedupe_key LIKE 'plugin.%'` **锚定零**
 > 作真兜底（`≥5` 降为正向信号）；N2——R-0 的 `git pull` 会让工作树超前于③所建镜像，
 > 加改动路径守卫（仅限 `.agent/` 才可继续），回执 sha **分列两行**（产品代码 sha ≠ 指令版 sha）。
+>
+> **v12 补丁**（十一轮 N3/N4，③闸放行不变）：N3——终态第六项的锚定零目前是**假设的零**
+> （⓪-2 未删 notification、⓪-4 已 drop 旧实例表，历史不可复查），R-0 补一条 `plugin.%`
+> 现存量实测，出现早于本轮的历史行则**当场**把终态第六项改锚定等值，不拖到⑫后假红；
+> N4——回③重建路径上守卫基线随重建 HEAD 更新。
 >
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**（判据=②的「你在分支尖端」+
 > 「迁移清单恰为 0043-0046」，不写死 sha；实际 sha 记进回执）。
@@ -309,6 +314,7 @@ git pull
 git log --oneline -1
 git diff --name-only e725c67..HEAD
 git stash list
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS plugin_notifs_now, min(created_at) AS oldest FROM app.notification WHERE dedupe_key LIKE 'plugin.%';"
 function Get-SqlValue([string]$Sql) {
   $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -tA -1 -v ON_ERROR_STOP=1 -c $Sql
   return ($raw | Out-String).Trim()
@@ -321,7 +327,13 @@ $HA = @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = $IA.token }
 
 **判据**：`git diff --name-only e725c67..HEAD` 输出路径**仅限 `.agent/`** → ③所建镜像
 仍有效可继续；出现 `backend/`、`frontend/`、`infra/`、`workers/` 任一路径 → **回③重建
-+重迁移**后再续。回执 sha **分列两行**：产品代码=`e725c67`（③建镜像所用）、指令版=
++重迁移**后再续（重建后本守卫的基线 sha 随之更新为重建时 HEAD 并记回执，后续续跑
+以新基线对比——十一轮 N4）。
+**`plugin_notifs_now`/`oldest` 照实记回执（十一轮 N3——终态第六项的零要测不要假设）**：
+若现存行**全部**能由本轮已跑步骤解释（⑧-2 的 `plugin.pending_claim.3` + ⑧-1 对 O4 的
+`plugin.no_asin.10`，预期量级 2），⑫终态第六项维持 **=0**；若出现 `created_at` 早于
+本轮开跑时间的行，**当场**把终态第六项改为**锚定等值（= 历史行条数，行清单贴回执）**，
+不得拖到⑫之后靠假红才发现。回执 sha **分列两行**：产品代码=`e725c67`（③建镜像所用）、指令版=
 `git log` 所示 HEAD（十轮 N2——单写一个 sha 就是「没被镜像验证过的 sha」，正文失实
 同族）。`git stash list` 照实记回执（①若做过 README 暂存它应还挂在栈上、⑫要 pop；
 空则记「无暂存」——八轮点名的回执缺项）；吊销 200 且旧行仍在（revoked、last_seen 保留）；
@@ -555,6 +567,8 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 > 已逐一核过）：本轮全部通知发射点的 dedupe_key 一律 `plugin.` 前缀；插件从未在生产
 > 跑过（⓪-3 实测 `pi_rows=0`）；库内其它通知生产者全用冒号式 key（`ship_failed:` 等），
 > 不会命中 `plugin.%`。它不依赖任何手工占位符，「查询与 DELETE 一起瞎」在这里不可能。
+> 判 0 的前提由 R-0 的 `plugin_notifs_now` 实测背书；若 R-0 记录了早于本轮的历史行，
+> 本项按 R-0 所定改锚定等值（十一轮 N3）。
 
 ---
 
