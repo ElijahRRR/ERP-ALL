@@ -1234,6 +1234,11 @@
     "date": "2026-07-30",
     "kind": "ruling",
     "text": "【Owner 下冻结令，本单升为全局阻塞】原话「我需要先执行项目简化再进行下一步的开发，不然各种团队、角色、权限还会一直卡着我」。007 的 MVP 路径表已插 -1 行并加冻结令段(解冻三条件)；三路并行须知整节挂起，迁移号 R2-17 若需取 0050、三路原号段不变。顺带的工程事实：17c 共享 token 直接取代 13a 的实例签发设计，先做本单可让插件线免返工——冻结不是纯等待，是消除返工源。"
+   },
+   {
+    "date": "2026-08-01",
+    "kind": "progress",
+    "text": "【代码面收口：17a—17d 全部落地，闸序进行中】PR #50 分支（增量1=56e9413；17c=0c348e3+15614e8+fa4b7cd；17d=e55d493）四项 CI 全绿（run 30692242237，含 0048 空库双向演练）。验收机器证据映射：①⑤ test_single_user_mode.py（开关注入固定超管/关闭后 401 与 token 流原样）；②人工流 test_r2_17d_manual_assign（procurement.assign actor_type=user）+ 机器流 buyer_account.auto_register（actor_type=system，13a）+ 报错流 notifications 既有；③ AppLayout 摘除（增量1）；④ test_r2_17c_shared_token.py 正反面 + 13a/13d 全文件切共享形态回归。17d 要点：拉取改「取本账号名下已指派单」只读语义（dispatch/洪水闸/认领仪式休眠，13b 直调照测）、customerId 首见即 active、/assign 二选一收 buyer_account_id（与人工链双向互斥）、迁移 0048 放松 ck_buyer_account_claimed（其站点路由消费者已随自动派发休眠；downgrade 重建约束 fail-loud——已在待审评论标为 L2 审点）。③闸指令 v1 已备（.agent/evidence/R2-17/deploy-verify-r2-17.md，D1—D8 覆盖验收①—⑤），前置=清场单 C6 停点裁定（部署机现场多一张验证轮遗留 PO，只读诊断指令已发，删数据待 Owner 授权）。解冻三条件现状：验收①③④代码/CI 面已备，待②闸审查（de61fc8..e55d493 增量）+ ③闸真机回执。"
    }
   ]
  },
