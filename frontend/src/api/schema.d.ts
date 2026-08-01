@@ -6636,7 +6636,7 @@ export interface components {
         };
         /** @description 采购插件实例＝**一台授权浏览器**（R2-13，图纸 07:274-286 + 本轮补 exec_mode）。**本 schema 逐字不含 token 的任何形态**，也**不含 buyer_account_id**——令牌不绑买家账号。 */
         PluginInstance: {
-            /** @description 同时是插件请求头 X-Plugin-Instance 的取值 */
+            /** @description 逐实例链休眠期间仅作列表标识（D-Q73 17c 共享 token 不带实例头；多机归因重启后恢复为 X-Plugin-Instance 头的取值） */
             id?: number;
             /** @enum {string} */
             status?: "active" | "revoked";
