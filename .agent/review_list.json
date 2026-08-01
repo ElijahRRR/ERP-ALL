@@ -994,7 +994,7 @@
    "specs/001-domain-model/07-order-sourcing-aftersale.md",
    "specs/001-domain-model/09-platform.md"
   ],
-  "gate": "13a/13b/13d 可立即开工，不必等 R2-09 收账；**auto 档开关锁死在 13c 交付并验收之后**（Owner 2026-07-30；原写「排 R2-09 之后」留了洞——R2-09 从未建护栏消费点）；13e 在 13c 验收之后。13e 回切方式=**换回厂商原版插件**而非改 baseUrl（插件路径已改成一组，指回厂商后端只会 404），回切演练须实测这条真路；红线=同一浏览器配置内绝不同时启用两个插件(会重复下单)",
+  "gate": "D-Q73 后置于 R2-17。13a/13b/13d 可立即开工，不必等 R2-09 收账；**auto 档开关锁死在 13c 交付并验收之后**（Owner 2026-07-30；原写「排 R2-09 之后」留了洞——R2-09 从未建护栏消费点）；13e 在 13c 验收之后。13e 回切方式=**换回厂商原版插件**而非改 baseUrl（插件路径已改成一组，指回厂商后端只会 404），回切演练须实测这条真路；红线=同一浏览器配置内绝不同时启用两个插件(会重复下单)",
   "acceptance": "**分两层验（Owner 2026-07-30 定执行方式：先停在付款前一步，通了再拿真实订单收口）；插件 fork 必须带 stop_before_payment 档位，否则本表执行不了**。〔stop_before_payment 层·不花钱〕②三档各跑一遍，auto 档超 amount_ceiling/price_delta_pct/delivery_days_limit 任一护栏必停在 pending_review 且零下单；③**越权（边界＝团队，2026-07-30 更正）**：团队 A 的实例带团队 B 的 customerId 取任务必败；未认领的 customerId(pending_claim) 不派单、只落待认领行+通知；同一实例换带另一个**同团队已认领**的 customerId 应正常路由（证明令牌绑的是浏览器不是账号，换登即跟随）；④并发下发同一订单不产生两个采购任务(claimed 原子锁)；⑥**金额解析证伪**：构造带千分位/空串/null 的回填，须落异常告警而非静默写 0；⑦**事后核对生效**：构造回填 ASIN 或邮编与下单时不一致的情形，系统必须发现并标记(不得只在下单前校验)；⑧非 FBA 与 bundle 商品在派发前即被拦截(不进插件执行)；⑨物流事件按 seq 存储且 seq=0 为最新，不误当时间序；⑩**cookie 链已删净**：fork 后 manifest permissions 为空数组，全仓无 updateBuyerCookie/getCookiesAsJson/onMessage 监听器残留，ERP 侧无 buyer_session 表。〔live 层·花真钱，Owner 亲自收口〕①真实订单在人工档由插件完成采购并回填，金额/单号/运单与亚马逊后台一致，且 purchase_cost+tax_amount+freight_cost 与渠道 total 自校验相等；⑤一个买家账号完成厂商SaaS→ERP灰度切换并稳定运行+回切演练(按「换回原版插件」的真路)",
   "finding": "审计侧解包 v2.5.0 crx 并对比仓内 v2.4.1(2026-07-27)：实为完整自动采购机器人(加购→填址→结账→抓单号→回填 + 物流回填链 + 验证码人机接力),支持 com/ca/co.jp,两版差异仅日本地址选择两函数。安全实测：host_permissions=*://*/* + cookies 权限可读该浏览器任何站点 cookie(含 Walmart 后台/飞书)；updateBuyerCookie 将买家 cookie 上传厂商服务器。fork 时须收窄权限。性质=迁移非新建(现产线跑在 smallbee168.com)",
   "last_checked_at": "2026-07-30",
@@ -1028,6 +1028,11 @@
     "date": "2026-07-30",
     "kind": "correction",
     "text": "【插件身份模型错了：不该做成每个买家号专用，也不该预填 customerId——Owner 质疑后读源码证实】Owner 原话：「插件为什么做成每个买家号专用的插件了？为什么提前填写 customerID，我插件没安装拿不到这个 ID。」**两条都成立，第二条指出的是死循环**：装插件前先要知道 ID，而 ID 只有装了插件才看得到。**逐字读 js/popup.js 的三条硬事实**：①`extractCustomerId()` 读 document.documentElement.innerHTML 现场正则`/customerId:\\s*\"([^\"]*)\"/`——即「这个浏览器当前登录的是哪个亚马逊账号」，三个入口(handleStartSync/handleStartSyncTracking/handleStartPurchase)**每次点击重抓一次，localStorage 从不存它**；②**插件零 per-install 配置**——全仓 localStorage 只有 sb2-delivery-days-limit 一个键，baseUrl 是 CONFIG 构建期常量，**同一个 build 装几十台浏览器，装完即用**；③「提取 customerId」按钮**是纯展示**——handleExtractCustomerId() 只把值写进页面一个 div 的 textContent，不存不发，用途是让人肉眼看见这台机器登的是哪个号(正对上 Owner「我一开始并不知道我的 ID 在哪里看」)。**故厂商插件根本不是每个买家号专用，我方也不该做成那样。改为身份两段式**：plugin_instance 令牌绑**一台授权浏览器**(buyer_account_id 那列从 NOT NULL 取消，降为观察列 last_seen_customer_id 不参与鉴权)、请求带的 customerId 管**此刻登的是哪个号**，服务端在团队范围内解析成 buyer_account。**external_customer_id 改首见自动登记**：遇本团队没见过的 customerId → 落 buyer_account(status='pending_claim')+通知，运营补 label/site/daily_cap 后转 active，**pending_claim 一律不派单**；status CHECK 加该值且 DEFAULT 改为它。**越权边界从「实例只能取自己账号的任务」改为「跨团队必败」**，判据③重写。**这个方向不只是更省事，而是更安全**：customerId 取自活着的亚马逊登录态，任务天然只流向确实登着该账号的浏览器；而我原来的预绑定方案在有人改了某台浏览器的亚马逊登录后，**会继续按旧绑定派任务、用错号把单买了**——厂商的做法自我纠正，我的原设计会静默买错。**成因**：2026-07-30 早些时候我据 Owner「提取按钮需要，预配置账号 ID 也是用插件提取出来的」这句，把该按钮升格成「一次性配置工具」并写进 13b 作为录入通道——**把「人用它看一眼」误读成「系统靠它配置」**，且未回到源码核实按钮到底做了什么。与本周同源：写新内容时未回验既有实现。"
+   },
+   {
+    "date": "2026-07-30",
+    "kind": "ruling",
+    "text": "【D-Q73 单人模式对本单的修改】验收③(越权三条)整条划除；13a 实例认证段改按 R2-17 17c(共享常量 token，无签发)；13b 自动路由(轮转+容量策略)降级为订单页人工下拉指派，daily_cap 列保留不强制消费；customerId 首见自动建档即 active，pending_claim 闸取消。护栏(amount_ceiling/price_delta_pct/delivery_days_limit)与 stop_before_payment 档位**不受影响**——那是「自动花钱」本身要求的，与权限无关。"
    }
   ]
  },
@@ -1183,6 +1188,22 @@
     "text": "【Owner 推翻「walmart 源占位产品 + 人工合并」；旧仓 erp-core 早有生产级实现】Owner 原话：「ASIN 是唯一的，不应该并存两条 product 指同一实物。我目前沃尔玛的 SKU 编码也是 ASIN，拉下来以后直接同步 SKU 和 ASIN 就可以了。然后为沃尔玛拉取下来数据也建档，erp-core 中有部分实现，可以参考他的运作机理。」**我上一版方案是在给自己造合并负担**：先造出重复实体(source_channel='walmart' 占位行)，再设计 pending_asin_link + 人工合并 + 墓碑清理把它合掉。**定案：产品身份就是 ASIN，与数据从哪来无关**——Walmart 拉回的数据直接 upsert 进 product(team,'amazon',ASIN) 那一行，source_channel 表的是身份命名空间而非「这次从哪个网站抓的」。**旧仓 store_sync.py:520-570 逐字可移植**：以 ASIN 唯一确定(同 ASIN 跨多店铺 = 同一行)，写入一律 COALESCE(:新值, 现有值)——**Walmart 侧稀数据只补空列，绝不覆盖亚马逊采集来的好数据**；提不出 ASIN 的 `if not real_asin: continue` 只入 listings 不建产品行。**先到的占位、后到的补全，自始至终只有一行。****ASIN 提取是 regex search 不是相等判断**(store_sync.py:239 `re.search(r'B[A-Z0-9]{9}', sku.upper())`)——SKU 里「含有」即可，同时覆盖 R2-15 的 -N 后缀与历史各种嵌法；建议收紧为 B0[A-Z0-9]{8} 但**须先在真实 SKU 集上验**(怕存量有非 B0 开头)。**五级阶梯塌缩成三级**，消掉三个我自造的问题：①「亚马逊采不回怎么办」不再存在(建档根本不经采集——原设计把建档与采集耦在一起、采不到就卡死，是设计错误)；②「两条 product 指同一实物」不存在(uq_product 直接保证)；③「并发竞争」退化为普通 upsert(写的是同一行)。**裁定三(两段式异步)一并作废**——补挂是同步的，link_state 不需要 adopting 态。**另考古出现役 item_pull 的 8 条缺口**(007 对照表)，其中**第 3 条是唯一正确性缺陷、建议独立于本单先修**：旧仓有 OFFSET_CAP=9800 显式报错，现役 max_pages=100×200=20000 无上限判断，单状态超 9800 时**静默截断**——循环按「本页<limit」终止会误以为扫完，超出部分全被算成 gone_remote。其余缺口：漏 STAGE 轮、不扫 RETIRED lifecycle、unpublishedReasons 只兼容 dict 一种形态、gone_remote 无收敛机制(旧仓 orphan_miss_count 连续 3 次未见才推 deleted，「避免 walmart 偶发分页漏拉就误删」)、缺跨店 lifecycle 联动(旧仓不限 store_id 全库扫，一个 ASIN 任一店上架成功即算 listed)、库存字段四级优先级。⚠️ **扩 RETIRED 轮时必须知道**：同时传 lifecycleStatus + publishedStatus=UNPUBLISHED/SYSTEM_PROBLEM/STAGE 会被 Walmart 返 404(旧仓实测 2026-05-06)，现役只传 publishedStatus 恰好避开了。"
    }
   ]
+ },
+ {
+  "id": "R2-17",
+  "priority": "P0",
+  "dimension": "platform",
+  "status": "todo",
+  "check": "单人模式收口(D-Q73)：17a 免登录(SINGLE_USER_MODE 开关，无凭证注入固定超管身份，前端跳过登录)+17b 导航摘除(Users/Roles/TeamSwitcher)+17c 插件共享 token(取消逐实例签发)+17d 订单人工指派(customerId 首见即 active，取消 pending_claim)。表层摘除、地基休眠：不删 team_id/RLS/权限点任何一行",
+  "evidence": [
+   "specs/000-founding/DECISION-FORM.md",
+   "specs/007-mvp-completion-plan/README.md",
+   "backend/src/erp/core/authn.py"
+  ],
+  "gate": "先于三路并行的一切——它修改所有工单的默认前提(越权/权限判据全线划除)",
+  "acceptance": "①部署机开 SINGLE_USER_MODE 后浏览器直开地址即达产品页无登录；②audit_log 三流可辨：人工操作(固定用户)/定时任务(actor_type='system')/系统报错(incidents+notifications)各取一条验 actor 归属；③导航无 团队/用户/角色 入口；④插件带共享 token 可拉任务、不带则拒(唯一保留的闸)；⑤关掉开关登录流程原样回来(休眠可逆)",
+  "finding": "【Owner 2026-07-30 裁定运营形态收敛为单人自用】「现在的开发做复杂了，总是围绕团队、角色、权限、越权——我只需要一个我个人能够使用的 erp」。审计侧量化后定「表层摘除、地基休眠」：19 张表 team_id、102 条 RLS 策略、106 个权限检查端点全是验证过的在跑代码，拆除=数周手术+回归风险；而超管身份下全部权限检查在前后端各一行短路(authn.py:47 / AuthContext.tsx:69)，休眠运行时零成本。**摘的是持续要交的税**(新工单越权判据/评审轮次/签发仪式)不是沉没成本。风险注记：免登录=拿到地址即可操作，仅限内网/VPN，Web 端口是唯一边界(RS-02a 后 db/redis 已绑 127.0.0.1)",
+  "last_checked_at": "2026-07-30"
  },
  {
   "id": "FX-0729",
