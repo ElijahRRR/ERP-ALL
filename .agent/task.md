@@ -172,9 +172,10 @@
 - Constraints: workflow discipline per CLAUDE.md；每增量 CI 绿（pytest/ruff[check+format]/mypy +
   pnpm lint/build）；业务参数一律 system_config；不绕过 walmart_client 语义直连渠道；
   fail-closed 底线；migration 仅 ar 帽；specs 正文只由云端 AI 落笔（007/图纸归审计侧，批注回传）。
-- 真机验证流程（2026-07-18 Owner 拍板）：增量先在 PR 分支上由部署机验证（前置核验点
-  分支 head），通过后 Owner 授权合并 main，合并后重建分支接着开发；部署机验完切回 main
-  常驻；含迁移的增量若分支被弃须 alembic downgrade 归位。
+- 真机验证流程（2026-07-18 Owner 拍板；2026-08-01 起按 D-Q74 分级，specs/009-process-lite §四）：
+  **L2 增量**先在 PR 分支上由部署机验证（前置核验点分支 head），通过后 Owner 授权合并 main，
+  合并后重建分支接着开发；**L0/L1 不单独验**，随下次例行部署批量点验（冒烟清单+healthz）；
+  部署机验完切回 main 常驻；含迁移的增量若分支被弃须 alembic downgrade 归位。
   **切回 main 前必做「运维资产在位检查」**（2026-07-26 Owner 查出 P0-3）：只在开发分支上的
   运维资产会随切换从检出树消失。**该 P0 已根治**——PR #36 合并后 `origin/main`=`5b37ded`
   已含 `.gitattributes` + `infra/local-deploy/automation/`（uspto-daily.bat + README），
