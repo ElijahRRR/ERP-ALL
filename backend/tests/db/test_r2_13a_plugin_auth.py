@@ -28,7 +28,8 @@
 | 下发载荷逐字段对齐插件实读 | `test_pull_payload_shape` |
 | 缺 ASIN 不猜、不派、有告警 | `test_missing_asin_task_not_dispatched` |
 | 账号闸只挡拉取、不挡写路径认证 | `test_paused_account_pulls_nothing_but_writes_authenticate` |
-| 拉取回写 last_seen_at / 版本 / **最近登录号** | `test_pull_touches_last_seen_and_version` |
+| 拉取回写账号 last_seen_at；**实例观察列零回写**（17c 放弃机器归因）
+  | `test_pull_touches_account_last_seen_but_not_instance` |
 | 端点 6 只列已拍单且属本次解析出的账号的 | `test_sync_orders_scope` |
 
 **不在本文件**：派发算法本身（`test_r2_13b_dispatch.py`）、回填/异常/物流语义
@@ -38,7 +39,9 @@
 
 import asyncio
 import hashlib
+import os
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 import psycopg
@@ -46,16 +49,17 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from erp.core.db import ctx_tx, get_session_factory, system_tx
-from erp.core.errors import BusinessError
+from erp.core.db import ctx_tx, get_session_factory
 from erp.core.security import hash_password
 from erp.order import dispatch
-from erp.plugin import auth as plugin_auth
 from erp.plugin import service
 from erp.plugin.auth import PluginPrincipal
 
 from .test_identity_api import PASSWORD, _login
 
+# 17c（D-Q73 ③）：全文件经共享 token 过闸；实例签发端点保留休眠仍被 _issue 真调，
+# 但请求头一律走共享形态（_h 不再读实例字段）。
+SHARED_TOKEN = "r13a-shared-token-0123456789abcdef"
 ADMIN = "r13a_admin"
 TEAM = "R2-13a 插件认证测试团队"
 FOREIGN_TEAM = "R2-13a 跨团队取证团队"
@@ -118,6 +122,16 @@ def seeded(migrated_db: str) -> dict[str, int]:
             " VALUES (%s, %s, 'PL13AF', '他团队插件测试店', true) RETURNING id",
             (foreign_id, channel_id),
         ).fetchone()[0]
+        conn.execute("DELETE FROM app.system_config WHERE key = 'procurement.plugin_team_id'")
+        conn.execute(
+            "INSERT INTO app.system_config (key, value) VALUES"
+            " ('procurement.plugin_team_id', to_jsonb(%s::bigint))",
+            (team_id,),
+        )
+        # 档位残值清除：13d/17c 的模块会写 procurement.plugin_exec_mode（可能是 live），
+        # 而本文件的判据全部押在「未配置 ⇒ 回落 stop_before_payment」上。库跨 pytest
+        # 进程持久，不清就是隐式模块序耦合。
+        conn.execute("DELETE FROM app.system_config WHERE key = 'procurement.plugin_exec_mode'")
     return {
         "team": team_id,
         "user": uid,
@@ -128,10 +142,19 @@ def seeded(migrated_db: str) -> dict[str, int]:
 
 
 @pytest.fixture(scope="module")
-def client(seeded: dict[str, int]) -> TestClient:
+def client(seeded: dict[str, int]) -> Iterator[TestClient]:
+    os.environ["ERP_PLUGIN_SHARED_TOKEN"] = SHARED_TOKEN
+    from erp.core.settings import get_settings
+
+    get_settings.cache_clear()
     from erp.main import app
 
-    return TestClient(app)
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        os.environ.pop("ERP_PLUGIN_SHARED_TOKEN", None)
+        get_settings.cache_clear()
 
 
 # ── 造数助手 ──
@@ -321,7 +344,9 @@ def _pending_rows(conn: psycopg.Connection, seeded: dict[str, int]) -> list[Any]
 
 
 def _h(instance: dict[str, Any]) -> dict[str, str]:
-    return {"X-Plugin-Instance": str(instance["id"]), "X-Plugin-Token": instance["token"]}
+    """17c 共享形态：只带 X-Plugin-Token=共享值。参数保留是为了不动几十处调用点；
+    实例字段不再参与认证（逐实例链休眠）。"""
+    return {"X-Plugin-Token": SHARED_TOKEN}
 
 
 def _pull(client: TestClient, instance: dict[str, Any], customer_id: str, **params: str):  # type: ignore[no-untyped-def]
@@ -483,9 +508,9 @@ class TestInstanceScope:
             "（`ck_audit_actor` 只认 user/portal/system，本轮不为它扩 CHECK）"
         )
         assert audits[0][1]["external_customer_id"] == fresh
-        assert audits[0][1]["instance_id"] == inst["id"], (
-            "审计快照里没有实例号——「哪台浏览器带来的」正是这条审计存在的理由"
-        )
+        # 17c：共享通道无机器归因，快照如实记哨兵 0（写 None 反而分不清「老数据没记」
+        # 与「共享通道记不了」）。多机归因重启后此断言翻回真实实例号。
+        assert audits[0][1]["instance_id"] == 0, "共享通道的审计快照该记哨兵 0"
 
         assert _pull(client, inst, fresh).json()["data"] == []
         with psycopg.connect(migrated_db) as conn:
@@ -602,9 +627,9 @@ class TestInstanceScope:
                 ).fetchall()
             assert len(alerts) == 1, "撞闸必须有 critical 告警"
             body = alerts[0][0]
-            assert f"#{inst['id']}" in body, (
-                f"critical 正文里没有实例号（处置＝吊销哪一把令牌，不写就得去翻日志）：{body}"
-            )
+            # 17c：共享通道正文记哨兵 #0（无机器归因可写；「吊销哪一把」的处置语义
+            # 已随逐实例链休眠，整条洪水闸 17d 拆除）。多机归因重启后翻回真实实例号。
+            assert "#0" in body, f"critical 正文里没有实例号占位（共享通道应如实记哨兵 #0）：{body}"
             assert "2" in body and "rejected" in body, (
                 f"critical 正文里没有本团队已驳回行数——「换 id 反复灌」失去唯一观察点：{body}"
             )
@@ -935,52 +960,10 @@ class TestInstanceScope:
                 (foreign, account["customerId"]),
             ).fetchone() == ("pending_claim",), "跨团队解析不到应落对方团队待认领行"  # fmt: skip
 
+    # ── 认证域本身 ──
 
-# ── 认证域本身 ──
-
-
-class TestAuthDomain:
-    @pytest.mark.parametrize(
-        ("method", "path", "payload"),
-        [
-            ("get", "getNeedPurchaseOrders", None),
-            ("get", "getNeedSyncOrders", None),
-            ("post", "purchaseOrderFinishUpdate", {"id": 1}),
-            ("post", "updateOrderStatus", {"id": 1, "status": 99}),
-            ("post", "updateAmzOrderStatus", {"id": 1, "status": 91}),
-            ("post", "updateTrackingInfo", {"orderId": 1}),
-        ],
-    )
-    def test_revoked_instance_all_endpoints_401(
-        self,
-        client: TestClient,
-        migrated_db: str,
-        seeded: dict,
-        method: str,
-        path: str,
-        payload: dict | None,
-    ) -> None:
-        """吊销 = 六个端点全域失效。**逐个端点参数化**：漏挂一个依赖就是一个后门。"""
-        auth = _login(client, ADMIN, PASSWORD)
-        with psycopg.connect(migrated_db, autocommit=True) as conn:
-            _reset(conn, seeded)
-            account = _mk_account(conn, seeded)
-        instance = _issue(client, auth)
-        assert (
-            client.post(
-                f"/api/v1/plugin-instances/{instance['id']}/revoke", headers=auth
-            ).status_code
-            == 200
-        )
-
-        kwargs: dict[str, Any] = {"headers": _h(instance)}
-        if payload is None:
-            kwargs["params"] = {"customerId": account["customerId"]}
-        else:
-            kwargs["json"] = payload
-        r = getattr(client, method)(f"{PLUGIN}/{path}", **kwargs)
-        assert r.status_code == 401, r.text
-        assert r.json()["error"]["code"] == "PLUGIN_AUTH"
+    # 17c：test_revoked_instance_all_endpoints_401 已随逐实例认证链休眠移除（吊销/时序纪律属
+    # authenticate_instance，重启多机归因时随链恢复；authenticate_shared 头注有价签）。
 
     def test_bad_credentials_all_401(
         self, client: TestClient, migrated_db: str, seeded: dict
@@ -1010,65 +993,19 @@ class TestAuthDomain:
             assert r.status_code == 401, (headers, r.status_code, r.text)
             assert r.json()["error"]["code"] == "PLUGIN_AUTH"
 
-    async def test_failure_paths_all_hash_and_compare(
-        self,
-        client: TestClient,
-        migrated_db: str,
-        seeded: dict,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """三条失败路径**做同样的活**：都要跑一次散列 + 比较（审查 B6）。
-
-        同码同状态还不够。`row is None` 与「已吊销」原先靠 `or` 短路直接返回，比
-        「实例存在但令牌不对」少一次 sha256 + 一次比较——那点时间差恰好把模块头注承诺
-        不泄露的「这个实例存不存在 / 是不是已被吊销」漏到了**响应时间**上，探测者拿一把
-        随便的 token 扫 id 就能画出实例地图。
-
-        时序本身在单测里测不稳（几十微秒的差异会被调度噪声淹没），故这里钉**代码路径**：
-        给 `token_digest` 挂一个计数器，三条路都必须调到它。短路一旦回来，计数立刻对不上。
-        """
-        auth = _login(client, ADMIN, PASSWORD)
-        with psycopg.connect(migrated_db, autocommit=True) as conn:
-            _reset(conn, seeded)
-        live = _issue(client, auth)
-        revoked = _issue(client, auth)
-        assert (
-            client.post(
-                f"/api/v1/plugin-instances/{revoked['id']}/revoke", headers=auth
-            ).status_code
-            == 200
-        )
-
-        calls: list[str] = []
-        real = plugin_auth.token_digest
-
-        def counting_digest(token: str) -> str:
-            calls.append(token)
-            return real(token)
-
-        monkeypatch.setattr(plugin_auth, "token_digest", counting_digest)
-
-        cases = {
-            "不存在的 id": ("2000000111", live["token"]),
-            "已吊销的实例": (str(revoked["id"]), revoked["token"]),
-            "令牌不对": (str(live["id"]), "not-the-token"),
-        }
-        for label, (instance_id, token) in cases.items():
-            before = len(calls)
-            async with system_tx(get_session_factory()) as s:
-                with pytest.raises(BusinessError) as exc:
-                    await plugin_auth.authenticate_instance(s, instance_id, token)
-            assert exc.value.code == "PLUGIN_AUTH", label
-            assert exc.value.http_status == 401, label
-            assert len(calls) == before + 1, f"「{label}」这条路短路了，没跑散列比较"
+    # 17c：test_failure_paths_all_hash_and_compare 已随逐实例认证链休眠移除（吊销/时序纪律属
+    # authenticate_instance，重启多机归因时随链恢复；authenticate_shared 头注有价签）。
 
     def test_stored_hash_is_not_a_usable_token(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
-        """把库里的 `token_hash` 当令牌递进来必须 401——证明服务端比的是 sha256(明文)。
+        """把散列当令牌递进来必须 401——证明服务端比的是 sha256(明文) 对 sha256(明文)。
 
-        若哪天有人图省事改成「直接比对头里的值和 token_hash」，一次库读权限就等于
-        全部实例的下单能力。这条用例是那次改动的绊线。
+        17c 共享形态下的绊线：`authenticate_shared` 若被图省事改成
+        `compare_digest(token_digest(shared), token)`（拿头里的原始值直接比摘要），
+        那么 sha256(共享明文) 就成了等价令牌——而那个十六进制串会出现在任何一处
+        「按老习惯存 hash」的地方。补一条实例休眠链的同款（库里的 `token_hash`
+        当令牌），两条都得 401。
         """
         auth = _login(client, ADMIN, PASSWORD)
         with psycopg.connect(migrated_db, autocommit=True) as conn:
@@ -1081,12 +1018,14 @@ class TestAuthDomain:
             ).fetchone()[0]
         assert stored == hashlib.sha256(instance["token"].encode()).hexdigest()
 
-        r = client.get(
-            f"{PLUGIN}/getNeedPurchaseOrders",
-            headers={"X-Plugin-Instance": str(instance["id"]), "X-Plugin-Token": stored},
-            params={"customerId": account["customerId"]},
-        )
-        assert r.status_code == 401 and r.json()["error"]["code"] == "PLUGIN_AUTH"
+        shared_digest = hashlib.sha256(SHARED_TOKEN.encode()).hexdigest()
+        for probe in (shared_digest, stored):
+            r = client.get(
+                f"{PLUGIN}/getNeedPurchaseOrders",
+                headers={"X-Plugin-Token": probe},
+                params={"customerId": account["customerId"]},
+            )
+            assert r.status_code == 401 and r.json()["error"]["code"] == "PLUGIN_AUTH", probe
 
 
 # ── 端点 1：拉取语义（取还幂等 + 载荷形状 + 不猜 ASIN）──
@@ -1200,19 +1139,21 @@ class TestPullTasks:
             f"账号被停不得影响写路径的认证与归属判定（实得 {wrote.status_code}：{wrote.text}）"
         )
 
-    def test_pull_touches_last_seen_and_version(
+    def test_pull_touches_account_last_seen_but_not_instance(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
-        """拉取回写 `last_seen_at` / 版本 / `last_seen_customer_id`。
+        """拉取仍回写账号 `last_seen_at`；**实例观察列一列不动**（17c 放弃机器归因）。
 
-        第三项是本轮新增的**观察列**（0044 头注六）：换号即自然更新，运营据此在实例列表里
-        看出「这台机器现在登的是哪个号」。它**不参与鉴权**——第二段换号后仍能正常拉取，
-        本身就是「它没被当成绑定」的证据。
+        账号侧那半继续承重——掉线判断看「这个号还在不在拉单」。实例侧翻转成反向断言：
+        共享通道的 principal 是 `instance_id=0` 哨兵，`touch_last_seen` 那句
+        `UPDATE app.plugin_instance WHERE id = :i` 零行命中，签发出的休眠实例行必须
+        保持全 NULL——这正是 D-Q73「放弃机器归因」的可测形状。重启多机归因时连同
+        `_h` 一起换回，本用例再翻回原断言（原文见 git 历史）。
         """
         auth = _login(client, ADMIN, PASSWORD)
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             _reset(conn, seeded)
-            account, other = _mk_account(conn, seeded), _mk_account(conn, seeded)
+            account = _mk_account(conn, seeded)
         instance = _issue(client, auth)
 
         assert _pull(client, instance, account["customerId"], v="2.4.1").status_code == 200
@@ -1225,16 +1166,8 @@ class TestPullTasks:
                 " WHERE id = %s",
                 (instance["id"],),
             ).fetchone()
-        assert seen is not None and inst[0] is not None
-        assert inst[1] == "2.4.1"
-        assert inst[2] == account["customerId"]
-
-        assert _pull(client, instance, other["customerId"]).status_code == 200
-        with psycopg.connect(migrated_db) as conn:
-            assert conn.execute(
-                "SELECT last_seen_customer_id FROM app.plugin_instance WHERE id = %s",
-                (instance["id"],),
-            ).fetchone()[0] == other["customerId"], "换号后观察列没跟着变"  # fmt: skip
+        assert seen is not None, "账号 last_seen_at 仍要回写（掉线判断的依据）"
+        assert inst == (None, None, None), "共享通道不得回写实例观察列（哨兵 0 应零行命中）"
 
 
 # ── 端点 6：待物流同步 ──

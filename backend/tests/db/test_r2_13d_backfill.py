@@ -29,7 +29,9 @@
 """
 
 import json
+import os
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 from typing import Any, ClassVar
 
@@ -46,6 +48,9 @@ from erp.plugin.auth import PluginPrincipal
 
 from .test_identity_api import PASSWORD, _login
 
+# 17c（D-Q73 ③）：全文件经共享 token 过闸；执行档位不再由实例行承载，改由
+# system_config 的 procurement.plugin_exec_mode 承载（_setup 每次显式写入）。
+SHARED_TOKEN = "r13d-shared-token-0123456789abcdef"
 ADMIN = "r13d_admin"
 TEAM = "R2-13d 回填与异常测试团队"
 PLUGIN = "/api/v1/purchase-plugin"
@@ -90,14 +95,31 @@ def seeded(migrated_db: str) -> dict[str, int]:
             " VALUES (%s, %s, 'PL13D', '回填测试店', true) RETURNING id",
             (team_id, channel_id),
         ).fetchone()[0]
+        # 17c：共享通道的团队归属由配置中心指定（铁律 5）。逐模块覆写——13a 的模块
+        # 会把它指到 13a 的团队，本模块首个用例起必须指回来。
+        conn.execute("DELETE FROM app.system_config WHERE key = 'procurement.plugin_team_id'")
+        conn.execute(
+            "INSERT INTO app.system_config (key, value) VALUES"
+            " ('procurement.plugin_team_id', to_jsonb(%s::bigint))",
+            (team_id,),
+        )
     return {"team": team_id, "user": uid, "store": store_id}
 
 
 @pytest.fixture(scope="module")
-def client(seeded: dict[str, int]) -> TestClient:
+def client(seeded: dict[str, int]) -> Iterator[TestClient]:
+    os.environ["ERP_PLUGIN_SHARED_TOKEN"] = SHARED_TOKEN
+    from erp.core.settings import get_settings
+
+    get_settings.cache_clear()
     from erp.main import app
 
-    return TestClient(app)
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        os.environ.pop("ERP_PLUGIN_SHARED_TOKEN", None)
+        get_settings.cache_clear()
 
 
 # ── 造数助手（形状同 13a 用例；测的是端点语义，不是建单链）──
@@ -196,29 +218,22 @@ def _mk_po(
     )
 
 
-def _issue(client: TestClient, auth: dict[str, str], *, exec_mode: str = "live") -> dict[str, Any]:
-    """签发一枚**团队级**实例令牌。要 `live` 的话**必须签发后再 PATCH 升档**。
-
-    签发端点只收两个演练档（审查 B2：一步直签 live 会打穿「升 live 须显式 PATCH」）。
-    本用例文件要测的是 live 档的回填语义，故照真实运营路径走一遍升档——
-    直接 `json={"exec_mode": "live"}` 会 422。
-
-    **不收 account_id**（本轮改形）：令牌绑一台授权浏览器，不绑买家账号。
-    """
-    issue_mode = "stop_before_payment" if exec_mode == "live" else exec_mode
-    r = client.post("/api/v1/plugin-instances", headers=auth, json={"exec_mode": issue_mode})
-    assert r.status_code == 201, r.text
-    issued = dict(r.json())
-    if exec_mode != issue_mode:
-        up = client.patch(
-            f"/api/v1/plugin-instances/{issued['id']}", headers=auth, json={"exec_mode": exec_mode}
-        )
-        assert up.status_code == 200, up.text
-    return issued
+def _set_exec_mode(conn: psycopg.Connection, mode: str) -> None:
+    """17c：执行档位写进配置中心（原先由实例行 `exec_mode` 承载，签发后 PATCH 升档；
+    共享通道下签发仪式整个休眠，档位=`procurement.plugin_exec_mode` 一条配置）。
+    每次 `_setup` 显式写入而不依赖残值——上一个用例要的档位不该漏进下一个。"""
+    conn.execute("DELETE FROM app.system_config WHERE key = 'procurement.plugin_exec_mode'")
+    conn.execute(
+        "INSERT INTO app.system_config (key, value) VALUES"
+        " ('procurement.plugin_exec_mode', to_jsonb(%s::text))",
+        (mode,),
+    )
 
 
 def _h(instance: dict[str, Any]) -> dict[str, str]:
-    return {"X-Plugin-Instance": str(instance["id"]), "X-Plugin-Token": instance["token"]}
+    """17c 共享形态：只带 X-Plugin-Token=共享值。参数保留是为了不动几十处调用点；
+    实例字段不再参与认证（逐实例链休眠）。"""
+    return {"X-Plugin-Token": SHARED_TOKEN}
 
 
 def _setup(
@@ -232,18 +247,21 @@ def _setup(
     asins: tuple[str, ...] = ("B0PLUG13D",),
     purchase_order_ref: str | None = None,
 ) -> dict[str, Any]:
-    """一张已派给本实例的执行单 + 一枚可用令牌。返回造数结果供断言。"""
-    auth = _login(client, ADMIN, PASSWORD)
+    """一张已派好的执行单 + 档位配置。返回造数结果供断言。
+
+    17c：`instance` 键退化成 `{"exec_mode": …}` 的档位快照——`_backfill_body` 读它拼
+    `execMode`，`_h` 已不读实例字段。真档位在 system_config（`_set_exec_mode`）。
+    """
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         _reset(conn, seeded)
+        _set_exec_mode(conn, exec_mode)
         account = _mk_account(conn, seeded)
         order = _mk_order(conn, seeded, postcode=postcode, asins=asins)
         po = _mk_po(
             conn, seeded, order, account["id"], status=status,
             purchase_order_ref=purchase_order_ref,
         )  # fmt: skip
-    instance = _issue(client, auth, exec_mode=exec_mode)
-    return {"account": account, "order": order, "po": po, "instance": instance}
+    return {"account": account, "order": order, "po": po, "instance": {"exec_mode": exec_mode}}
 
 
 def _backfill_body(env: dict[str, Any], **overrides: Any) -> dict[str, Any]:
@@ -402,7 +420,9 @@ class TestLiveBackfill:
         assert row["status"] == "purchased", "插件路径走 purchased，不写 backfilled（D5）"
         assert row["purchased_at"] is not None
         assert row["backfill_actor_kind"] == "plugin"
-        assert row["backfill_actor_id"] == env["instance"]["id"]
+        # 17c：共享通道 instance_id=0 哨兵 → actor NULL（放弃机器归因，D-Q73；
+        # kind='plugin' 仍在——「是插件报的」这个事实不因归因休眠而丢）
+        assert row["backfill_actor_id"] is None
         assert row["exception_kind"] is None, "全部核对通过时不该留异常分类"
 
         with psycopg.connect(migrated_db) as conn:
@@ -646,9 +666,9 @@ class TestExecModes:
     def test_exec_mode_mismatch_is_rejected(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
-        """插件回报的档与实例当前档不符 → 409，且**一列未写**。
+        """插件回报的档与服务端当前档（17c 起=配置中心）不符 → 409，且**一列未写**。
 
-        挡的是「实例已降档、插件仍按旧档在真下单」：放行就等于默许它继续按错档买。
+        挡的是「服务端已降档、插件仍按旧档在真下单」：放行就等于默许它继续按错档买。
         """
         env = _setup(client, migrated_db, seeded, exec_mode="stop_before_payment")
         r = client.post(
@@ -716,7 +736,7 @@ class TestExecModes:
     ) -> None:
         """演练档却带回了真实渠道单号 = **钱已经花出去了的实证**。
 
-        比实例上配的档位更硬：按已下单入账（D2）并升 critical 告警。当成演练处理会把
+        比服务端配的档位更硬：按已下单入账（D2）并升 critical 告警。当成演练处理会把
         这张单留在 `assigned`，下一轮派发再派一次——那就是二次扣款。
         """
         env = _setup(client, migrated_db, seeded, exec_mode="stop_before_payment")

@@ -26,7 +26,7 @@ tags:
   - {name: Scrape, description: 采集工单与采集端（内部 API 面）}
   - {name: Notify, description: 通知中心：列表/未读数/已读（任何登录用户可用，无权限点）}
   - {name: ScrapeWorker, description: 采集节点回调面（X-Node-Key + X-Node-Token 双头部认证，非 JWT）}
-  - {name: PurchasePlugin, description: 采购插件回调面（X-Plugin-Instance + X-Plugin-Token 双头部认证，非 JWT；R2-13）}
+  - {name: PurchasePlugin, description: 采购插件回调面（X-Plugin-Token 共享 token 认证，非 JWT；R2-13 建，D-Q73 17c 改共享形态）}
   - {name: Portal, description: 采购方门户（独立认证域，白名单最小面）}
 
 security:
@@ -1937,9 +1937,13 @@ paths:
         '200': {description: OK, content: {application/json: {schema: {type: object}}}}
 
   # ─────────────────── PurchasePlugin（Amazon 采购插件回调面，R2-13）───────────────────
-  # ① **第四个认证域**：`X-Plugin-Instance`（plugin_instance.id）+ `X-Plugin-Token`（明文令牌）
-  #    双头部，非 JWT、无 x-permission——同 ScrapeWorker，保护在另一条道上而不是没有保护。
-  #    失败一律 401 `PLUGIN_AUTH`，**不区分**「实例不存在 / 令牌错 / 已吊销」。
+  # ① **第四个认证域**：`X-Plugin-Token`（共享 token，D-Q73 17c）单头部，非 JWT、
+  #    无 x-permission——同 ScrapeWorker，保护在另一条道上而不是没有保护。
+  #    共享值来自 `ERP_PLUGIN_SHARED_TOKEN`（.env 一行，**未配置=通道整体关闭**）；
+  #    团队归属/执行档位是业务参数，在 system_config（procurement.plugin_team_id /
+  #    plugin_exec_mode）。失败一律 401 `PLUGIN_AUTH`，**不区分**「未配置 / 缺头 / 令牌错」。
+  #    〔逐实例双头部链（X-Plugin-Instance + 签发/吊销仪式）保留休眠于
+  #    `plugin/auth.py::authenticate_instance`，重启多机归因时换回 router 依赖并还原本段。〕
   # ② **路径末段保留厂商方法名（camelCase）是有意的**：本组是机器协议不是 UI 契约。
   #    13e 的回切演练要拿 fork 版与厂商原版逐条对照，路径逐字对应做到零翻译；
   #    且插件 `CONFIG.API.endpoints` 的键名与末段一一对应。前缀收成一组
@@ -1965,7 +1969,7 @@ paths:
   /purchase-plugin/getNeedPurchaseOrders:
     get:
       tags: [PurchasePlugin]
-      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      security: [{pluginTokenAuth: []}]
       summary: 拉待采购任务（拉取即认领）
       description: >-
         **GET 但有副作用**：本端点把 `customerId` 在**本团队范围内**解析成买家账号，
@@ -2003,7 +2007,7 @@ paths:
   /purchase-plugin/getNeedSyncOrders:
     get:
       tags: [PurchasePlugin]
-      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      security: [{pluginTokenAuth: []}]
       summary: 拉待物流同步订单
       description: >-
         该 `customerId` 解析出的账号名下、已拍单（`purchased`/`shipped`）且有渠道单号的单。
@@ -2031,7 +2035,7 @@ paths:
   /purchase-plugin/purchaseOrderFinishUpdate:
     post:
       tags: [PurchasePlugin]
-      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      security: [{pluginTokenAuth: []}]
       summary: 采购完成回填（金额/单号/卡号后四位/预计送达）
       description: >-
         幂等键 = `platformOrderNo`（自然键，跨插件重装/换实例仍成立，**不用 Idempotency-Key**
@@ -2052,7 +2056,7 @@ paths:
   /purchase-plugin/updateOrderStatus:
     post:
       tags: [PurchasePlugin]
-      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      security: [{pluginTokenAuth: []}]
       summary: 拍单失败（status=99）
       description: >-
         落 `status=exception` + `exception_reason`（failReason 原文一字不改）+
@@ -2076,7 +2080,7 @@ paths:
   /purchase-plugin/updateAmzOrderStatus:
     post:
       tags: [PurchasePlugin]
-      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      security: [{pluginTokenAuth: []}]
       summary: 渠道侧回报（91=已取消/退款，92=订单不存在）
       description: >-
         这两条发生在**已拍单之后**，故只落 `exception_kind`（`channel_cancelled` /
@@ -2101,7 +2105,7 @@ paths:
   /purchase-plugin/updateTrackingInfo:
     post:
       tags: [PurchasePlugin]
-      security: [{pluginInstanceAuth: [], pluginTokenAuth: []}]
+      security: [{pluginTokenAuth: []}]
       summary: 物流回填（运单号 + 承运商 + 轨迹事件）
       description: >-
         主表金额四项走 `coalesce(列, 新值)`（端点 2 已落的是权威，本端点只补空洞）；
@@ -2125,8 +2129,9 @@ components:
     portalAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 门户 JWT（audience=portal）}
     nodeKeyAuth: {type: apiKey, in: header, name: X-Node-Key, description: 采集节点标识（与 nodeTokenAuth 同时提供）}
     nodeTokenAuth: {type: apiKey, in: header, name: X-Node-Token, description: 采集节点令牌（`scrape/router.py::_node_auth` 双头部校验）}
-    pluginInstanceAuth: {type: apiKey, in: header, name: X-Plugin-Instance, description: 采购插件实例标识（plugin_instance.id 的十进制串；与 pluginTokenAuth 同时提供）}
-    pluginTokenAuth: {type: apiKey, in: header, name: X-Plugin-Token, description: 采购插件实例令牌（`plugin/auth.py::authenticate_instance` 双头部校验；**实例专属，禁全局共享密钥**；库里只存 sha256）}
+    # 〔D-Q73 17c〕pluginInstanceAuth（X-Plugin-Instance 头）随逐实例链休眠摘除：fork 插件
+    # 旧构建仍会发该头，FastAPI 对未声明的头自动忽略，无需兼容层。重启多机归因时放回。
+    pluginTokenAuth: {type: apiKey, in: header, name: X-Plugin-Token, description: 采购插件共享令牌（`plugin/auth.py::authenticate_shared`；值=ERP_PLUGIN_SHARED_TOKEN，未配置则通道整体关闭；比较走 sha256+恒定时；D-Q73 17c——原「实例专属、禁全局共享密钥」纪律随单人模式经 Owner 裁定翻转，逐实例链保留休眠）}
 
   parameters:
     page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
@@ -3129,7 +3134,7 @@ components:
       type: object
       description: 采购插件实例＝**一台授权浏览器**（R2-13，图纸 07:274-286 + 本轮补 exec_mode）。**本 schema 逐字不含 token 的任何形态**，也**不含 buyer_account_id**——令牌不绑买家账号。
       properties:
-        id: {type: integer, description: 同时是插件请求头 X-Plugin-Instance 的取值}
+        id: {type: integer, description: 逐实例链休眠期间仅作列表标识（D-Q73 17c 共享 token 不带实例头；多机归因重启后恢复为 X-Plugin-Instance 头的取值）}
         status: {type: string, enum: [active, revoked]}
         exec_mode: {type: string, enum: [dry_run, stop_before_payment, live], description: 'dry_run=不进结账页 / stop_before_payment=付款前停下回报（不花钱验收的主力档）/ live=完整下单'}
         version: {type: [string, 'null']}
