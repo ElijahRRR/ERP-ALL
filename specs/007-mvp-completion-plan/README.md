@@ -655,7 +655,7 @@ Web 端口自此是唯一边界。
 |---|---|---|
 | R2-13 | `0043`–`0046` | `buyer_account` / `plugin_instance` / `procurement_order` 增列与 `status` CHECK 扩 `pending_review` / `procurement_logistics_event` |
 | R2-14 14b | `0047` | `deleted_principal`（PK `(kind,id)`）+ 主体删除权限点 |
-| R2-16 | `0048`–`0049` | `sku_mapping` 建表（§03，含 R2-16 补的 `link_state` 等列）+ `ck_listing_mode` 扩 `adopt` |
+| R2-16 | ~~`0048`–`0049`~~ **`0049`–`0050`**（2026-08-01 改：`0048` 已被 PR #50 内的 R2-17 17d 用掉——DROP `ck_buyer_account_claimed`） | `sku_mapping` 建表（§03，含 R2-16 补的 `link_state` 等列）+ `ck_listing_mode` 扩 `adopt` |
 
 用不完的号**留空不补**——号段连续不是不变量，链正确才是。
 
