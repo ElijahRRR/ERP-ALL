@@ -1,4 +1,4 @@
-# PR #50 第三闸真机验证指令 v13（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
+# PR #50 第三闸真机验证指令 v14（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
 >
@@ -51,6 +51,17 @@
 > 会话若已不在（`$TOKEN`/`$IA` 失效）→ 重登录取 `$TOKEN`、重贴 **-q 版**函数、跑 R-0 探针，
 > 吊销当前 active 的 IA-R（id=3）并按 R 节补签新工作实例（判据同 R：任一时刻仅一枚 active、
 > version 落库），再进⑧-3；会话仍在 → 重贴函数 + 探针后直接⑧-3。
+>
+> **v14 补丁（⑨-1 停点定性 + 现场修复 + 载荷钉死）**：v13 续跑⑧全过、停在⑨-1——**定性
+> 为「测试载荷带了 `platformOrderNo` 触发设计内护栏」，不是产品缺陷**。`service.py`
+> `record_purchase_finish` 明文：**渠道单号是「钱已花出去」的实证，比实例档位更硬**——
+> 演练档带回真实单号 → 按已下单入账（D2：不记账比记错更糟）+ 报警「请核实实例档位与
+> 插件版本」。stop_before_payment 演练里插件停在付款前，**根本不存在渠道单号**；⑨-1 原文
+> 只列了四个金额、没钉完整载荷，部署侧自组载荷把⑨-4b 的单号提前带了进来，正好踩进这条
+> 护栏的领地。v14：**⑨-0** 先把这次意外变成证据（该护栏此前无真机承重计划，白得一次）、
+> 再单事务精确修复现场（仅 R13T 行）；⑨-1/2/3 **钉完整 JSON 载荷、禁带 platformOrderNo**
+> （⑨-5 幂等/重复单号探针除外——那发生在人工补录之后，本就该带）。
+> 停机计数更新：本役第 3 停，前两次取值层、本次测试载荷层，**产品判据实质失败仍为 0**。
 >
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**（判据=②的「你在分支尖端」+
 > 「迁移清单恰为 0043-0046」，不写死 sha；实际 sha 记进回执）。
@@ -487,17 +498,54 @@ e. 认领正路（审查五轮点名的真机链，前半）：`PATCH /buyer-acc
 
 ## ⑨ 回填链：金额与状态机（审查重点位，数值逐字入回执）
 
-**⑨-1 stop_before_payment 档抓金额不落单**：IA 对 `<POA>` 调 `purchaseOrderFinishUpdate`
-（totalBeforeTax `$9.99` / tax `$0.80` / shipping `$0.00` / total `$10.79`）。
+> **⑨ 载荷纪律（v14，⑨-1 停点的根治）**：⑨-1/⑨-2/⑨-3 的请求体**一律按下文钉死的
+> JSON 逐字发，禁带 `platformOrderNo`**——stop_before_payment 演练里插件停在付款前，
+> 不存在渠道单号；带上它就进了 D2 升档护栏（服务端视真实单号比档位硬，按已下单入账
+> +报警——那是⑨-0 已实测过的另一条路径，不是本组用例）。**⑨-5 例外**：它是幂等/重复
+> 单号探针，发生在⑨-4b 人工补录之后，按原文带 platformOrderNo。
+
+**⑨-0 仅本次续跑：v13 停点的证据补录与现场修复（新读者跑全程时跳过本小节）**
+
+先补录（把意外变成承重证据——「演练档带回真实单号→按已下单入账+报警」这条 D2 护栏
+原本没有真机承重计划，v13 停点恰好把它完整走了一遍）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT severity, dedupe_key, left(body, 120) AS body_head FROM app.notification WHERE dedupe_key = 'plugin.backfill_check.7.other';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT backfill_actor_kind, backfill_actor_id, exception_kind, purchase_platform FROM app.procurement_order WHERE id = 7;"
+```
+
+**判据（逐字记回执）**：告警恰 1 行、正文含「该档不应真实下单」；PO7
+`backfill_actor_kind='plugin'`、`backfill_actor_id=4`（发起实例）、`exception_kind='other'`、
+`purchase_platform='amazon'`——升档路径的全套落库与 `service.py` 注释逐字对应。
+
+再修复（单事务；**仅动 R13T 现场的 PO7 与 R13T-O1 两行**，把⑨-1 误触发的 live 写入
+逐列归位到⑧结束时的形状；告警行**留着**，它是⑨-0 的证据、⑫按对象圈定会收）：
+
+```powershell
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "UPDATE app.procurement_order SET purchase_platform = NULL, purchase_currency = NULL, exchange_rate_locked = NULL, purchase_order_ref = NULL, purchase_cost = NULL, tax_amount = NULL, freight_cost = NULL, backfill_actor_kind = NULL, backfill_actor_id = NULL, exception_kind = NULL, exception_reason = NULL, purchased_at = NULL, status = 'assigned' WHERE id = 7 AND status = 'purchased'; UPDATE app.channel_order SET internal_status = 'assigned' WHERE channel_order_no = 'R13T-O1' AND internal_status = 'purchasing';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT status, purchase_order_ref, purchased_at, purchase_cost, buyer_account_id FROM app.procurement_order WHERE id = 7;"
+```
+
+**判据**：两条 UPDATE 各 `UPDATE 1`；复核 PO7 `status='assigned'`、ref/purchased_at/
+purchase_cost 全 NULL、`buyer_account_id` 仍指向 A（派发关系不动）。过 → 进⑨-1。
+
+**⑨-1 stop_before_payment 档抓金额不落单**：IA 对 `<POA>` 发（载荷逐字，无 platformOrderNo）：
+
+```powershell
+Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/purchaseOrderFinishUpdate" -Method Post -Headers $HA -Body '{"id": <POA>, "totalBeforeTax": "9.99", "tax": "0.80", "shipping": "0.00", "total": "10.79"}' -ContentType "application/json" -UseBasicParsing
+```
+
 库内判据：`purchase_cost=9.99`、`tax_amount=0.80`、`freight_cost=0.00`、
 `purchase_currency='USD'`、`exchange_rate_locked=1.0`、**`purchase_order_ref IS NULL`**、
 **`purchased_at IS NULL`**、**`status='assigned'` 不动**、channel_order 不进 purchasing。
 
-**⑨-2 金额自校验不平 → 落异常但数据照实入库（D2/D1）**：再调一次，totalBeforeTax
-`$5.00`、total `$10.79`（不平）→ `exception_kind` 落值、金额列**照实更新为 5.00**、
+**⑨-2 金额自校验不平 → 落异常但数据照实入库（D2/D1）**：再发一次，body 逐字
+`'{"id": <POA>, "totalBeforeTax": "5.00", "tax": "0.80", "shipping": "0.00", "total": "10.79"}'`
+（不平）→ `exception_kind` 落值、金额列**照实更新为 5.00**、
 `status` 仍不动；notification 出现对应告警（dedupe_key ASCII）。
 
-**⑨-3 负数拒收（B5）**：totalBeforeTax `-$3.20` → 该列**保持上一次值**（不写负不写 0）、
+**⑨-3 负数拒收（B5）**：body 逐字 `'{"id": <POA>, "totalBeforeTax": "-3.20"}'` →
+该列**保持上一次值**（不写负不写 0）、
 告警/日志触发；HTTP 200（解析失败不断链）。
 
 **⑨-4 人工补录与释放互斥（Owner 异常#16 裁定承重）**：
