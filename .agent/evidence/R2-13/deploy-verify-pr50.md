@@ -1,4 +1,4 @@
-# PR #50 第三闸真机验证指令 v12（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
+# PR #50 第三闸真机验证指令 v13（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
 >
@@ -40,6 +40,18 @@
 > 现存量实测，出现早于本轮的历史行则**当场**把终态第六项改锚定等值，不拖到⑫后假红；
 > N4——回③重建路径上守卫基线随重建 HEAD 更新。
 >
+> **v13 补丁**（v12 续跑停在⑧-3 取值层 + 十二/十三轮意见；产品判据至今 0 失败）：
+> `psql -tA` **不抑制命令标签**，`Get-SqlValue` 对 `INSERT … RETURNING` 形状必然拿到
+> 两行（值 + `INSERT 0 1`）——函数加 **`-q`** 修整类（十三轮实测表 B）；⑧-3 两处取值改
+> **幂等 CTE**（Team B 现场已存在 id=14——`-1` 内已提交、转换失败在其后，**凡经函数执行的
+> 写入续跑一律按「可能已落库」处理**；⑫按 name 圈定本就涵盖 id=14）；R-0 加**探针自测**
+> （函数对 INSERT 形状可用才准进⑧-3）；N5——R-0 通知实测改**枚举**并按 **dedupe_key 语义**
+> 判分支（不再依赖未钉下的开跑时间戳）；N6——⑫判 0 依据措辞修正。
+> **本次续跑从⑧-3 重入**：先补报 ⑧-2 的 `c_audit`（判据恰 1，`$BA_C=3` 现成）；PowerShell
+> 会话若已不在（`$TOKEN`/`$IA` 失效）→ 重登录取 `$TOKEN`、重贴 **-q 版**函数、跑 R-0 探针，
+> 吊销当前 active 的 IA-R（id=3）并按 R 节补签新工作实例（判据同 R：任一时刻仅一枚 active、
+> version 落库），再进⑧-3；会话仍在 → 重贴函数 + 探针后直接⑧-3。
+>
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**（判据=②的「你在分支尖端」+
 > 「迁移清单恰为 0043-0046」，不写死 sha；实际 sha 记进回执）。
 > 写法约定沿用 #48 v7 + #49 v6 全部教训：每条命令写死 `-f infra/docker-compose.yml`、
@@ -74,12 +86,15 @@
 
 ```powershell
 function Get-SqlValue([string]$Sql) {
-  $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -tA -1 -v ON_ERROR_STOP=1 -c $Sql
+  $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -q -tA -1 -v ON_ERROR_STOP=1 -c $Sql
   return ($raw | Out-String).Trim()
 }
 ```
 
-规则：数值用 `[long](Get-SqlValue "…")`，字符串直接用；`-tA` 保证无表头无对齐的裸值；
+规则：数值用 `[long](Get-SqlValue "…")`，字符串直接用；`-q -tA` 保证无表头无对齐无
+**命令标签**的裸值（十三轮实测：无 `-q` 时 `INSERT … RETURNING` 必然多出一行
+`INSERT 0 1`，v12 续跑正停在这）；**函数带 `-1`，语句在 psql 内已提交、PowerShell 侧
+失败发生在提交之后——凡经它执行的写入，续跑一律按「可能已落库」处理（幂等形或先探后写）**；
 **禁止 `.Split` / 禁止对返回值做行数组索引**——psql 单行输出在 PowerShell 里是 String，
 `[0]` 取到的是 Char（v8 停点实证）。需要多列时分两次取值，不做文本拆分。
 下文 `<BA_C>`/`<TEAM_B>`/`<ITB>`/`<BA_D>`/`<BA_F>` 等尖括号占位符 = 用本函数取到并记进
@@ -314,11 +329,13 @@ git pull
 git log --oneline -1
 git diff --name-only e725c67..HEAD
 git stash list
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT count(*) AS plugin_notifs_now, min(created_at) AS oldest FROM app.notification WHERE dedupe_key LIKE 'plugin.%';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT id, dedupe_key, created_at FROM app.notification WHERE dedupe_key LIKE 'plugin.%' ORDER BY created_at;"
 function Get-SqlValue([string]$Sql) {
-  $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -tA -1 -v ON_ERROR_STOP=1 -c $Sql
+  $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -q -tA -1 -v ON_ERROR_STOP=1 -c $Sql
   return ($raw | Out-String).Trim()
 }
+$PROBE = [long](Get-SqlValue "CREATE TEMP TABLE r13t_probe (id bigint); INSERT INTO r13t_probe (id) VALUES (42) RETURNING id;")
+"PROBE=$PROBE"
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances/1/revoke" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
 $IA = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"stop_before_payment","version":"R13T"}' -ContentType "application/json"
 "IA_R_id=$($IA.id) token_len=$($IA.token.Length)"
@@ -329,11 +346,14 @@ $HA = @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = $IA.token }
 仍有效可继续；出现 `backend/`、`frontend/`、`infra/`、`workers/` 任一路径 → **回③重建
 +重迁移**后再续（重建后本守卫的基线 sha 随之更新为重建时 HEAD 并记回执，后续续跑
 以新基线对比——十一轮 N4）。
-**`plugin_notifs_now`/`oldest` 照实记回执（十一轮 N3——终态第六项的零要测不要假设）**：
-若现存行**全部**能由本轮已跑步骤解释（⑧-2 的 `plugin.pending_claim.3` + ⑧-1 对 O4 的
-`plugin.no_asin.10`，预期量级 2），⑫终态第六项维持 **=0**；若出现 `created_at` 早于
-本轮开跑时间的行，**当场**把终态第六项改为**锚定等值（= 历史行条数，行清单贴回执）**，
-不得拖到⑫之后靠假红才发现。回执 sha **分列两行**：产品代码=`e725c67`（③建镜像所用）、指令版=
+**`plugin.%` 通知枚举整份贴回执（十一轮 N3 + 十二轮 N5——终态第六项的零要测不要假设，
+且行清单本身就是判据输入）**：**按 dedupe_key 语义判**，不比时间戳（开跑时间从未钉下）：
+`plugin.pending_claim.3`（⑧-2 落的）与 `plugin.no_asin.10`（⑧-1 对 O4 触发的）是本轮
+可解释的两条；**出现任何其它 key = 历史残行**，**当场**把⑫终态第六项改为**锚定等值
+（= 历史行条数，行清单已在回执）**，不得拖到⑫之后靠假红才发现；只有这两条（或其子集）
+→ 终态第六项维持 **=0**。
+**`PROBE=42` 才准进后续**（十三轮 (d)——取值函数对 `INSERT … RETURNING` 形状的一分钟
+自测；异常或非 42 = 函数或 psql 行为不符，停下来贴现场，别拿几小时的跑动去替它证伪）。回执 sha **分列两行**：产品代码=`e725c67`（③建镜像所用）、指令版=
 `git log` 所示 HEAD（十轮 N2——单写一个 sha 就是「没被镜像验证过的 sha」，正文失实
 同族）。`git stash list` 照实记回执（①若做过 README 暂存它应还挂在栈上、⑫要 pop；
 空则记「无暂存」——八轮点名的回执缺项）；吊销 200 且旧行仍在（revoked、last_seen 保留）；
@@ -386,9 +406,17 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 不是签发通道；token 是测试字面量非凭证）：
 
 ```powershell
-$TEAM_B = [long](Get-SqlValue "INSERT INTO app.team (name) VALUES ('R13T-TEAM-B') RETURNING id;")
-$ITB = [long](Get-SqlValue "INSERT INTO app.plugin_instance (team_id, token_hash, exec_mode, version) VALUES ($TEAM_B, encode(sha256('R13T-TB-TOKEN-4f9a2c81'::bytea), 'hex'), 'dry_run', 'R13T') RETURNING id;")
+$TEAM_B = [long](Get-SqlValue "WITH ins AS (INSERT INTO app.team (name) VALUES ('R13T-TEAM-B') ON CONFLICT (name) DO NOTHING RETURNING id) SELECT coalesce((SELECT id FROM ins), (SELECT id FROM app.team WHERE name = 'R13T-TEAM-B'));")
+$ITB = [long](Get-SqlValue "WITH probe AS (SELECT id FROM app.plugin_instance WHERE team_id = $TEAM_B AND version = 'R13T'), ins AS (INSERT INTO app.plugin_instance (team_id, token_hash, exec_mode, version) SELECT $TEAM_B, encode(sha256('R13T-TB-TOKEN-4f9a2c81'::bytea), 'hex'), 'dry_run', 'R13T' WHERE NOT EXISTS (SELECT 1 FROM probe) RETURNING id) SELECT coalesce((SELECT id FROM probe), (SELECT id FROM ins));")
 "TEAM_B=$TEAM_B ITB=$ITB"
+```
+
+> 幂等说明（十三轮 (b)(c)，实测背书）：`app.team.name` 有 UNIQUE 约束（0002），
+> `ON CONFLICT DO NOTHING` + coalesce 连跑同一 id；ITB 无唯一键，CTE 先探
+> （team_id + version）有则复用。**续跑现场 `R13T-TEAM-B` 已存在（id=14，上次 `-1` 内
+> 已提交属预期）——幂等语句会直接取到它，无需特殊处理；⑫按 name 圈定本就涵盖。**
+
+```powershell
 ```
 
 用 `<ITB>` + 明文 `R13T-TB-TOKEN-4f9a2c81` 作头，拉 `?customerId=R13TCUSTA`
@@ -564,10 +592,11 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 ```
 
 > 第六项 `r13t_notifs`（十轮 N1，notification 清理的真兜底）判 **0** 的三条依据（审查侧
-> 已逐一核过）：本轮全部通知发射点的 dedupe_key 一律 `plugin.` 前缀；插件从未在生产
-> 跑过（⓪-3 实测 `pi_rows=0`）；库内其它通知生产者全用冒号式 key（`ship_failed:` 等），
+> 已逐一核过）：本轮全部通知发射点的 dedupe_key 一律 `plugin.` 前缀；⓪-3 实测
+> `pi_rows=0`——**只证明该时刻无实例行、不排除历史，故由 R-0 的 `plugin.%` 枚举实测
+> 背书**（十二轮 N6 措辞修正）；库内其它通知生产者全用冒号式 key（`ship_failed:` 等），
 > 不会命中 `plugin.%`。它不依赖任何手工占位符，「查询与 DELETE 一起瞎」在这里不可能。
-> 判 0 的前提由 R-0 的 `plugin_notifs_now` 实测背书；若 R-0 记录了早于本轮的历史行，
+> 若 R-0 枚举出本轮不可解释的 key（历史残行），
 > 本项按 R-0 所定改锚定等值（十一轮 N3）。
 
 ---
