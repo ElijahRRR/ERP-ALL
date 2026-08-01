@@ -1193,17 +1193,24 @@
   "id": "R2-17",
   "priority": "P0",
   "dimension": "platform",
-  "status": "todo",
+  "status": "in_progress",
   "check": "单人模式收口(D-Q73)：17a 免登录(SINGLE_USER_MODE 开关，无凭证注入固定超管身份，前端跳过登录)+17b 导航摘除(Users/Roles/TeamSwitcher)+17c 插件共享 token(取消逐实例签发)+17d 订单人工指派(customerId 首见即 active，取消 pending_claim)。表层摘除、地基休眠：不删 team_id/RLS/权限点任何一行",
   "evidence": [
    "specs/000-founding/DECISION-FORM.md",
    "specs/007-mvp-completion-plan/README.md",
    "backend/src/erp/core/authn.py"
   ],
-  "gate": "先于三路并行的一切——它修改所有工单的默认前提(越权/权限判据全线划除)",
+  "gate": "⛔ 冻结令主体(Owner 2026-07-30「先执行项目简化再进行下一步开发」)：本单+R2-18 完成并部署前，其余功能线一律不开新工、在途停在当前提交。唯一例外=线上事故修复。解冻标志=验收①③④过+部署机回执",
   "acceptance": "①部署机开 SINGLE_USER_MODE 后浏览器直开地址即达产品页无登录；②audit_log 三流可辨：人工操作(固定用户)/定时任务(actor_type='system')/系统报错(incidents+notifications)各取一条验 actor 归属；③导航无 团队/用户/角色 入口；④插件带共享 token 可拉任务、不带则拒(唯一保留的闸)；⑤关掉开关登录流程原样回来(休眠可逆)",
   "finding": "【Owner 2026-07-30 裁定运营形态收敛为单人自用】「现在的开发做复杂了，总是围绕团队、角色、权限、越权——我只需要一个我个人能够使用的 erp」。审计侧量化后定「表层摘除、地基休眠」：19 张表 team_id、102 条 RLS 策略、106 个权限检查端点全是验证过的在跑代码，拆除=数周手术+回归风险；而超管身份下全部权限检查在前后端各一行短路(authn.py:47 / AuthContext.tsx:69)，休眠运行时零成本。**摘的是持续要交的税**(新工单越权判据/评审轮次/签发仪式)不是沉没成本。风险注记：免登录=拿到地址即可操作，仅限内网/VPN，Web 端口是唯一边界(RS-02a 后 db/redis 已绑 127.0.0.1)",
-  "last_checked_at": "2026-07-30"
+  "last_checked_at": "2026-07-30",
+  "updates": [
+   {
+    "date": "2026-07-30",
+    "kind": "ruling",
+    "text": "【Owner 下冻结令，本单升为全局阻塞】原话「我需要先执行项目简化再进行下一步的开发，不然各种团队、角色、权限还会一直卡着我」。007 的 MVP 路径表已插 -1 行并加冻结令段(解冻三条件)；三路并行须知整节挂起，迁移号 R2-17 若需取 0050、三路原号段不变。顺带的工程事实：17c 共享 token 直接取代 13a 的实例签发设计，先做本单可让插件线免返工——冻结不是纯等待，是消除返工源。"
+   }
+  ]
  },
  {
   "id": "R2-18",
