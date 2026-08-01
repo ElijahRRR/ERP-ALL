@@ -99,10 +99,19 @@ from erp.plugin.auth import PluginPrincipal
 
 log = structlog.get_logger()
 
-# 拉取批量的上界交给配置中心决定：这里传硬上限，`dispatch.claim_tasks_for_account`
-# 内部会 `min(limit, procurement.plugin_dispatch.pull_batch_max)`。插件侧不带数量参数
-# （厂商协议就没有），故批量完全由服务端配置控制。
+# 拉取批量的硬上限（插件侧不带数量参数，厂商协议就没有）。17d 起拉取只读已指派单，
+# 直接用硬上限；自动派发形态下的 `min(limit, pull_batch_max)` 配置收窄随 dispatch 休眠。
 _PULL_LIMIT = dispatch.PULL_BATCH_HARD_MAX
+
+# 17d（D-Q73）：拉取＝取本账号名下已指派单（人工指派是唯一派发入口，自动派发休眠）。
+# `team_id = :t` 显式谓词照旧是防线②，RLS 防线③。ORDER BY id＝指派先后的稳定序。
+_ASSIGNED_POS_SQL = """
+SELECT id
+  FROM app.procurement_order
+ WHERE team_id = :t AND buyer_account_id = :a AND status = 'assigned'
+ ORDER BY id
+ LIMIT :n
+"""
 
 # 任务头：渠道单号 + 收货地址。`orderNo` 取**渠道单号**而不是 `PO-{id}`——插件只把它
 # 写日志与回调参数，取渠道单号让插件日志能与 Walmart 后台直接对上。
@@ -385,21 +394,25 @@ def _opt(ship_to: dict[str, Any], key: str) -> str | None:
 async def pull_purchase_tasks(
     session: AsyncSession, principal: PluginPrincipal, *, customer_id: str, version: str | None
 ) -> list[dict[str, Any]]:
-    """端点 1：拉待采购任务（**拉取即认领**，GET 但有副作用）。
+    """端点 1：拉待采购任务（17d 起＝**取本账号名下已指派单**，只读不认领）。
 
-    重复调用幂等：已认领给本账号的单会**再次返回**（`dispatch` 的续拉），不产生新派发、
-    不重复消耗 `daily_cap`。插件重启/掉线后必须还能看见自己手上的单，否则那批单没人管。
+    〔17d，D-Q73〕**自动派发休眠**：单归谁做由人在订单页指派
+    （`POST /procurement-orders/{id}/assign` 带 `buyer_account_id`），本端点只回
+    `status='assigned'` 且挂在本账号名下的单。天然幂等——重复拉回同一批，插件重启/
+    掉线后照样看得见手上的单。`dispatch.claim_tasks_for_account`（拉取即认领 +
+    daily_cap 计量 + 站点路由 + 唯一派发锁）保留休眠，13b 的测试仍直调它；
+    多机多人形态重启时把下面那段 SELECT 换回 dispatch 调用即可。
 
-    缺 ASIN 的单在派发层就不进候选（`dispatch._CANDIDATE_SQL` 的 `NOT EXISTS`）；本函数
-    再兜一次——**已派出去之后商品被删**（14a 硬删）会让老单变成缺 ASIN，那种单只能
-    告警 + 不下发，不能猜一个 ASIN 给插件去买。
+    缺 ASIN 的单照旧兜底——人工指派不看商品来源，指派后商品被删（14a 硬删）也会让
+    老单缺 ASIN，那种单只能告警 + 不下发，不能猜一个 ASIN 给插件去买。
 
-    `customerId` 在**本团队范围内**解析成账号（`plugin/identity.py`）：解析不到即当新号
-    首见登记为 `pending_claim` 并回空数组——**四种情形响应逐字节同形**，不泄漏存在性。
+    `customerId` 在**本团队范围内**解析成账号（`plugin/identity.py`）：解析不到即当
+    新号首见登记为 `active`（17d）并回空数组——新号名下没有指派的单，无任务可拉；
+    **各情形响应逐字节同形**，不泄漏存在性。
     """
     resolved = await identity.resolve_customer(session, principal, customer_id)
-    # `touch_last_seen` 必须留在**派发之后**（见下方 B1 提醒），但 `last_seen_customer_id`
-    # 与解析结果无关，故它对「解析不到」这一支同样要跑——两件事在同一个函数里。
+    # 账号闸照旧：paused/blocked/retired（及休眠遗留的 pending_claim/rejected）不出任务
+    # ——它挡的只是拉取；写路径（回填/异常/物流）不解析账号，钱照样报得回来。
     if resolved is None or resolved.status != "active":
         await touch_last_seen(
             session,
@@ -416,21 +429,13 @@ async def pull_purchase_tasks(
         )
         return []
 
-    # **`status != 'active'` 的短路在调用方**：`dispatch.py` 不该知道 `pending_claim` /
-    # `rejected` 这些身份态存在，它只认「能不能派单」。`claim_tasks_for_account` 的闸①
-    # 作为**双层冗余保留**（13b 的测试直接调它）。
-    po_ids, reason = await dispatch.claim_tasks_for_account(
-        session,
-        team_id=principal.team_id,
-        buyer_account_id=resolved.id,
-        site=resolved.site,
-        account_status=resolved.status,
-        daily_cap=resolved.daily_cap,
-        limit=_PULL_LIMIT,
-    )
-    # ⚠️ **顺序承重**：`touch_last_seen` 会 UPDATE 同一行账号，它必须留在派发**之后**。
-    # 挪到前面，账号行锁就变成「由 touch 隐式获得」——正是 `dispatch.py` 第③步注释
-    # 明令警告的那种「将来任何一次挪动都会静默拿掉 daily_cap 串行化」。
+    po_ids = [
+        int(r[0])
+        for r in await session.execute(
+            text(_ASSIGNED_POS_SQL),
+            {"t": principal.team_id, "a": resolved.id, "n": _PULL_LIMIT},
+        )
+    ]
     await touch_last_seen(
         session, principal, account_id=resolved.id, customer_id=customer_id, version=version
     )
@@ -439,7 +444,7 @@ async def pull_purchase_tasks(
             "plugin.pull.empty",
             instance=principal.instance_id,
             account=resolved.id,
-            reason=reason,
+            reason="NO_ASSIGNED_TASKS",
         )
         return []
 

@@ -1204,11 +1204,14 @@ class TestBuyerAccountCrud:
     def test_status_transition_guard(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
-        """账号状态机：认领要补齐、驳回是终态、任何态都不许回「待认领」。
+        """账号状态机：驳回是终态、任何态都不许回「待认领」；17d 起认领**不再要求 site**。
 
-        三条各挡一件事：
-        - `pending_claim → active` **缺 site** ⇒ 422 `BUYER_ACCOUNT_CLAIM_INCOMPLETE`
-          （库层 `ck_buyer_account_claimed` 不许裸奔成 500——运营少填一格是日常操作）；
+        原第一条「缺 site ⇒ 422 CLAIM_INCOMPLETE」随 0048 放松 `ck_buyer_account_claimed`
+        翻转为**放行**：单人模式下 site 的消费者（自动派发站点路由）休眠，站点是可后补的
+        备注不是准入条件（首见登记的行本就 active + 双空）。应用层的翻译分支
+        （`_translate_integrity` 的 CLAIM_INCOMPLETE）保留休眠，0048 downgrade 后自动复活。
+
+        仍在岗的两条：
         - `rejected → active` ⇒ 409：驳回必须粘住，否则伪造者换个时间再灌一次；
         - `active → pending_claim` ⇒ 409：待认领是系统发现态，不是运营可选态。
 
@@ -1233,15 +1236,11 @@ class TestBuyerAccountCrud:
             ), "0043 的 DEFAULT 不是 pending_claim——首见自动登记的归宿被改了"
 
         url = f"/api/v1/buyer-accounts/{pending}"
+        # 17d：缺 site 认领放行（原 422 CLAIM_INCOMPLETE 随 0048 休眠，见 docstring）
         half = client.patch(url, headers=auth, json={"status": "active", "label": f"补名-{tag}"})
-        assert half.status_code == 422, half.text
-        assert half.json()["error"]["code"] == "BUYER_ACCOUNT_CLAIM_INCOMPLETE"
+        assert half.status_code == 200, half.text
 
-        full = client.patch(
-            url,
-            headers=auth,
-            json={"status": "active", "label": f"补名-{tag}", "site": "amazon_com"},
-        )
+        full = client.patch(url, headers=auth, json={"site": "amazon_com"})
         assert full.status_code == 200, full.text
 
         back = client.patch(url, headers=auth, json={"status": "pending_claim"})
@@ -1512,7 +1511,8 @@ class TestLockIntegrity:
         完全一样，那条靠**加一条 `is_super=True` 的腿**才有了区分力；本条是同款第三腿。
 
         形状：绕开 RLS（`is_super=True`）解析**他团队真实存在**的 customerId。
-        - 谓词在 ⇒ 解析不到 ⇒ 走首见自动登记，在**本团队**落一条待认领行；
+        - 谓词在 ⇒ 解析不到 ⇒ 走首见自动登记，在**本团队**落一条自动登记行
+          （17d 首见即 active，空行无指派单）；
         - 谓词没了 ⇒ 直接解析到**他团队那一行**（`active` + 他们的站点 + 他们的日限），
           于是本团队的实例拿着别人的账号去派单——正是「跨团队必败」要挡的那件事。
 
@@ -1552,8 +1552,8 @@ class TestLockIntegrity:
             "绕开 RLS 后解析到了**他团队**的账号行——`_RESOLVE_SQL` 的 `team_id = :t` 没了，"
             "本团队的实例会拿着别人的账号、别人的站点与日限去派单"
         )
-        assert (got.status, got.site, got.daily_cap) == ("pending_claim", None, None), (
-            f"解析结果不是一条本团队的新待认领行（实得 {got}）"
+        assert (got.status, got.site, got.daily_cap) == ("active", None, None), (
+            f"解析结果不是一条本团队的新自动登记空行（实得 {got}）"
         )
         with psycopg.connect(migrated_db) as conn:
             landed = conn.execute(

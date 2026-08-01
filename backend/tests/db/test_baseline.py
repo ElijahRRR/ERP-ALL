@@ -242,6 +242,13 @@ class TestDowngradeDataGuard:
                 "DELETE FROM app.procurement_order"
                 " WHERE backfill_actor_kind = 'plugin' OR status = 'pending_review'"
             )
+            # 第三类顶包（17d 之后新增）：首见自动登记的 active+空 label 行会让 0048 的
+            # downgrade（重建 ck_buyer_account_claimed）先炸，本例的探针行根本走不到
+            # 0045 的守卫。同款预清理——那些行是前序模块的遗留空行，无 PO 指着它们。
+            conn.execute(
+                "DELETE FROM app.buyer_account WHERE status NOT IN ('pending_claim','rejected')"
+                " AND (label IS NULL OR site IS NULL)"
+            )
             po = conn.execute(
                 "INSERT INTO app.procurement_order"
                 " (team_id, store_id, order_id, order_date, status,"

@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -225,7 +225,16 @@ class ProcurementCreateIn(BaseModel):
 
 
 class AssignIn(BaseModel):
-    purchaser_id: int
+    """二选一（17d，D-Q73）：指派给人工采购方或买家账号（插件路径的人工入口）。"""
+
+    purchaser_id: int | None = None
+    buyer_account_id: int | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "AssignIn":
+        if (self.purchaser_id is None) == (self.buyer_account_id is None):
+            raise ValueError("purchaser_id 与 buyer_account_id 必须恰好提供一个")
+        return self
 
 
 class BackfillIn(BaseModel):
@@ -381,16 +390,27 @@ async def assign_procurement(
     user: Annotated[CurrentUser, Depends(require_permission("order.assign"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    await procurement.assign_po(
-        session,
-        team_id=user.team_id or -1,
-        po_id=po_id,
-        purchaser_id=body.purchaser_id,
-        actor_id=user.id,
-    )
+    if body.purchaser_id is not None:
+        await procurement.assign_po(
+            session,
+            team_id=user.team_id or -1,
+            po_id=po_id,
+            purchaser_id=body.purchaser_id,
+            actor_id=user.id,
+        )
+    else:
+        # 17d（D-Q73）：指派给买家账号——插件路径的人工入口（自动派发休眠）。
+        await procurement.assign_po_to_buyer_account(
+            session,
+            team_id=user.team_id or -1,
+            po_id=po_id,
+            buyer_account_id=body.buyer_account_id or -1,
+            actor_id=user.id,
+        )
     await AuditWriter.for_user(session, user, request).log(
-        "procurement.assign", "procurement_order", po_id, after=body.model_dump()
-    )
+        "procurement.assign", "procurement_order", po_id,
+        after=body.model_dump(exclude_none=True),
+    )  # fmt: skip
     return {"id": po_id, "status": "assigned"}
 
 

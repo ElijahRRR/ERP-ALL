@@ -17,7 +17,7 @@ import {
 } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, api, type PageOf, type Schemas } from '@/api/client'
+import { ApiError, api, type BuyerAccount, type PageOf, type Schemas } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
 
 // 契约类型（schema.d.ts codegen）；OrderDetail 内嵌结构在契约里是 free-form object，本地补形态
@@ -283,6 +283,9 @@ function OrderDrawer({
   const [detail, setDetail] = useState<OrderDetail | null>(null)
   const [purchasers, setPurchasers] = useState<Purchaser[]>([])
   const [assignId, setAssignId] = useState<number | undefined>()
+  // 17d（D-Q73）：插件路径的人工指派——下拉选买家账号。自动派发休眠后这是唯一派发入口
+  const [buyerAccounts, setBuyerAccounts] = useState<BuyerAccount[]>([])
+  const [assignAccountId, setAssignAccountId] = useState<number | undefined>()
   const [shipOpen, setShipOpen] = useState(false)
   const [backfillOpen, setBackfillOpen] = useState(false)
   const [pluginBackfillOpen, setPluginBackfillOpen] = useState(false)
@@ -311,6 +314,12 @@ function OrderDrawer({
       .then(setPurchasers)
       .catch(() => {
         /* 无采购方读权限时下拉保持为空 */
+      })
+    void api
+      .get<PageOf<BuyerAccount>>('/buyer-accounts?status=active&page=1&size=100')
+      .then((page) => setBuyerAccounts(page.items ?? []))
+      .catch(() => {
+        /* 无买家账号读权限时下拉保持为空 */
       })
   }, [canAssign])
 
@@ -617,6 +626,39 @@ function OrderDrawer({
                         }
                       >
                         分配
+                      </Button>
+                    </Space.Compact>
+                  )}
+                  {/* 17d（D-Q73）：指派给买家账号＝插件路径的唯一派发入口（自动派发休眠）。
+                      指派后对应浏览器的插件按 customerId 拉到本单 */}
+                  {canAssign && ['unassigned', 'assigned'].includes(po.status ?? '') && (
+                    <Space.Compact>
+                      <Select
+                        size="small"
+                        style={{ width: 200 }}
+                        placeholder="选择采购账号（插件）"
+                        value={assignAccountId}
+                        onChange={setAssignAccountId}
+                        options={buyerAccounts.map((a) => ({
+                          value: a.id,
+                          label: a.label ?? a.external_customer_id ?? `#${a.id}`,
+                        }))}
+                      />
+                      <Button
+                        size="small"
+                        type="primary"
+                        disabled={assignAccountId == null}
+                        onClick={() =>
+                          void op(
+                            () =>
+                              api.post(`/procurement-orders/${po.id}/assign`, {
+                                buyer_account_id: assignAccountId,
+                              }),
+                            '已指派采购账号',
+                          )
+                        }
+                      >
+                        指派
                       </Button>
                     </Space.Compact>
                   )}

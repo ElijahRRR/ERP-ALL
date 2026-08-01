@@ -3898,6 +3898,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * 指派执行单（二选一：人工采购方 purchaser_id / 买家账号 buyer_account_id）
+         * @description 〔17d，D-Q73〕自动派发休眠后，`buyer_account_id` 是插件路径的**唯一派发入口**： 指派后插件按 customerId 拉到该单。两个目标恰好给一个，都给/都不给 ⇒ 422； 与另一路在途互斥（先 /release 才能换道，409）。
+         */
         post: {
             parameters: {
                 query?: never;
@@ -3910,7 +3914,9 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        purchaser_id: number;
+                        purchaser_id?: number | null;
+                        /** @description 17d 人工指派给买家账号（插件路径） */
+                        buyer_account_id?: number | null;
                     };
                 };
             };

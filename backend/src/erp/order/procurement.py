@@ -262,6 +262,72 @@ async def assign_po(
     )
 
 
+async def assign_po_to_buyer_account(
+    session: AsyncSession, *, team_id: int, po_id: int, buyer_account_id: int, actor_id: int | None
+) -> None:
+    """17d（D-Q73）：人工把执行单指派给一个**买家账号**——插件路径的人工入口。
+
+    自动派发（`dispatch.claim_tasks_for_account` 的「拉取即认领」）随单人模式休眠：
+    单归谁做由人在订单页指定，插件只取本账号名下已指派单（`plugin/service.py`）。
+
+    - **与人工采购方互斥**（`_reject_if_plugin_dispatched` 的镜像）：`purchaser_id`
+      在位说明这单已走人工链，直接盖 buyer_account 会两头各买一次——先 `/release`。
+    - 状态窗口同 `assign_po`：`unassigned`/`assigned` 可指派（重指派＝换账号）。
+      **换账号的残余风险如实记**：旧账号的浏览器若已拉走任务并真下了单，回填仍按
+      单号入账（写路径不解析账号，13d 纪律），钱不丢——丢的只是「哪台浏览器买的」
+      这个归因，而 17c 已整体放弃机器归因。
+    - 账号必须在册、本团队、`active`：指派给 paused/blocked 的账号不是「先派着等
+      恢复」，是操作失误——拉取侧账号闸（`resolved.status != 'active'` 短路）会让
+      这单永远躺着，不如在指派时就拒绝。
+    """
+    po = await _load_po(session, po_id, team_id)
+    if po["status"] not in ("unassigned", "assigned"):
+        raise BusinessError(
+            "PROCUREMENT_STATE_INVALID", f"状态 {po['status']} 不可分配", http_status=409
+        )
+    if po["purchaser_id"] is not None:
+        raise BusinessError(
+            "PROCUREMENT_MANUAL_ASSIGNED",
+            "该执行单已分配人工采购方，不能同时指派买家账号——请先释放回池（/release）再指派",
+            http_status=409,
+        )
+    account = (
+        (
+            await session.execute(
+                text("SELECT id, team_id, status FROM app.buyer_account WHERE id = :a"),
+                {"a": buyer_account_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if account is None or account["team_id"] != team_id:
+        raise BusinessError("BUYER_ACCOUNT_NOT_FOUND", "买家账号不存在")
+    if account["status"] != "active":
+        raise BusinessError(
+            "BUYER_ACCOUNT_NOT_ACTIVE",
+            f"买家账号状态为 {account['status']}，不可指派（仅 active 可接单）",
+        )
+    await _order_block_gate(session, team_id=team_id, order_id=po["order_id"])
+    # assignee_kind 保持 'none'（13b 既有纪律：插件不是 purchaser，不扩第四种 kind；
+    # 「这是插件单」由 buyer_account_id 非空这一个真相源表达）。
+    await session.execute(
+        text(
+            "UPDATE app.procurement_order SET buyer_account_id = :a, purchaser_id = NULL,"
+            " assignee_kind = 'none', status = 'assigned', assigned_by = :u,"
+            " assigned_at = now() WHERE id = :id"
+        ),
+        {"a": buyer_account_id, "u": actor_id, "id": po_id},
+    )
+    await advance_order(
+        session,
+        order_id=po["order_id"],
+        order_date=po["order_date"],
+        to_status="assigned",
+        from_statuses=("checked",),
+    )
+
+
 async def claim_po(session: AsyncSession, *, team_id: int, po_id: int) -> None:
     """内部领单（D-Q50①）：assigned → claimed，并锁定汇率快照（D-Q32）。"""
     po = await _load_po(session, po_id, team_id)
