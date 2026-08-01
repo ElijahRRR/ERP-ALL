@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     # `ERP_DOCS_ENABLED=true`，与密钥放行再无关系。
     docs_enabled: bool = False
 
+    # ── 单人模式（D-Q73 / R2-17 17a）──
+    # 开启后无凭证请求注入固定超管身份（免登录）。表层摘除、地基休眠：鉴权/RLS/
+    # 权限点全部保留，本开关只在最外层短路。⚠️ 免登录=拿到地址即可操作店铺，
+    # 仅限内网/VPN，绝不端口映射公网——RS-02a 后 Web 端口是唯一边界。
+    single_user_mode: bool = False
+    # 注入身份的超管用户名（bootstrap 默认建的就是 admin）。指向停用/非超管用户时
+    # authn 侧 fail-closed 拒绝，不把降级身份静默当超管用。
+    single_user_admin: str = "admin"
+
     # 数据库（同库三角色，应用默认 erp_app；alembic 用 migrator URL）
     database_url: str = "postgresql+psycopg://erp_app:erp_app@localhost:5432/erp_all"
     migrator_database_url: str = (

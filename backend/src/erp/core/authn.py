@@ -9,6 +9,7 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.core.db import get_session
 from erp.core.security import TokenError, decode_token
+from erp.core.settings import get_settings
 
 
 class AuthError(Exception):
@@ -50,13 +52,34 @@ class CurrentUser:
 _bearer = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    session: AsyncSession = Depends(get_session),
-) -> CurrentUser:
+async def _load_identity_row(
+    session: AsyncSession, credentials: HTTPAuthorizationCredentials | None
+) -> Any:
+    """把请求凭证解析成用户行（两条路，出口同形）。
+
+    无凭证 + D-Q73 17a 单人模式：注入固定超管身份（免登录）。解析走与登录同一条
+    SECURITY DEFINER 通道（auth_user_by_username），此后 GUC 注入/审计 actor 归属
+    与正常登录完全同路——audit_log 三流可辨的「人工流」记的就是这个真实用户行。
+    fail-closed：开关关着、或配置指向停用/非超管用户，一律 401，不把降级身份
+    静默当超管用（验收⑤：关掉开关登录流程原样回来）。
+    """
     if credentials is None:
-        raise AuthError("缺少 Bearer token")
+        settings = get_settings()
+        if not settings.single_user_mode:
+            raise AuthError("缺少 Bearer token")
+        row = (
+            await session.execute(
+                text(
+                    "SELECT id, team_id, is_super, display_name, status, token_version"
+                    " FROM app.auth_user_by_username(:u)"
+                ),
+                {"u": settings.single_user_admin.lower()},
+            )
+        ).first()
+        if row is None or row.status != "active" or not row.is_super:
+            raise AuthError("SINGLE_USER_MODE 需要指向一个在册且激活的超管账号")
+        return row
+
     try:
         payload = decode_token(credentials.credentials, audience="erp", kind="access")
     except TokenError as exc:
@@ -73,6 +96,15 @@ async def get_current_user(
     ).first()
     if row is None or row.status != "active" or row.token_version != payload["tv"]:
         raise AuthError("用户不存在、已停用或凭证已吊销")
+    return row
+
+
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    session: AsyncSession = Depends(get_session),
+) -> CurrentUser:
+    row = await _load_identity_row(session, credentials)
 
     # GUC 注入：SET LOCAL 只影响当前事务（= 当前请求），请求间零泄漏
     team_id: int | None = row.team_id

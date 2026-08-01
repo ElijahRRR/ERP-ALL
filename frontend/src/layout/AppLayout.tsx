@@ -11,10 +11,8 @@ import {
   LogoutOutlined,
   ProfileOutlined,
   RobotOutlined,
-  SafetyOutlined,
   ShopOutlined,
   ShoppingOutlined,
-  TeamOutlined,
   ThunderboltOutlined,
   UserSwitchOutlined,
   WarningOutlined,
@@ -24,7 +22,6 @@ import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { logout } from '@/api/client'
 import NotificationBell from '@/components/NotificationBell'
-import TeamSwitcher from '@/components/TeamSwitcher'
 import { useAuth } from '@/auth/AuthContext'
 
 // 菜单项 → 所需权限点（无权限点的菜单所有人可见）
@@ -46,8 +43,8 @@ const MENU = [
   { key: '/incidents', icon: <WarningOutlined />, label: '店铺事件', permission: 'channel.incident_read' },
   { key: '/compliance', icon: <FileProtectOutlined />, label: '合规中心', permission: 'compliance.blacklist_read' },
   { key: '/proxies', icon: <ApiOutlined />, label: '代理管理', permission: 'channel.proxy_read' },
-  { key: '/users', icon: <TeamOutlined />, label: '成员管理', permission: 'identity.user_read' },
-  { key: '/roles', icon: <SafetyOutlined />, label: '角色权限', permission: 'identity.user_read' },
+  // D-Q73 17b：成员管理/角色权限入口摘除（路由保留，直敲 URL 仍可达——表层摘除、
+  // 地基休眠；将来重启多人协作时把这两行放回来即可）。
   { key: '/notifications', icon: <BellOutlined />, label: '通知中心', permission: null },
   { key: '/audit', icon: <AuditOutlined />, label: '审计日志', permission: 'identity.audit_read' },
 ]
@@ -101,7 +98,8 @@ export default function AppLayout() {
             gap: 24,
           }}
         >
-          {me.user.is_super && <TeamSwitcher />}
+          {/* D-Q73 17b：TeamSwitcher 摘除（单人单团队无切换语义；组件保留在
+              components/ 未删，重启多团队时放回） */}
           <NotificationBell />
           <Dropdown
             menu={{
