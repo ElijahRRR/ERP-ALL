@@ -1,4 +1,4 @@
-# PR #50 第三闸真机验证指令 v9（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
+# PR #50 第三闸真机验证指令 v10（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
 >
@@ -23,6 +23,12 @@
 > **本版续跑路径：⓪-⑧-2 前半的已录证据全部有效不重跑——「续跑入口 R」→ ⑧-2「续跑
 > 补齐」→ ⑧-3 起按序走完**。全新重跑者仍从⓪走起（R 节跳过）。取值一律用「统一取值」
 > 节的 `Get-SqlValue`，**禁 Split**（八轮点名同族陷阱下游还有五处）。
+>
+> **v10 补丁**（九轮 V1-V4，均指令层）：R 节补齐**跨会话三前置**（`git pull`／重新登录取
+> `$TOKEN`／重贴 `Get-SqlValue`）并钉入停点回执值清单——续跑会话是全新进程，⑤不重跑
+> 则 `$TOKEN` 无处产生，第一条 revoke 即 401（与 Split 停点同类：状态只活在死进程里）；
+> ⑧-2 补齐改 `$BA_C` 插值、`c_audit` 钉恰 1；⑫ notification 清理加行数下界 ≥5 兜底
+> （占位符漏替换删 0 行时终态五清单照样全 0，会假清场）。
 >
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**（判据=②的「你在分支尖端」+
 > 「迁移清单恰为 0043-0046」，不写死 sha；实际 sha 记进回执）。
@@ -284,8 +290,22 @@ try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNe
 > `last_seen_customer_id='R13TCUSTC'` 观察值保留；已落派单在 `procurement_order` 上与实例
 > 状态无关；明文只在签发响应出现一次、库内仅散列——**补签是唯一路径**。
 
+**R-0 跨会话三前置（九轮 V1——续跑会话是全新进程，一样都不能省）**：
+① `git pull` 取最新指令与代码；② **重新登录取 `$TOKEN`**（同⑤的方式：验收账号五码
+在位，口令与 token 只入变量不回显）；③ 重贴 `Get-SqlValue`（下块已含——「统一取值」节
+在文档前部，从本节接入不会经过它）。
+**停点回执值清单**（⑧-3 起的手工占位符从这里填；现场复核不同以现场为准并记回执）：
+`<PO1>`-`<PO4>` = **7/8/9/10**；`<POA>` = **7**（派给 A）；`<POB1>`/`<POB2>` = **8/9**
+（派给 B）；`<BA_C>` = **3**（⑧-2 补齐会用统一取值重取核对）；`<TEAM_ID>` = ⑤所用
+验收团队 id（现场已知）；订单 O1-O4 = 18-21、product = 2494-2497（⑪/⑫复核参照）。
+
 ```powershell
+git pull
 git stash list
+function Get-SqlValue([string]$Sql) {
+  $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -tA -1 -v ON_ERROR_STOP=1 -c $Sql
+  return ($raw | Out-String).Trim()
+}
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances/1/revoke" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } | ConvertTo-Json
 $IA = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Method Post -Headers @{ Authorization = "Bearer $TOKEN" } -Body '{"exec_mode":"stop_before_payment","version":"R13T"}' -ContentType "application/json"
 "IA_R_id=$($IA.id) token_len=$($IA.token.Length)"
@@ -329,11 +349,12 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 ```powershell
 $BA_C = [long](Get-SqlValue "SELECT id FROM app.buyer_account WHERE team_id = <TEAM_ID> AND external_customer_id = 'R13TCUSTC';")
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.notification WHERE dedupe_key = 'plugin.pending_claim.<BA_C>') AS c_alerts, (SELECT count(*) FROM app.audit_log WHERE action = 'buyer_account.auto_register' AND object_id = '<BA_C>') AS c_audit;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.notification WHERE dedupe_key = 'plugin.pending_claim.$BA_C') AS c_alerts, (SELECT count(*) FROM app.audit_log WHERE action = 'buyer_account.auto_register' AND object_id = '$BA_C') AS c_audit;"
 docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT channel_order_no, internal_status FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' ORDER BY channel_order_no;"
 ```
 
-**判据**：`c_alerts=1`（warn 行在）、`c_audit>=1`（auto_register 留痕在）；随后用 IA-R
+**判据**：`c_alerts=1`（warn 行在）、**`c_audit=1`**（恰一行，九轮 V3——重复见号走解析
+命中根本不进登记，审计留痕多于 1 行本身就是缺陷，`>=1` 对它是瞎的）；随后用 IA-R
 再拉一次 `?customerId=R13TCUSTC` → 200+空数组，复查 C 行数仍 1、`c_alerts` **仍 1**
 （幂等不重复告警——⑧-2 原判据的续跑复核）；channel_order 侧 `R13T-O1/O2/O3 = assigned`、
 `R13T-O4 = checked`（⑧-1 漏报的 A2 对称项，补进回执）。
@@ -486,6 +507,12 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 > `existing_cfg=0` 判据过了）；`R13T-TEAM-B` 团队行最后删（其 plugin_instance/
 > buyer_account 子行已先删；audit/notification 的 team_id 是软引用不阻删——TB 的审计行
 > **留着**，append-only 铁律对测试团队的行同样有效）。
+
+**清理判据（九轮 V4 兜底——终态五清单不含 notification，这里不拦会假清场）**：
+`-1` 单事务下 psql 逐条打印 `DELETE n`，各条行数**照实记回执**；其中 **notification
+那条必须 ≥ 5**（确定性下界：C/D/F/TB 四条 pending_claim warn + 1 条洪水闸；no_asin、
+金额自校验、dup_ref 等按实际发生数再往上加）。**该条为 0 = 占位符漏替换的信号，停**，
+不得继续走迁移可逆演练。
 
 **迁移可逆**（migrate 服务默认命令是 upgrade head，降级要覆盖命令跑）：
 
