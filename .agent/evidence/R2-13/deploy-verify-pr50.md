@@ -1,4 +1,4 @@
-# PR #50 第三闸真机验证指令 v10（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
+# PR #50 第三闸真机验证指令 v11（R2-13 自动采购：不花钱可证伪层，改形版 + 旧现场清场 + 续跑补丁）
 
 > **给部署 AI（Win11 部署机）。整段可粘贴，逐步执行，每步贴回输出。**
 >
@@ -29,6 +29,11 @@
 > 则 `$TOKEN` 无处产生，第一条 revoke 即 401（与 Split 停点同类：状态只活在死进程里）；
 > ⑧-2 补齐改 `$BA_C` 插值、`c_audit` 钉恰 1；⑫ notification 清理加行数下界 ≥5 兜底
 > （占位符漏替换删 0 行时终态五清单照样全 0，会假清场）。
+>
+> **v11 补丁**（十轮 N1/N2，③闸已随十轮放行，两条都在开跑前落齐）：N1——`≥5` 下界
+> 盖不住 PO 支半替换恰好压线，终态残留查询加第六项 `dedupe_key LIKE 'plugin.%'` **锚定零**
+> 作真兜底（`≥5` 降为正向信号）；N2——R-0 的 `git pull` 会让工作树超前于③所建镜像，
+> 加改动路径守卫（仅限 `.agent/` 才可继续），回执 sha **分列两行**（产品代码 sha ≠ 指令版 sha）。
 >
 > 被验代码：分支 **`claude/r2-03-launch-leg5n8` 的当前尖端**（判据=②的「你在分支尖端」+
 > 「迁移清单恰为 0043-0046」，不写死 sha；实际 sha 记进回执）。
@@ -301,6 +306,8 @@ try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNe
 
 ```powershell
 git pull
+git log --oneline -1
+git diff --name-only e725c67..HEAD
 git stash list
 function Get-SqlValue([string]$Sql) {
   $raw = docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -tA -1 -v ON_ERROR_STOP=1 -c $Sql
@@ -312,7 +319,11 @@ $IA = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/plugin-instances" -Me
 $HA = @{ 'X-Plugin-Instance' = "$($IA.id)"; 'X-Plugin-Token' = $IA.token }
 ```
 
-**判据**：`git stash list` 照实记回执（①若做过 README 暂存它应还挂在栈上、⑫要 pop；
+**判据**：`git diff --name-only e725c67..HEAD` 输出路径**仅限 `.agent/`** → ③所建镜像
+仍有效可继续；出现 `backend/`、`frontend/`、`infra/`、`workers/` 任一路径 → **回③重建
++重迁移**后再续。回执 sha **分列两行**：产品代码=`e725c67`（③建镜像所用）、指令版=
+`git log` 所示 HEAD（十轮 N2——单写一个 sha 就是「没被镜像验证过的 sha」，正文失实
+同族）。`git stash list` 照实记回执（①若做过 README 暂存它应还挂在栈上、⑫要 pop；
 空则记「无暂存」——八轮点名的回执缺项）；吊销 200 且旧行仍在（revoked、last_seen 保留）；
 补签 201，回执只记 `IA_R_id`/`token_len`；`GET /plugin-instances` 复核三行：id=1 revoked /
 IC revoked / **IA-R 是唯一 active**，且 IA-R 行 **`version='R13T'`**（八轮一号条件：
@@ -513,6 +524,8 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 那条必须 ≥ 5**（确定性下界：C/D/F/TB 四条 pending_claim warn + 1 条洪水闸；no_asin、
 金额自校验、dup_ref 等按实际发生数再往上加）。**该条为 0 = 占位符漏替换的信号，停**，
 不得继续走迁移可逆演练。
+> 十轮 N1 修正：`≥5` 只是**正向信号**——半替换（PO 支占位符漏、BA 支已替）会恰好删 5 条
+> 压线通过。**真兜底是终态残留查询的第六项 `r13t_notifs`（锚定零）**，见下。
 
 **迁移可逆**（migrate 服务默认命令是 upgrade head，降级要覆盖命令跑）：
 
@@ -532,11 +545,16 @@ docker compose -f infra/docker-compose.yml restart beat
 > `TestDowngradeDataGuard` 钉着它），**回⑫清理核对漏了哪行，不许改词表硬闯**。
 
 **终态**：⑪三项复核相等/等值；六服务 Up（db/redis healthy）；`git stash pop` 还原 README
-暂存（若①做过）并在回执记「已还原」；残留核对**五清单全 0**：
+暂存（若①做过）并在回执记「已还原」；残留核对**六清单全 0**：
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%') AS r13t_orders, (SELECT count(*) FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%') AS r13t_accounts, (SELECT count(*) FROM app.plugin_instance WHERE version = 'R13T') AS r13t_instances, (SELECT count(*) FROM app.team WHERE name = 'R13T-TEAM-B') AS r13t_team, (SELECT count(*) FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch') AS r13t_cfg;"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%') AS r13t_orders, (SELECT count(*) FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%') AS r13t_accounts, (SELECT count(*) FROM app.plugin_instance WHERE version = 'R13T') AS r13t_instances, (SELECT count(*) FROM app.team WHERE name = 'R13T-TEAM-B') AS r13t_team, (SELECT count(*) FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch') AS r13t_cfg, (SELECT count(*) FROM app.notification WHERE dedupe_key LIKE 'plugin.%') AS r13t_notifs;"
 ```
+
+> 第六项 `r13t_notifs`（十轮 N1，notification 清理的真兜底）判 **0** 的三条依据（审查侧
+> 已逐一核过）：本轮全部通知发射点的 dedupe_key 一律 `plugin.` 前缀；插件从未在生产
+> 跑过（⓪-3 实测 `pi_rows=0`）；库内其它通知生产者全用冒号式 key（`ship_failed:` 等），
+> 不会命中 `plugin.%`。它不依赖任何手工占位符，「查询与 DELETE 一起瞎」在这里不可能。
 
 ---
 
