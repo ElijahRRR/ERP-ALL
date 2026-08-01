@@ -39,11 +39,22 @@ def actual_headers(origin: str) -> dict[str, str]:
     return {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
 
 
-def preflight_headers(origin: str) -> dict[str, str]:
-    """预检（OPTIONS）204 响应头。Max-Age 600：插件逐单循环里别每发必预检。"""
-    return {
+def preflight_headers(origin: str, *, private_network: bool = False) -> dict[str, str]:
+    """预检（OPTIONS）204 响应头。Max-Age 600：插件逐单循环里别每发必预检。
+
+    `private_network`＝本次预检带了 `Access-Control-Request-Private-Network: true`。
+    真机部署形态是 `https://www.amazon.com` 页面 → `http://127.0.0.1:8000`，落在
+    Chrome 的 Private Network Access（公网上下文打私网/环回）口径里：Chrome 的预检会
+    额外带该请求头，响应不回 `Access-Control-Allow-Private-Network: true` 就**整条被
+    浏览器拦掉**——与「插件一条请求都发不出、还报不出为什么」同一现象。CI/curl 都看不见
+    这层（浏览器端强制），只有真机 Chrome 会触发；故按「见到即回」放行本组、不主动声张。
+    """
+    headers = {
         **actual_headers(origin),
         "Access-Control-Allow-Methods": _ALLOW_METHODS,
         "Access-Control-Allow-Headers": _ALLOW_HEADERS,
         "Access-Control-Max-Age": "600",
     }
+    if private_network:
+        headers["Access-Control-Allow-Private-Network"] = "true"
+    return headers

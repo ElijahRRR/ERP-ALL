@@ -109,6 +109,31 @@ def test_foreign_origin_gets_no_cors(client: TestClient, origin: str) -> None:
     assert "access-control-allow-origin" not in r.headers
 
 
+def test_preflight_grants_private_network_when_requested(client: TestClient) -> None:
+    """PNA：预检带 `Access-Control-Request-Private-Network: true` ⇒ 响应放行私网头。
+
+    真机部署形态 = https amazon 页面 → http://127.0.0.1，落在 Chrome 的 Private
+    Network Access 口径；不回 `Access-Control-Allow-Private-Network: true` 则整条请求
+    被浏览器拦（CI/curl 看不见这层）。不带该请求头时不回该响应头（不主动声张）。
+    """
+    with_pna = client.options(
+        PULL,
+        headers={
+            "Origin": AMZ,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Private-Network": "true",
+        },
+    )
+    assert with_pna.status_code == 204
+    assert with_pna.headers["access-control-allow-private-network"] == "true"
+
+    without_pna = client.options(
+        PULL, headers={"Origin": AMZ, "Access-Control-Request-Method": "GET"}
+    )
+    assert without_pna.status_code == 204
+    assert "access-control-allow-private-network" not in without_pna.headers
+
+
 def test_non_plugin_path_gets_no_cors(client: TestClient) -> None:
     preflight = client.options(
         "/api/v1/me", headers={"Origin": AMZ, "Access-Control-Request-Method": "GET"}

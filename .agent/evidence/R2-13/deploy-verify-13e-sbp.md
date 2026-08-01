@@ -37,12 +37,16 @@ $ok = Invoke-WebRequest -Method Options -Uri "http://127.0.0.1:8000/api/v1/purch
 $ok.StatusCode; $ok.Headers["Access-Control-Allow-Origin"]; $ok.Headers["Access-Control-Allow-Headers"]
 $bad = Invoke-WebRequest -Method Options -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -UseBasicParsing -TimeoutSec 5 -SkipHttpErrorCheck -Headers @{"Origin"="https://evil.example"; "Access-Control-Request-Method"="GET"}
 "bad_acao=[$($bad.Headers["Access-Control-Allow-Origin"])]"
+$pna = Invoke-WebRequest -Method Options -Uri "http://127.0.0.1:8000/api/v1/purchase-plugin/getNeedPurchaseOrders" -UseBasicParsing -TimeoutSec 5 -Headers @{"Origin"="https://www.amazon.com"; "Access-Control-Request-Method"="GET"; "Access-Control-Request-Private-Network"="true"}
+"pna_grant=[$($pna.Headers["Access-Control-Allow-Private-Network"])]"
 ```
 
 **判据**：两条 `rev-parse` 逐字相等（锚定等值）；migrate **no-op**（本 PR 无迁移，
 `version_num` 不变）；healthz 200；正探针 `204` + `Access-Control-Allow-Origin` 逐字
 回声 `https://www.amazon.com` + Allow-Headers 含 `X-Plugin-Token`；反探针
-`bad_acao=[]`（空——非 amazon 源零 CORS 头）。
+`bad_acao=[]`（空——非 amazon 源零 CORS 头）；**PNA 探针 `pna_grant=[true]`**——这一条
+模拟真机 Chrome 的私网预检（https 页面打 127.0.0.1 会带 `Request-Private-Network`），
+不放行则 E4 在真机上撞一个不透明网络错误、而 E1 若不带此头会假绿。
 
 ## E2 执行档配置（显式写 stop_before_payment）
 
@@ -86,18 +90,27 @@ git rev-parse origin/claude/r2-03-launch-leg5n8
 2. ERP 订单页：选一张**已核可（checked）**、行上 `source_ref` 为在售 ASIN、金额小的
    真实渠道订单 → 「选择采购账号（插件）」下拉选中刚登记的账号 → 点**指派**。
    （账号 label 为空时下拉按 customerId 显示；也可先在买家账号处补 label 再指派。）
+   指派后**立刻取一次 before 快照**（把 PO id 记进回执，后续所有取证都锁定这一个 id）：
+   ```powershell
+   docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -q -tA -c "SELECT id || '|before|' || status || '|' || coalesce(purchase_cost::text,'<NULL>') || '|' || coalesce(tax_amount::text,'<NULL>') || '|' || coalesce(freight_cost::text,'<NULL>') || '|' || coalesce(delivery_est_date::text,'<NULL>') || '|' || coalesce(payment_card_last4,'<NULL>') FROM app.procurement_order WHERE buyer_account_id IS NOT NULL ORDER BY id DESC LIMIT 1;"
+   ```
+   **before 判据**：五列（`purchase_cost`/`tax_amount`/`freight_cost`/`delivery_est_date`/
+   `payment_card_last4`）**全部 `<NULL>`**、`status=assigned`。**记下这行的 `id=<PO>`**——
+   E4 第 4 步用 `WHERE id = <PO>` 锁定它，判的是「这五列从 NULL 跃迁到有值」，而不是
+   「有值」（本役已停机 6 次，重跑是常态：只判「有值」时第二轮半路崩掉、五列留着上一轮
+   的值也会假绿；跃迁才证明本轮真的走到了结账页停在付款前）。
 3. 插件面板再点**开始拍单**。预期链路：拉到该单 → 清购物车 → 加购 → 填地址 →
    进结账页 → 抓金额/预计送达/卡后四位 → **停在点付款之前**，日志出现
    「已停在付款前一步」字样；浏览器停留在结账页，**未产生任何亚马逊订单**。
-4. ERP 侧取证：
+4. ERP 侧取证（`<PO>` = 第 2 步记下的 id）：
    ```powershell
-   docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -q -tA -c "SELECT id || '|' || status || '|' || coalesce(purchase_order_ref,'<NULL>') || '|' || coalesce(purchase_cost::text,'<NULL>') || '|' || coalesce(tax_amount::text,'<NULL>') || '|' || coalesce(freight_cost::text,'<NULL>') || '|' || coalesce(delivery_est_date::text,'<NULL>') || '|' || coalesce(payment_card_last4,'<NULL>') FROM app.procurement_order WHERE buyer_account_id IS NOT NULL ORDER BY id DESC LIMIT 1;"
-   docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -q -tA -c "SELECT note FROM app.procurement_order WHERE buyer_account_id IS NOT NULL ORDER BY id DESC LIMIT 1;"
+   docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -q -tA -c "SELECT id || '|after|' || status || '|' || coalesce(purchase_order_ref,'<NULL>') || '|' || coalesce(purchase_cost::text,'<NULL>') || '|' || coalesce(tax_amount::text,'<NULL>') || '|' || coalesce(freight_cost::text,'<NULL>') || '|' || coalesce(delivery_est_date::text,'<NULL>') || '|' || coalesce(payment_card_last4,'<NULL>') FROM app.procurement_order WHERE id = <PO>;"
+   docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -q -tA -c "SELECT note FROM app.procurement_order WHERE id = <PO>;"
    ```
-   **判据**：`status` 仍为 `assigned`（演练档**不改状态**）；`purchase_order_ref=<NULL>`
-   （没下单就没有单号）；`purchase_cost`/`tax_amount`/`freight_cost`/`delivery_est_date`/
-   `payment_card_last4` **有值**（结账页抓回）；`note` 含
-   `[stop_before_payment 演练 instance=0]` 痕迹行。
+   **after 判据（对 before 快照的跃迁）**：`status` 仍为 `assigned`（演练档**不改状态**）；
+   `purchase_order_ref=<NULL>`（没下单就没有单号）；五列**从 before 的全 NULL 跃迁到有值**
+   （结账页抓回——五列都从 `<NULL>` 变成非空即达标，仅「有值」不算，须与 before 逐列对照）；
+   `note` 新增 `[stop_before_payment 演练 instance=0]` 痕迹行（before 快照时不存在）。
 5. 亚马逊侧人工一步：该买家号订单历史里**没有**新订单——贴一句「已目检，零新单」。
 
 ## E5 反向探针（fail-closed 两条）

@@ -95,7 +95,13 @@ def create_app() -> FastAPI:
         assert origin is not None  # allow_origin 已排除 None，仅收窄类型
         if request.method == "OPTIONS" and "access-control-request-method" in request.headers:
             # 预检不进路由（路由层对 OPTIONS 只会 405）、不问认证——预检本就不带凭证。
-            return Response(status_code=204, headers=plugin_cors.preflight_headers(origin))
+            # PNA：真机是 https amazon 页面打 http://127.0.0.1，Chrome 预检带私网请求头，
+            # 见到即在响应放行（否则整条被浏览器拦，CI/curl 看不见——见 cors.py 注释）。
+            pna = request.headers.get("access-control-request-private-network") == "true"
+            return Response(
+                status_code=204,
+                headers=plugin_cors.preflight_headers(origin, private_network=pna),
+            )
         response = await call_next(request)
         for key, value in plugin_cors.actual_headers(origin).items():
             if key.lower() == "vary":
