@@ -614,7 +614,7 @@
    ".agent/evidence/R2-07/"
   ],
   "finding": "PRD §8 模块7，审计补单(2026-07-16)。returns=新建非移植(旧系统本就缺,R-ERP-006 实证)。【开发侧进展 2026-07-16】Owner 点名开工（007 落地前已启动，撞号已按 007 口径调和）：五路考古（archaeology.md）+ ✅ 07a 核心增量完码（PR #18）：0030 三表（channel_return 头/channel_return_line 行/channel_return_event 变更留痕，C6 行级 upsert）+ return_pull beat（BR-AS-001 全量翻页 nextCursor parse_qs、BR-AS-007 骤降告警、店间隔离）+ GET /returns 端点+ openapi 契约 + aftersale.read 权限点；本地 CI 全绿（pytest 411/ruff/mypy strict，新测 8 项）。【开发侧批注（不改 007 正文，走回传）】R-ERP-006 实证的是 erp-core 缺 returns；erpAPI 根另有独立生产脚本 售后订单同步/fetch_walmart_returns.py（台账 §13 AS 全部规则的出处），已用作实现语义与 L1 对拍口径——结论不变（代码确属新建），但『无旧语义可考』不成立。✅ 增量2（07a 收尾，PR#19）：0031 refund_request 图纸原样落库 + record/approval 两档本地闭环（幂等创建/审批/拒绝端点，权限点 refund.request/approve，reason_code 字典校验；auto 档 R2-09 接线前 fail-closed 拒绝不静默降档；approved 驻留待执行接线）；本地 CI 全绿（pytest 418/ruff/mypy strict，新测 7 项）。✅ 验收①真机通过（2026-07-17，evidence/R2-07/a152-recon-20260717.md）：A152 拉回 36 张真实退货单（36 头 36 行 1 页），return_pull_verify 全口径对账一致（RMA 集合/聚合状态/金额/行数/行级退款状态）；部署机 HEAD=176da4c、alembic 0031、migrate 退出码 0。**07a 整片收账（PR #18/#19 均已合并）**。✅ 07b 封店工作流开发面完成（2026-07-17，Workflow：Opus 双实现并行+三镜头评审，fable 终审）：考古修正范围（archaeology-07b.md+raw×5）——store_incident 表/端点/状态联动 0003 早已建成（router:537 留坑），真缺口=brand_assignment 表整仓不存在（图纸预留≠DB 预留）。落地：0033 建表（§03:72-89 逐列+uq_brand_occupied 部分唯一+RLS/touch+权限点 catalog.brand_read/brand_release+schedule 种子 suspension_reminder 每日/remind_days=7）；build 分配 upsert 占用（brand_norm 复用 product 生成列，异店冲突 BRAND_OCCUPIED_OTHER_STORE，match/无品牌豁免，撞唯一复查+重试一次防欠占用窄窗）；suspension 建单批量释放（reason=suspension+incident_id 回链+brand/sku_released_at 回填+notify 仅 count>0）；「listing 停止维护」全覆盖=四对账 beat 门控+outbox pick_next/claim listing 类冻结（order_ack/ship 放行且不被冻结命令挡道——评审 major①）；suspension_reminder 周期判重改无时间窗历史键（评审 major②：notify 24h 窗跨不过周期会隔天刷屏架空 remind_days）；GET /brand-assignments+manual release（AuditWriter 留痕含 notes——评审 minor）；前端店铺事件页（事件登记/流转+品牌占用/手工释放，双权限门控）；erp.tools.run_task 通用单跑工具（根治 runbook run_once 文档-现实缺口，实测入口在档）；契约落笔（brand-assignments 两路径+incidentId/assignmentId 共享参数+修 HEAD 上 RefundRequest.lines 未引号 YAML 阻断）+schema.d.ts codegen 重生成（顺带清偿既往 codegen 欠账）；runbook 封店演练节（occurred_at 需回填≥remind_days 天前）。评审 2 major+4 minor 全修；CI：pytest 457 绿+ruff/format/mypy 干净+前端 lint/build 绿+0033 up/down/re-up 实测。**07b PR #25 已 squash 合并 main bb75790（2026-07-18），0033 已在 main**——07b 开发面收口，止于人工验收点。待：验收②真机封店演练（runbook 有完整步骤，与 R2-12 无依赖可另排时间）→ 07c 邮箱（需 Owner 提供 IMAP 凭证，后置不阻塞）。整单 status 仍 in_progress 的原因=07b 验收② 未收 + 07c 未开工（07a 已随 PR #18/#19 收口）。",
-  "last_checked_at": "2026-07-29",
+  "last_checked_at": "2026-08-01",
   "note": "验收：①A152 真实 returns 拉取对账一致 ②封店演练(incident→品牌 released→提醒送达) ③真实邮件→分类→incident 落库",
   "updates": [
    {
@@ -636,6 +636,11 @@
     "date": "2026-07-29",
     "kind": "progress",
     "text": "【审计侧接收开发侧 07c 考古发现，转挂后续 AI 分片，防其随底座收单丢失】开发侧考古指出：channel/router.py 的 create_incident 把三件事内联在端点函数里——source 写死 'manual'、suspension 时置 store.status=suspended、brand.release_for_incident 批量释放品牌占用。邮件路径将来要建 source='mail' 且必须触发同一套封店联动，**若照抄一份则两条路径静默分叉，且分叉方向是邮件路径少做了品牌释放**，无任何判据会红（同 core/automation.py 模块头注记载的「面板与订单闸各算一份判读」同形）。建议处置：把 incident 创建抽成共用服务函数（签名带 source/mail_message_id/mail_body_snapshot），router 与 mail 任务共用，抽取时对现有 router 路径逐字等价；配套判据须断言**两条路径封店联动一致**（都置 suspended、都 brand_released_at 非空），只测新路径挡不住「后来有人只改一边」。**归属澄清（审计侧）**：该问题服务于「邮件→分类→自动开 incident」链路，而 D-Q71 已将 AI 分类整体后置——**故不属 07c 底座范围，不在底座期做**；记于此以便 AI 分片立单时直接取用。"
+   },
+   {
+    "date": "2026-08-01",
+    "kind": "ruling",
+    "text": "【07c 邮箱底座搁置——Owner「搁置邮箱功能的开发。这一步放着」】不进解冻后排期，007 已移入挂账/推后清单。**资产不作废**：D-Q71 四项选型裁定(自建+imapclient/代理随店铺/保守节流/AI 后置)、163 IMAP ID 的 A/B 实测证据、§09 mail 域图纸全部在档，重启时直接用。R2-07 整单剩余范围＝07a returns + 07b 封店工作流两片。"
    }
   ],
   "acceptance": "三片各自判据：①07a returns——A152 真实 returns 拉取与渠道后台对账一致(✅ 2026-07-25 验收通过)；②07b 封店——手工造 incident 演练：封店→品牌占用批量 released→beat 提醒送达(✅ PR#25 已并)；③07c 邮箱(剩余项，IMAP 凭证已具备)——真实邮箱收一封 Walmart 通知类邮件→LLM 自动分类(llm_usage.module=mail_classify)→生成 store_incident + 告警落库，全链可追溯。范围闸：会话线程/模板/附件/回信=MVP 后第一批(D-Q22)，本单不做。"
