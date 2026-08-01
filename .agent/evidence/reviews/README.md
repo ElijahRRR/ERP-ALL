@@ -2,11 +2,13 @@
 
 Owner 2026-07-26 新设**独立审查 AI**，合并前闸序为：
 **CI 绿 → 审查 AI 通读 diff → 部署机真机验证 → Owner 授权合并**
-（正文见 `specs/007-mvp-completion-plan/README.md`「角色分工」节，审计侧落笔于 `90c7ffd`）。
+（正文见 `specs/007-mvp-completion-plan/README.md`「角色分工」节，审计侧落笔于 `90c7ffd`。
+**2026-08-01 起按 D-Q74 分级适用**——L0 不进审查队列、L1 审查一轮且免单独真机、L2 全套，
+见 `specs/009-process-lite/README.md` §一/§二）。
 
 ## 本目录放什么
 
-每个 PR 一份 `PR-<n>.md`，由**审查 AI** 落笔。
+每个**进入审查队列的 PR（L1/L2）**一份 `PR-<n>.md`，由**审查 AI** 落笔（L0 不审即无报告）。
 
 ## 谁不能写这里
 
