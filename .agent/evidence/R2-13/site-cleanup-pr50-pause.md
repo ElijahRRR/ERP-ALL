@@ -1,4 +1,12 @@
-# PR #50 挂起清场单 v2（十五轮 Z1 + 十六轮 W1/W2/W3；独立于已作废的 deploy-verify v14）
+# PR #50 挂起清场单 v3（十五轮 Z1 + 十六轮 W1/W2/W3 + 部署机 C5 停点修订）
+
+> **v3 变更**（2026-08-01，部署机实测停点回修）：C5 的 `git checkout main` 只会切到
+> **陈旧的本地分支**——`git fetch` 更新的是 `origin/main` 引用，不会推动本地 `main`，
+> 于是锚定等值闸必然打红（实测本地落后 6 个提交，闸按设计中止，未 build/up）。
+> 补对齐两行：`merge-base --is-ancestor` 卫（本地必须是远端祖先，防散开时静默合并）
+> → `git merge --ff-only origin/main`（只快进，散开即硬失败，什么都不丢弃）。
+> **不用 `reset --hard`/`checkout -B`**：那两个会静默丢弃本地提交，部署机不改码
+> 意味着不该有本地提交——真出现了恰恰要停下来问，而不是抹掉。
 
 > **v2 变更**：W1——C5 运维资产检查改在**切换之前**对 `origin/main` 用 `git cat-file -e`
 > 验（原 Test-Path 排在 checkout 之后且对已跟踪文件永真，连切换失败都测不出）；切换后
@@ -71,6 +79,8 @@ git cat-file -e origin/main:infra/local-deploy/automation/uspto-daily.bat; "bat_
 git cat-file -e origin/main:infra/local-deploy/automation/README.md; "readme_ok=$?"
 git cat-file -e origin/main:.gitattributes; "attrs_ok=$?"
 git checkout main
+git merge-base --is-ancestor HEAD origin/main; "ancestor_ok=$?"
+git merge --ff-only origin/main
 git rev-parse HEAD
 git rev-parse origin/main
 docker compose -f infra/docker-compose.yml build api frontend migrate
@@ -84,10 +94,12 @@ $r.StatusCode
 
 **判据**：三个 `_ok` 全 True（在**切换之前**对 `origin/main` 验——三行不齐**不许切**，
 停下来问；此查的是仓库内运维资产，部署机上的 Windows 计划任务本体是否在位属另一项
-检查、不在本单）；切换后两条 `git rev-parse` 输出**逐字相等**（锚定等值——切没切成、
-切到哪，由它裁，不靠「记回执」）；migrate 为 no-op、`version_num` = **main 链尖端**
-（当前为 0047；若届时 main 已带新迁移，以现值为准并记回执）；healthz 200
-（失败等 10 秒重试一次）。
+检查、不在本单）；`ancestor_ok=True`（本地 main 是 origin/main 的祖先——不是则
+**本地有了不该有的提交**，停下来贴 `git log origin/main..HEAD` 输出，不许 ff、更不许
+reset）；`merge --ff-only` 成功（散开时它硬失败，就是设计行为）；对齐后两条
+`git rev-parse` 输出**逐字相等**（锚定等值——切没切成、切到哪，由它裁，不靠
+「记回执」）；migrate 为 no-op、`version_num` = **main 链尖端**（当前为 0047；
+若届时 main 已带新迁移，以现值为准并记回执）；healthz 200（失败等 10 秒重试一次）。
 
 ## C6 终态锚定（对 v8①基线的生产不变量）
 
