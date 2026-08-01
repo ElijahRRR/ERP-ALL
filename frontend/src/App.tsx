@@ -4,6 +4,7 @@ import { AuthProvider } from '@/auth/AuthContext'
 import AppLayout from '@/layout/AppLayout'
 import AuditPage from '@/pages/AuditPage'
 import AutomationPage from '@/pages/AutomationPage'
+import BuyerAccountsPage from '@/pages/BuyerAccountsPage'
 import CompliancePage from '@/pages/CompliancePage'
 import HomePage from '@/pages/HomePage'
 import IncidentsPage from '@/pages/IncidentsPage'
@@ -11,6 +12,7 @@ import ListingsPage from '@/pages/ListingsPage'
 import LoginPage from '@/pages/LoginPage'
 import NotificationsPage from '@/pages/NotificationsPage'
 import OrdersPage from '@/pages/OrdersPage'
+import PluginInstancesPage from '@/pages/PluginInstancesPage'
 import PricingPage from '@/pages/PricingPage'
 import ProductsPage from '@/pages/ProductsPage'
 import ProxiesPage from '@/pages/ProxiesPage'
@@ -35,6 +37,8 @@ export default function App() {
             <Route path="/automation" element={<AutomationPage />} />
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/purchasers" element={<PurchasersPage />} />
+            <Route path="/buyer-accounts" element={<BuyerAccountsPage />} />
+            <Route path="/plugin-instances" element={<PluginInstancesPage />} />
             <Route path="/stores" element={<StoresPage />} />
             <Route path="/incidents" element={<IncidentsPage />} />
             <Route path="/compliance" element={<CompliancePage />} />

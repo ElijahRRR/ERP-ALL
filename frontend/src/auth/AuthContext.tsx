@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
-import { ACCESS_KEY, api, tokenStore } from '@/api/client'
+import { ACCESS_KEY, api } from '@/api/client'
 
 export interface Me {
   user: {
@@ -35,11 +35,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const reload = useCallback(async () => {
     const seq = ++seqRef.current
-    if (!tokenStore.access) {
-      setMe(null)
-      setLoading(false)
-      return
-    }
+    // D-Q73 17a：无本地凭证也先问一次 /me——单人模式下后端对无凭证请求注入固定
+    // 超管身份（client 无 token 时不带 Authorization 头），/me 直接 200，免登录达页；
+    // 开关关着时该请求 401 落回 me=null → 登录页照常（验收⑤：休眠可逆）。
     setLoading(true)
     try {
       const next = await api.get<Me>('/me')

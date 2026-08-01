@@ -28,6 +28,15 @@ export type AuditBatchSkip = Schemas['AuditBatchSkip']
 export type AuditBatchResult = Schemas['AuditBatchResult']
 // R2-14 14a 产品删除回执（同上）
 export type ProductDeleteResult = Schemas['ProductDeleteResult']
+// R2-13 13b 买家账号池 + 采购插件实例（同上：类型全部取自 codegen，页面不得手写这三个形状）。
+// ⚠️ `PluginInstanceIssued.token` 是明文令牌，**只在签发响应里出现这一次**：前端一次性
+// 展示后即丢弃，不得写进 localStorage / sessionStorage，也不得塞进任何列表状态。
+// ⚠️ `PluginInstance` 本轮起**不含 buyer_account_id**（身份模型更正，图纸 07:288-340）：
+// 令牌绑「一台授权浏览器」，不绑买家账号。`last_seen_customer_id` / `last_seen_account_*`
+// 三列是**观察值，不参与鉴权**——按它们推断「这台机器只能拉那个号的单」是错的读法。
+export type BuyerAccount = Schemas['BuyerAccount']
+export type PluginInstance = Schemas['PluginInstance']
+export type PluginInstanceIssued = Schemas['PluginInstanceIssued']
 export type PageOf<T> = { items: T[]; total: number; page: number; size: number }
 
 // ACCESS_KEY 导出给 AuthContext 监听跨标签页 token 变更（storage 事件按 key 过滤）

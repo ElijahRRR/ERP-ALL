@@ -2,6 +2,10 @@
 
 import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy.exc import IntegrityError
 
 
 def _set_team(conn: psycopg.Connection, team_id: int | None, *, super_: bool = False) -> None:
@@ -101,7 +105,8 @@ class TestSeeds:
                 # + 0033 catalog.brand_* 2 + 0035 compliance.blacklist_*/trademark/tro 4
                 # + 0040 automation.* 2 + 0041 catalog.product_delete 1
                 # + 0047 identity.user_delete/role_delete + procurement.purchaser_delete 3
-                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 59
+                # + 0043 procurement.buyer_account_read/_admin + plugin_instance_admin 3
+                conn.execute("SELECT count(*) FROM app.permission").fetchone()[0] == 62
             )
             assert (
                 conn.execute("SELECT count(*) FROM app.role WHERE team_id IS NULL").fetchone()[0]
@@ -192,4 +197,79 @@ class TestSoftReferenceInvariant:
         assert rows == [], (
             f"以下执行单的 purchaser_id 在主表与墓碑都查不到（永久无法解析）：{rows}"
             "——多半是绕过删除服务的直删或墓碑漏写"
+        )
+
+
+class TestDowngradeDataGuard:
+    @pytest.mark.parametrize(
+        ("actor_kind", "po_status", "constraint"),
+        [
+            pytest.param("plugin", "purchased", "ck_procurement_backfill_actor", id="plugin-actor"),
+            pytest.param(None, "pending_review", "ck_procurement_status", id="pending-review"),
+        ],
+    )
+    def test_downgrade_hard_fails_on_new_vocab_rows(
+        self, migrated_db: str, actor_kind: str | None, po_status: str, constraint: str
+    ) -> None:
+        """0045 降级守卫的承重（PR #50 五轮 H1，六轮建议参数化补齐）：带新词表数据时降级必须硬失败。
+
+        0045 downgrade 头注承诺**两条**：库中已有 `backfill_actor_kind='plugin'` 或
+        `status='pending_review'` 的行时 ADD CONSTRAINT 硬失败——人工处置前不许降
+        （同 0047 口径：升级期间已发生的事实无法靠降级抹掉）。这条承诺原先被 CI
+        步序**意外**覆盖着（空库演练排在 pytest 后，套件残余恰好触发）；8ee9703
+        把演练挪到 pytest 前之后变成**零覆盖**。本条把它变成显式承重，两条各钉一例：
+        downgrade 先重建 ck_procurement_backfill_actor 再重建 ck_procurement_status，
+        故 plugin 行撞前者、pending_review 行（actor NULL 穿过前者）撞后者。
+
+        安全性依据：env.py 是整链单事务（begin_transaction 包住 run_migrations），
+        中途失败即全部回滚、共享测试库仍在 head。末尾断言钉住这一点——将来若改成
+        transaction_per_migration=True，失败的降级会留下半降级的库拖垮整个套件，
+        这条会先红并指明原因。
+
+        两处防「顶包」（本用例第一次落地时实测踩过）：先清掉库里既有的新词表残行
+        （前序用例的遗留——它们会先撞约束，让本例的探针行根本没被验到）；match 钉
+        psycopg 报错详情的 `check constraint "<名>"` 带引号短语——IntegrityError 的
+        字符串附带整段 [SQL: ...]，裸约束名在那里两个都出现，松 match 会跨约束误配。
+        """
+        cfg = Config("alembic.ini")
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN"
+                " (SELECT id FROM app.procurement_order"
+                "  WHERE backfill_actor_kind = 'plugin' OR status = 'pending_review')"
+            )
+            conn.execute(
+                "DELETE FROM app.procurement_order"
+                " WHERE backfill_actor_kind = 'plugin' OR status = 'pending_review'"
+            )
+            # 第三类顶包（17d 之后新增）：首见自动登记的 active+空 label 行会让 0048 的
+            # downgrade（重建 ck_buyer_account_claimed）先炸，本例的探针行根本走不到
+            # 0045 的守卫。同款预清理——那些行是前序模块的遗留空行，无 PO 指着它们。
+            conn.execute(
+                "DELETE FROM app.buyer_account WHERE status NOT IN ('pending_claim','rejected')"
+                " AND (label IS NULL OR site IS NULL)"
+            )
+            po = conn.execute(
+                "INSERT INTO app.procurement_order"
+                " (team_id, store_id, order_id, order_date, status,"
+                "  backfill_actor_kind, exchange_rate_locked)"
+                " SELECT id, 1, 997766, now(), %s, %s, 1.0"
+                " FROM app.team LIMIT 1 RETURNING id",
+                (po_status, actor_kind),
+            ).fetchone()[0]
+        try:
+            with pytest.raises(IntegrityError, match=f'check constraint "{constraint}"'):
+                command.downgrade(cfg, "0044")
+        finally:
+            # 单事务回滚后库已在 head，此处为幂等 no-op；若将来变成分步事务，
+            # 先修复 schema 再清样本，保证后续用例拿到完整的 head 库。
+            command.upgrade(cfg, "head")
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute("DELETE FROM app.procurement_order WHERE id = %s", (po,))
+        with psycopg.connect(migrated_db) as conn:
+            version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        expected = ScriptDirectory.from_config(cfg).get_current_head()
+        assert version == expected, (
+            f"降级失败后库停在 {version} 而非 head（{expected}）——env.py 的整链单事务"
+            "回滚被破坏，带数据降级会把共享库留在半降级状态"
         )

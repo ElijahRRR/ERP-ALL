@@ -26,6 +26,7 @@ tags:
   - {name: Scrape, description: 采集工单与采集端（内部 API 面）}
   - {name: Notify, description: 通知中心：列表/未读数/已读（任何登录用户可用，无权限点）}
   - {name: ScrapeWorker, description: 采集节点回调面（X-Node-Key + X-Node-Token 双头部认证，非 JWT）}
+  - {name: PurchasePlugin, description: 采购插件回调面（X-Plugin-Token 共享 token 认证，非 JWT；R2-13 建，D-Q73 17c 改共享形态）}
   - {name: Portal, description: 采购方门户（独立认证域，白名单最小面）}
 
 security:
@@ -1329,6 +1330,11 @@ paths:
   /procurement-orders/{poId}/assign:
     post:
       tags: [Order]
+      summary: 指派执行单（二选一：人工采购方 purchaser_id / 买家账号 buyer_account_id）
+      description: >-
+        〔17d，D-Q73〕自动派发休眠后，`buyer_account_id` 是插件路径的**唯一派发入口**：
+        指派后插件按 customerId 拉到该单。两个目标恰好给一个，都给/都不给 ⇒ 422；
+        与另一路在途互斥（先 /release 才能换道，409）。
       x-permission: order.assign
       parameters: [{$ref: '#/components/parameters/poId'}]
       requestBody:
@@ -1336,8 +1342,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [purchaser_id]
-              properties: {purchaser_id: {type: integer}}
+              properties:
+                purchaser_id: {type: [integer, 'null']}
+                buyer_account_id: {type: [integer, 'null'], description: 17d 人工指派给买家账号（插件路径）}
       responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
   /procurement-orders/{poId}/claim:
     post:
@@ -1354,6 +1361,57 @@ paths:
       parameters: [{$ref: '#/components/parameters/poId'}]
       requestBody: {$ref: '#/components/requestBodies/ProcurementBackfill'}
       responses: {'200': {description: OK}}
+  /procurement-orders/{poId}/release:
+    post:
+      tags: [Order]
+      # R2-13 审查 A3：插件异常单的**显式出边**（0045 头注二承诺、此前代码里不存在）。
+      # 不给出边则 uq_po_active_dispatch 长期占着该 order_id，该渠道订单再也派不出去，
+      # 人工侧又被 PROCUREMENT_PLUGIN_DISPATCHED 挡住 —— 单卡死。
+      # 权限点取 order.assign（改的是「这单归谁做」，同建单/分配），不是 procurement.execute。
+      summary: 把插件异常单释放回待派池（清 buyer_account_id / 异常分类与原文，订单退回 checked）
+      description: |
+        仅接受**插件派发单**（buyer_account_id 非空）且 status='exception' 且尚未拍成单
+        （purchase_order_ref 与 purchased_at 均为空）。三条守卫各自 409：
+        - `PROCUREMENT_NOT_PLUGIN_DISPATCHED`：人工采购方的异常单不走本出边（FX-0730B）
+        - `PROCUREMENT_STATE_INVALID`：插件仍在执行（assigned/claimed）的单不许把活抽走
+        - `PROCUREMENT_ALREADY_PURCHASED`：已有单号/拍单时刻 —— 释放会被重新派发＝二次扣款
+      x-permission: order.assign
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}
+  /procurement-orders/{poId}/plugin-backfill:
+    post:
+      tags: [Order]
+      # Owner 2026-07-31 裁定（异常 #16 口径）：人工补录 = 先去亚马逊买家号核实确有
+      # 这条购买记录，再把单号手填进来。插件端点 2 重试仍是主通道（一般能自动查到），
+      # 本端点是实例失联时的人工兜底。与 /backfill 是两个语义：那边人买人填推 backfilled，
+      # 这边插件买人代抄，按插件路径落 purchased（D5），物流链随插件端点 7 继续。
+      # 与 /release 互斥成对：查到记录→补录（落 ref 后 release 守卫 3 自动拒绝）；
+      # 确认没有→释放回池。
+      summary: 人工补录插件单的已发生购买（异常 #16 兜底；落 purchased，主体 op_direct）
+      description: |
+        仅接受**插件派发单**（buyer_account_id 非空）且 status ∈ assigned/exception
+        且尚无 purchase_order_ref。三条守卫各自 409：
+        - `PROCUREMENT_NOT_PLUGIN_DISPATCHED`：人工采购的回填走 /backfill
+        - `PROCUREMENT_STATE_INVALID`：插件已回传过的单不需要补录
+        - `PROCUREMENT_ALREADY_PURCHASED`：已有单号——与所查不一致属重复下单形状，标异常勿覆盖
+        补录同时清 exception_kind/exception_reason（处置完毕，陈旧分类不留），
+        渠道订单推进 checked→purchasing。
+      x-permission: procurement.execute
+      parameters: [{$ref: '#/components/parameters/poId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purchase_order_ref]
+              properties:
+                purchase_order_ref: {type: string, minLength: 1, maxLength: 64}
+                purchase_cost: {type: number, minimum: 0}
+                tax_amount: {type: number, minimum: 0}
+                freight_cost: {type: number, minimum: 0}
+                payment_card_last4: {type: string, pattern: '^\d{4}$'}
+      responses: {'200': {description: 'OK（{id, status=purchased}）'}, '409': {$ref: '#/components/responses/Error'}}
   /procurement-orders/{poId}/exception:
     post:
       tags: [Order]
@@ -1365,7 +1423,12 @@ paths:
             schema:
               type: object
               required: [reason]
-              properties: {reason: {type: string}}
+              properties:
+                reason: {type: string}
+                # R2-13 0045：问题分类。不传 = 保持已有分类（coalesce 语义），不会抹成 null。
+                kind:
+                  type: string
+                  enum: [address, stock, product, delivery, checkout, price_guard, channel_cancelled, order_not_found, other]
       responses: {'200': {description: OK}}
   /purchasers:
     get:
@@ -1411,6 +1474,172 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/PrincipalDeleteResult'}}}
         '404': {description: 'PURCHASER_NOT_FOUND', $ref: '#/components/responses/Error'}
         '409': {description: 'PURCHASER_DELETE_IN_FLIGHT（退回未锁汇率单后仍有执行中的已锁汇率单——等其回填完结再删；若含 exception 单：人工处置通道未建成（FX-0730B），落地前暂无法删除）', $ref: '#/components/responses/Error'}
+
+  # ──── 买家账号池 + 采购插件实例（R2-13 13b；图纸 07:249-286 + 288-340 身份模型更正）────
+  # 与 purchaser 并列同 tag：买家账号是「谁去亚马逊下单」的另一种形态，同一类运营对象。
+  # 权限三分（0043）：读 buyer_account_read / 改账号 buyer_account_admin /
+  # **签发与吊销实例单列 plugin_instance_admin**——签发 = 发一个能代表本团队真下单的
+  # 凭证，与「改个备注名」不是同一量级。**本组无 DELETE 端点**：买家账号的删除分支挂在
+  # 14b 之后另补（0043 头注：授 DELETE 必须同时建 DELETE 策略，且要处置该账号名下在途单）。
+  # 「删不掉」与「驳回是终态」互为因果——正因为删不掉，驳回才必须粘住（见 PATCH 说明）。
+  #
+  # **两段式身份**（本轮更正）：`plugin_instance` 的令牌绑「一台授权浏览器」，回答
+  # 「这是不是团队 T 的授权浏览器」；`buyer_account` 由插件每次带上来的 `customerId`
+  # 在团队 T 内解析，回答「这台浏览器此刻登的是哪个买家号」。故实例端点是**团队级**，
+  # 而账号的产生方式是**首见自动登记**（不是人工预录入——那会造成「装插件前先要知道
+  # customerId、而 customerId 只有装了插件才看得到」的死循环）。
+  /buyer-accounts:
+    get:
+      tags: [Order]
+      summary: 买家账号池列表（服务端分页）
+      x-permission: procurement.buyer_account_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: site, in: query, schema: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}}
+        - {name: status, in: query, schema: {type: string, enum: [pending_claim, active, paused, blocked, retired, rejected]}, description: 'pending_claim=插件首见自动登记的待认领行（一律不派单）；rejected=已驳回终态'}
+        # 默认折叠 rejected，与 14c 产品页折叠 retired 同一做法（`GET /products` 的 include_retired）：
+        # 驳回是终态且**不删行**（本表无 DELETE 授权，粘性即治理），被灌过伪造 customerId 的团队
+        # 池子里会长期躺着一堆已驳回行。**显式传 status 时本参数不生效**——运营在下拉里选「已驳回」
+        # 必须真能看到它们，否则看起来就是功能坏了。
+        - {name: include_rejected, in: query, schema: {type: boolean, default: false}, description: '是否包含已驳回（rejected）行；默认折叠。显式传 status 时本参数不生效'}
+        - {name: q, in: query, schema: {type: string}, description: 按 label 模糊搜索}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/BuyerAccountPage'}}}}}
+    post:
+      tags: [Order]
+      summary: 建买家账号（可选预建捷径）
+      description: >-
+        **主路径是首见自动登记，不是本端点**（身份模型更正，Owner 2026-07-30，图纸 07:288-340）：
+        让插件在那台浏览器上跑一次拉取，服务端把它带上来的 `customerId` 落成一条
+        `status=pending_claim` 的待认领行并通知，运营补齐 `label`/`site`(/`daily_cap`)
+        后走 `PATCH /buyer-accounts/{id}` 认领。本端点只在运营手上**已经**有 customerId
+        时省一轮往返。`external_customer_id` 在本端点仍必填——一条解析不到的账号行永远
+        收不到任务；不知道 customerId 时的正解是走主路径，不是在这里留空。
+        `label` 的语义 = 对应哪个指纹浏览器（07:258）。
+
+
+        **`status` 只收人工可选的四值**（`active`/`paused`/`blocked`/`retired`）——
+        `pending_claim` 与 `rejected` 是**系统态**，本端点一律 422：前者由插件首见自动
+        登记独家产生（手工建一条等于伪造一个从未发生的"发现"），后者只能从待认领行驳回
+        而来（直接建出来即是一条改不动也删不掉的死行——终态 + 无 DELETE 授权）。
+        PATCH 侧对应的是「任何态都不许转回 `pending_claim`」；两处一起才封住这两个系统态。
+      x-permission: procurement.buyer_account_admin
+      requestBody: {$ref: '#/components/requestBodies/BuyerAccountCreate'}
+      responses:
+        '201': {description: Created}
+        '409': {description: 'BUYER_ACCOUNT_DUPLICATE（detail.field 指明撞的是 external_customer_id 还是 label）', $ref: '#/components/responses/Error'}
+        '422': {description: 'BUYER_ACCOUNT_FIELDS_REQUIRED（label/site/external_customer_id 缺项）/ BUYER_ACCOUNT_STATUS_NOT_CREATABLE（status 填了系统态 pending_claim 或 rejected）', $ref: '#/components/responses/Error'}
+  /buyer-accounts/{buyerAccountId}:
+    patch:
+      tags: [Order]
+      summary: 改买家账号（含**认领 / 驳回**：label/site/status/daily_cap/note/external_customer_id）
+      description: >-
+        `daily_cap` **显式传 null = 改成不限**（不传 = 不动该列）。日限的唯一权威就是本列
+        ——`automation_policy` 的 flow config 里不得出现同名键（Owner 2026-07-30 裁定）。
+
+
+        **认领与驳回也走本端点**（不另开路由、不另加权限码）：
+
+        - 认领 `pending_claim → active`：必须**同时**补齐 `label` 与 `site`，缺则 422
+          `BUYER_ACCOUNT_CLAIM_INCOMPLETE`（库层 `ck_buyer_account_claimed` 兜底——
+          「active 但没站点」不可表示，否则美国号会收到加拿大单）。审计动作名 `buyer_account.claim`。
+        - 驳回 `pending_claim → rejected`：**终态**。不删行是刻意的（本表无 DELETE 授权），
+          该 customerId 被 `uq_buyer_account` 永久占住 ⇒ 同一个伪造 id 再灌只会解析到那一行，
+          零新增行、零新通知。审计动作名 `buyer_account.reject`。
+        - `rejected → *` 与**任何态 → `pending_claim`** 一律 409 `BUYER_ACCOUNT_STATUS_TRANSITION`
+          （待认领是系统发现态，不是运营可选态）。
+        - **结果态为 `rejected` 的请求不许挪动 `external_customer_id`** ⇒ 409
+          `BUYER_ACCOUNT_REJECTED_IMMUTABLE`——既拦已驳回行的后续修改，也拦「驳回 + 改 id
+          合并成同一次 PATCH」的形状（整个请求原子拒绝，不做部分放行）。粘性靠「唯一索引
+          占着那个值」成立，把值改走等于当场撤销驳回（此后同一个伪造 id 再灌又是"没见过"，
+          新增行 + 新通知）。其余列（label/note/daily_cap）照常可改；原样带回同一个值是
+          no-op，不报错——「整表单回填 + 驳回」一次请求照常 200。
+      x-permission: procurement.buyer_account_admin
+      parameters: [{$ref: '#/components/parameters/buyerAccountId'}]
+      requestBody: {$ref: '#/components/requestBodies/BuyerAccountWrite'}
+      responses:
+        '200': {description: OK}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {description: 'BUYER_ACCOUNT_DUPLICATE / BUYER_ACCOUNT_STATUS_TRANSITION（非法状态转移）/ BUYER_ACCOUNT_REJECTED_IMMUTABLE（结果态为 rejected 的请求挪动 external_customer_id，含驳回+改 id 合并的形状）', $ref: '#/components/responses/Error'}
+        '422': {description: 'BUYER_ACCOUNT_CLAIM_INCOMPLETE（认领时缺 label 或 site）', $ref: '#/components/responses/Error'}
+  # 实例端点是**团队级**的（身份模型更正，Owner 2026-07-30，图纸 07:288-340）：
+  # 令牌绑「一台授权浏览器」，不绑买家账号。旧的 `/buyer-accounts/{id}/plugin-instances`
+  # 两条已**删除而不是保留**——那个形状本身就是「先有账号才能发令牌」的死循环
+  # （装插件前先要知道 customerId，而 customerId 只有装了插件才看得到）。
+  /plugin-instances:
+    get:
+      tags: [Order]
+      summary: 本团队的插件实例列表（服务端分页）
+      description: >-
+        **响应不含 token 的任何形态（含 hash）**——明文只在签发响应出现一次。
+        `last_seen_customer_id` 及随之 JOIN 出来的 `last_seen_account_label` /
+        `last_seen_account_status` 是**观察值，不参与鉴权**（0044 头注六）：它们回答排障
+        问题「这台机器现在登的是哪个号、认领了没有」。
+      x-permission: procurement.buyer_account_read
+      parameters:
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/size'}
+        - {name: status, in: query, schema: {type: string, enum: [active, revoked]}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/PluginInstancePage'}}}}}
+    post:
+      tags: [Order]
+      summary: 签发实例令牌（团队级；明文只返回这一次）
+      description: >-
+        **不收买家账号**：令牌绑一台授权浏览器，装插件时还不知道那台浏览器会登哪个买家号。
+        插件侧只需配置 `token` 与 `baseUrl` 两项——**ERP 侧契约不要求插件存储任何身份**
+        （`customerId` 由插件每次从亚马逊页面现抓并随请求带上）。
+        新签发的实例默认 `exec_mode=stop_before_payment`——**不会花钱**；升到 `live` 是一次
+        显式 PATCH 且有 audit 留痕。故**本端点不接受 `live`**（枚举只有两个演练档，传 live 一律 422）
+        ——只把 live 定成「非默认值」挡不住一步直签，那条不变量得由校验器执行。
+        令牌明文**只在本响应里出现一次**，此后 ERP 侧任何端点（含本组的 GET）都取不到，
+        遗失只能吊销后重新签发。
+      x-permission: procurement.plugin_instance_admin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                exec_mode: {type: string, enum: [dry_run, stop_before_payment], default: stop_before_payment}
+                version: {type: string}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/PluginInstanceIssued'}}}}
+        '409': {description: 'TEAM_REQUIRED（当前主体没有团队——超管未切换到具体团队。令牌绑定的就是「团队 T 的一台授权浏览器」，无团队的令牌解析不出任何任务）', $ref: '#/components/responses/Error'}
+        '422': {description: '签发档位不合法（含 `exec_mode=live`——升 live 只能走 PATCH）', $ref: '#/components/responses/Error'}
+  /plugin-instances/{pluginInstanceId}:
+    patch:
+      tags: [Order]
+      summary: 改执行档（只此一项可改）
+      description: >-
+        切到 `live` 意味着该实例此后真实下单花钱——前端须二次确认，服务端写 audit。
+        **本端点是升到 `live` 的唯一入口**：签发端点的枚举里没有 live。
+      x-permission: procurement.plugin_instance_admin
+      parameters: [{$ref: '#/components/parameters/pluginInstanceId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [exec_mode]
+              properties:
+                exec_mode: {type: string, enum: [dry_run, stop_before_payment, live]}
+      responses:
+        '200': {description: OK}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {description: 'PLUGIN_INSTANCE_REVOKED（已吊销的实例不可改档，请重新签发）', $ref: '#/components/responses/Error'}
+  /plugin-instances/{pluginInstanceId}/revoke:
+    post:
+      tags: [Order]
+      summary: 吊销实例（UPDATE 不是 DELETE）
+      description: >-
+        吊销后该令牌对全部插件端点一律 401。已吊销的再调一次是 no-op（200，不报错）。
+        不做物理删除：历史实例 id 还挂在 `procurement_order.backfill_actor_id` 上
+        （`backfill_actor_kind='plugin'` 时解读为实例 id），删行会让「这单谁填的」失去落点。
+      x-permission: procurement.plugin_instance_admin
+      parameters: [{$ref: '#/components/parameters/pluginInstanceId'}]
+      responses:
+        '200': {description: OK}
+        '404': {$ref: '#/components/responses/Error'}
 
   # ──────────────────────── Aftersale（R2-07）────────────────────────
   /returns:
@@ -1713,12 +1942,202 @@ paths:
       responses:
         '200': {description: OK, content: {application/json: {schema: {type: object}}}}
 
+  # ─────────────────── PurchasePlugin（Amazon 采购插件回调面，R2-13）───────────────────
+  # ① **第四个认证域**：`X-Plugin-Token`（共享 token，D-Q73 17c）单头部，非 JWT、
+  #    无 x-permission——同 ScrapeWorker，保护在另一条道上而不是没有保护。
+  #    共享值来自 `ERP_PLUGIN_SHARED_TOKEN`（.env 一行，**未配置=通道整体关闭**）；
+  #    团队归属/执行档位是业务参数，在 system_config（procurement.plugin_team_id /
+  #    plugin_exec_mode）。失败一律 401 `PLUGIN_AUTH`，**不区分**「未配置 / 缺头 / 令牌错」。
+  #    〔逐实例双头部链（X-Plugin-Instance + 签发/吊销仪式）保留休眠于
+  #    `plugin/auth.py::authenticate_instance`，重启多机归因时换回 router 依赖并还原本段。〕
+  # ② **路径末段保留厂商方法名（camelCase）是有意的**：本组是机器协议不是 UI 契约。
+  #    13e 的回切演练要拿 fork 版与厂商原版逐条对照，路径逐字对应做到零翻译；
+  #    且插件 `CONFIG.API.endpoints` 的键名与末段一一对应。前缀收成一组
+  #    （厂商侧原本分 amazonOrder / amazonOrderPig 两个命名空间）是 Owner 2026-07-30 裁定。
+  # ③ ⛔ **本组故意不含 `updateBuyerCookie`**（9 端点 − 它 − amazonOrderPig 那 2 条 = 6 条）。
+  #    Owner 2026-07-30 二次裁定「先不收 cookie」，理由不是「暂时不用」而是**用途已被证伪**：
+  #    那份 jar 的字段整形正是 Cookie-Editor 类插件的导出格式，唯一目的是被导入回浏览器
+  #    ——它是整套可搬运的登录态而非标识；「哪个买家号」由同一调用的 `customerId` 承载。
+  #    ERP 侧不建路由、不建 `buyer_session` 表、任何 cookie jar 不落库。
+  #    **契约门禁只查「代码有契约无」和「契约有代码无」，不会替我们记住「故意不做」**，故写在此处。
+  # ④ **`getNeedSyncOrders` 的响应字段未逐字取证**（考古只对端点 1 给了逐字段清单，
+  #    `archaeology.md:24`）。此处按最小集声明；fork 时以插件 `handleOrderSync` 实读为准，
+  #    如有出入**以插件为准并同 PR 修本契约**。不许编字段。
+  # ⑤ 成功响应一律 `{code: 200, data: ...}`（厂商兼容信封，插件读 `response.data`）；
+  #    **失败走本仓统一 ErrorResponse + 真实 HTTP 状态码**，绝不做「HTTP 200 里塞 code:500」。
+  # ⑥ **写回四端点（2/3/4/7）的请求体不带 `customerId`**——厂商协议如此，已逐字取证
+  #    （`.agent/evidence/R2-13/owner-reverse-engineering-20260730.md` C.2/E.2）。故它们的归属
+  #    检查是「**团队** + 是不是插件派发单」，**不是**身份一致性。这条写进契约是为了挡住
+  #    下一个人「那就给插件加个 customerId 参数」的念头：ERP 侧契约**不得要求插件存储或
+  #    上报任何 per-install 身份**（插件源码实测零 per-install 配置，customerId 每次从
+  #    亚马逊页面现抓）。同团队、派给另一个账号的单**放行**是有意的——换号之后那笔已经
+  #    花出去的钱必须报得回来。
+  /purchase-plugin/getNeedPurchaseOrders:
+    get:
+      tags: [PurchasePlugin]
+      security: [{pluginTokenAuth: []}]
+      summary: 拉待采购任务（拉取即认领）
+      description: >-
+        **GET 但有副作用**：本端点把 `customerId` 在**本团队范围内**解析成买家账号，
+        再按站点/日限/唯一派发把待采购单认领给它。重复调用幂等——已认领给该账号的单会再次
+        返回，不产生新派发、不重复消耗 `daily_cap`（插件重启/掉线后必须还能看见手上的单）。
+
+
+        `customerId` 是**路由参数不是鉴权凭据**（身份模型更正，图纸 07:288-340）：
+        令牌回答「这是不是团队 T 的一台授权浏览器」，`customerId` 回答「这台浏览器此刻登的
+        是哪个买家号」。越权边界＝**跨团队必败**，由 `plugin_instance.team_id` + RLS +
+        每条 SQL 的显式 `team_id = :t` 承担。
+
+
+        **未认领 / 从没见过 / 跨团队一律 `200` + 空数组**（响应逐字节同形，不泄漏存在性——
+        任何差异化处理本身就是存在性探针）。本团队没见过的 `customerId` 会**自动落一条
+        `status=pending_claim` 的账号行并通知**，运营认领后才开始派单；`pending_claim` 与
+        `rejected` 一律不派单。待认领行数有上限（配置键 `procurement.plugin_dispatch`
+        的 `pending_claim_cap`），撞上限则**不登记**并发 critical 告警，响应仍同形。
+        账号 `status` 非 `active` 时本端点返回空（写路径不受影响）。
+      parameters:
+        - {name: customerId, in: query, required: true, schema: {type: string, maxLength: 64}, description: '插件从亚马逊页面现抓的买家号标识。服务端在本团队范围内解析成 buyer_account；**不是鉴权凭据**'}
+        - {name: v, in: query, schema: {type: string, maxLength: 40}, description: 插件版本（选填），回写 plugin_instance.version}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, data]
+                properties:
+                  code: {type: integer, enum: [200], description: 厂商兼容回声，恒为 200}
+                  data: {type: array, items: {$ref: '#/components/schemas/PluginTask'}}
+        '401': {description: 'PLUGIN_AUTH（不区分原因）', $ref: '#/components/responses/Error'}
+  /purchase-plugin/getNeedSyncOrders:
+    get:
+      tags: [PurchasePlugin]
+      security: [{pluginTokenAuth: []}]
+      summary: 拉待物流同步订单
+      description: >-
+        该 `customerId` 解析出的账号名下、已拍单（`purchased`/`shipped`）且有渠道单号的单。
+        响应字段取证缺口见本组头注④。`customerId` 的语义与首见自动登记行为同端点 1
+        （**路由参数，未认领/未知/跨团队一律 200 + 空数组**）。
+
+
+        **本端点不设账号 status 闸**（与端点 1 的区别是刻意的）：它拉的是「已经买了、等物流」
+        的单，账号被 `paused`/`blocked` 时**必须照常同步**——包裹在路上，钱已经花了。
+      parameters:
+        - {name: customerId, in: query, required: true, schema: {type: string, maxLength: 64}, description: 同端点 1：路由参数，非鉴权凭据}
+        - {name: v, in: query, schema: {type: string, maxLength: 40}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, data]
+                properties:
+                  code: {type: integer, enum: [200]}
+                  data: {type: array, items: {$ref: '#/components/schemas/PluginSyncOrder'}}
+        '401': {$ref: '#/components/responses/Error'}
+  /purchase-plugin/purchaseOrderFinishUpdate:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginTokenAuth: []}]
+      summary: 采购完成回填（金额/单号/卡号后四位/预计送达）
+      description: >-
+        幂等键 = `platformOrderNo`（自然键，跨插件重装/换实例仍成立，**不用 Idempotency-Key**
+        ——插件侧没有生成它的地方）。同值重投 = 200 no-op；**异值不覆盖原值**，改落
+        `exception_kind=other` + critical 告警（那是重复下单的形状，必须让人看见）。
+        `execMode` 与实例当前档不符回 409 `PLUGIN_EXEC_MODE_MISMATCH`。
+        非本团队的插件派发任务回 403 `PLUGIN_TASK_NOT_OWNED`（与「id 不存在」同码同状态）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PluginBackfillIn'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: 'PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥）', $ref: '#/components/responses/Error'}
+        '409': {description: PLUGIN_EXEC_MODE_MISMATCH, $ref: '#/components/responses/Error'}
+  /purchase-plugin/updateOrderStatus:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginTokenAuth: []}]
+      summary: 拍单失败（status=99）
+      description: >-
+        落 `status=exception` + `exception_reason`（failReason 原文一字不改）+
+        `exception_kind`（17 条厂商原文的归类表，见 `plugin/classify.py`）。**零金额列写入**。
+        `status` 只接受 99——厂商的数字状态机不进我方模型，其余值 422。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, status]
+              properties:
+                id: {type: integer, description: procurement_order.id}
+                status: {type: integer, enum: [99]}
+                failReason: {type: [string, 'null'], description: 失败原文；服务端亦接受同义字段名 failContent（请求体键名未逐字取证，两名一义故都收）}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: 'PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥）', $ref: '#/components/responses/Error'}
+  /purchase-plugin/updateAmzOrderStatus:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginTokenAuth: []}]
+      summary: 渠道侧回报（91=已取消/退款，92=订单不存在）
+      description: >-
+        这两条发生在**已拍单之后**，故只落 `exception_kind`（`channel_cancelled` /
+        `order_not_found`）+ critical 告警，**`status` 一律不动**——改成 exception 会抹掉
+        「已拍单」这个事实，运营看到会以为没拍然后重拍一次。
+        `orderNo` 只做一致性校验，不符仅记 warn 不拒（渠道单号漂移不该挡住「渠道取消了」入库）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, status]
+              properties:
+                id: {type: integer}
+                orderNo: {type: [string, 'null']}
+                status: {type: integer, enum: [91, 92]}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: 'PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥）', $ref: '#/components/responses/Error'}
+  /purchase-plugin/updateTrackingInfo:
+    post:
+      tags: [PurchasePlugin]
+      security: [{pluginTokenAuth: []}]
+      summary: 物流回填（运单号 + 承运商 + 轨迹事件）
+      description: >-
+        主表金额四项走 `coalesce(列, 新值)`（端点 2 已落的是权威，本端点只补空洞）；
+        `status` **只从 purchased 推到 shipped**，绝不从 assigned 跳（没拍单哪来的运单）。
+        **绝不动 `channel_order.internal_status`**——那是「我方已发货给 Walmart 买家」，
+        亚马逊侧包裹在路上 ≠ 我方已发货。
+        轨迹事件写 `procurement_logistics_event`，`seq` = 渠道数组下标（**0 = 最新，整个数组倒序**）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PluginTrackingIn'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {description: 'PLUGIN_TASK_NOT_OWNED（非本团队的插件派发任务；请求体不带 customerId，故这里判的是团队而不是身份——见组头注⑥）', $ref: '#/components/responses/Error'}
+
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 内部 JWT（audience=erp）}
     portalAuth: {type: http, scheme: bearer, bearerFormat: JWT, description: 门户 JWT（audience=portal）}
     nodeKeyAuth: {type: apiKey, in: header, name: X-Node-Key, description: 采集节点标识（与 nodeTokenAuth 同时提供）}
     nodeTokenAuth: {type: apiKey, in: header, name: X-Node-Token, description: 采集节点令牌（`scrape/router.py::_node_auth` 双头部校验）}
+    # 〔D-Q73 17c〕pluginInstanceAuth（X-Plugin-Instance 头）随逐实例链休眠摘除：fork 插件
+    # 旧构建仍会发该头，FastAPI 对未声明的头自动忽略，无需兼容层。重启多机归因时放回。
+    pluginTokenAuth: {type: apiKey, in: header, name: X-Plugin-Token, description: 采购插件共享令牌（`plugin/auth.py::authenticate_shared`；值=ERP_PLUGIN_SHARED_TOKEN，未配置则通道整体关闭；比较走 sha256+恒定时；D-Q73 17c——原「实例专属、禁全局共享密钥」纪律随单人模式经 Owner 裁定翻转，逐实例链保留休眠）}
 
   parameters:
     page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
@@ -1732,6 +2151,8 @@ components:
     listingId: {name: listingId, in: path, required: true, schema: {type: integer}}
     orderId: {name: orderId, in: path, required: true, schema: {type: integer}}
     poId: {name: poId, in: path, required: true, schema: {type: integer}}
+    buyerAccountId: {name: buyerAccountId, in: path, required: true, schema: {type: integer}}
+    pluginInstanceId: {name: pluginInstanceId, in: path, required: true, schema: {type: integer}}
     returnId: {name: returnId, in: path, required: true, schema: {type: integer}}
     refundRequestId: {name: refundRequestId, in: path, required: true, schema: {type: integer}}
     incidentId: {name: incidentId, in: path, required: true, schema: {type: integer}}
@@ -1877,12 +2298,50 @@ components:
             properties:
               purchase_platform: {type: string}
               purchase_order_ref: {type: string}
-              purchase_cost: {type: number}
+              purchase_cost: {type: number, description: 税前商品额（成本三分之一，不含税与运费）}
               purchase_currency: {type: string, default: CNY}
               freight_cost: {type: number}
               carrier: {type: string}
               tracking_no: {type: string}
               note: {type: string}
+              # R2-13 0045 增列：人工在订单页也要能补这四项（插件路径的回填不走本端点）
+              tax_amount: {type: number, description: 销售税（成本三分之一）}
+              payment_card_last4: {type: string, maxLength: 8}
+              delivery_est_date: {type: string, format: date}
+              delivery_est_raw: {type: string, description: 渠道原文（如 `Thursday, August 7`）}
+    # 建号与改号的入参**故意分成两个 requestBody**：唯一的差别是 `status` 的枚举
+    # （建号只收人工四值，见下），而那正是必须在契约里看得见的差别——共用一个 schema
+    # 会让「建号能不能直接建 pending_claim」只存在于服务层代码里，前端与部署机无从对表。
+    BuyerAccountCreate:
+      content:
+        application/json:
+          schema:
+            type: object
+            description: '建号（可选预建捷径）。label/site/external_customer_id 必填（服务层校验，缺则 422 BUYER_ACCOUNT_FIELDS_REQUIRED）。`status` 只收人工四值——两个系统态由 422 BUYER_ACCOUNT_STATUS_NOT_CREATABLE 拒绝。'
+            properties:
+              label: {type: string, maxLength: 100, description: 运营可读名，语义=对应哪个指纹浏览器（07:258）}
+              site: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}
+              external_customer_id: {type: string, maxLength: 64, description: 插件侧 customerId。**首见自动登记是主路径**；本字段只在手工预建（可选捷径）时由运营填}
+              # 词表 = 0043 `ck_buyer_account_status` 全集 **减去两个系统态**：
+              # `pending_claim` 由插件首见自动登记独家生产（也是洪水闸精确性的前提——
+              # 那把 advisory 锁只锁登记路径，多一个生产者 cap 就退化成近似值）；
+              # `rejected` 只能从待认领行驳回而来，直接建即死行（终态 + 无 DELETE 授权）。
+              status: {type: string, enum: [active, paused, blocked, retired], default: active, description: '建号可选的四个运营态；不传 = active。**系统态 pending_claim / rejected 一律 422**'}
+              daily_cap: {type: [integer, 'null'], minimum: 1, description: 单日采购上限；null=不限}
+              note: {type: string, maxLength: 1000}
+    BuyerAccountWrite:
+      content:
+        application/json:
+          schema:
+            type: object
+            description: '`PATCH` 按传入字段增量更新，**认领已有待认领行也走 PATCH**（补 label+site 并置 status=active）。建号入参见 `BuyerAccountCreate`（status 词表更窄）。'
+            properties:
+              label: {type: string, maxLength: 100, description: 运营可读名，语义=对应哪个指纹浏览器（07:258）}
+              site: {type: string, enum: [amazon_com, amazon_ca, amazon_co_jp]}
+              external_customer_id: {type: string, maxLength: 64, description: 插件侧 customerId。**首见自动登记是主路径**；本字段只在手工预建（可选捷径）时由运营填}
+              status: {type: string, enum: [pending_claim, active, paused, blocked, retired, rejected], description: '非 active 一律不派新任务（含 pending_claim / rejected）；**但回填/异常/物流三条写路径不受影响**（钱可能已经花出去了）。合法转移见 PATCH 端点说明——任何态都不许改回 pending_claim'}
+              daily_cap: {type: [integer, 'null'], minimum: 1, description: 单日采购上限；null=不限。**显式传 null 即改成不限**，不传=不动}
+              note: {type: string, maxLength: 1000}
 
   schemas:
     ErrorResponse:
@@ -2639,10 +3098,156 @@ components:
         claimed_at: {type: [string, 'null'], format: date-time}
         backfilled_at: {type: [string, 'null'], format: date-time}
         exception_reason: {type: [string, 'null']}
+        # ── R2-13 0045 增列 ──
+        buyer_account_id: {type: [integer, 'null'], description: 非空即「已派给买家账号」（插件路径）；人工/门户路径恒 null}
+        # 软引用解析（同 purchaser_label 的做法，不冗余名字列）。buyer_account 尚无删除路径，
+        # 故当前只查主表、无墓碑回落；删除分支落地时这里要跟着补。
+        buyer_account_label: {type: [string, 'null']}
+        tax_amount: {type: [number, 'null'], description: 销售税；与 purchase_cost（税前商品额）、freight_cost 三分不合并，合计由计算得出不落库}
+        payment_card_last4: {type: [string, 'null']}
+        delivery_est_date: {type: [string, 'null'], format: date}
+        delivery_est_raw: {type: [string, 'null']}
+        exception_kind:
+          type: [string, 'null']
+          enum: [address, stock, product, delivery, checkout, price_guard, channel_cancelled, order_not_found, other, null]
+          description: >-
+            问题分类，**不是状态列**。回填后核对不通过（asin/邮编/金额不平）属「已花钱但有问题」，
+            此时 status 保持 purchased 只写本列——改成 exception 会丢掉「已拍单」这个事实，
+            运营看到会以为没拍然后重拍一次。
     ProcurementPage:
       allOf:
         - {$ref: '#/components/schemas/PageMeta'}
         - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/ProcurementOrder'}}}}
+    BuyerAccount:
+      type: object
+      description: 亚马逊买家账号（R2-13 13b，图纸 07:249-268 + 288-340）。各自登录在一个独立指纹浏览器内；代理与指纹由外部浏览器管理，**ERP 不管代理**。
+      properties:
+        id: {type: integer}
+        label: {type: [string, 'null'], description: '语义=对应哪个指纹浏览器。**待认领/已驳回行为 null**——首见自动登记时服务端只知道一个 customerId，账号名是人给的'}
+        site: {type: [string, 'null'], enum: [amazon_com, amazon_ca, amazon_co_jp, null], description: '**待认领/已驳回行为 null**（customerId 不含站点信息，编一个占位值是假话）。一旦转 active 必须齐全（库层 ck_buyer_account_claimed）'}
+        external_customer_id: {type: string, description: '插件侧 customerId；**任务路由键，不是授权依据**。来源＝插件运行时从亚马逊页面现抓并随请求带上，由 ERP **首见自动登记**（图纸 07:288-340）；不是人工预录入'}
+        status: {type: string, enum: [pending_claim, active, paused, blocked, retired, rejected], description: 'pending_claim=首见自动登记的待认领行（**一律不派单**）；rejected=已驳回终态（该 customerId 被永久占用，此后不再自动登记）'}
+        daily_cap: {type: [integer, 'null'], description: null=不限。**日限的唯一权威就是这一列**}
+        last_seen_at: {type: [string, 'null'], format: date-time, description: 该 customerId 最近一次被插件请求解析到的时间（掉线可见；待认领行同样刷新——运营据此看出这个未认领的号此刻真的在活动）}
+        note: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    BuyerAccountPage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/BuyerAccount'}}}}
+    PluginInstance:
+      type: object
+      description: 采购插件实例＝**一台授权浏览器**（R2-13，图纸 07:274-286 + 本轮补 exec_mode）。**本 schema 逐字不含 token 的任何形态**，也**不含 buyer_account_id**——令牌不绑买家账号。
+      properties:
+        id: {type: integer, description: 逐实例链休眠期间仅作列表标识（D-Q73 17c 共享 token 不带实例头；多机归因重启后恢复为 X-Plugin-Instance 头的取值）}
+        status: {type: string, enum: [active, revoked]}
+        exec_mode: {type: string, enum: [dry_run, stop_before_payment, live], description: 'dry_run=不进结账页 / stop_before_payment=付款前停下回报（不花钱验收的主力档）/ live=完整下单'}
+        version: {type: [string, 'null']}
+        last_seen_customer_id: {type: [string, 'null'], description: '**观察值，不参与鉴权**（0044 头注六）：该浏览器最近一次带上来的 customerId，换号即自然更新。任何鉴权判定读它都等于把「令牌绑账号」偷偷接回来'}
+        last_seen_account_label: {type: [string, 'null'], description: '由 last_seen_customer_id 在本团队内 JOIN 出来的账号名（未认领时为 null）。同为观察值'}
+        last_seen_account_status: {type: [string, 'null'], description: '同上，账号状态；为 pending_claim 即「这台机器登的号还没认领」——运营看出该认领谁的唯一入口'}
+        last_seen_at: {type: [string, 'null'], format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    PluginInstancePage:
+      allOf:
+        - {$ref: '#/components/schemas/PageMeta'}
+        - {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/PluginInstance'}}}}
+    PluginInstanceIssued:
+      type: object
+      description: 签发响应。**token 明文只在这里出现一次**，此后任何端点都取不到（库里只有 sha256）；遗失请吊销后重新签发。**不含 buyer_account_id**——令牌绑一台授权浏览器。
+      required: [id, token]
+      properties:
+        id: {type: integer}
+        token: {type: string, description: 实例专属令牌明文（禁全局共享密钥）。前端一次性展示后不得缓存、不得写 localStorage}
+    # ── PurchasePlugin 机器面载荷（字段名逐字保留厂商 camelCase，理由见该组头注②）──
+    PluginTask:
+      type: object
+      description: 一条待采购任务（字段集＝插件拍单流程实读，`07:216-224`）。展示用字段（products[].price/imgUrl/status）插件不读，**不造**。
+      required: [id, orderNo, products, execMode]
+      properties:
+        id: {type: integer, description: procurement_order.id；全部回调的主键}
+        orderNo: {type: string, description: '**渠道单号**（channel_order.channel_order_no）而不是 PO-{id}：插件把它写日志与回调参数，取渠道单号才能与 Walmart 后台直接对上'}
+        receivingName: {type: [string, 'null']}
+        receivingPhone: {type: [string, 'null']}
+        receivingAddress: {type: [string, 'null'], description: address1；address2 非空时以换行拼接}
+        receivingCity: {type: [string, 'null']}
+        receivingDistrict: {type: [string, 'null'], description: JP 必填。**日本站本轮不做但字段与分支保留**（不做不等于删掉）}
+        receivingPostCode: {type: [string, 'null']}
+        receivingCountry: {type: [string, 'null'], description: 驱动插件的地址填写与校验分支}
+        state: {type: [string, 'null'], description: 与 receivingState **两个字段名都返回、同值**——插件读的是 `order.state || order.receivingState`}
+        receivingState: {type: [string, 'null']}
+        products:
+          type: array
+          items:
+            type: object
+            required: [asin, quantity]
+            properties:
+              asin: {type: string, description: product.source_ref（source_channel=amazon）。**任一行解不出 ASIN 则整单不派**——少给一行会让插件少买一件且无人发现}
+              quantity: {type: integer}
+        execMode: {type: string, enum: [dry_run, stop_before_payment, live], description: 下发执行档，插件回报时原样回声}
+    PluginSyncOrder:
+      type: object
+      description: 一条待物流同步订单。**响应字段未逐字取证**（见该组头注④），按最小集声明。
+      required: [id, orderNo, platformOrderNo]
+      properties:
+        id: {type: integer}
+        orderNo: {type: string}
+        platformOrderNo: {type: string, description: 亚马逊订单号（procurement_order.purchase_order_ref）}
+    PluginBackfillIn:
+      type: object
+      description: 采购完成回填体（逐字对齐插件实发）。金额字段是结账页原文字符串（如 "$1,234.56"）——服务端解析失败时该列留 NULL 并告警，**绝不写 0**（空值与解析不出是两件事）。
+      required: [id]
+      properties:
+        id: {type: integer}
+        platformOrderNo: {type: [string, 'null'], description: 亚马逊订单号，兼作幂等键}
+        asins: {type: [string, 'null'], description: 逗号分隔；**不落列**，用于回填后核对（不符落 exception_kind=product）}
+        deliveryTime: {type: [string, 'null'], description: 预计送达 YYYY-MM-DD → delivery_est_date}
+        origDeliveryTime: {type: [string, 'null'], description: 结账页原文（如 "Thursday, August 7"）→ delivery_est_raw}
+        creditCardNumber: {type: [string, 'null'], description: 卡号后四位 → payment_card_last4}
+        mainPostCode: {type: [string, 'null'], description: '**不落列**，用于回填后核对邮编'}
+        extPostCode: {type: [string, 'null']}
+        shipping: {type: [string, number, 'null'], description: → freight_cost}
+        totalBeforeTax: {type: [string, number, 'null'], description: 税前商品额 → purchase_cost}
+        tax: {type: [string, number, 'null'], description: → tax_amount}
+        total: {type: [string, number, 'null'], description: '**不落库**，用于三项加总自校验；不平则落 exception_kind=other + critical 告警，但金额照实入库'}
+        products:
+          type: array
+          items:
+            type: object
+            properties:
+              asin: {type: [string, 'null']}
+              quantity: {type: [integer, 'null']}
+              unitPrice: {type: [string, number, 'null'], description: 图纸未指定落点，**不落库**、不自造落点}
+              totalPrice: {type: [string, number, 'null']}
+              productImage: {type: [string, 'null']}
+        execMode: {type: [string, 'null'], enum: [dry_run, stop_before_payment, live, null], description: fork 新增的回声字段；与实例当前档不符即 409（防插件版本落后按旧档跑）}
+    PluginTrackingIn:
+      type: object
+      description: 物流回填体。**主键叫 orderId 不是 id**（厂商这一组就这么发）。trackingJson 是 **JSON 编码的字符串**不是数组。
+      required: [orderId]
+      properties:
+        orderId: {type: integer, description: procurement_order.id}
+        trackingNumber: {type: [string, 'null']}
+        carrier: {type: [string, 'null']}
+        trackingJson: {type: [string, 'null'], description: '事件数组的 JSON 字符串；元素含 day/time/tracking_info/city/state，**倒序（index 0 = 最新）**'}
+        trackingUrl: {type: [string, 'null'], description: '**接收后立即丢弃**，不落任何列（可重抓、无消费者）'}
+        trackingHtml: {type: [string, 'null'], description: '**接收后立即丢弃**：base64 整页 HTML，万单 GB 级，图纸 07:245-247 的明确不做决定'}
+        receiptPicture: {type: [string, 'null'], description: '**接收后立即丢弃**'}
+        mainPostCode: {type: [string, 'null']}
+        extPostCode: {type: [string, 'null']}
+        card: {type: [string, 'null'], description: 卡号后四位，仅在端点 2 未落时补空洞}
+        asins: {type: [string, 'null']}
+        orderDate: {type: [string, 'null']}
+        subtotal: {type: [string, number, 'null']}
+        shipping: {type: [string, number, 'null']}
+        totalBeforeTax: {type: [string, number, 'null']}
+        tax: {type: [string, number, 'null']}
+        total: {type: [string, number, 'null']}
+        deliveryDate: {type: [string, 'null']}
+        origDeliveryDate: {type: [string, 'null']}
     Purchaser:
       type: object
       properties:

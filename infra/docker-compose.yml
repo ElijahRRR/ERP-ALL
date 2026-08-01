@@ -64,6 +64,13 @@ services:
       # Swagger UI 的独立开关（审查 AI 的 N1）。要接口文档就在 infra/.env 里设
       # ERP_DOCS_ENABLED=true —— **不要**为此去改 ERP_ENV，那会连带重开弱密钥放行。
       ERP_DOCS_ENABLED: ${ERP_DOCS_ENABLED:-false}
+      # 单人模式（D-Q73 17a）：compose 只转发白名单内的变量，infra/.env 里加行
+      # 不转发就进不了容器——③闸 D3 停点实测正是漏了这三条。默认关；部署机常驻
+      # 形态在 infra/.env 显式写 true。
+      ERP_SINGLE_USER_MODE: ${ERP_SINGLE_USER_MODE:-false}
+      ERP_SINGLE_USER_ADMIN: ${ERP_SINGLE_USER_ADMIN:-admin}
+      # 插件共享 token（17c）：默认空＝插件通道整体关闭（fail-closed），不存在裸奔档。
+      ERP_PLUGIN_SHARED_TOKEN: ${ERP_PLUGIN_SHARED_TOKEN:-}
       ERP_DATABASE_URL: postgresql+psycopg://erp_app:${ERP_APP_DB_PASSWORD:?infra/.env 缺 ERP_APP_DB_PASSWORD}@db:5432/erp_all
       ERP_MIGRATOR_DATABASE_URL: postgresql+psycopg://erp_migrator:${ERP_MIGRATOR_DB_PASSWORD:?infra/.env 缺 ERP_MIGRATOR_DB_PASSWORD}@db:5432/erp_all
       ERP_REDIS_URL: redis://:${REDIS_PASSWORD:?infra/.env 缺 REDIS_PASSWORD}@redis:6379/0

@@ -360,7 +360,14 @@ class TestPurchaserDelete:
     ) -> None:
         """审查六轮 F 显式化承重：未锁汇率的 exception 单被退回时，exception_reason
         一并清（不留陈旧异常语句在待分配池）、被解除的单号记进审计 after——
-        退回是全系统唯一离开 exception 的路径（FX-0730B），副作用必须可审计。"""
+        退回是全系统唯一离开 exception 的路径（FX-0730B），副作用必须可审计。
+
+        R2-13 审查 A4 扩断言：**`exception_kind` 也必须清**。0045 新增的这一列与
+        `exception_reason` 是同一件事的两半（分类 + 原文），只清后者会让陈旧分类随单
+        回池，再被插件回填那句 `coalesce(:kind, exception_kind)` 固化——最终得到一张
+        「已拍单、带异常分类、查不到任何异常原文」的单。修前本用例在 `exception_kind`
+        上拿到 `'stock'`。
+        """
         with psycopg.connect(migrated_db, autocommit=True) as conn:
             pid = conn.execute(
                 "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
@@ -370,8 +377,9 @@ class TestPurchaserDelete:
             po = conn.execute(
                 "INSERT INTO app.procurement_order"
                 " (team_id, store_id, order_id, order_date, status, assignee_kind, purchaser_id,"
-                "  exception_reason)"
-                " VALUES (%s, 1, 990005, now(), 'exception', 'external', %s, '样品损坏待处置')"
+                "  exception_reason, exception_kind)"
+                " VALUES (%s, 1, 990005, now(), 'exception', 'external', %s, '样品损坏待处置',"
+                "         'stock')"
                 " RETURNING id",
                 (seeded["team"], pid),
             ).fetchone()[0]
@@ -381,11 +389,11 @@ class TestPurchaserDelete:
         assert r.json()["orders_returned"] == 1
         with psycopg.connect(migrated_db) as conn:
             row = conn.execute(
-                "SELECT status, purchaser_id, exception_reason"
+                "SELECT status, purchaser_id, exception_reason, exception_kind"
                 " FROM app.procurement_order WHERE id = %s",
                 (po,),
             ).fetchone()
-            assert row == ("unassigned", None, None)
+            assert row == ("unassigned", None, None, None)
             after = conn.execute(
                 "SELECT after FROM app.audit_log"
                 " WHERE action = 'procurement.purchaser_delete' AND object_id = %s"

@@ -299,7 +299,21 @@ async def delete_purchaser(
             text(
                 "UPDATE app.procurement_order po"
                 " SET status = 'unassigned', purchaser_id = NULL, assignee_kind = 'none',"
-                "     assigned_by = NULL, assigned_at = NULL, exception_reason = NULL"
+                "     assigned_by = NULL, assigned_at = NULL, exception_reason = NULL,"
+                # R2-13 审查 A4：0045 新增的 `exception_kind` 与 `exception_reason` 是
+                # 同一件事的两半（分类 + 原文），只清后者会让**陈旧分类随单回池**。
+                # 下游会把它固化：插件回填走 `coalesce(:kind, exception_kind)`（0045 的
+                # 「重复标异常不丢第一次归类」语义），于是这单重新派出去、正常拍成之后，
+                # 仍顶着上一任采购方留下的 `exception_kind`——运营在采购面板看到一张
+                # 「已拍单但带异常分类」的单，查不出任何对应的 exception_reason。
+                "     exception_kind = NULL,"
+                # R2-13 13b：当前不变量下（assign_po 拒绝已派给买家账号的单，
+                # procurement.py 的 PROCUREMENT_PLUGIN_DISPATCHED 守卫）本条恒为 no-op
+                # ——能有 purchaser_id 的单一定没有 buyer_account_id。写它是因为那个
+                # 不变量靠一句 `if` 维持，而本条 SQL 是删除的副作用、离那句 `if` 很远：
+                # 不变量若被破（新增第三条派发路径、守卫被改），这里要**失败在安全的一侧**
+                # ——退回池的单必须同时释放 uq_po_active_dispatch，否则它永远派不出去。
+                "     buyer_account_id = NULL"
                 " FROM (SELECT id, status AS old_status FROM app.procurement_order"
                 "       WHERE purchaser_id = :p AND exchange_rate_locked IS NULL"
                 "         AND status <> ALL (ARRAY['backfilled', 'cancelled'])"

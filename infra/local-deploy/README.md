@@ -483,3 +483,41 @@ docker compose -f infra/docker-compose.yml exec api \
   `UPDATE app.schedule SET config = jsonb_set(config, '{kinds}', '["delist"]') WHERE code='maintenance_run';`
   关回人工档把 kinds 改回 `[]`。end_date_renewal 执行通道随增量4b。
 - 手动单跑：`docker compose -f infra/docker-compose.yml exec api python -m erp.tools.run_task item_pull`
+
+## 四闸后固定收尾：合并 main 后上线部署并回执（每张 PR 合并后必做，部署 AI 执行）
+
+> 由来：PR #46 验证收尾正确恢复了验证前状态，但「合并后重新部署」不在任何人的清单里，
+> 导致「验收通过」与「线上能用」断链（Owner 在界面上看不到已验收的功能）。自 PR #49 起
+> 固化为第四闸之后的固定步骤。
+> 本节 = 云端版与部署机本地版（PR #50 评论归档的 +33 行）**合并稿**——命令块与收口语义
+> 取自部署机实测版，资产名对拍与删分支步取自云端版。
+>
+> **四闸通过只表示 PR 可以合并，不代表部署机已在跑合并后的代码。本节未完成并回执前，
+> 增量不得标记为「上线完成」；第三闸或第四闸通过不能替代本节。**
+
+Windows 部署机 PowerShell 兼容命令（等价 `make up`）：
+
+```powershell
+git fetch origin main
+git checkout main
+git pull --ff-only origin main
+git log -1 --oneline
+
+docker compose -f infra/docker-compose.yml up -d --build db redis migrate api beat frontend
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -Atc "SELECT version_num FROM public.alembic_version;"
+curl.exe -fsS http://127.0.0.1:8000/healthz
+docker compose -f infra/docker-compose.yml ps
+```
+
+**前端有改动时的双重证据**（缺一不算前端上线）：
+1. **资产名对拍**：容器内 `assets/index-*.js` 文件名与浏览器实际加载的资产名逐字一致
+   （防「代码合了、浏览器还跑旧包」）；
+2. **功能实测**：浏览器刷新后核对该增量新增的入口/文案/交互确已出现——
+   仅镜像构建成功或容器 `Up` 不算前端上线证据。
+
+收尾另两步：**删除本地验证分支**；含迁移的增量确认 `alembic_version` = 当前 main 的 head
+（已在 head 则 migrate 为 no-op，照记终态值）。
+
+**固定回执至少包含**：`main` HEAD 短哈希（须与 `origin/main` 一致）、`alembic_version`、
+`/healthz` 成功、容器状态表、前端改动对应页面的实测结果（无前端改动则注明「跳过」及原因）。
+回执贴到对应 PR 评论。

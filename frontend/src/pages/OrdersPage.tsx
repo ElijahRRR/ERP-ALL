@@ -17,7 +17,7 @@ import {
 } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, api, type PageOf, type Schemas } from '@/api/client'
+import { ApiError, api, type BuyerAccount, type PageOf, type Schemas } from '@/api/client'
 import { useAuth } from '@/auth/AuthContext'
 
 // 契约类型（schema.d.ts codegen）；OrderDetail 内嵌结构在契约里是 free-form object，本地补形态
@@ -74,6 +74,22 @@ const PO_STATUS: Record<string, { color: string; label: string }> = {
   backfilled: { color: 'green', label: '已回填' },
   exception: { color: 'red', label: '异常' },
   cancelled: { color: 'default', label: '已取消' },
+}
+
+// 采购异常分类中文名（R2-13 0045 `exception_kind`）。
+// ⚠️ 它是**问题分类不是状态**：回填后核对不通过（ASIN/邮编/金额不平）属「已花钱但有问题」，
+// 这时 status 仍是 purchased 而本列非空——面板必须把两者分开显示，
+// 否则运营会把「已拍单但有问题」看成「没拍单」然后重拍一次。
+const EXCEPTION_KIND: Record<string, string> = {
+  address: '地址问题',
+  stock: '无库存/售罄',
+  product: '商品不可自动采购（非 FBA / 捆绑）',
+  delivery: '预计送达超期',
+  checkout: '结账/下单失败',
+  price_guard: '价格护栏拦截',
+  channel_cancelled: '渠道已取消或退款',
+  order_not_found: '渠道查无此单',
+  other: '其他',
 }
 
 // 四检 check_kind 中文名（契约枚举 phishing/purchaser/price_limit/consistency）
@@ -267,8 +283,12 @@ function OrderDrawer({
   const [detail, setDetail] = useState<OrderDetail | null>(null)
   const [purchasers, setPurchasers] = useState<Purchaser[]>([])
   const [assignId, setAssignId] = useState<number | undefined>()
+  // 17d（D-Q73）：插件路径的人工指派——下拉选买家账号。自动派发休眠后这是唯一派发入口
+  const [buyerAccounts, setBuyerAccounts] = useState<BuyerAccount[]>([])
+  const [assignAccountId, setAssignAccountId] = useState<number | undefined>()
   const [shipOpen, setShipOpen] = useState(false)
   const [backfillOpen, setBackfillOpen] = useState(false)
+  const [pluginBackfillOpen, setPluginBackfillOpen] = useState(false)
   const [exceptionOpen, setExceptionOpen] = useState(false)
 
   const load = useCallback(async () => {
@@ -294,6 +314,12 @@ function OrderDrawer({
       .then(setPurchasers)
       .catch(() => {
         /* 无采购方读权限时下拉保持为空 */
+      })
+    void api
+      .get<PageOf<BuyerAccount>>('/buyer-accounts?status=active&page=1&size=100')
+      .then((page) => setBuyerAccounts(page.items ?? []))
+      .catch(() => {
+        /* 无买家账号读权限时下拉保持为空 */
       })
   }, [canAssign])
 
@@ -509,11 +535,19 @@ function OrderDrawer({
                           `#${po.purchaser_id}`)
                         : '—')}
                   </Descriptions.Item>
+                  {/* 买家账号非空 = 这单走的是插件自动采购路径（人工/门户路径该列恒 NULL）。
+                      两条路径互斥由库层唯一索引兜底，面板把它显式摆出来，
+                      运营才不会对一张机器人正在执行的单再点一次「分配采购方」。 */}
+                  <Descriptions.Item label="买家账号">
+                    {po.buyer_account_label ??
+                      (po.buyer_account_id != null ? `#${po.buyer_account_id}` : '—')}
+                  </Descriptions.Item>
                   <Descriptions.Item label="采购成本">
                     {po.purchase_cost != null
                       ? `${po.purchase_cost} ${po.purchase_currency ?? ''}`
                       : '—'}
                   </Descriptions.Item>
+                  <Descriptions.Item label="销售税">{po.tax_amount ?? '—'}</Descriptions.Item>
                   <Descriptions.Item label="运费">{po.freight_cost ?? '—'}</Descriptions.Item>
                   <Descriptions.Item label="锁定汇率">
                     {po.exchange_rate_locked ?? '—'}
@@ -527,6 +561,34 @@ function OrderDrawer({
                   <Descriptions.Item label="平台单号">
                     {po.purchase_order_ref ?? '—'}
                   </Descriptions.Item>
+                  <Descriptions.Item label="付款卡尾号">
+                    {po.payment_card_last4 ?? '—'}
+                  </Descriptions.Item>
+                  {/* 悬浮显示渠道原文：解析成的日期与结账页原文都留着，
+                      对不上时人能一眼看出是我们解析错了还是渠道就那么写的 */}
+                  <Descriptions.Item label="预计送达">
+                    {po.delivery_est_date ? (
+                      <span title={po.delivery_est_raw ?? undefined}>
+                        {po.delivery_est_date}
+                        {po.delivery_est_raw ? '（悬浮看渠道原文）' : ''}
+                      </span>
+                    ) : (
+                      (po.delivery_est_raw ?? '—')
+                    )}
+                  </Descriptions.Item>
+                  {po.exception_kind && (
+                    <Descriptions.Item label="问题分类" span={2}>
+                      <Tag color={po.status === 'exception' ? 'red' : 'orange'}>
+                        {EXCEPTION_KIND[po.exception_kind] ?? po.exception_kind}
+                      </Tag>
+                      {po.status !== 'exception' && (
+                        <span style={{ color: '#999' }}>
+                          单据状态不是「异常」——这单<b>已经拍出去了</b>
+                          ，只是回填后核对有问题，请勿重拍
+                        </span>
+                      )}
+                    </Descriptions.Item>
+                  )}
                   {po.exception_reason && (
                     <Descriptions.Item label="异常原因" span={2}>
                       {po.exception_reason}
@@ -567,6 +629,39 @@ function OrderDrawer({
                       </Button>
                     </Space.Compact>
                   )}
+                  {/* 17d（D-Q73）：指派给买家账号＝插件路径的唯一派发入口（自动派发休眠）。
+                      指派后对应浏览器的插件按 customerId 拉到本单 */}
+                  {canAssign && ['unassigned', 'assigned'].includes(po.status ?? '') && (
+                    <Space.Compact>
+                      <Select
+                        size="small"
+                        style={{ width: 200 }}
+                        placeholder="选择采购账号（插件）"
+                        value={assignAccountId}
+                        onChange={setAssignAccountId}
+                        options={buyerAccounts.map((a) => ({
+                          value: a.id,
+                          label: a.label ?? a.external_customer_id ?? `#${a.id}`,
+                        }))}
+                      />
+                      <Button
+                        size="small"
+                        type="primary"
+                        disabled={assignAccountId == null}
+                        onClick={() =>
+                          void op(
+                            () =>
+                              api.post(`/procurement-orders/${po.id}/assign`, {
+                                buyer_account_id: assignAccountId,
+                              }),
+                            '已指派采购账号',
+                          )
+                        }
+                      >
+                        指派
+                      </Button>
+                    </Space.Compact>
+                  )}
                   {canExec && ['unassigned', 'assigned'].includes(po.status ?? '') && (
                     <Button
                       size="small"
@@ -588,6 +683,43 @@ function OrderDrawer({
                         标异常
                       </Button>
                     )}
+                  {/* 插件单两个互斥出口（Owner 2026-07-31 异常#16 裁定）：
+                      先查亚马逊买家号——有购买记录→补录单号；确认没有→释放回池 */}
+                  {canExec &&
+                    po.buyer_account_id != null &&
+                    !po.purchase_order_ref &&
+                    ['assigned', 'exception'].includes(po.status ?? '') && (
+                      <Button size="small" onClick={() => setPluginBackfillOpen(true)}>
+                        补录插件购买
+                      </Button>
+                    )}
+                  {has('order.assign') &&
+                    po.buyer_account_id != null &&
+                    !po.purchase_order_ref &&
+                    po.status === 'exception' && (
+                      <Button
+                        size="small"
+                        danger
+                        onClick={() => {
+                          Modal.confirm({
+                            title: '释放回待派池？',
+                            content:
+                              '释放前请先在亚马逊买家号里核实：若已有这条购买记录，' +
+                              '请走「补录插件购买」填单号，不要释放——释放后该单会被' +
+                              '重新派发，等于再买一次。确认亚马逊侧没有购买记录才释放。',
+                            okText: '确认没有购买记录，释放',
+                            cancelText: '先去查',
+                            onOk: () =>
+                              op(
+                                () => api.post(`/procurement-orders/${po.id}/release`),
+                                '已释放回待派池',
+                              ),
+                          })
+                        }}
+                      >
+                        释放回池
+                      </Button>
+                    )}
                 </Space>
               </>
             ) : (
@@ -603,6 +735,17 @@ function OrderDrawer({
           onClose={() => setShipOpen(false)}
           onShipped={() => {
             setShipOpen(false)
+            void load()
+            onChanged()
+          }}
+        />
+      )}
+      {pluginBackfillOpen && po && (
+        <PluginBackfillModal
+          poId={po.id ?? 0}
+          onClose={() => setPluginBackfillOpen(false)}
+          onDone={() => {
+            setPluginBackfillOpen(false)
             void load()
             onChanged()
           }}
@@ -783,11 +926,81 @@ function BackfillModal({
         <Form.Item label="运单号" name="tracking_no">
           <Input />
         </Form.Item>
+        {/* R2-13 0045 四个新列：插件路径由插件回报，人工路径也得能补，
+            否则同一张表的一半字段只有机器人填得了，运营接管时无从下手 */}
+        <Form.Item label="销售税" name="tax_amount">
+          <InputNumber min={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item label="付款卡尾号" name="payment_card_last4">
+          <Input maxLength={8} placeholder="如 4242" />
+        </Form.Item>
+        <Form.Item label="预计送达日期" name="delivery_est_date">
+          <Input placeholder="YYYY-MM-DD" />
+        </Form.Item>
+        <Form.Item label="预计送达原文" name="delivery_est_raw" extra="渠道页面上的原话，照抄即可">
+          <Input placeholder="如 Thursday, August 7" />
+        </Form.Item>
         <Form.Item label="备注" name="note">
           <Input.TextArea rows={2} />
         </Form.Item>
         <Button type="primary" htmlType="submit" block>
           提交回填
+        </Button>
+      </Form>
+    </Modal>
+  )
+}
+
+function PluginBackfillModal({
+  poId,
+  onClose,
+  onDone,
+}: {
+  poId: number
+  onClose: () => void
+  onDone: () => void
+}) {
+  async function onFinish(values: Record<string, unknown>) {
+    try {
+      await api.post(`/procurement-orders/${poId}/plugin-backfill`, values)
+      message.success('已补录，单据转入 purchased（物流将随插件同步链继续）')
+      onDone()
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : '补录失败')
+    }
+  }
+
+  return (
+    <Modal title="补录插件购买记录" open onCancel={onClose} footer={null} destroyOnHidden>
+      {/* Owner 2026-07-31 异常#16 裁定：先查亚马逊买家号确有这条购买记录，再手填单号。
+          与人工「回填」不同：这是替插件抄单（落 purchased），不是人工采购（落 backfilled） */}
+      <p style={{ color: '#888' }}>
+        仅用于插件已在亚马逊拍成但回传失败的单：请先在对应<b>亚马逊买家号</b>
+        的订单列表核实确有这条购买记录，再把单号抄进来。若亚马逊侧
+        <b>没有</b>购买记录，请关闭本窗改用「释放回池」。
+      </p>
+      <Form layout="vertical" onFinish={onFinish}>
+        <Form.Item
+          label="亚马逊订单号"
+          name="purchase_order_ref"
+          rules={[{ required: true, message: '必填：亚马逊订单号' }]}
+        >
+          <Input placeholder="如 111-5958998-9658617" />
+        </Form.Item>
+        <Form.Item label="实付金额（税前）" name="purchase_cost">
+          <InputNumber min={0} style={{ width: '100%' }} addonAfter="USD" />
+        </Form.Item>
+        <Form.Item label="销售税" name="tax_amount">
+          <InputNumber min={0} style={{ width: '100%' }} addonAfter="USD" />
+        </Form.Item>
+        <Form.Item label="运费" name="freight_cost">
+          <InputNumber min={0} style={{ width: '100%' }} addonAfter="USD" />
+        </Form.Item>
+        <Form.Item label="付款卡尾号" name="payment_card_last4">
+          <Input maxLength={4} placeholder="如 4242" />
+        </Form.Item>
+        <Button type="primary" htmlType="submit" block>
+          补录
         </Button>
       </Form>
     </Modal>
@@ -803,7 +1016,7 @@ function ExceptionModal({
   onClose: () => void
   onDone: () => void
 }) {
-  async function onFinish(values: { reason: string }) {
+  async function onFinish(values: { reason: string; kind?: string }) {
     try {
       await api.post(`/procurement-orders/${poId}/exception`, values)
       message.success('已标记异常')
@@ -822,6 +1035,13 @@ function ExceptionModal({
           rules={[{ required: true, message: '请填写异常原因' }]}
         >
           <Input.TextArea rows={3} placeholder="如：缺货 / 采购价超限 / 地址无法配送" />
+        </Form.Item>
+        {/* 分类可留空：不传 = 保持已有分类（后端 coalesce 语义），不会把插件已经归好的类抹掉 */}
+        <Form.Item label="问题分类（可选）" name="kind" extra="留空则沿用已有分类，不会抹掉">
+          <Select
+            allowClear
+            options={Object.entries(EXCEPTION_KIND).map(([value, label]) => ({ value, label }))}
+          />
         </Form.Item>
         <Button type="primary" danger htmlType="submit" block>
           确认标异常

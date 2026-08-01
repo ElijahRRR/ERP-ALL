@@ -26,6 +26,7 @@ from erp.identity.router import auth_router, identity_router
 from erp.listing.router import listing_router
 from erp.notify.router import notify_router
 from erp.order.router import order_router
+from erp.plugin.router import plugin_router
 from erp.pricing.router import pricing_router
 from erp.scrape.router import scrape_router, worker_router
 
@@ -127,6 +128,8 @@ def create_app() -> FastAPI:
     app.include_router(compliance_router, prefix="/api/v1")
     app.include_router(aftersale_router, prefix="/api/v1")
     app.include_router(automation_router, prefix="/api/v1")
+    # 采购插件回调面（R2-13 13a）：第四认证域，双头部机器令牌，无权限点。
+    app.include_router(plugin_router, prefix="/api/v1")
 
     return app
 

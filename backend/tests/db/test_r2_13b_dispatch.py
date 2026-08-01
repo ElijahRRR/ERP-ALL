@@ -1,0 +1,1677 @@
+"""R2-13 13b 验收：买家账号池 + 任务路由（判据④「同一订单不产生两个采购任务」）。
+
+| 判据 / 铁律 | 用例（类见下） |
+|---|---|
+| DB 层唯一派发确实存在（绕全部应用层注入违反） | `test_constraint_violation_injected` |
+| 验收④ 同一订单只派一个账号（批量 + 并发两路） | `test_batch_claims_only_one_po_per_order` |
+| 同上，并发形态 | `test_concurrent_pull_dispatches_once` |
+| 谓词正向：cancelled 不锁死重建单 | `test_cancelled_does_not_block_redispatch` |
+| 谓词反向：exception 必须挡住重派（钱已花＝二次扣款） | `test_exception_does_block_redispatch` |
+| 零回归：人工路径该列恒 NULL，唯一索引不触发 | `test_manual_path_unaffected` |
+| `daily_cap` 唯一落点＝账号列，按**派发数**计 | `TestDailyCap` |
+| 并发拉同一账号不得超 cap（账号行锁，审查 B1） | `test_concurrent_pulls_do_not_exceed_cap` |
+| 签发端点**不收 `live`**（升实盘只能 PATCH，审查 B2） | `test_issue_refuses_live` |
+| 签发端点要求真实团队（无团队 409 而不是 500，审查 F8） | `test_issue_instance_requires_team` |
+| 账号状态机：认领缺 site 422 / 驳回是终态 / 不许回 pending_claim | `test_status_transition_guard` |
+| 建号**不收两个系统态**（凭空建那一面，审查 F4） | `test_create_refuses_system_statuses` |
+| 站点路由 + 无收货国不猜（fail-closed + 告警） | `TestSiteRouting` 三例 |
+| 账号闸只挡拉取（写路径不受影响见下注） | `TestAccountGate` |
+| 应用层对偶：已派机器人的单不许再派人工/领单/回填 | `TestAssignInterlock` 前三例 |
+| 混派：同一订单已有在途单则不许再建第二张 | `test_create_rejects_second_in_flight_po` |
+| 插件认领镜像 `assign_po` 的订单联动 | `test_plugin_claim_advances_channel_order` |
+| 插件异常单的显式出边（释放回池 → 可重新派发） | `TestPluginRelease` 四例 |
+| 14b 耦合：退回池必须一并清 `buyer_account_id` | `test_pool_return_clears_buyer_account` |
+| 令牌散列链：明文不入库、列表与审计不回显 | `test_issue_instance_token_only_once` |
+| 日界 / 批量上限 / 待认领上限不写死（配置中心） | `TestDispatchConfig` 两例 |
+| **F2 的结构性继任者**：解析/续拉按团队隔离 + 行锁带 team 谓词 | `TestLockIntegrity` 四例 |
+
+**不在本文件**（属 13a/13d）：双头部认证与越权（A 实例取不到 B 账号的任务）、
+六端点 401、插件侧回填/异常/物流语义。本文件只测服务层与管理面。
+
+> **「账号闸只挡拉取、不挡写路径」的写侧证据在 13a**
+> （`test_paused_account_pulls_nothing_but_writes_authenticate`）——那条纪律说的是**插件的**
+> 写路径（回填/异常/物流三条端点），而本文件此前用「人工 `/backfill` 端点」当代理去测它。
+> 审查 A1 之后人工写路径对插件单一律 409（理由见
+> `procurement.py::_reject_if_plugin_dispatched`），那个代理不再成立：故本文件只留拉取侧
+> （`TestAccountGate`），写侧由 13a 那条钉住，人工侧改由
+> `test_backfill_po_rejects_plugin_dispatched` 反向钉住。
+"""
+
+import asyncio
+import uuid
+from typing import Any
+
+import psycopg
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from erp.core.db import ctx_tx, get_session_factory
+from erp.core.security import hash_password
+from erp.order import dispatch
+from erp.plugin import identity
+from erp.plugin.auth import PluginPrincipal
+
+from .test_identity_api import PASSWORD, _login
+
+ADMIN = "r13b_admin"
+SUPER_ADMIN = "r13b_super"  # 无团队超管（`ck_app_user_team` 允许），只用于 F8 那条兜底判据
+TEAM = "R2-13b 买家账号池测试团队"
+
+
+@pytest.fixture(scope="module")
+def seeded(migrated_db: str) -> dict[str, int]:
+    with psycopg.connect(migrated_db, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO app.team (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (TEAM,)
+        )
+        team_id = conn.execute("SELECT id FROM app.team WHERE name = %s", (TEAM,)).fetchone()[0]
+        # 顺序保留（实例与账号之间的硬外键已随身份模型更正删除，先清依赖方仍无害）
+        for t in ("plugin_instance", "buyer_account", "procurement_order", "order_check",
+                  "order_line", "channel_order", "purchaser", "deleted_principal",
+                  "automation_policy", "store"):  # fmt: skip
+            conn.execute(f"DELETE FROM app.{t} WHERE team_id = %s", (team_id,))
+        conn.execute("DELETE FROM app.app_user WHERE username LIKE 'r13b_%'")
+        uid = conn.execute(
+            "INSERT INTO app.app_user (team_id, username, password_hash, display_name)"
+            " VALUES (%s, %s, %s, '账号池管理员') RETURNING id",
+            (team_id, ADMIN, hash_password(PASSWORD)),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM app.role WHERE team_id = %s AND name = '13b测试角色'", (team_id,))
+        role_id = conn.execute(
+            "INSERT INTO app.role (team_id, name) VALUES (%s, '13b测试角色') RETURNING id",
+            (team_id,),
+        ).fetchone()[0]
+        for code in (
+            "order.read", "order.assign", "procurement.read", "procurement.execute",
+            "procurement.admin", "procurement.purchaser_delete",
+            "procurement.buyer_account_read", "procurement.buyer_account_admin",
+            "procurement.plugin_instance_admin",
+        ):  # fmt: skip
+            conn.execute(
+                "INSERT INTO app.role_permission (role_id, permission_code) VALUES (%s, %s)",
+                (role_id, code),
+            )
+        conn.execute("INSERT INTO app.user_role (user_id, role_id) VALUES (%s, %s)", (uid, role_id))
+        # **无团队的超管**（`ck_app_user_team` 允许 `is_super AND team_id IS NULL`）：
+        # 只给 `test_issue_instance_requires_team` 用——签发路径的 team_id 兜底。
+        # 超管的权限集是空 frozenset 但 `has()` 恒真，故不必给它配角色。
+        super_uid = conn.execute(
+            "INSERT INTO app.app_user (team_id, username, password_hash, display_name, is_super)"
+            " VALUES (NULL, %s, %s, '无团队超管', true) RETURNING id",
+            (SUPER_ADMIN, hash_password(PASSWORD)),
+        ).fetchone()[0]
+        channel_id = conn.execute("SELECT id FROM app.channel WHERE code='walmart_us'").fetchone()[
+            0
+        ]
+        store_id = conn.execute(
+            "INSERT INTO app.store (team_id, channel_id, code, name, is_test)"
+            " VALUES (%s, %s, 'BA13B', '账号池测试店', true) RETURNING id",
+            (team_id, channel_id),
+        ).fetchone()[0]
+    return {"team": team_id, "user": uid, "store": store_id, "super": super_uid}
+
+
+@pytest.fixture(scope="module")
+def client(seeded: dict[str, int]) -> TestClient:
+    from erp.main import app
+
+    return TestClient(app)
+
+
+# ── 造数助手 ──
+
+
+def _reset(conn: psycopg.Connection, seeded: dict[str, int]) -> None:
+    """每个用例开跑前清空本团队的单与账号——候选查询按 created_at 取最老的，
+    上一个用例的残留会被下一个用例捞走，断言就不可复现了。"""
+    for t in ("plugin_instance", "buyer_account", "procurement_order", "order_check",
+              "order_line", "channel_order", "purchaser"):  # fmt: skip
+        conn.execute(f"DELETE FROM app.{t} WHERE team_id = %s", (seeded["team"],))
+
+
+def _mk_order(
+    conn: psycopg.Connection, seeded: dict[str, int], *, country: str | None = "US"
+) -> tuple[int, Any]:
+    ship_to = '{"name": "B", "postalCode": "36759"}'
+    if country is not None:
+        ship_to = f'{{"name": "B", "postalCode": "36759", "country": "{country}"}}'
+    row = conn.execute(
+        "INSERT INTO app.channel_order (team_id, store_id, channel_order_no, order_date,"
+        " channel_status, customer, ship_to, order_total, item_count, pulled_at,"
+        " internal_status, has_flag)"
+        " VALUES (%s, %s, %s, now() - interval '1 day', 'Created', '{}',"
+        "         %s::jsonb, 10, 1, now(), 'checked', false)"
+        " RETURNING id, order_date",
+        (seeded["team"], seeded["store"], f"BA13B-{uuid.uuid4().hex[:8]}", ship_to),
+    ).fetchone()
+    return int(row[0]), row[1]
+
+
+def _mk_po(
+    conn: psycopg.Connection,
+    seeded: dict[str, int],
+    order: tuple[int, Any],
+    *,
+    status: str = "unassigned",
+    buyer_account_id: int | None = None,
+    purchaser_id: int | None = None,
+    exception_kind: str | None = None,
+    exception_reason: str | None = None,
+    purchase_order_ref: str | None = None,
+) -> int:
+    """直插 procurement_order（绕应用层）——用于造应用层不该产生的形状。"""
+    assigned_at = "now()" if buyer_account_id is not None else "NULL"
+    return int(
+        conn.execute(
+            "INSERT INTO app.procurement_order (team_id, store_id, order_id, order_date,"
+            " status, buyer_account_id, purchaser_id, assignee_kind, assigned_at,"
+            " exception_kind, exception_reason, purchase_order_ref)"
+            f" VALUES (%s, %s, %s, %s, %s, %s, %s, %s, {assigned_at}, %s, %s, %s) RETURNING id",
+            (
+                seeded["team"],
+                seeded["store"],
+                order[0],
+                order[1],
+                status,
+                buyer_account_id,
+                purchaser_id,
+                "internal" if purchaser_id else "none",
+                exception_kind,
+                exception_reason,
+                purchase_order_ref,
+            ),
+        ).fetchone()[0]
+    )
+
+
+def _internal_status(conn: psycopg.Connection, order: tuple[int, Any]) -> str:
+    return str(
+        conn.execute(
+            "SELECT internal_status FROM app.channel_order WHERE id = %s AND order_date = %s",
+            (order[0], order[1]),
+        ).fetchone()[0]
+    )
+
+
+def _mk_account(
+    conn: psycopg.Connection,
+    seeded: dict[str, int],
+    *,
+    site: str = "amazon_com",
+    status: str = "active",
+    daily_cap: int | None = None,
+) -> int:
+    """造一个**已认领可派单**的买家账号。
+
+    `status` 默认 `'active'` 且**显式传进 INSERT**：0043 本轮把列默认值改成
+    `'pending_claim'`（首见自动登记的归宿）。依赖列默认值的话，本文件全部派发用例会静默
+    变成「绿的空判据」——建出来的都是待认领账号，闸① 一律不派，而断言只查「拿到了空」。
+    """
+    tag = uuid.uuid4().hex[:8]
+    return int(
+        conn.execute(
+            "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+            " status, daily_cap) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (seeded["team"], f"号-{tag}", site, f"A{tag.upper()}", status, daily_cap),
+        ).fetchone()[0]
+    )
+
+
+async def _pull(team_id: int, account_id: int, *, limit: int = 20) -> tuple[list[int], str | None]:
+    """按账号真实属性调派发内核。
+
+    真实链路里这个 `account_id` 由 `plugin/identity.py` 从请求带的 `customerId` **在本团队
+    内解析**而来（不再来自实例绑定）；本文件测的是派发内核本身，故直接给 id。
+    """
+    async with ctx_tx(get_session_factory(), team_id=team_id) as s:
+        acc = (
+            (
+                await s.execute(
+                    text("SELECT site, status, daily_cap FROM app.buyer_account WHERE id = :i"),
+                    {"i": account_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return await dispatch.claim_tasks_for_account(
+            s,
+            team_id=team_id,
+            buyer_account_id=account_id,
+            site=acc["site"],
+            account_status=acc["status"],
+            daily_cap=acc["daily_cap"],
+            limit=limit,
+        )
+
+
+def _dispatched(conn: psycopg.Connection, po_id: int) -> int | None:
+    row = conn.execute(
+        "SELECT buyer_account_id FROM app.procurement_order WHERE id = %s", (po_id,)
+    ).fetchone()
+    return None if row[0] is None else int(row[0])
+
+
+# ── 验收④ + 铁律「同一渠道订单只派一个买家账号」 ──
+
+
+class TestUniqueDispatch:
+    def test_constraint_violation_injected(self, migrated_db: str, seeded: dict) -> None:
+        """**约束真的在 DB 里**：用 migrator 直连（绕 RLS 与全部应用层）注入违反。
+
+        这条与其余用例的区别在于它不经过任何 Python 判断——没有它，「唯一派发」可能
+        只是应用层的一句 if，将来任何新写入路径（beat / 运维 SQL / 另一条端点）都能绕开。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            order = _mk_order(conn, seeded)
+            po_a, po_b = _mk_po(conn, seeded, order), _mk_po(conn, seeded, order)
+            conn.execute(
+                "UPDATE app.procurement_order SET buyer_account_id = %s WHERE id = %s",
+                (account, po_a),
+            )
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                conn.execute(
+                    "UPDATE app.procurement_order SET buyer_account_id = %s WHERE id = %s",
+                    (account, po_b),
+                )
+
+    async def test_batch_claims_only_one_po_per_order(self, migrated_db: str, seeded: dict) -> None:
+        """同一订单两张待派 PO，一次拉取只派得出一张——批量撞约束后逐单回退。
+
+        同时证伪「一单撞车整批失败」：同批里另一张不同订单的 PO 必须照样派出去。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            same = _mk_order(conn, seeded)
+            po_a, po_b = _mk_po(conn, seeded, same), _mk_po(conn, seeded, same)
+            po_c = _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        claimed, reason = await _pull(seeded["team"], account)
+        assert reason is None
+        assert po_c in claimed, "撞车的那张不该拖累同批其余单"
+        assert len({po_a, po_b} & set(claimed)) == 1, f"同一订单派了不止一张：{claimed}"
+        with psycopg.connect(migrated_db) as conn:
+            dispatched = [p for p in (po_a, po_b) if _dispatched(conn, p) is not None]
+        assert len(dispatched) == 1
+
+    async def test_concurrent_pull_dispatches_once(self, migrated_db: str, seeded: dict) -> None:
+        """并发下发压测（验收④ 的原文形态）：两个账号四路并发抢同一订单的两张 PO。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            acc_x, acc_y = _mk_account(conn, seeded), _mk_account(conn, seeded)
+            order = _mk_order(conn, seeded)
+            pos = [_mk_po(conn, seeded, order) for _ in range(2)]
+
+        results = await asyncio.gather(
+            *(_pull(seeded["team"], a) for a in (acc_x, acc_y, acc_x, acc_y)),
+            return_exceptions=True,
+        )
+        assert not [r for r in results if isinstance(r, BaseException)], results
+        with psycopg.connect(migrated_db) as conn:
+            owners = [_dispatched(conn, p) for p in pos]
+        assert len([o for o in owners if o is not None]) == 1, owners
+
+    async def test_cancelled_does_not_block_redispatch(
+        self, migrated_db: str, seeded: dict
+    ) -> None:
+        """谓词正向：`cancelled` 是唯一明确的作废终态，不排除会锁死「取消后重建单」。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            order = _mk_order(conn, seeded)
+            _mk_po(conn, seeded, order, status="cancelled", buyer_account_id=account)
+            fresh = _mk_po(conn, seeded, order)
+
+        claimed, reason = await _pull(seeded["team"], account)
+        assert claimed == [fresh] and reason is None
+
+    async def test_exception_does_block_redispatch(self, migrated_db: str, seeded: dict) -> None:
+        """谓词反向：`exception` **不排除**——17 条异常里 #16 是「回传订单失败」，
+        那意味着单已真下出去、钱已经花了。此刻放行重派就是二次扣款。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            order = _mk_order(conn, seeded)
+            _mk_po(conn, seeded, order, status="exception", buyer_account_id=account)
+            fresh = _mk_po(conn, seeded, order)
+
+        claimed, reason = await _pull(seeded["team"], account)
+        assert claimed == []
+        assert reason == dispatch.REASON_ALREADY_DISPATCHED
+        with psycopg.connect(migrated_db) as conn:
+            assert _dispatched(conn, fresh) is None
+
+    def test_manual_path_unaffected(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """零回归：人工路径 `buyer_account_id` 恒 NULL ⇒ 部分唯一索引整条谓词不成立，
+        同一订单可以有多张人工执行单（R2-05 既有行为一条不变）。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            order = _mk_order(conn, seeded)
+            po_a, po_b = _mk_po(conn, seeded, order), _mk_po(conn, seeded, order)
+            purchaser = int(
+                conn.execute(
+                    "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                    " VALUES (%s, '人工采购方', 'external', 7.1) RETURNING id",
+                    (seeded["team"],),
+                ).fetchone()[0]
+            )
+        for po in (po_a, po_b):
+            r = client.post(
+                f"/api/v1/procurement-orders/{po}/assign",
+                headers=auth,
+                json={"purchaser_id": purchaser},
+            )
+            assert r.status_code == 200, r.text
+        with psycopg.connect(migrated_db) as conn:
+            assert [_dispatched(conn, p) for p in (po_a, po_b)] == [None, None]
+
+
+# ── daily_cap（唯一落点＝账号列；口径＝派发数不是拍成数）──
+
+
+class TestDailyCap:
+    async def test_blocks_beyond_cap(self, migrated_db: str, seeded: dict) -> None:
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, daily_cap=2)
+            for _ in range(3):
+                _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        claimed, reason = await _pull(seeded["team"], account, limit=5)
+        assert len(claimed) == 2 and reason is None
+
+    async def test_null_cap_is_unlimited(self, migrated_db: str, seeded: dict) -> None:
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, daily_cap=None)
+            for _ in range(3):
+                _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        claimed, reason = await _pull(seeded["team"], account, limit=5)
+        assert len(claimed) == 3 and reason is None
+
+    async def test_counts_dispatch_not_purchase(self, migrated_db: str, seeded: dict) -> None:
+        """口径证伪：单派出去就算数，拍没拍成都一样。
+
+        按「已拍成的单数」计的话，一个账号可被派 100 单再一口气拍完——帽子形同虚设。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, daily_cap=2)
+            for _ in range(4):
+                _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        first, _ = await _pull(seeded["team"], account, limit=2)
+        assert len(first) == 2
+        # 推到 purchased：既不在续拉可见范围（assigned/claimed）内，也不该退还额度
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.procurement_order SET status = 'purchased' WHERE id = ANY(%s)",
+                (first,),
+            )
+        claimed, reason = await _pull(seeded["team"], account, limit=2)
+        assert claimed == []
+        assert reason == dispatch.REASON_DAILY_CAP_REACHED
+
+    async def test_repull_does_not_consume_cap(self, migrated_db: str, seeded: dict) -> None:
+        """续拉＝同一批单的重新可见（插件重启后要还看得见自己的单），不是新派发。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, daily_cap=2)
+            for _ in range(4):
+                _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        first, _ = await _pull(seeded["team"], account, limit=2)
+        again, reason = await _pull(seeded["team"], account, limit=2)
+        assert sorted(again) == sorted(first) and reason is None
+        with psycopg.connect(migrated_db) as conn:
+            total = conn.execute(
+                "SELECT count(*) FROM app.procurement_order"
+                " WHERE team_id = %s AND buyer_account_id IS NOT NULL",
+                (seeded["team"],),
+            ).fetchone()[0]
+        assert total == 2, "续拉不得消耗新额度"
+
+    async def test_concurrent_pulls_do_not_exceed_cap(self, migrated_db: str, seeded: dict) -> None:
+        """并发拉同一账号，合计不得超过 `daily_cap`（审查 B1）。
+
+        `daily_cap` 是 read-then-claim：先数今日已派、再按余量认领。没有账号级串行化时，
+        N 路并发各自读到的 `used` 都是对方写入之前的值，于是能派出 **N×cap** 单。
+        **`SKIP LOCKED` 在这里帮倒忙**——它让各路的候选集互斥，于是两边都不撞车、
+        都成功，把超发放大而不是挡住（这正是「绿的并发测试没证明帽子还在」的形状：
+        `test_concurrent_pull_dispatches_once` 断言的是唯一派发索引，与日限无关）。
+
+        每张单挂在**不同订单**上：`uq_po_active_dispatch` 只挡「同一订单派两次」，
+        本例要测的是日限，不能让那个索引替日限背书。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, daily_cap=2)
+            for _ in range(6):
+                _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        results = await asyncio.gather(
+            *(_pull(seeded["team"], account, limit=2) for _ in range(3)),
+            return_exceptions=True,
+        )
+        assert not [r for r in results if isinstance(r, BaseException)], results
+        with psycopg.connect(migrated_db) as conn:
+            dispatched = conn.execute(
+                "SELECT count(*) FROM app.procurement_order"
+                " WHERE team_id = %s AND buyer_account_id = %s",
+                (seeded["team"], account),
+            ).fetchone()[0]
+        assert dispatched == 2, f"并发拉取派出了 {dispatched} 单，daily_cap=2 被击穿"
+
+    async def test_cap_resets_across_day_boundary(self, migrated_db: str, seeded: dict) -> None:
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, daily_cap=2)
+            for _ in range(4):
+                _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        first, _ = await _pull(seeded["team"], account, limit=2)
+        assert len(first) == 2
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            # 把昨天派的单挪出今日窗口，并推到 purchased 免得续拉占满 limit
+            conn.execute(
+                "UPDATE app.procurement_order SET assigned_at = now() - interval '2 days',"
+                " status = 'purchased' WHERE id = ANY(%s)",
+                (first,),
+            )
+        claimed, reason = await _pull(seeded["team"], account, limit=2)
+        assert len(claimed) == 2 and reason is None
+        assert not set(claimed) & set(first)
+
+
+# ── 站点路由 ──
+
+
+class TestSiteRouting:
+    async def test_routes_by_country_and_skips_unknown(
+        self, migrated_db: str, seeded: dict
+    ) -> None:
+        """US 账号只拿 US 单；CA 单不碰；**无收货国的单不猜、不派**，落一条告警。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            conn.execute(
+                "DELETE FROM app.notification WHERE team_id = %s AND category = 'procurement'",
+                (seeded["team"],),
+            )
+            account = _mk_account(conn, seeded, site="amazon_com")
+            us = _mk_po(conn, seeded, _mk_order(conn, seeded, country="US"))
+            ca = _mk_po(conn, seeded, _mk_order(conn, seeded, country="CA"))
+            blank = _mk_po(conn, seeded, _mk_order(conn, seeded, country=None))
+
+        claimed, reason = await _pull(seeded["team"], account, limit=10)
+        assert claimed == [us] and reason is None
+        with psycopg.connect(migrated_db) as conn:
+            assert _dispatched(conn, ca) is None
+            assert _dispatched(conn, blank) is None
+            warned = conn.execute(
+                "SELECT count(*) FROM app.notification WHERE dedupe_key = %s",
+                (f"plugin.site.{blank}",),
+            ).fetchone()[0]
+        assert warned == 1, "无收货国的单必须留告警，否则它会静默躺着没人管"
+
+    async def test_ca_account_takes_ca_order(self, migrated_db: str, seeded: dict) -> None:
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, site="amazon_ca")
+            _mk_po(conn, seeded, _mk_order(conn, seeded, country="US"))
+            ca = _mk_po(conn, seeded, _mk_order(conn, seeded, country="CA"))
+
+        claimed, _ = await _pull(seeded["team"], account, limit=10)
+        assert claimed == [ca]
+
+    async def test_null_site_is_fail_closed(self, migrated_db: str, seeded: dict) -> None:
+        """`site IS NULL`（待认领/已驳回行）⇒ 返回空 + 不抛。
+
+        正常路径到不了这里（active ⇒ `ck_buyer_account_claimed` 保证 site 非空），钉的是
+        **闸① 被谁删掉时的第二响**：没有站点就不知道该去哪个亚马逊站买，猜一个就是买错国家。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            tag = uuid.uuid4().hex[:8]
+            account = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, external_customer_id, status)"
+                    " VALUES (%s, %s, 'pending_claim') RETURNING id",
+                    (seeded["team"], f"A{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        async with ctx_tx(get_session_factory(), team_id=seeded["team"]) as s:
+            claimed, reason = await dispatch.claim_tasks_for_account(
+                s,
+                team_id=seeded["team"],
+                buyer_account_id=account,
+                site=None,
+                # 刻意传 active：把闸① 让开，才测得到站点那一层的 fail-closed
+                account_status="active",
+                daily_cap=None,
+                limit=5,
+            )
+        assert claimed == []
+        assert reason == dispatch.REASON_ACCOUNT_NOT_ACTIVE
+
+    def test_site_country_map_keeps_jp(self) -> None:
+        """铁律 9：日本站 MVP 不做，但代码路径保留——将来开 JP 只补映射表。"""
+        assert dispatch.site_country("amazon_co_jp") == "JP"
+        assert dispatch.site_country("amazon_de") is None
+
+
+# ── 账号闸：只挡拉取，不挡写路径 ──
+
+
+class TestAccountGate:
+    @pytest.mark.parametrize(
+        "status", ["paused", "blocked", "retired", "pending_claim", "rejected"]
+    )
+    async def test_non_active_pulls_nothing(
+        self, migrated_db: str, seeded: dict, status: str
+    ) -> None:
+        """闸① 只认「是不是 active」。
+
+        `pending_claim`（首见自动登记的待认领行）与 `rejected`（已驳回）本轮加进参数化：
+        **未认领一律不派单**是图纸 `07:261` 的硬要求，而 `dispatch.py` 刻意**不知道**这两个
+        身份态存在——它们天然落在非 active 一侧，这条用例钉的正是「不需要额外分支」。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded, status=status)
+            _mk_po(conn, seeded, _mk_order(conn, seeded))
+
+        claimed, reason = await _pull(seeded["team"], account)
+        assert claimed == []
+        assert reason == dispatch.REASON_ACCOUNT_NOT_ACTIVE
+
+
+# ── 与人工路径的互锁（审查 A1/A2）──
+
+
+class TestAssignInterlock:
+    """插件派发单 ⇒ 人工侧三条写路径全 409；同一订单 ⇒ 只允许一张在途执行单。
+
+    三条端点共用 `procurement.py::_reject_if_plugin_dispatched`，但**必须一条一条测**：
+    审查 A1 的实测绕过序列正是「assign 有守卫、claim 没有」——共用一个 helper 不等于
+    三个调用点都接了它，接没接只有逐个调用点断言才证得出来。
+    """
+
+    def _plugin_po(
+        self, conn: psycopg.Connection, seeded: dict, *, status: str = "assigned"
+    ) -> tuple[int, tuple[int, Any]]:
+        """造一张「插件已派发」的单：`status='assigned'` + `buyer_account_id` 非空。
+
+        这正是 `dispatch.py::_CLAIM_SQL` 落地后的形状，不是编出来的形状。
+        """
+        _reset(conn, seeded)
+        account = _mk_account(conn, seeded)
+        order = _mk_order(conn, seeded)
+        return _mk_po(conn, seeded, order, status=status, buyer_account_id=account), order
+
+    def test_assign_po_rejects_plugin_dispatched(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """不加这条守卫，一张已派给买家账号的单还能被分配给 purchaser——
+        同一订单既派机器人又派人，两边都会真下单。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            po, _ = self._plugin_po(conn, seeded)
+            purchaser = int(
+                conn.execute(
+                    "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                    " VALUES (%s, '抢单采购方', 'external', 7.1) RETURNING id",
+                    (seeded["team"],),
+                ).fetchone()[0]
+            )
+        r = client.post(
+            f"/api/v1/procurement-orders/{po}/assign",
+            headers=auth,
+            json={"purchaser_id": purchaser},
+        )
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "PROCUREMENT_PLUGIN_DISPATCHED"
+
+    def test_claim_po_rejects_plugin_dispatched(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """审查 A1 实测的绕过序列：插件派发落 `assigned`，而 `claim_po` 只判
+        `status == 'assigned'` ⇒ 人工 `POST /claim` 200 ⇒ 机器人与人各下一次单。
+
+        修前这里回 200 并把 `status` 推成 `claimed`（把单从插件手里抢走）。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            po, _ = self._plugin_po(conn, seeded)
+        r = client.post(f"/api/v1/procurement-orders/{po}/claim", headers=auth)
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "PROCUREMENT_PLUGIN_DISPATCHED"
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT status, buyer_account_id FROM app.procurement_order WHERE id = %s", (po,)
+            ).fetchone()
+        assert row[0] == "assigned" and row[1] is not None, "守卫必须连一个字段都不改"
+
+    @pytest.mark.parametrize("status", ["assigned", "purchased"])
+    def test_backfill_po_rejects_plugin_dispatched(
+        self, client: TestClient, migrated_db: str, seeded: dict, status: str
+    ) -> None:
+        """人工回填插件单会把 `status` 推成 `backfilled`，而插件侧的白名单
+        （`plugin/service.py::_PURCHASABLE_FROM`）**不含** `backfilled` ⇒ 插件真下出去的
+        金额此后永远写不进来。两个参数化状态是插件单实际会停的两个位置。
+
+        修前这里回 200。**写侧「账号闸不挡写路径」那条纪律不受影响**：它说的是插件的
+        写路径，证据在 13a `test_paused_account_pulls_nothing_but_writes_authenticate`。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            po, _ = self._plugin_po(conn, seeded, status=status)
+        r = client.post(
+            f"/api/v1/procurement-orders/{po}/backfill",
+            headers=auth,
+            json={"purchase_order_ref": "111-2223334-4445556", "purchase_cost": 12.34},
+        )
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "PROCUREMENT_PLUGIN_DISPATCHED"
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT status, purchase_order_ref FROM app.procurement_order WHERE id = %s", (po,)
+            ).fetchone()
+        assert row == (status, None), "守卫必须连一个字段都不改"
+
+    def test_create_rejects_second_in_flight_po(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """审查 A2 的混派路径：`uq_po_active_dispatch` 只约束插件侧（谓词带
+        `buyer_account_id IS NOT NULL`），人工**新建**一张单时该列是 NULL ⇒ DB 放行 ⇒
+        同一渠道订单可以同时挂着「插件在拍」和「人工另开的单」，两边都真下单。
+
+        修前 `POST /procurement-orders` 回 201（造出第二张在途单）。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _, order = self._plugin_po(conn, seeded)
+        r = client.post("/api/v1/procurement-orders", headers=auth, json={"order_id": order[0]})
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "PROCUREMENT_ORDER_IN_FLIGHT"
+        with psycopg.connect(migrated_db) as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM app.procurement_order WHERE order_id = %s", (order[0],)
+            ).fetchone()[0]
+        assert n == 1, "409 之后不许留下半张单"
+
+    @pytest.mark.parametrize("done", ["cancelled", "backfilled"])
+    def test_create_allowed_after_terminal_po(
+        self, client: TestClient, migrated_db: str, seeded: dict, done: str
+    ) -> None:
+        """A2 的闸不能顺手锁死既有人工路径：`cancelled`（作废）与 `backfilled`（办完）
+        都是终态，之后重新建单是 R2-05 就有的合法动作。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            order = _mk_order(conn, seeded)
+            _mk_po(conn, seeded, order, status=done)
+        r = client.post("/api/v1/procurement-orders", headers=auth, json={"order_id": order[0]})
+        assert r.status_code == 201, r.text
+
+    async def test_plugin_claim_advances_channel_order(
+        self, migrated_db: str, seeded: dict
+    ) -> None:
+        """审查 A2 的不对称加重项：人工 `assign_po` 把渠道订单推到 `assigned`，插件认领
+        此前**只改执行单不动订单** ⇒ 订单列表里那单仍显示 `checked`（＝「等着派」），
+        运营据此再建一张人工单去下单，正是混派的上游诱因。
+
+        修前这里断言 `'assigned'` 会拿到 `'checked'`。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            order = _mk_order(conn, seeded)
+            po = _mk_po(conn, seeded, order)
+            assert _internal_status(conn, order) == "checked"
+
+        claimed, _ = await _pull(seeded["team"], account)
+        assert claimed == [po]
+        with psycopg.connect(migrated_db) as conn:
+            assert _internal_status(conn, order) == "assigned"
+
+    async def test_plugin_claim_does_not_pull_back_later_states(
+        self, migrated_db: str, seeded: dict
+    ) -> None:
+        """条件推进（`from_statuses=('checked',)`）与 `assign_po` 逐字同款：已经走到
+        `purchasing` 的订单不许被认领动作拉回 `assigned`。"""
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            order = _mk_order(conn, seeded)
+            po = _mk_po(conn, seeded, order)
+            conn.execute(
+                "UPDATE app.channel_order SET internal_status = 'purchasing'"
+                " WHERE id = %s AND order_date = %s",
+                (order[0], order[1]),
+            )
+
+        claimed, _ = await _pull(seeded["team"], account)
+        assert claimed == [po]
+        with psycopg.connect(migrated_db) as conn:
+            assert _internal_status(conn, order) == "purchasing"
+
+    def test_pool_return_clears_buyer_account(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """14b 耦合：删采购方把未锁汇率的单退回池时，**必须一并清 `buyer_account_id`**
+        ——否则那张单顶着唯一派发索引回到待派池，从此永远派不出去。
+
+        本形状（同时有 purchaser_id 与 buyer_account_id）在当前不变量下不该出现，
+        故绕应用层直插造出来：这条测的正是「不变量被破时失败在安全的一侧」。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            account = _mk_account(conn, seeded)
+            purchaser = int(
+                conn.execute(
+                    "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                    " VALUES (%s, '待删采购方', 'external', 7.2) RETURNING id",
+                    (seeded["team"],),
+                ).fetchone()[0]
+            )
+            po = _mk_po(
+                conn,
+                seeded,
+                _mk_order(conn, seeded),
+                status="assigned",
+                buyer_account_id=account,
+                purchaser_id=purchaser,
+            )
+        r = client.delete(f"/api/v1/purchasers/{purchaser}?reason=13b耦合测试", headers=auth)
+        assert r.status_code == 200, r.text
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT status, purchaser_id, buyer_account_id FROM app.procurement_order"
+                " WHERE id = %s",
+                (po,),
+            ).fetchone()
+        assert row == ("unassigned", None, None)
+
+
+# ── 插件异常单的显式出边（审查 A3）──
+
+
+class TestPluginRelease:
+    """`POST /procurement-orders/{id}/release`：0045 头注二承诺、此前代码里不存在的出边。
+
+    没有它，插件把单标成 `exception` 之后 `buyer_account_id` 永远非空，
+    `uq_po_active_dispatch` 长期占着该 `order_id`（谓词故意不排除 `exception`），
+    该渠道订单再也派不出去；人工侧又被 `PROCUREMENT_PLUGIN_DISPATCHED` 挡住 —— 单卡死。
+    """
+
+    def _exception_po(
+        self, conn: psycopg.Connection, seeded: dict, **kw: Any
+    ) -> tuple[int, tuple[int, Any], int]:
+        _reset(conn, seeded)
+        account = _mk_account(conn, seeded)
+        order = _mk_order(conn, seeded)
+        conn.execute(
+            "UPDATE app.channel_order SET internal_status = 'assigned'"
+            " WHERE id = %s AND order_date = %s",
+            (order[0], order[1]),
+        )
+        po = _mk_po(
+            conn,
+            seeded,
+            order,
+            status="exception",
+            buyer_account_id=account,
+            exception_kind="stock",
+            exception_reason="商品无库存",
+            **kw,
+        )
+        return po, order, account
+
+    async def test_release_returns_to_pool_and_redispatches(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """承重全链：释放 → 五个字段清干净 + 订单对称退回 `checked` + 审计留 before
+        → **再跑一次派发能重新捞到这单**（出边不通的话最后这步永远拿不到）。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            po, order, account = self._exception_po(conn, seeded)
+
+        r = client.post(f"/api/v1/procurement-orders/{po}/release", headers=auth)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"id": po, "status": "unassigned"}
+
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT status, buyer_account_id, exception_kind, exception_reason, assigned_at"
+                " FROM app.procurement_order WHERE id = %s",
+                (po,),
+            ).fetchone()
+            assert row == ("unassigned", None, None, None, None)
+            # 14b 先例：assign 推上去的 internal_status，退回就对称退回来
+            assert _internal_status(conn, order) == "checked"
+            before = conn.execute(
+                "SELECT before FROM app.audit_log WHERE action = 'order.po_release'"
+                " AND object_id = %s ORDER BY occurred_at DESC LIMIT 1",
+                (str(po),),
+            ).fetchone()[0]
+        assert before["exception_kind"] == "stock"
+        assert before["exception_reason"] == "商品无库存"
+        assert before["status"] == "exception"
+
+        # 出边真的通了：同一账号重新拉取能捞回这张单
+        claimed, reason = await _pull(seeded["team"], account)
+        assert claimed == [po] and reason is None
+
+    def test_release_refuses_manual_purchaser_order(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """人工采购方的 `exception` 单属 FX-0730B 既有缺口，出边是「删采购方时退回池」，
+        本次不扩——守卫必须把两者分开，不能顺手给人工单开一条新出边。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            purchaser = int(
+                conn.execute(
+                    "INSERT INTO app.purchaser (team_id, name, purchaser_kind, exchange_rate)"
+                    " VALUES (%s, '人工异常方', 'external', 7.3) RETURNING id",
+                    (seeded["team"],),
+                ).fetchone()[0]
+            )
+            po = _mk_po(
+                conn,
+                seeded,
+                _mk_order(conn, seeded),
+                status="exception",
+                purchaser_id=purchaser,
+                exception_reason="人工侧异常",
+            )
+        r = client.post(f"/api/v1/procurement-orders/{po}/release", headers=auth)
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "PROCUREMENT_NOT_PLUGIN_DISPATCHED"
+
+    @pytest.mark.parametrize("status", ["assigned", "claimed"])
+    def test_release_refuses_in_execution(
+        self, client: TestClient, migrated_db: str, seeded: dict, status: str
+    ) -> None:
+        """插件仍在执行的单不许释放——那是把活从它手里抽走再派给别人，才是真的双买。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            po = _mk_po(
+                conn,
+                seeded,
+                _mk_order(conn, seeded),
+                status=status,
+                buyer_account_id=_mk_account(conn, seeded),
+            )
+        r = client.post(f"/api/v1/procurement-orders/{po}/release", headers=auth)
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "PROCUREMENT_STATE_INVALID"
+
+    def test_release_refuses_already_purchased(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """0045 头注二那句「钱已经花了」的代码落点：`exception_po` 只排除
+        backfilled/cancelled，所以「已拍单 + 被人标成 exception」这个形状是可达的；
+        对它释放回池 ⇒ 重新派发 ⇒ **二次扣款**。fail-closed 挡掉。"""
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            po, _, _ = self._exception_po(conn, seeded, purchase_order_ref="111-2223334-4445556")
+        r = client.post(f"/api/v1/procurement-orders/{po}/release", headers=auth)
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "PROCUREMENT_ALREADY_PURCHASED"
+        with psycopg.connect(migrated_db) as conn:
+            assert _dispatched(conn, po) is not None, "被拒之后买家账号必须还挂着"
+
+
+# ── 管理面 CRUD + 令牌散列链 ──
+
+
+class TestBuyerAccountCrud:
+    def test_create_patch_and_duplicates(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+        tag = uuid.uuid4().hex[:6]
+        body = {
+            "label": f"指纹浏览器-{tag}",
+            "site": "amazon_com",
+            "external_customer_id": f"A{tag.upper()}",
+            "daily_cap": 5,
+        }
+        r = client.post("/api/v1/buyer-accounts", headers=auth, json=body)
+        assert r.status_code == 201, r.text
+        account_id = r.json()["id"]
+
+        # 缺 external_customer_id（本端点是可选预建捷径，仍必填——一条解析不到的账号行
+        # 永远收不到任务；不知道 customerId 时的正解是走首见自动登记，不是在这里留空）
+        r = client.post(
+            "/api/v1/buyer-accounts",
+            headers=auth,
+            json={"label": f"另一个-{tag}", "site": "amazon_com"},
+        )
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "BUYER_ACCOUNT_FIELDS_REQUIRED"
+
+        # 撞 customerId / 撞 label 各自回 409 且指明字段
+        r = client.post(
+            "/api/v1/buyer-accounts", headers=auth, json={**body, "label": f"换名-{tag}"}
+        )
+        assert r.status_code == 409
+        assert r.json()["error"]["detail"]["field"] == "external_customer_id"
+        r = client.post(
+            "/api/v1/buyer-accounts",
+            headers=auth,
+            json={**body, "external_customer_id": f"B{tag.upper()}"},
+        )
+        assert r.status_code == 409
+        assert r.json()["error"]["detail"]["field"] == "label"
+
+        # daily_cap 显式传 null = 改成不限（与「不传」区分开）
+        assert (
+            client.patch(
+                f"/api/v1/buyer-accounts/{account_id}", headers=auth, json={"daily_cap": None}
+            ).status_code
+            == 200
+        )
+        page = client.get("/api/v1/buyer-accounts", headers=auth, params={"q": tag}).json()
+        assert page["total"] == 1
+        assert page["items"][0]["daily_cap"] is None
+        assert "active_instance_count" not in page["items"][0], (
+            "实例不再属于账号（令牌绑浏览器），这个计数没有意义——留着会让运营以为"
+            "「这个号有 N 台机器在跑」"
+        )
+        # 改了不该动的列没被顺手改掉
+        assert page["items"][0]["external_customer_id"] == f"A{tag.upper()}"
+
+    def test_create_refuses_system_statuses(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """建号**不收两个系统态**（审查 F4）：`pending_claim` / `rejected` 一律 422。
+
+        与「系统发现态」的口径矛盾在于：`pending_claim` 的语义是「插件带上来一个我们
+        没见过的号」，手工建一条等于伪造一个从未发生的"发现"；`rejected` 的前提是它先被
+        发现过，直接建出来还是一条**当场就死**的行（终态 + 本表无 DELETE 授权 ⇒ 建完既
+        改不动也删不掉）。
+
+        `_ALLOWED_TRANSITIONS` 只挡**转入**（`test_status_transition_guard` 钉住），
+        挡不住**凭空建**——两条路各堵一半，缺一即等于没堵。
+        这条同时是洪水闸精确性的前提：`pending_claim` 行必须只有 `_register` 一个生产者，
+        那把 advisory 锁才锁得住全部产出（见 `plugin/identity.py::_REGISTER_LOCK_SQL`）。
+        *修前红*：`create_account` 不校验时两条都回 201。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+        tag = uuid.uuid4().hex[:6]
+
+        for i, bad in enumerate(("pending_claim", "rejected")):
+            r = client.post(
+                "/api/v1/buyer-accounts",
+                headers=auth,
+                json={
+                    "label": f"系统态-{tag}-{i}",
+                    "site": "amazon_com",
+                    "external_customer_id": f"S{tag.upper()}{i}",
+                    "status": bad,
+                },
+            )
+            assert r.status_code == 422, f"{bad} 被建出来了：{r.text}"
+            assert r.json()["error"]["code"] == "BUYER_ACCOUNT_STATUS_NOT_CREATABLE"
+
+        # 四个人工态照常放行（收窄不能误伤正常建号）
+        for i, ok in enumerate(("active", "paused", "blocked", "retired")):
+            r = client.post(
+                "/api/v1/buyer-accounts",
+                headers=auth,
+                json={
+                    "label": f"人工态-{tag}-{ok}",
+                    "site": "amazon_com",
+                    "external_customer_id": f"M{tag.upper()}{i}",
+                    "status": ok,
+                },
+            )
+            assert r.status_code == 201, f"{ok} 被误伤：{r.text}"
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s"
+                " AND status IN ('pending_claim','rejected')",
+                (seeded["team"],),
+            ).fetchone()[0] == 0, "系统态被人工建进了库"  # fmt: skip
+
+    def test_issue_instance_token_only_once(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """令牌散列链：库里只有 sha256、明文只在签发响应出现一次、列表零回显。"""
+        import hashlib
+
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+
+        r = client.post("/api/v1/plugin-instances", headers=auth, json={})
+        assert r.status_code == 201, r.text
+        issued = r.json()
+        assert "buyer_account_id" not in issued, (
+            "签发响应仍带账号 id——令牌绑的是一台授权浏览器，不绑任何买家账号"
+        )
+        token = issued["token"]
+        assert token and len(token) >= 32
+
+        with psycopg.connect(migrated_db) as conn:
+            stored = conn.execute(
+                "SELECT token_hash, exec_mode, status FROM app.plugin_instance WHERE id = %s",
+                (issued["id"],),
+            ).fetchone()
+        assert stored[0] != token
+        assert stored[0] == hashlib.sha256(token.encode()).hexdigest()
+        # 默认档不会花钱（安全边界即默认值）
+        assert stored[1] == "stop_before_payment" and stored[2] == "active"
+
+        listed = client.get("/api/v1/plugin-instances", headers=auth)
+        assert listed.status_code == 200
+        blob = listed.text
+        assert token not in blob and stored[0] not in blob, "列表端点不得回显 token 任何形态"
+        assert listed.json()["items"][0]["exec_mode"] == "stop_before_payment"
+
+        # 审计快照同样不得含凭证（audit_log 是长期留存面）
+        with psycopg.connect(migrated_db) as conn:
+            audits = conn.execute(
+                "SELECT coalesce(after::text, '') FROM app.audit_log"
+                " WHERE action = 'plugin_instance.issue' AND object_id = %s",
+                (str(issued["id"]),),
+            ).fetchall()
+        assert audits, "签发必须留审计"
+        assert all(token not in a[0] and stored[0] not in a[0] for a in audits)
+
+    def test_issue_refuses_live(self, client: TestClient, migrated_db: str, seeded: dict) -> None:
+        """签发端点**不接受 `live`**（审查 B2）：升实盘只能走 PATCH。
+
+        「新签发的实例不会花钱」此前只由**默认值**保证——而默认值挡不住显式传 live 的
+        一步直签，于是「升 live 须显式 PATCH（有 audit、有前端二次确认）」这条不变量
+        （openapi 该端点白纸黑字）等于没有。两档演练照常放行，PATCH 三档不受影响
+        （`test_exec_mode_patch_and_revoke` 钉住）。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+
+        url = "/api/v1/plugin-instances"
+        r = client.post(url, headers=auth, json={"exec_mode": "live"})
+        assert r.status_code == 422, r.text
+        for mode in ("dry_run", "stop_before_payment"):
+            ok = client.post(url, headers=auth, json={"exec_mode": mode})
+            assert ok.status_code == 201, ok.text
+        with psycopg.connect(migrated_db) as conn:
+            modes = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT exec_mode FROM app.plugin_instance WHERE team_id = %s",
+                    (seeded["team"],),
+                ).fetchall()
+            ]
+        assert "live" not in modes, "签发路径落库了 live 实例"
+
+    def test_issue_instance_requires_team(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """无团队主体签发令牌 ⇒ **可读的 409**，不是 500（审查 F8）。
+
+        令牌的**全部**授权语义就是「这是团队 T 的一台授权浏览器」
+        （`plugin/auth.py` → `plugin_instance.team_id`），没有团队的令牌是个无意义对象。
+        此前 `user.team_id` 为 `None` 会直送 INSERT，撞 `plugin_instance.team_id` 的
+        NOT NULL（0044）变成 500——运维看到「服务器错误」，而真因是「你没在任何团队里」。
+
+        **不用 `or -1` 那套哨兵**：读路径上它只是查空（无害），写路径上会撞外键，等于把
+        一个可读的 409 换成一个 500（同 `automation/router.py:99` 记的那条教训）。
+
+        另一半判据是**不误伤**：同一个超管带上 `X-Act-Team` 就该照常签得出来——
+        409 说的是「你没指定团队」，不是「超管不许签」。
+        *修前红*：去掉 guard 后第一段回 500。
+        """
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+        auth = _login(client, SUPER_ADMIN, PASSWORD)
+
+        r = client.post("/api/v1/plugin-instances", headers=auth, json={})
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "TEAM_REQUIRED"
+
+        acting = client.post(
+            "/api/v1/plugin-instances",
+            headers={**auth, "X-Act-Team": str(seeded["team"])},
+            json={},
+        )
+        assert acting.status_code == 201, acting.text
+        with psycopg.connect(migrated_db) as conn:
+            assert conn.execute(
+                "SELECT team_id FROM app.plugin_instance WHERE id = %s", (acting.json()["id"],)
+            ).fetchone()[0] == seeded["team"]  # fmt: skip
+
+    def test_exec_mode_patch_and_revoke(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        auth = _login(client, ADMIN, PASSWORD)
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+        instance = client.post("/api/v1/plugin-instances", headers=auth, json={}).json()["id"]
+
+        r = client.patch(
+            f"/api/v1/plugin-instances/{instance}", headers=auth, json={"exec_mode": "live"}
+        )
+        assert r.status_code == 200 and r.json()["exec_mode"] == "live"
+        assert (
+            client.patch(
+                f"/api/v1/plugin-instances/{instance}", headers=auth, json={"exec_mode": "nope"}
+            ).status_code
+            == 422
+        )
+
+        assert (
+            client.post(f"/api/v1/plugin-instances/{instance}/revoke", headers=auth).status_code
+            == 200
+        )
+        # 幂等：再吊销一次仍 200
+        assert (
+            client.post(f"/api/v1/plugin-instances/{instance}/revoke", headers=auth).status_code
+            == 200
+        )
+        r = client.patch(
+            f"/api/v1/plugin-instances/{instance}", headers=auth, json={"exec_mode": "dry_run"}
+        )
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "PLUGIN_INSTANCE_REVOKED"
+        with psycopg.connect(migrated_db) as conn:
+            row = conn.execute(
+                "SELECT status, revoked_at, exec_mode FROM app.plugin_instance WHERE id = %s",
+                (instance,),
+            ).fetchone()
+        assert row[0] == "revoked" and row[1] is not None and row[2] == "live"
+
+    def test_status_transition_guard(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """账号状态机：驳回是终态、任何态都不许回「待认领」；17d 起认领**不再要求 site**。
+
+        原第一条「缺 site ⇒ 422 CLAIM_INCOMPLETE」随 0048 放松 `ck_buyer_account_claimed`
+        翻转为**放行**：单人模式下 site 的消费者（自动派发站点路由）休眠，站点是可后补的
+        备注不是准入条件（首见登记的行本就 active + 双空）。应用层的翻译分支
+        （`_translate_integrity` 的 CLAIM_INCOMPLETE）保留休眠，0048 downgrade 后自动复活。
+
+        仍在岗的两条：
+        - `rejected → active` ⇒ 409：驳回必须粘住，否则伪造者换个时间再灌一次；
+        - `active → pending_claim` ⇒ 409：待认领是系统发现态，不是运营可选态。
+
+        顺带钉住审计动作名分化——审计面要能一眼看出「谁认领的、谁驳回的」。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        tag = uuid.uuid4().hex[:8]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            pending = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, external_customer_id)"
+                    " VALUES (%s, %s) RETURNING id",
+                    (seeded["team"], f"P{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            assert (
+                conn.execute(
+                    "SELECT status FROM app.buyer_account WHERE id = %s", (pending,)
+                ).fetchone()[0]
+                == "pending_claim"
+            ), "0043 的 DEFAULT 不是 pending_claim——首见自动登记的归宿被改了"
+
+        url = f"/api/v1/buyer-accounts/{pending}"
+        # 17d：缺 site 认领放行（原 422 CLAIM_INCOMPLETE 随 0048 休眠，见 docstring）
+        half = client.patch(url, headers=auth, json={"status": "active", "label": f"补名-{tag}"})
+        assert half.status_code == 200, half.text
+
+        full = client.patch(url, headers=auth, json={"site": "amazon_com"})
+        assert full.status_code == 200, full.text
+
+        back = client.patch(url, headers=auth, json={"status": "pending_claim"})
+        assert back.status_code == 409, back.text
+        assert back.json()["error"]["code"] == "BUYER_ACCOUNT_STATUS_TRANSITION"
+
+        # 另起一条走驳回，并验证终态粘住
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            doomed = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, external_customer_id)"
+                    " VALUES (%s, %s) RETURNING id",
+                    (seeded["team"], f"D{tag.upper()}"),
+                ).fetchone()[0]
+            )
+        assert (
+            client.patch(
+                f"/api/v1/buyer-accounts/{doomed}", headers=auth, json={"status": "rejected"}
+            ).status_code
+            == 200
+        )
+        revive = client.patch(
+            f"/api/v1/buyer-accounts/{doomed}", headers=auth, json={"status": "active"}
+        )
+        assert revive.status_code == 409, revive.text
+        assert revive.json()["error"]["code"] == "BUYER_ACCOUNT_STATUS_TRANSITION"
+
+        with psycopg.connect(migrated_db) as conn:
+            actions = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT action FROM app.audit_log WHERE object_type = 'buyer_account'"
+                    " AND object_id = ANY(%s)",
+                    ([str(pending), str(doomed)],),
+                ).fetchall()
+            }
+        assert {"buyer_account.claim", "buyer_account.reject"} <= actions, (
+            f"审计动作名没按转移分化（实得 {sorted(actions)}）"
+        )
+
+    def test_rejected_is_folded_by_default(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """列表默认折叠 `rejected`，且**显式筛选优先、折叠不叠加**（同 14c 折叠 retired）。
+
+        为什么要折叠：驳回是终态且**不删行**（无 DELETE 授权，粘性即治理），被人灌过
+        一轮伪造 customerId 的团队池子里会长期躺着一堆已驳回行——默认视图堆满垃圾，
+        真正要认领的那条就看不见了。
+
+        为什么必须落在**后端**而不是前端过滤：`total` 要跟着筛选走。前端把 rejected
+        滤掉而 total 仍按全量算，翻页会出现半空页与对不上的总数（008 §3 服务端分页）。
+
+        三条判据缺一不可——**只做前两条时，「运营在下拉里选『已驳回』得到空列表」
+        这个功能坏掉的形状不会被发现**。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        tag = uuid.uuid4().hex[:8].upper()
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            for cid, st in ((f"K{tag}", "active"), (f"R{tag}", "rejected")):
+                conn.execute(
+                    "INSERT INTO app.buyer_account"
+                    " (team_id, label, site, external_customer_id, status)"
+                    " VALUES (%s, %s, 'amazon_com', %s, %s)",
+                    (seeded["team"], f"{st}-{tag}", cid, st),
+                )
+
+        def ids(qs: str) -> set[str]:
+            r = client.get(f"/api/v1/buyer-accounts?size=200{qs}", headers=auth)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["total"] == len(body["items"]), (
+                "total 与本页条数不一致——筛选没落在 SQL 里（前端过滤会让翻页错位）"
+            )
+            return {i["external_customer_id"] for i in body["items"]}
+
+        assert ids("") == {f"K{tag}"}, "默认列表把已驳回行也带出来了"
+        assert ids("&include_rejected=true") == {f"K{tag}", f"R{tag}"}
+        # 显式筛选优先：选「已驳回」必须真能看到，否则看起来就是功能坏了
+        assert ids("&status=rejected") == {f"R{tag}"}
+
+    def test_cross_team_is_invisible(
+        self, client: TestClient, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """RLS + 显式 team 谓词双保险：别的团队的账号一律 404；别的团队的实例不进列表。
+
+        实例那一腿本轮改形：旧的 `/buyer-accounts/{id}/plugin-instances` 已删除，
+        列表改为团队级——于是「不泄露别团队实例」的判据从「404」变成「不出现在我的列表里」。
+        """
+        auth = _login(client, ADMIN, PASSWORD)
+        tag = uuid.uuid4().hex[:6]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            other = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_com', %s, 'active') RETURNING id",
+                    (team_ids[0], f"他团队-{tag}", f"X{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            other_instance = int(
+                conn.execute(
+                    "INSERT INTO app.plugin_instance (team_id, token_hash)"
+                    " VALUES (%s, repeat('a', 64)) RETURNING id",
+                    (team_ids[0],),
+                ).fetchone()[0]
+            )
+        mine = client.post("/api/v1/plugin-instances", headers=auth, json={}).json()["id"]
+        assert (
+            client.patch(
+                f"/api/v1/buyer-accounts/{other}", headers=auth, json={"note": "越权"}
+            ).status_code
+            == 404
+        )
+        assert (
+            client.patch(
+                f"/api/v1/plugin-instances/{other_instance}",
+                headers=auth,
+                json={"exec_mode": "dry_run"},
+            ).status_code
+            == 404
+        )
+        listed = client.get("/api/v1/plugin-instances", headers=auth)
+        assert listed.status_code == 200, listed.text
+        ids = [i["id"] for i in listed.json()["items"]]
+        assert mine in ids and other_instance not in ids, "别的团队的实例出现在了本团队列表里"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.plugin_instance WHERE id = %s", (other_instance,))
+            conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (other,))
+
+
+# ── 配置中心：日界与批量上限不写死 ──
+
+
+class TestDispatchConfig:
+    async def test_defaults_and_team_override(self, migrated_db: str, seeded: dict) -> None:
+        """三个键各测默认 / team 覆盖 / 硬上限。
+
+        返回值本轮由元组改成 `DispatchConfig` dataclass——**元组一路加字段就是让调用点
+        静默错位**，而本轮正好加了第三项 `pending_claim_cap`（首见登记的洪水闸）。
+        """
+
+        async def read() -> dispatch.DispatchConfig:
+            async with ctx_tx(get_session_factory(), team_id=seeded["team"]) as s:
+                return await dispatch.dispatch_config(s, seeded["team"])
+
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM app.team_config WHERE team_id = %s AND key = %s",
+                (seeded["team"], dispatch.PLUGIN_DISPATCH_CONFIG_KEY),
+            )
+        assert await read() == dispatch.DispatchConfig(
+            day_boundary_tz=dispatch.DEFAULT_DAY_BOUNDARY_TZ,
+            pull_batch_max=dispatch.DEFAULT_PULL_BATCH_MAX,
+            pending_claim_cap=dispatch.DEFAULT_PENDING_CLAIM_CAP,
+        )
+
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO app.team_config (team_id, key, value) VALUES (%s, %s, %s::jsonb)",
+                (
+                    seeded["team"],
+                    dispatch.PLUGIN_DISPATCH_CONFIG_KEY,
+                    '{"day_boundary_tz": "America/Los_Angeles", "pull_batch_max": 999,'
+                    ' "pending_claim_cap": 7}',
+                ),
+            )
+        cfg = await read()
+        assert cfg.day_boundary_tz == "America/Los_Angeles"
+        assert cfg.pull_batch_max == dispatch.PULL_BATCH_HARD_MAX, "配置写多大都不许越过硬上限"
+        assert cfg.pending_claim_cap == 7
+
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app.team_config SET value = %s::jsonb WHERE team_id = %s AND key = %s",
+                (
+                    '{"pending_claim_cap": 99999}',
+                    seeded["team"],
+                    dispatch.PLUGIN_DISPATCH_CONFIG_KEY,
+                ),
+            )
+        assert (await read()).pending_claim_cap == dispatch.PENDING_CLAIM_CAP_HARD_MAX
+
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM app.team_config WHERE team_id = %s AND key = %s",
+                (seeded["team"], dispatch.PLUGIN_DISPATCH_CONFIG_KEY),
+            )
+
+    def test_bad_timezone_degrades_not_breaks(self) -> None:
+        """坏时区名只降级回 UTC + 告警，**不抛**——一个配错的值不该让整条拉取链 500。"""
+        assert dispatch.day_start("Mars/Olympus").utcoffset().total_seconds() == 0  # type: ignore[union-attr]
+        assert dispatch.day_start("UTC").hour == 0
+
+
+# ── 审查 #50 首轮 F2：删掉的那一半与留下的那一半 ──
+
+
+class TestLockIntegrity:
+    """**F2 没有被回退，是被取代**——这句话必须在这里有可执行的证据。
+
+    F2 原是双修：修法 2（`plugin_instance (buyer_account_id, team_id)` 复合外键，让
+    「实例 team ≠ 账号 team」不可表示）+ 修法 1（行锁零行即炸）。
+
+    身份模型更正（Owner 2026-07-30）之后，**修法 2 守护的失效链第一环被物理删除**：
+    认证不再 JOIN `buyer_account`，账号改为在 `ctx_tx` 内按
+    `team_id = :t AND external_customer_id = :c` 解析——账号 team **由查询谓词构造**，
+    「实例与账号配对」这件事根本不存在了，那个形状不可被表达。故复合外键随绑定列一并删除。
+
+    替代物三条，本类钉住其中两条（第三条 `uq_buyer_account` 由 13a 的并发首见用例钉）：
+    - `test_resolution_is_team_scoped` —— 解析谓词 `team_id = :t` + RLS 双层；
+    - `test_resolution_team_predicate_holds_without_rls` —— 上一条的 **is_super 腿**
+      （审查 F1：只有绕开 RLS 时，那条显式谓词才是唯一的铃，否则删掉它照样绿）；
+    - `test_reclaim_is_team_scoped` —— **续拉**也带 team 谓词（审查 F5：续拉打满时函数
+      在行锁之前就 return，那条路径上「会在行锁上炸响」的论证原本不成立）；
+    - `test_lock_zero_rows_raises` —— 行锁零行即炸，且**本轮加强**：锁语句补了
+      `AND team_id = :t`，跨团队的真实账号 id 同样炸响而不是静默零行。
+    """
+
+    async def test_resolution_is_team_scoped(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """两个团队各有一个**同名 customerId** 的账号 ⇒ 各自解析到自己那一行，互不可见。
+
+        *修前红*：解析 SQL 漏掉 `team_id = :t` 且 RLS 被绕开时立刻红（会解析到对方的行，
+        进而把对方的额度与站点当成自己的）。
+        """
+        tag = uuid.uuid4().hex[:8]
+        shared_customer = f"SHARED{tag.upper()}"
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            mine = _mk_account(conn, seeded)
+            conn.execute(
+                "UPDATE app.buyer_account SET external_customer_id = %s WHERE id = %s",
+                (shared_customer, mine),
+            )
+            theirs = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_ca', %s, 'active') RETURNING id",
+                    (other_team, f"他团队-{tag}", shared_customer),
+                ).fetchone()[0]
+            )
+
+        async def resolve(team_id: int) -> identity.ResolvedAccount | None:
+            principal = PluginPrincipal(
+                instance_id=-1, team_id=team_id, exec_mode="stop_before_payment"
+            )
+            async with ctx_tx(get_session_factory(), team_id=team_id) as s:
+                return await identity.resolve_customer(s, principal, shared_customer)
+
+        got_mine, got_theirs = await resolve(seeded["team"]), await resolve(other_team)
+        assert got_mine is not None and got_mine.id == mine
+        assert got_theirs is not None and got_theirs.id == theirs
+        assert got_mine.site == "amazon_com" and got_theirs.site == "amazon_ca"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (theirs,))
+
+    async def test_resolution_team_predicate_holds_without_rls(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """`_RESOLVE_SQL` 的显式 `team_id = :t` 是**承重的**（审查 F1）。
+
+        上面那条 `test_resolution_is_team_scoped` **区分不开新旧两版**：它跑在普通
+        `ctx_tx` 下，RLS 本就把对方的行挡在视野外——把谓词删掉照样绿（实测：变异掉
+        `AND team_id = :t` 后本类 11 条全过）。这与 `test_lock_zero_rows_raises` 的处境
+        完全一样，那条靠**加一条 `is_super=True` 的腿**才有了区分力；本条是同款第三腿。
+
+        形状：绕开 RLS（`is_super=True`）解析**他团队真实存在**的 customerId。
+        - 谓词在 ⇒ 解析不到 ⇒ 走首见自动登记，在**本团队**落一条自动登记行
+          （17d 首见即 active，空行无指派单）；
+        - 谓词没了 ⇒ 直接解析到**他团队那一行**（`active` + 他们的站点 + 他们的日限），
+          于是本团队的实例拿着别人的账号去派单——正是「跨团队必败」要挡的那件事。
+
+        故断言写在「解析结果是谁」上，而不是「拿没拿到单」上：后者会被别的闸挡住而
+        误绿（本团队没有候选单时，两版都返回空）。
+        """
+        tag = uuid.uuid4().hex[:8]
+        shared_customer = f"SUPER{tag.upper()}"
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            theirs = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status, daily_cap) VALUES (%s, %s, 'amazon_ca', %s, 'active', 7)"
+                    " RETURNING id",
+                    (other_team, f"他团队超管腿-{tag}", shared_customer),
+                ).fetchone()[0]
+            )
+            # 「对方一列不动」用**前后快照 + 行数增量**表达，不用全量行数：
+            # 测试团队A/B 是全仓共用的，池子里本就有别的用例留下的行。
+            theirs_before = conn.execute(
+                "SELECT to_jsonb(ba) FROM app.buyer_account ba WHERE id = %s", (theirs,)
+            ).fetchone()[0]
+            their_rows_before = conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s", (other_team,)
+            ).fetchone()[0]
+        principal = PluginPrincipal(
+            instance_id=-1, team_id=seeded["team"], exec_mode="stop_before_payment"
+        )
+        # is_super=True ⇒ RLS 放行全部行；此刻挡住越界的**只剩** SQL 里那条显式谓词。
+        async with ctx_tx(get_session_factory(), team_id=seeded["team"], is_super=True) as s:
+            got = await identity.resolve_customer(s, principal, shared_customer)
+
+        assert got is not None, "本团队没见过这个 customerId，应当走首见自动登记而不是回 None"
+        assert got.id != theirs, (
+            "绕开 RLS 后解析到了**他团队**的账号行——`_RESOLVE_SQL` 的 `team_id = :t` 没了，"
+            "本团队的实例会拿着别人的账号、别人的站点与日限去派单"
+        )
+        assert (got.status, got.site, got.daily_cap) == ("active", None, None), (
+            f"解析结果不是一条本团队的新自动登记空行（实得 {got}）"
+        )
+        with psycopg.connect(migrated_db) as conn:
+            landed = conn.execute(
+                "SELECT team_id FROM app.buyer_account WHERE id = %s", (got.id,)
+            ).fetchone()[0]
+            # 对方团队一列不动：跨团队一视同仁当「新号」处理，不碰对方任何数据
+            assert (
+                conn.execute(
+                    "SELECT to_jsonb(ba) FROM app.buyer_account ba WHERE id = %s", (theirs,)
+                ).fetchone()[0]
+                == theirs_before
+            ), "对方团队的账号行被动了"
+            assert conn.execute(
+                "SELECT count(*) FROM app.buyer_account WHERE team_id = %s", (other_team,)
+            ).fetchone()[0] == their_rows_before, "对方团队多出了行"  # fmt: skip
+        assert landed == seeded["team"], "待认领行落到了别的团队"
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (theirs,))
+
+    async def test_reclaim_is_team_scoped(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """②续拉也必须自带 `team_id = :t`（审查 F5：替代物②的论证缺口）。
+
+        「F2 修法 2 删除后仍安全」的论证里有一条是「跨团队的账号 id 会在③的账号行锁上
+        炸响」。**但②跑在③之前**：续拉把 `want` 打满（`room <= 0`）时函数直接 return，
+        **根本走不到那把锁**。于是在那条路径上，跨团队 id 的唯一防线只剩 RLS——与本文件
+        「不靠 RLS 单撑」的既定纪律不符，论证也就不完整。
+
+        本例把那条路径造出来：`limit=1` + 他团队恰有一张派给该账号的在途单。
+        - 谓词在 ⇒ 续拉零行 ⇒ 走到③ ⇒ 行锁零行 ⇒ **炸响**；
+        - 谓词没了 ⇒ 续拉捞到他团队那张单 ⇒ `room=0` ⇒ **静默返回别人的 po_id**。
+
+        `procurement_order` 的 team/store/order 三列都是软引用（无外键，0025），
+        故直插一行即可，不必为对方团队造店与渠道单。
+        """
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
+        tag = uuid.uuid4().hex[:8]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            foreign_account = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_com', %s, 'active') RETURNING id",
+                    (other_team, f"他团队续拉-{tag}", f"RC{tag.upper()}"),
+                ).fetchone()[0]
+            )
+            foreign_po = int(
+                conn.execute(
+                    "INSERT INTO app.procurement_order (team_id, store_id, order_id, order_date,"
+                    " status, buyer_account_id, assignee_kind, assigned_at)"
+                    " VALUES (%s, %s, %s, now() - interval '1 day', 'assigned', %s, 'none', now())"
+                    " RETURNING id",
+                    (other_team, seeded["store"], 10_000_000 + int(tag[:6], 16), foreign_account),
+                ).fetchone()[0]
+            )
+        try:
+            # is_super=True ⇒ RLS 放行他团队的行；此刻挡住越界的**只剩** SQL 里的显式谓词。
+            async with ctx_tx(
+                get_session_factory(), team_id=seeded["team"], is_super=True
+            ) as s:  # fmt: skip
+                with pytest.raises(RuntimeError, match="行锁匹配零行"):
+                    await dispatch.claim_tasks_for_account(
+                        s,
+                        team_id=seeded["team"],
+                        buyer_account_id=foreign_account,
+                        site="amazon_com",
+                        account_status="active",
+                        daily_cap=None,
+                        limit=1,  # 打满即早退——这正是走不到③行锁的那条路径
+                    )
+        finally:
+            with psycopg.connect(migrated_db, autocommit=True) as conn:
+                conn.execute("DELETE FROM app.procurement_order WHERE id = %s", (foreign_po,))
+                conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (foreign_account,))
+
+    async def test_lock_zero_rows_raises(
+        self, migrated_db: str, seeded: dict, team_ids: tuple[int, int]
+    ) -> None:
+        """行锁匹配零行必须**炸响**，而不是无锁继续派发。
+
+        `SELECT … FOR UPDATE` 匹配零行**不报错也不加锁** ⇒ daily_cap 串行化静默消失、
+        超发回到 B1 修复前。两腿：不存在的 id（原有）+ **另一团队的真实账号 id**
+        （本轮新增，钉住锁语句里那条 `AND team_id = :t`）。
+        """
+        other_team = team_ids[0] if team_ids[0] != seeded["team"] else team_ids[1]
+        tag = uuid.uuid4().hex[:8]
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            _reset(conn, seeded)
+            foreign_account = int(
+                conn.execute(
+                    "INSERT INTO app.buyer_account (team_id, label, site, external_customer_id,"
+                    " status) VALUES (%s, %s, 'amazon_com', %s, 'active') RETURNING id",
+                    (other_team, f"他团队锁-{tag}", f"L{tag.upper()}"),
+                ).fetchone()[0]
+            )
+        # 第三腿 `is_super=True` 是**唯一能把新旧两版区分开的那一腿**：前两腿在 RLS 下
+        # 本就零行（谓词删不删都红不了），只有绕开 RLS 时「显式 team 谓词」才是唯一的铃。
+        # 这正是 F2 原本守护的形状——认证曾在 `system_tx` 下 JOIN 账号表。
+        legs: list[tuple[int, bool, str]] = [
+            (999_999_999, False, "不存在的 id"),
+            (foreign_account, False, "别团队的真实 id（RLS 挡）"),
+            (foreign_account, True, "别团队的真实 id + 绕开 RLS（只剩显式 team 谓词挡）"),
+        ]
+        for account_id, is_super, label in legs:
+            async with ctx_tx(
+                get_session_factory(), team_id=seeded["team"], is_super=is_super
+            ) as s:
+                with pytest.raises(RuntimeError, match="行锁匹配零行"):
+                    await dispatch.claim_tasks_for_account(
+                        s,
+                        team_id=seeded["team"],
+                        buyer_account_id=account_id,
+                        site="amazon_com",
+                        account_status="active",
+                        daily_cap=None,
+                        limit=5,
+                    )
+            assert label  # 可读标签（失败信息里能看出是哪一腿）
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute("DELETE FROM app.buyer_account WHERE id = %s", (foreign_account,))
