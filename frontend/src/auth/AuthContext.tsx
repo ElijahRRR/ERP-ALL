@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
-import { ACCESS_KEY, api, tokenStore } from '@/api/client'
+import { ACCESS_KEY, api } from '@/api/client'
 
 export interface Me {
   user: {
