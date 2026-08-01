@@ -2,7 +2,6 @@ import {
   ApiOutlined,
   AuditOutlined,
   BellOutlined,
-  ChromeOutlined,
   CloudDownloadOutlined,
   DashboardOutlined,
   DollarOutlined,
@@ -35,10 +34,8 @@ const MENU = [
   { key: '/orders', icon: <ProfileOutlined />, label: '订单管理', permission: 'order.read' },
   { key: '/purchasers', icon: <UserSwitchOutlined />, label: '采购方', permission: 'procurement.read' },
   { key: '/buyer-accounts', icon: <RobotOutlined />, label: '买家账号池', permission: 'procurement.buyer_account_read' },
-  // 实例管理与账号池并列而不是嵌在里面：令牌绑「一台授权浏览器」，不绑买家账号
-  // （图纸 07:288-340）。读权限沿用 buyer_account_read，签发/吊销另由页内按钮按
-  // plugin_instance_admin 门控——看得见和发得出不是同一量级。
-  { key: '/plugin-instances', icon: <ChromeOutlined />, label: '插件实例', permission: 'procurement.buyer_account_read' },
+  // D-Q73 17c：插件实例入口摘除（共享 token 无签发仪式；页面与路由保留休眠，
+  // 重启多机归因时放回）。
   { key: '/stores', icon: <GlobalOutlined />, label: '店铺管理', permission: 'channel.store_read' },
   { key: '/incidents', icon: <WarningOutlined />, label: '店铺事件', permission: 'channel.incident_read' },
   { key: '/compliance', icon: <FileProtectOutlined />, label: '合规中心', permission: 'compliance.blacklist_read' },

@@ -956,7 +956,7 @@ async def record_purchase_finish(
         "card": _clean(body.creditCardNumber),
         "ddate": parse.parse_iso_date(body.deliveryTime),
         "draw": _clean(body.origDeliveryTime),
-        "inst": principal.instance_id,
+        "inst": principal.instance_id or None,  # 17c 共享通道 instance_id=0 哨兵 → actor NULL（放弃机器归因，D-Q73）
         "kind": findings.kind,
         "reason": _append_reason(po["exception_reason"], findings.text),
         "from_": list(_PURCHASABLE_FROM),

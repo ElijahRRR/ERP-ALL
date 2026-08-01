@@ -66,18 +66,17 @@ PluginVersion = Annotated[str | None, Query(alias="v", max_length=40)]
 
 
 async def _plugin_auth(
-    x_plugin_instance: Annotated[str | None, Header()] = None,
     x_plugin_token: Annotated[str | None, Header()] = None,
 ) -> PluginPrincipal:
-    """双头部认证依赖。
+    """共享 token 认证依赖（D-Q73 17c，单人模式唯一保留的闸）。
 
-    头缺失也回 **401**（而不是 FastAPI 默认的 422 缺参）——「认证失败一律同码同状态」
-    这条纪律要覆盖到「压根没带凭证」这一种，否则错误形状本身就能被用来探测端点。
+    旧的 `X-Plugin-Instance` 头不再要求——fork 插件旧构建仍会发它，FastAPI 对未声明
+    的头自动忽略，无需兼容层。头缺失也回 **401**（而不是 422 缺参）——「认证失败
+    一律同码同状态」覆盖「压根没带凭证」这一种，错误形状不可被用来探测端点。
+    逐实例认证链保留休眠（auth.authenticate_instance），重启多机归因时换回。
     """
-    if not x_plugin_instance or not x_plugin_token:
-        raise auth.auth_failed()
     async with system_tx(get_session_factory()) as s:
-        return await auth.authenticate_instance(s, x_plugin_instance, x_plugin_token)
+        return await auth.authenticate_shared(s, x_plugin_token)
 
 
 PluginAuth = Annotated[PluginPrincipal, Depends(_plugin_auth)]

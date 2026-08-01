@@ -72,6 +72,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from erp.core.errors import BusinessError
+from erp.core.settings import get_settings
 
 # bigint 上界：`X-Plugin-Instance` 是外部输入，超界的十进制串若直接进 SQL 会让
 # Postgres 抛 NumericValueOutOfRange（500，且整事务作废）。认证失败本就该是 401。
@@ -124,6 +125,52 @@ class PluginPrincipal:
 def auth_failed() -> BusinessError:
     """认证失败的唯一出口——三种原因同码同状态（见模块头注）。"""
     return BusinessError("PLUGIN_AUTH", "插件实例认证失败", http_status=401)
+
+
+# 17c（D-Q73 ③）共享通道的配置中心直读：团队归属与执行档位都是业务参数（铁律 5），
+# 存 system_config；这里不走 ConfigService 的缓存层——认证路径要的是「改配置立即生效、
+# 无缓存失效时序」，且插件轮询 QPS 极低，直读一条 SELECT 的成本可忽略。
+_SHARED_CFG_SQL = """
+SELECT (SELECT value FROM app.system_config WHERE key = 'procurement.plugin_team_id') AS team_cfg,
+       (SELECT value FROM app.system_config WHERE key = 'procurement.plugin_exec_mode') AS mode_cfg,
+       (SELECT min(id) FROM app.team WHERE status = 'active') AS fallback_team
+"""
+
+_EXEC_MODES = frozenset({"dry_run", "stop_before_payment", "live"})
+
+
+async def authenticate_shared(session: AsyncSession, token: str | None) -> PluginPrincipal:
+    """17c（D-Q73 ③）共享 token 认证——单人模式下唯一保留的闸。
+
+    - **fail-closed**：`ERP_PLUGIN_SHARED_TOKEN` 未配置 ⇒ 插件通道整体关闭（全拒 401）；
+      未带/带错 token 同码 `PLUGIN_AUTH`（同实例链纪律：失败不区分原因）。
+    - 比较两侧先散列再 `hmac.compare_digest`（恒定时；明文可能含非 ASCII）。
+    - `team_id`：`procurement.plugin_team_id`（system_config）指定；未配置回落**最小
+      活跃团队**（单人模式冻结单团队，正常现场两者同值）；一个团队都没有 ⇒ 401。
+    - `exec_mode`：`procurement.plugin_exec_mode`；词表外/未配置一律回落
+      `stop_before_payment`（fail-safe 到不花钱档——绝不因配置错字滑进 live）。
+    - `instance_id = 0` 哨兵：共享通道没有按机身份（D-Q73 放弃机器归因，重启价签
+      已写进裁定）；写路径的 `backfill_actor_id` 以 NULL 落库（service.py params）。
+
+    逐实例链（`authenticate_instance`/`plugin_instance` 表/签发端点）**保留休眠**，
+    重启多机归因时换回 router 依赖即可。
+    """
+    settings = get_settings()
+    shared = settings.plugin_shared_token
+    if not shared or not token:
+        raise auth_failed()
+    if not hmac.compare_digest(token_digest(shared), token_digest(token)):
+        raise auth_failed()
+    cfg = (await session.execute(text(_SHARED_CFG_SQL))).mappings().one()
+    team_raw = cfg["team_cfg"] if cfg["team_cfg"] is not None else cfg["fallback_team"]
+    try:
+        team_id = int(team_raw)
+    except (TypeError, ValueError):
+        raise auth_failed() from None
+    mode = str(cfg["mode_cfg"]).strip('"') if cfg["mode_cfg"] is not None else ""
+    if mode not in _EXEC_MODES:
+        mode = "stop_before_payment"
+    return PluginPrincipal(instance_id=0, team_id=team_id, exec_mode=mode)
 
 
 async def authenticate_instance(
