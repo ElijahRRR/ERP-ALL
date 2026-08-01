@@ -1,4 +1,11 @@
-# PR #50 挂起清场单 v1（十五轮 Z1；独立于已作废的 deploy-verify v14）
+# PR #50 挂起清场单 v2（十五轮 Z1 + 十六轮 W1/W2/W3；独立于已作废的 deploy-verify v14）
+
+> **v2 变更**：W1——C5 运维资产检查改在**切换之前**对 `origin/main` 用 `git cat-file -e`
+> 验（原 Test-Path 排在 checkout 之后且对已跟踪文件永真，连切换失败都测不出）；切换后
+> HEAD 与 origin/main **锚定等值**。W2——buyer_account 删除补 id 卫（⓪-2 原则回归：
+> 宁可漏删停下来问）。W3——本单用 C 编号，`xrefcheck` 无机检覆盖（其水印如实报
+> 「一条都没查」）；C2→C4 顺序、C3 前置、回 C2 三处交叉引用已人工核并经十六轮独立复核。
+> nit——C5 版本判据改「= main 链尖端」不写死快照值。
 
 > **给部署 AI。整段可粘贴，逐步执行，每步贴回输出。**
 > 背景：③闸挂起（Owner 单租户化裁定），⑫清理随之未跑——本单只做三件事：
@@ -27,7 +34,7 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 `backfill_actor_kind='plugin'`，不清则 0045 降级守卫硬失败，那是守卫在正确工作）
 
 ```powershell
-docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (7,8,9,10); DELETE FROM app.procurement_order WHERE id IN (7,8,9,10) AND order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (18,19,20,21)); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (18,19,20,21)); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (18,19,20,21); DELETE FROM app.product WHERE source_ref LIKE 'R13T%' AND id IN (2494,2495,2496,2497); DELETE FROM app.plugin_instance WHERE version = 'R13T'; DELETE FROM app.buyer_account WHERE label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%'; DELETE FROM app.notification WHERE dedupe_key LIKE 'plugin.%'; DELETE FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch'; DELETE FROM app.team WHERE name = 'R13T-TEAM-B';"
+docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d erp_all -1 -v ON_ERROR_STOP=1 -c "DELETE FROM app.procurement_logistics_event WHERE procurement_order_id IN (7,8,9,10); DELETE FROM app.procurement_order WHERE id IN (7,8,9,10) AND order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%'); DELETE FROM app.order_check WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (18,19,20,21)); DELETE FROM app.order_line WHERE order_id IN (SELECT id FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (18,19,20,21)); DELETE FROM app.channel_order WHERE channel_order_no LIKE 'R13T-%' AND id IN (18,19,20,21); DELETE FROM app.product WHERE source_ref LIKE 'R13T%' AND id IN (2494,2495,2496,2497); DELETE FROM app.plugin_instance WHERE version = 'R13T'; DELETE FROM app.buyer_account WHERE (label LIKE 'R13T-%' OR external_customer_id LIKE 'R13T%') AND id IN (1,2,3,4,5,6); DELETE FROM app.notification WHERE dedupe_key LIKE 'plugin.%'; DELETE FROM app.team_config WHERE team_id = <TEAM_ID> AND key = 'procurement.plugin_dispatch'; DELETE FROM app.team WHERE name = 'R13T-TEAM-B';"
 ```
 
 **判据（DELETE 行数逐条记回执并比对）**：`procurement_order=4`、`channel_order=4`、
@@ -60,11 +67,12 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
 
 ```powershell
 git fetch origin main
+git cat-file -e origin/main:infra/local-deploy/automation/uspto-daily.bat; "bat_ok=$?"
+git cat-file -e origin/main:infra/local-deploy/automation/README.md; "readme_ok=$?"
+git cat-file -e origin/main:.gitattributes; "attrs_ok=$?"
 git checkout main
-git log --oneline -1
-Test-Path infra/local-deploy/automation/uspto-daily.bat
-Test-Path infra/local-deploy/automation/README.md
-Test-Path .gitattributes
+git rev-parse HEAD
+git rev-parse origin/main
 docker compose -f infra/docker-compose.yml build api frontend migrate
 docker compose -f infra/docker-compose.yml run --rm migrate
 docker compose -f infra/docker-compose.yml up -d --force-recreate api beat frontend
@@ -74,8 +82,12 @@ $r = Invoke-WebRequest -Uri "http://127.0.0.1:8000/healthz" -UseBasicParsing -Ti
 $r.StatusCode
 ```
 
-**判据**：三个 Test-Path 全 True（三行不齐**不许切**，停下来问）；main 尖端 sha 记回执；
-migrate 在 0047 上为 no-op、`version_num=0047`；healthz 200（失败等 10 秒重试一次）。
+**判据**：三个 `_ok` 全 True（在**切换之前**对 `origin/main` 验——三行不齐**不许切**，
+停下来问；此查的是仓库内运维资产，部署机上的 Windows 计划任务本体是否在位属另一项
+检查、不在本单）；切换后两条 `git rev-parse` 输出**逐字相等**（锚定等值——切没切成、
+切到哪，由它裁，不靠「记回执」）；migrate 为 no-op、`version_num` = **main 链尖端**
+（当前为 0047；若届时 main 已带新迁移，以现值为准并记回执）；healthz 200
+（失败等 10 秒重试一次）。
 
 ## C6 终态锚定（对 v8①基线的生产不变量）
 
