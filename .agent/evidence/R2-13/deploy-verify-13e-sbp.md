@@ -68,16 +68,25 @@ git rev-parse origin/claude/r2-03-launch-leg5n8
 ```
 
 然后**手工两步**（本单唯一允许的本地改动；不 commit 不 push）：
-1. 编辑 `js/popup.js` 顶部 `CONFIG.API`：`baseUrl` 改为 `http://127.0.0.1:8000/api/v1`；
-   `token` 改为 `.env` 里 `ERP_PLUGIN_SHARED_TOKEN` 的值。
+1. **凭证走 gitignore 的本地配置，绝不改 tracked 文件**（③闸真机实测：编辑 tracked
+   `popup.js` 注入 token 后，只读 `git diff` 就把活值打印到终端＝凭证泄露）。
+   `Copy-Item js/config.local.example.js js/config.local.js`，编辑 `js/config.local.js`：
+   `token` 填 `.env` 里 `ERP_PLUGIN_SHARED_TOKEN` 的值；`baseUrl` 默认 `http://127.0.0.1:8000/api/v1`
+   一般不改。`config.local.js` 已 gitignore，`git status` 不应出现它——若出现即**停**。
    ⚠️ **指纹浏览器必须跑在部署机本机**：amazon 页面是 https，content script 的 fetch
    打到 `http://<内网IP>` 会被 Chrome 按混合内容拦死，唯一豁免是 loopback
    （`http://127.0.0.1`）。跨机形态等 RS-02b（HTTPS 反代）落地后另起验证单。
 2. 选一个**测试用指纹浏览器**（登着真实买家号）：先停用厂商原版插件（红线，见上），
    再 `chrome://extensions` → 开发者模式 → 「加载已解压的扩展程序」→ 选本仓目录。
+   （缺 `config.local.js` 时 Chrome 会拒绝加载——那是刻意的响亮失败，回去补第 1 步。）
 
 **判据**：两条 `rev-parse` 逐字相等；扩展列表出现「AMZ采购助手（ERP fork）」版本
-`2.4.1.1`；回执贴「已确认原版已停用/移除」+ `token_len=<N>`（不贴明文）。
+`2.4.1.1`；`git status --porcelain js/config.local.js` **无输出**（凭证未入库）；回执贴
+「已确认原版已停用/移除」+ `token_len=<N>`（不贴明文）。
+
+> ⚠️ **本轮之前的一次真机已把旧 token 通过 tracked-file diff 暴露到终端（③闸现场回执
+> 第 5 条）——那个值按已泄露处理，请在本轮开始前先轮换 `.env` 的
+> `ERP_PLUGIN_SHARED_TOKEN` 并 `up -d --force-recreate api`，再用新值填 config.local.js。**
 
 ## E4 首见登记 + 指派 + 走单到付款前（本单核心）
 
