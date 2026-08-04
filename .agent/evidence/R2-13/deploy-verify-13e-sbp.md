@@ -79,9 +79,10 @@ docker compose -f infra/docker-compose.yml exec -T db psql -U erp_migrator -d er
    再 `chrome://extensions` → 开发者模式 → 「加载已解压的扩展程序」→ 选 `amz-plugin/` 目录。
    （缺 `config.local.js` 时 Chrome 会拒绝加载——那是刻意的响亮失败，回去补第 1 步。）
 
-**判据**：两条 `rev-parse` 逐字相等；扩展列表出现「AMZ采购助手（ERP fork）」版本
-`2.4.1.1`；`git status --porcelain js/config.local.js` **无输出**（凭证未入库）；回执贴
-「已确认原版已停用/移除」+ `token_len=<N>`（不贴明文）。
+**判据**：扩展列表出现「AMZ采购助手（ERP fork）」版本 `2.4.1.1`（插件版本随 E1 检出的
+本仓分支一起锚定——vendoring 后插件即 `amz-plugin/`，E1 的两条 `rev-parse` 已覆盖，
+此处无需另取）；`git status --porcelain js/config.local.js` **无输出**（凭证未入库）；
+回执贴「已确认原版已停用/移除」+ `token_len=<N>`（不贴明文）。
 
 > ⚠️ **本轮之前的一次真机已把旧 token 通过 tracked-file diff 暴露到终端（③闸现场回执
 > 第 5 条）——那个值按已泄露处理，请在本轮开始前先轮换 `.env` 的

@@ -2,9 +2,12 @@ const CONFIG = {
   API: {
     // ⚠️ **凭证绝不写进本 tracked 文件**：③闸真机实测——把 token 注入 tracked 的
     // popup.js 后，只读 `git diff` 就把活值打印到终端（凭证泄露已兑现）。故 token 与
-    // baseUrl 改从 `js/config.local.js`（gitignore、不入库）里的 `SB2_LOCAL` 注入；
-    // 该文件缺失时保留占位符 → isApiConfigured() fail-closed（一条请求都不发）。
-    // 装载前：复制 js/config.local.example.js 为 js/config.local.js 并填真值。
+    // baseUrl 改从 `js/config.local.js`（gitignore、不入库）里的 `SB2_LOCAL` 注入。
+    // manifest 已把 config.local.js 列进 content_scripts、在本文件之前加载；**该文件
+    // 缺失时 Chrome 直接拒绝加载整个扩展**（刻意的响亮失败，见联调单 E3）——不是「保留
+    // 占位符 → fail-closed」那条路（manifest 拦在前面，那条在真机上执行不到）。下面
+    // `typeof SB2_LOCAL` 兜底只服务 node 单测沙箱（沙箱不加载 config.local.js），不是
+    // 生产的 fail-closed。装载前：复制 js/config.local.example.js 为 config.local.js 填真值。
     // baseUrl 混合内容约束：amazon 页面是 https，content script 的 http fetch 唯一豁免
     // 是 loopback——浏览器须与 ERP 同机（127.0.0.1）；跨机等 RS-02b（HTTPS 反代）。
     baseUrl:

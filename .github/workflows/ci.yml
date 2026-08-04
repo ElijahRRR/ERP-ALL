@@ -183,10 +183,16 @@ jobs:
             echo "::error::amz-plugin/js/config.local.js 被提交进仓库——凭证文件必须 gitignore，永不入库"
             exit 1
           fi
-          if ! grep -q "YOUR_PLUGIN_SHARED_TOKEN" js/popup.js; then
-            echo "::error::popup.js 丢失 token 占位符——疑似把真实 token 写死进 tracked 文件"
+          # 钉住 CONFIG.API.token 的**兜底占位行本身**（popup.js:15 那种整行
+          # `      "YOUR_PLUGIN_SHARED_TOKEN",`）。**不能用 `grep -q` 全文件找**：占位符
+          # 在 isApiConfigured() 的比较字面量里（:79）还有一处、且永不删，全文件找恒真，
+          # 会把「按老姿势把真 token 写进兜底行」这个③闸现场真实发生过的动作漏过去
+          # （审查 5173846838 实测：只改 :15 兜底值、:79 不动，旧 `grep -q` 照样输出「通过」）。
+          # 锚定整行 ⇒ 兜底行被改成真 token 即变红；两处都删了也变红。
+          if ! grep -qE '^[[:space:]]*"YOUR_PLUGIN_SHARED_TOKEN",[[:space:]]*$' js/popup.js; then
+            echo "::error::popup.js 的 token 兜底占位行被改动或删除——疑似把真实 token 写死进 tracked 文件"
             exit 1
           fi
-          echo "凭证守卫通过：config.local.js 未入库、popup.js 保留占位符"
+          echo "凭证守卫通过：config.local.js 未入库、popup.js 兜底占位行完整"
       - name: 纯逻辑单测（三档兜底 / fail-closed / token 注入 / 州匹配）
         run: node --test tests/*.test.mjs
