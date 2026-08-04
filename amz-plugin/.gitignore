@@ -1,0 +1,5 @@
+.DS_Store
+*.log
+node_modules/
+# 本机运行配置（含共享 token）——凭证永不入库，见 js/config.local.example.js
+js/config.local.js

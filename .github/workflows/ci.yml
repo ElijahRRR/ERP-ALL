@@ -152,3 +152,41 @@ jobs:
           # 二次确认且文案写明终态）全部只在渲染后存在，改坏了后端与 tsc 一律全绿——
           # 而站点填错的后果是这个买家号收到它根本买不了的单。
           node e2e/buyer-accounts-claim.mjs
+
+  # 采购插件（R2-13 13e；vendored 进本仓 amz-plugin/，见该目录 README/联调单）。
+  # 花钱链路的机器门禁：纯静态 + 纯逻辑单测，不碰 secrets/DB。原独立 fork 仓的
+  # plugin-ci 迁到这里，插件不再单开 PR/单跑闸——归本仓一个 PR、一套闸序。
+  plugin:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: amz-plugin}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - name: JS 语法检查（node --check）
+        run: for f in js/*.js; do node --check "$f"; done
+      - name: manifest.json 合法
+        run: node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8'))"
+      - name: prettier 格式（钉版 3.6.2）
+        run: npx --yes prettier@3.6.2 --check "js/**/*.js" manifest.json
+      - name: 残留清扫（cookies 链与零调用权限必须删净）
+        run: |
+          if grep -rinE "cookie|chrome\.(storage|tabs|scripting|cookies)" js/ manifest.json popup.html; then
+            echo "::error::命中 cookies 链 / storage|tabs|scripting|cookies 残留——13e ③④ 要求删净"
+            exit 1
+          fi
+          echo "残留清扫零命中"
+      - name: 凭证不入库守卫（13e ③闸安全事件回修）
+        run: |
+          if git ls-files --error-unmatch js/config.local.js 2>/dev/null; then
+            echo "::error::amz-plugin/js/config.local.js 被提交进仓库——凭证文件必须 gitignore，永不入库"
+            exit 1
+          fi
+          if ! grep -q "YOUR_PLUGIN_SHARED_TOKEN" js/popup.js; then
+            echo "::error::popup.js 丢失 token 占位符——疑似把真实 token 写死进 tracked 文件"
+            exit 1
+          fi
+          echo "凭证守卫通过：config.local.js 未入库、popup.js 保留占位符"
+      - name: 纯逻辑单测（三档兜底 / fail-closed / token 注入 / 州匹配）
+        run: node --test tests/*.test.mjs
