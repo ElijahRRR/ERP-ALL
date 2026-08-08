@@ -28,5 +28,8 @@ htmlcov/
 *.dump
 *.dump.gz
 *.sql.gz
+# 采购插件本机运行配置（含共享 token）——凭证永不入库（13e ③闸安全事件回修）。
+# amz-plugin/.gitignore 已含同条，此处根级再钉一道，兜住整仓 `git add -A`。
+amz-plugin/js/config.local.js
 # pnpm 本地 store（部署机上实见 frontend/.pnpm-store/）
 .pnpm-store/

@@ -26,6 +26,7 @@ from erp.identity.router import auth_router, identity_router
 from erp.listing.router import listing_router
 from erp.notify.router import notify_router
 from erp.order.router import order_router
+from erp.plugin import cors as plugin_cors
 from erp.plugin.router import plugin_router
 from erp.pricing.router import pricing_router
 from erp.scrape.router import scrape_router, worker_router
@@ -77,6 +78,36 @@ def create_app() -> FastAPI:
         finally:
             structlog.contextvars.unbind_contextvars("request_id")
         response.headers["X-Request-Id"] = request.state.request_id
+        return response
+
+    @app.middleware("http")
+    async def plugin_cors_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # 采购插件组定向 CORS（13e）：为什么只这一组、为什么必须开，见 plugin/cors.py。
+        # 放行面 = 前缀 × amazon 源，两条都不中就原样放过（响应零 CORS 头）。
+        origin = request.headers.get("origin")
+        if not (
+            request.url.path.startswith(plugin_cors.PLUGIN_PREFIX)
+            and plugin_cors.allow_origin(origin)
+        ):
+            return await call_next(request)
+        assert origin is not None  # allow_origin 已排除 None，仅收窄类型
+        if request.method == "OPTIONS" and "access-control-request-method" in request.headers:
+            # 预检不进路由（路由层对 OPTIONS 只会 405）、不问认证——预检本就不带凭证。
+            # PNA：真机是 https amazon 页面打 http://127.0.0.1，Chrome 预检带私网请求头，
+            # 见到即在响应放行（否则整条被浏览器拦，CI/curl 看不见——见 cors.py 注释）。
+            pna = request.headers.get("access-control-request-private-network") == "true"
+            return Response(
+                status_code=204,
+                headers=plugin_cors.preflight_headers(origin, private_network=pna),
+            )
+        response = await call_next(request)
+        for key, value in plugin_cors.actual_headers(origin).items():
+            if key.lower() == "vary":
+                response.headers.append("vary", value)  # 追加不覆盖，别抹掉既有 Vary
+            else:
+                response.headers[key] = value
         return response
 
     def _envelope(

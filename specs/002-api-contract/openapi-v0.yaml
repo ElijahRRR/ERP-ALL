@@ -1965,6 +1965,12 @@ paths:
   #    如有出入**以插件为准并同 PR 修本契约**。不许编字段。
   # ⑤ 成功响应一律 `{code: 200, data: ...}`（厂商兼容信封，插件读 `response.data`）；
   #    **失败走本仓统一 ErrorResponse + 真实 HTTP 状态码**，绝不做「HTTP 200 里塞 code:500」。
+  # ⑤-b **本组对浏览器跨域定向放行 CORS（13e）**：fork 插件是 MV3 content script，
+  #    跨域 fetch 按页面源（amazon 三站）走 CORS，host_permissions 不豁免——不放行则
+  #    插件一条请求都发不出。放行面＝本前缀 × `https://*.amazon.{com,ca,co.jp}`，
+  #    仅 GET/POST/OPTIONS、仅 X-Plugin-Token/Content-Type 头；预检 OPTIONS 回 204；
+  #    401 也带 CORS 头（插件要能读到错误体）。**其余端点组一律不放**（单人模式下
+  #    `/me` 免凭证出数，全局放行＝amazon 页面任意脚本可读）。实现见 `plugin/cors.py`。
   # ⑥ **写回四端点（2/3/4/7）的请求体不带 `customerId`**——厂商协议如此，已逐字取证
   #    （`.agent/evidence/R2-13/owner-reverse-engineering-20260730.md` C.2/E.2）。故它们的归属
   #    检查是「**团队** + 是不是插件派发单」，**不是**身份一致性。这条写进契约是为了挡住
@@ -2068,6 +2074,9 @@ paths:
         落 `status=exception` + `exception_reason`（failReason 原文一字不改）+
         `exception_kind`（17 条厂商原文的归类表，见 `plugin/classify.py`）。**零金额列写入**。
         `status` 只接受 99——厂商的数字状态机不进我方模型，其余值 422。
+        **13e 逐字取证**：fork 插件实发键名为 `orderId`/`failContent`（线上体与逆向报告的
+        调用签名不同名），服务端经 AliasChoices 双名兼容——`id|orderId`、`failReason|failContent`
+        各必居其一，两侧都不改名（回切零翻译）。
       requestBody:
         required: true
         content:
@@ -2078,7 +2087,7 @@ paths:
               properties:
                 id: {type: integer, description: procurement_order.id}
                 status: {type: integer, enum: [99]}
-                failReason: {type: [string, 'null'], description: 失败原文；服务端亦接受同义字段名 failContent（请求体键名未逐字取证，两名一义故都收）}
+                failReason: {type: [string, 'null'], description: 失败原文；服务端亦接受同义字段名 failContent（13e 逐字取证：fork 实发即 failContent）}
       responses:
         '200': {description: OK, content: {application/json: {schema: {type: object, properties: {code: {type: integer, enum: [200]}, data: {type: object}}}}}}
         '401': {$ref: '#/components/responses/Error'}
@@ -2093,6 +2102,8 @@ paths:
         `order_not_found`）+ critical 告警，**`status` 一律不动**——改成 exception 会抹掉
         「已拍单」这个事实，运营看到会以为没拍然后重拍一次。
         `orderNo` 只做一致性校验，不符仅记 warn 不拒（渠道单号漂移不该挡住「渠道取消了」入库）。
+        **13e 逐字取证**：fork 插件实发键名为 `orderId`/`orderNumber`/`amzStatus`（三键全部
+        与逆向报告的调用签名不同名），服务端经 AliasChoices 双名兼容，两侧都不改名（回切零翻译）。
       requestBody:
         required: true
         content:

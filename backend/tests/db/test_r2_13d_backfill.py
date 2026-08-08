@@ -800,7 +800,7 @@ class TestTaskFailure:
     def test_fail_content_alias_is_accepted(
         self, client: TestClient, migrated_db: str, seeded: dict
     ) -> None:
-        """请求体键名未逐字取证，`failContent` 与 `failReason` 同义——两个都收。"""
+        """`failContent` 与 `failReason` 同义都收（13e 逐字取证：fork 实发即 failContent）。"""
         env = _setup(client, migrated_db, seeded)
         r = client.post(
             f"{PLUGIN}/updateOrderStatus",
@@ -810,6 +810,27 @@ class TestTaskFailure:
         assert r.status_code == 200, r.text
         row = _po_row(migrated_db, env["po"])
         assert row["exception_kind"] == "checkout" and row["exception_reason"] == "下单验证超时"
+
+    def test_vendor_wire_shape_is_accepted(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """**13e 逐字取证的厂商线上体**：`{orderId, status, failContent}` 必须原样可用。
+
+        13a 按逆向报告的 JS 调用签名 `(id, 99, failReason)` 建模，而 fork 仓
+        `js/popup.js` 实发键名是 `orderId`/`failContent`——签名参数名 ≠ 线上体键名。
+        本用例钉住「插件一个字不改就能报回异常」；它红了说明有人把 AliasChoices
+        当成冗余清理掉了，届时线上表现是全部拍单失败 422、异常原因永远报不回来。
+        """
+        env = _setup(client, migrated_db, seeded)
+        r = client.post(
+            f"{PLUGIN}/updateOrderStatus",
+            headers=_h(env["instance"]),
+            json={"orderId": env["po"], "status": 99, "failContent": "商品无库存"},
+        )
+        assert r.status_code == 200, r.text
+        row = _po_row(migrated_db, env["po"])
+        assert row["status"] == "exception"
+        assert row["exception_kind"] == "stock" and row["exception_reason"] == "商品无库存"
 
     def test_failure_after_purchase_keeps_status(
         self, client: TestClient, migrated_db: str, seeded: dict
@@ -849,7 +870,8 @@ class TestTaskFailure:
             ("地址保存超时", "address"),
             ("地址列表加载超时", "address"),
             ("地址信息不完整，缺少区相关信息", "address"),
-            ("未匹配到洲信息，请检查订单", "address"),
+            ("未匹配到州信息，请检查订单", "address"),  # 13e fork 现行文案（洲→州）
+            ("未匹配到洲信息，请检查订单", "address"),  # 旧文案向后兼容
             ("商品无库存", "stock"),
             ("商品库存不足或已售罄", "stock"),
             ("未找到加入购物车按钮", "stock"),
@@ -909,6 +931,25 @@ class TestChannelStatus:
         )
         assert r.status_code == 200, r.text
         assert _po_row(migrated_db, env["po"])["exception_kind"] == "channel_cancelled"
+
+    def test_vendor_wire_shape_is_accepted(
+        self, client: TestClient, migrated_db: str, seeded: dict
+    ) -> None:
+        """**13e 逐字取证的厂商线上体**：`{orderId, orderNumber, amzStatus}` 必须原样可用。
+
+        端点 4 三个键**全部**与逆向报告的调用签名不同名——只测规范名的话，
+        这一组别名哪个被清掉都不红，而线上表现是渠道取消/退款信号永远进不来。
+        """
+        env = _setup(client, migrated_db, seeded, status="purchased", purchase_order_ref="111-5-5")
+        r = client.post(
+            f"{PLUGIN}/updateAmzOrderStatus",
+            headers=_h(env["instance"]),
+            json={"orderId": env["po"], "orderNumber": env["order"]["no"], "amzStatus": 91},
+        )
+        assert r.status_code == 200, r.text
+        row = _po_row(migrated_db, env["po"])
+        assert row["exception_kind"] == "channel_cancelled"
+        assert row["status"] == "purchased"
 
     def test_replay_does_not_pile_up_reason(
         self, client: TestClient, migrated_db: str, seeded: dict

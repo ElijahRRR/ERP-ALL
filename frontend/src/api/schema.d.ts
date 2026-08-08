@@ -5686,7 +5686,7 @@ export interface paths {
         put?: never;
         /**
          * 拍单失败（status=99）
-         * @description 落 `status=exception` + `exception_reason`（failReason 原文一字不改）+ `exception_kind`（17 条厂商原文的归类表，见 `plugin/classify.py`）。**零金额列写入**。 `status` 只接受 99——厂商的数字状态机不进我方模型，其余值 422。
+         * @description 落 `status=exception` + `exception_reason`（failReason 原文一字不改）+ `exception_kind`（17 条厂商原文的归类表，见 `plugin/classify.py`）。**零金额列写入**。 `status` 只接受 99——厂商的数字状态机不进我方模型，其余值 422。 **13e 逐字取证**：fork 插件实发键名为 `orderId`/`failContent`（线上体与逆向报告的 调用签名不同名），服务端经 AliasChoices 双名兼容——`id|orderId`、`failReason|failContent` 各必居其一，两侧都不改名（回切零翻译）。
          */
         post: {
             parameters: {
@@ -5702,7 +5702,7 @@ export interface paths {
                         id: number;
                         /** @enum {integer} */
                         status: 99;
-                        /** @description 失败原文；服务端亦接受同义字段名 failContent（请求体键名未逐字取证，两名一义故都收） */
+                        /** @description 失败原文；服务端亦接受同义字段名 failContent（13e 逐字取证：fork 实发即 failContent） */
                         failReason?: string | null;
                     };
                 };
@@ -5743,7 +5743,7 @@ export interface paths {
         put?: never;
         /**
          * 渠道侧回报（91=已取消/退款，92=订单不存在）
-         * @description 这两条发生在**已拍单之后**，故只落 `exception_kind`（`channel_cancelled` / `order_not_found`）+ critical 告警，**`status` 一律不动**——改成 exception 会抹掉 「已拍单」这个事实，运营看到会以为没拍然后重拍一次。 `orderNo` 只做一致性校验，不符仅记 warn 不拒（渠道单号漂移不该挡住「渠道取消了」入库）。
+         * @description 这两条发生在**已拍单之后**，故只落 `exception_kind`（`channel_cancelled` / `order_not_found`）+ critical 告警，**`status` 一律不动**——改成 exception 会抹掉 「已拍单」这个事实，运营看到会以为没拍然后重拍一次。 `orderNo` 只做一致性校验，不符仅记 warn 不拒（渠道单号漂移不该挡住「渠道取消了」入库）。 **13e 逐字取证**：fork 插件实发键名为 `orderId`/`orderNumber`/`amzStatus`（三键全部 与逆向报告的调用签名不同名），服务端经 AliasChoices 双名兼容，两侧都不改名（回切零翻译）。
          */
         post: {
             parameters: {

@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "AMZ采购助手（ERP fork）",
+  "version": "2.4.1.1",
+  "description": "AMZ采购助手 ERP 对接版（共享token直连自建ERP，无会话抓取链）",
+  "permissions": [],
+  "host_permissions": [
+    "*://*.amazon.com/*",
+    "*://*.amazon.ca/*",
+    "*://*.amazon.co.jp/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "images/icon.png",
+      "48": "images/icon.png",
+      "128": "images/icon.png"
+    }
+  },
+  "icons": {
+    "16": "images/icon.png",
+    "48": "images/icon.png",
+    "128": "images/icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.amazon.com/your-orders/orders?*",
+        "*://*.amazon.com/gp/css/order-history?*",
+        "*://*.amazon.com/gp/your-account/order-history*",
+        "*://*.amazon.ca/your-orders/orders?*",
+        "*://*.amazon.ca/gp/css/order-history?*",
+        "*://*.amazon.ca/gp/your-account/order-history*",
+        "*://*.amazon.co.jp/your-orders/orders?*",
+        "*://*.amazon.co.jp/gp/css/order-history?*",
+        "*://*.amazon.co.jp/-/en/gp/css/order-history?*",
+        "*://*.amazon.co.jp/gp/your-account/order-history*"
+      ],
+      "css": ["layer/theme/default/layer.css", "css/popup.css"],
+      "js": [
+        "lib/jquery-3.3.1.min.js",
+        "layer/layer.js",
+        "js/config.local.js",
+        "js/popup.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ]
+}

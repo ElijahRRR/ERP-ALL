@@ -121,13 +121,15 @@ class PluginOrderStatusIn(BaseModel):
     `status` 收窄成 `Literal[99]`——**厂商的数字状态机不进我方模型**，只认这一个值，
     其余一律 422。多认一个值就等于把他们的状态枚举悄悄搬进来。
 
-    `failReason` 接受 `failContent` 作为别名：一手来源里 JS 调用签名写的是
-    `updateOrderStatus(id, 99, failReason)`（`:213`），而订单对象上的同义字段叫
-    `failContent`（`:123`），**请求体到底用哪个名字未逐字取证**。两个名字一个含义，
-    都收下比赌一个更稳——这个端点的全部载荷就是这段原文，丢了就没有异常原因了。
+    〔13e 逐字取证，2026-08-01〕fork 仓 `js/popup.js` 实发线上体为
+    `{orderId, status, failContent}`——此前按逆向报告的 JS **调用签名**
+    `updateOrderStatus(id, 99, failReason)` 建模，签名参数名与线上体键名不同。
+    按 002 组头注④「以插件实读为准」：`id`/`failReason` 经 AliasChoices 双名兼容，
+    模型字段名不动（服务端代码与既有测试零改动），fork 侧也不必翻译键名
+    （回切演练零翻译原则）。
     """
 
-    id: int
+    id: int = Field(validation_alias=AliasChoices("id", "orderId"))
     status: Literal[99]
     failReason: str | None = Field(
         default=None, validation_alias=AliasChoices("failReason", "failContent")
@@ -138,11 +140,17 @@ class PluginAmzOrderStatusIn(BaseModel):
     """端点 4 `updateAmzOrderStatus` 请求体：渠道侧回报（91=已取消/退款，92=订单不存在）。
 
     `orderNo` 只做一致性校验、不作授权依据（授权只来自实例令牌）。
+
+    〔13e 逐字取证，2026-08-01〕fork 仓实发线上体为 `{orderId, orderNumber, amzStatus}`
+    ——三键全部与逆向报告的调用签名 `(id, orderNo, status)` 不同名。同上按插件实读
+    为准做 AliasChoices 双名兼容，两侧都不改名。
     """
 
-    id: int
-    orderNo: str | None = None
-    status: Literal[91, 92]
+    id: int = Field(validation_alias=AliasChoices("id", "orderId"))
+    orderNo: str | None = Field(
+        default=None, validation_alias=AliasChoices("orderNo", "orderNumber")
+    )
+    status: Literal[91, 92] = Field(validation_alias=AliasChoices("status", "amzStatus"))
 
 
 class PluginTrackingIn(BaseModel):
